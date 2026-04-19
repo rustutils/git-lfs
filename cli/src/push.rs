@@ -39,8 +39,6 @@ pub enum PushCommandError {
 /// Returns the [`Report`] so callers (i.e. `main`) can decide their own
 /// exit code based on per-object success/failure.
 pub fn push(cwd: &Path, remote: &str, refs: &[String]) -> Result<Report, PushCommandError> {
-    let store = Store::new(git_lfs_git::lfs_dir(cwd)?);
-
     let default_refs = ["HEAD".to_string()];
     let effective: &[String] = if refs.is_empty() { &default_refs } else { refs };
     let ref_strs: Vec<&str> = effective.iter().map(String::as_str).collect();
@@ -51,7 +49,23 @@ pub fn push(cwd: &Path, remote: &str, refs: &[String]) -> Result<Report, PushCom
     let excludes_owned = remote_tracking_refs(cwd, remote)?;
     let excludes: Vec<&str> = excludes_owned.iter().map(String::as_str).collect();
 
-    let pointers = scan_pointers(cwd, &ref_strs, &excludes)?;
+    upload_in_range(cwd, &ref_strs, &excludes)
+}
+
+/// Shared core: scan for pointers reachable from `includes` minus
+/// `excludes`, filter to objects we have locally (warn + skip the rest),
+/// and upload via the configured LFS endpoint.
+///
+/// Used by both [`push`] (CLI-driven) and
+/// [`crate::pre_push::pre_push`] (git-hook-driven). Prints summary lines
+/// and the per-object failure list directly to stdout/stderr.
+pub(crate) fn upload_in_range(
+    cwd: &Path,
+    includes: &[&str],
+    excludes: &[&str],
+) -> Result<Report, PushCommandError> {
+    let store = Store::new(git_lfs_git::lfs_dir(cwd)?);
+    let pointers = scan_pointers(cwd, includes, excludes)?;
 
     // Filter to OIDs we actually have locally. Pushing without local
     // bytes is impossible — warn so the user knows something's missing
@@ -104,7 +118,10 @@ pub fn push(cwd: &Path, remote: &str, refs: &[String]) -> Result<Report, PushCom
 /// Enumerate every ref under `refs/remotes/<remote>/`. Returns the
 /// fully-qualified ref names so they can go straight into rev-list's
 /// exclude set.
-fn remote_tracking_refs(cwd: &Path, remote: &str) -> Result<Vec<String>, PushCommandError> {
+pub(crate) fn remote_tracking_refs(
+    cwd: &Path,
+    remote: &str,
+) -> Result<Vec<String>, PushCommandError> {
     let pattern = format!("refs/remotes/{remote}/");
     let out = Command::new("git")
         .arg("-C")

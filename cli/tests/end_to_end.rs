@@ -802,6 +802,207 @@ async fn push_is_noop_when_remote_tracking_matches_head() {
 }
 
 #[tokio::test]
+async fn pre_push_uploads_new_commit_objects_via_stdin_protocol() {
+    use serde_json::json;
+    use wiremock::matchers::{body_bytes, method as m_method, path as m_path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    // Two commits: pre-push driven by stdin like git would.
+    const OLD: &[u8] = b"old\n";
+    const NEW: &[u8] = b"new\n";
+
+    let server = MockServer::start().await;
+    let repo = fresh_repo_with_identity();
+    git_in(repo.path(), &["config", "--local", "lfs.url", &server.uri()]);
+
+    let cleaned_old = run_in(repo.path(), &["clean"], OLD);
+    commit_pointer_at(repo.path(), "old.bin", &cleaned_old.stdout);
+    let first_commit = head_oid_str(repo.path());
+
+    let cleaned_new = run_in(repo.path(), &["clean"], NEW);
+    commit_pointer_at(repo.path(), "new.bin", &cleaned_new.stdout);
+    let head = head_oid_str(repo.path());
+
+    let new_oid = oid_from_pointer(&cleaned_new.stdout);
+    let upload_url = format!("{}/storage/{new_oid}", server.uri());
+
+    Mock::given(m_method("POST"))
+        .and(m_path("/objects/batch"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "transfer": "basic",
+            "objects": [{
+                "oid": new_oid, "size": NEW.len(),
+                "actions": { "upload": { "href": upload_url } }
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(m_method("PUT"))
+        .and(m_path(format!("/storage/{new_oid}")))
+        .and(body_bytes(NEW))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    // git's pre-push stdin format: <local-ref> <local-sha> <remote-ref> <remote-sha>
+    let stdin = format!("refs/heads/main {head} refs/heads/main {first_commit}\n");
+    let path = repo.path().to_owned();
+    let out = tokio::task::spawn_blocking(move || {
+        run_in(&path, &["pre-push", "origin", "https://example/dummy"], stdin.as_bytes())
+    })
+    .await
+    .unwrap();
+    assert!(
+        out.status.success(),
+        "pre-push failed: {}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+}
+
+#[tokio::test]
+async fn pre_push_skips_branch_deletes() {
+    // Local sha is all zeros → branch delete → nothing to push.
+    // No mocks: any HTTP call would 404 and the test would fail.
+    use wiremock::MockServer;
+
+    let server = MockServer::start().await;
+    let repo = fresh_repo_with_identity();
+    git_in(repo.path(), &["config", "--local", "lfs.url", &server.uri()]);
+    // Need at least one commit for git rev-parse to work later — but
+    // for the pre-push call itself the stdin alone drives behavior.
+    let cleaned = run_in(repo.path(), &["clean"], b"x\n");
+    commit_pointer_at(repo.path(), "x.bin", &cleaned.stdout);
+
+    let zero = "0000000000000000000000000000000000000000";
+    let some_remote = head_oid_str(repo.path());
+    let stdin = format!(
+        "(delete) {zero} refs/heads/dead {some_remote}\n"
+    );
+    let path = repo.path().to_owned();
+    let out = tokio::task::spawn_blocking(move || {
+        run_in(&path, &["pre-push", "origin", "https://example/dummy"], stdin.as_bytes())
+    })
+    .await
+    .unwrap();
+    assert!(
+        out.status.success(),
+        "pre-push should succeed for delete-only push: {}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+}
+
+#[tokio::test]
+async fn pre_push_new_branch_uses_remote_tracking_as_exclude() {
+    use serde_json::json;
+    use wiremock::matchers::{method as m_method, path as m_path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    // Brand-new branch: remote-sha is all zeros. We should fall back
+    // to refs/remotes/origin/* as the exclude set. Set up a remote
+    // tracking ref at commit 1; only commit 2's object should upload.
+    const OLD: &[u8] = b"old payload\n";
+    const NEW: &[u8] = b"new payload\n";
+
+    let server = MockServer::start().await;
+    let repo = fresh_repo_with_identity();
+    git_in(repo.path(), &["config", "--local", "lfs.url", &server.uri()]);
+
+    let cleaned_old = run_in(repo.path(), &["clean"], OLD);
+    commit_pointer_at(repo.path(), "old.bin", &cleaned_old.stdout);
+    let first_commit = head_oid_str(repo.path());
+
+    let cleaned_new = run_in(repo.path(), &["clean"], NEW);
+    commit_pointer_at(repo.path(), "new.bin", &cleaned_new.stdout);
+    let head = head_oid_str(repo.path());
+
+    git_in(
+        repo.path(),
+        &["update-ref", "refs/remotes/origin/main", &first_commit],
+    );
+
+    let new_oid = oid_from_pointer(&cleaned_new.stdout);
+    let upload_url = format!("{}/storage/{new_oid}", server.uri());
+
+    Mock::given(m_method("POST"))
+        .and(m_path("/objects/batch"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "transfer": "basic",
+            "objects": [{
+                "oid": new_oid, "size": NEW.len(),
+                "actions": { "upload": { "href": upload_url } }
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(m_method("PUT"))
+        .and(m_path(format!("/storage/{new_oid}")))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    // Push of a new branch (refs/heads/feature) — remote-sha all zeros.
+    let zero = "0000000000000000000000000000000000000000";
+    let stdin = format!("refs/heads/feature {head} refs/heads/feature {zero}\n");
+    let path = repo.path().to_owned();
+    let out = tokio::task::spawn_blocking(move || {
+        run_in(&path, &["pre-push", "origin", "https://example/dummy"], stdin.as_bytes())
+    })
+    .await
+    .unwrap();
+    assert!(
+        out.status.success(),
+        "pre-push failed: {}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+}
+
+#[tokio::test]
+async fn pre_push_respects_git_lfs_skip_push_env() {
+    use wiremock::MockServer;
+
+    // Even with a real refspec on stdin, GIT_LFS_SKIP_PUSH=1 should
+    // make pre-push exit cleanly without scanning or uploading.
+    let server = MockServer::start().await;
+    let repo = fresh_repo_with_identity();
+    git_in(repo.path(), &["config", "--local", "lfs.url", &server.uri()]);
+    let cleaned = run_in(repo.path(), &["clean"], b"payload\n");
+    commit_pointer_at(repo.path(), "x.bin", &cleaned.stdout);
+    let head = head_oid_str(repo.path());
+
+    let zero = "0000000000000000000000000000000000000000";
+    let stdin = format!("refs/heads/main {head} refs/heads/main {zero}\n");
+
+    let path = repo.path().to_owned();
+    let out = tokio::task::spawn_blocking(move || {
+        // run_in already augments PATH. We construct Command directly
+        // here to add the env var. Mirrors run_in's PATH handling.
+        let bin_dir = Path::new(BIN).parent().unwrap();
+        let path_var = std::env::var("PATH").unwrap_or_default();
+        let new_path = format!("{}:{path_var}", bin_dir.display());
+        let mut child = Command::new(BIN)
+            .args(["pre-push", "origin", "https://example/dummy"])
+            .current_dir(&path)
+            .env("PATH", new_path)
+            .env("GIT_LFS_SKIP_PUSH", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.as_mut().unwrap().write_all(stdin.as_bytes()).unwrap();
+        drop(child.stdin.take());
+        child.wait_with_output().unwrap()
+    })
+    .await
+    .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[tokio::test]
 async fn push_handles_server_already_has_object() {
     use serde_json::json;
     use wiremock::matchers::{method as m_method, path as m_path};

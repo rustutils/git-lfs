@@ -10,6 +10,7 @@ use git_lfs_store::Store;
 mod fetch;
 mod fetcher;
 mod install;
+mod pre_push;
 mod pull;
 mod push;
 mod track;
@@ -82,6 +83,16 @@ enum Command {
         /// Refs to push LFS objects for. Defaults to `HEAD`.
         refs: Vec<String>,
     },
+    /// Git pre-push hook entry point — not typically invoked by hand.
+    /// Reads `<local-ref> <local-sha> <remote-ref> <remote-sha>` lines
+    /// from stdin and uploads the LFS objects newly reachable from each
+    /// `<local-sha>`.
+    PrePush {
+        /// Name of the remote being pushed to.
+        remote: String,
+        /// URL of the remote (informational; we use `lfs.url` config).
+        url: Option<String>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -145,6 +156,13 @@ fn dispatch(cmd: Command) -> Result<(), Box<dyn std::error::Error>> {
             let report = push::push(&cwd, &remote, &refs)?;
             if !report.failed.is_empty() {
                 return Err("one or more objects failed to upload".into());
+            }
+        }
+        Command::PrePush { remote, url: _ } => {
+            let stdin = io::stdin().lock();
+            let report = pre_push::pre_push(&cwd, &remote, stdin)?;
+            if !report.failed.is_empty() {
+                return Err("pre-push: one or more objects failed to upload".into());
             }
         }
         Command::Track { patterns } => {
