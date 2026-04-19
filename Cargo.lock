@@ -217,6 +217,7 @@ dependencies = [
  "git-lfs-pointer",
  "git-lfs-store",
  "git-lfs-transfer",
+ "tempfile",
 ]
 
 [[package]]

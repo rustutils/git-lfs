@@ -14,3 +14,6 @@ git-lfs-api      = { workspace = true }
 git-lfs-transfer = { workspace = true }
 git-lfs-creds    = { workspace = true }
 git-lfs-filter   = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
