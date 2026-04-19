@@ -124,7 +124,11 @@ fn smudge_passes_through_non_pointer() {
 }
 
 #[test]
-fn smudge_missing_object_errors() {
+fn smudge_missing_object_without_lfs_url_errors() {
+    // No `lfs.url` configured + missing object → smudge attempts to fetch,
+    // realizes there's nowhere to fetch from, and fails with a config error.
+    // Previously (before transfer wiring) this surfaced as ObjectMissing;
+    // now it surfaces as a fetch failure that names the missing config key.
     let repo = fresh_repo();
     let pointer = b"version https://git-lfs.github.com/spec/v1\n\
                     oid sha256:0000000000000000000000000000000000000000000000000000000000000001\n\
@@ -134,7 +138,7 @@ fn smudge_missing_object_errors() {
     assert!(out.stdout.is_empty(), "no partial output on miss");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("not present"),
+        stderr.contains("lfs.url"),
         "unexpected stderr: {stderr}"
     );
 }
@@ -351,4 +355,85 @@ fn track_then_clean_filter_path() {
     let out = run_in(repo.path(), &["clean", "data.bin"], b"binary blob");
     assert!(out.status.success());
     assert!(out.stdout.starts_with(b"version https://git-lfs.github.com/spec/v1\n"));
+}
+
+// ---------- smudge with on-demand download --------------------------------
+//
+// One end-to-end test that proves the new wiring: lfs.url → batch API →
+// basic transfer → store, all driven from the smudge subcommand. Lives
+// next to the other smudge tests but uses tokio + wiremock, so it's
+// gated as a separate module.
+
+#[tokio::test]
+async fn smudge_downloads_missing_object_via_lfs_url() {
+    use serde_json::json;
+    use wiremock::matchers::{method as m_method, path as m_path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    // SHA-256 of "downloaded\n" — the bytes we'll have wiremock serve.
+    const OID: &str = "30031a9831674dd684c3817399acebc88a116ce5a7a3fbc0cf34d92521a534e6";
+    const CONTENT: &[u8] = b"downloaded\n";
+
+    let server = MockServer::start().await;
+    let storage_url = format!("{}/storage/{OID}", server.uri());
+
+    Mock::given(m_method("POST"))
+        .and(m_path("/objects/batch"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "transfer": "basic",
+            "objects": [{
+                "oid": OID, "size": CONTENT.len(),
+                "actions": { "download": { "href": storage_url } }
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    Mock::given(m_method("GET"))
+        .and(m_path(format!("/storage/{OID}")))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(CONTENT))
+        .mount(&server)
+        .await;
+
+    // Set lfs.url so the fetcher can find the wiremock.
+    let repo = fresh_repo();
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(repo.path())
+        .args(["config", "--local", "lfs.url", &server.uri()])
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    let pointer = format!(
+        "version https://git-lfs.github.com/spec/v1\n\
+         oid sha256:{OID}\n\
+         size {}\n",
+        CONTENT.len(),
+    );
+
+    // run_in is sync; spawn it on the blocking pool so we don't deadlock
+    // the current-thread runtime that wiremock is using.
+    let path = repo.path().to_owned();
+    let pointer_bytes = pointer.into_bytes();
+    let out = tokio::task::spawn_blocking(move || run_in(&path, &["smudge"], &pointer_bytes))
+        .await
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "smudge failed: {}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert_eq!(out.stdout, CONTENT, "smudge stdout != served bytes");
+
+    // The fetched object should now be in the local store, sharded under
+    // .git/lfs/objects/<aa>/<bb>/<full-oid>.
+    let stored = repo
+        .path()
+        .join(".git/lfs/objects")
+        .join(&OID[0..2])
+        .join(&OID[2..4])
+        .join(OID);
+    assert!(stored.is_file(), "expected stored object at {stored:?}");
 }

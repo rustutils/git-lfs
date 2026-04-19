@@ -12,7 +12,17 @@ mod smudge;
 
 pub use clean::{CleanOutcome, clean};
 pub use filter_process::{FilterProcessError, filter_process};
-pub use smudge::{SmudgeError, SmudgeOutcome, smudge};
+pub use smudge::{SmudgeError, SmudgeOutcome, smudge, smudge_with_fetch};
+
+/// Boxed error returned by the on-demand fetch closure passed to
+/// [`smudge_with_fetch`] / [`filter_process`].
+///
+/// Kept as a boxed trait object so callers can plug in any error type
+/// (HTTP failures, missing config, custom-transfer breakage, …) without
+/// the filter crate needing to know about it. The typed
+/// [`git_lfs_transfer::TransferError`] is the most common payload — it
+/// converts via `Into` since it implements `std::error::Error + Send + Sync`.
+pub type FetchError = Box<dyn std::error::Error + Send + Sync>;
 
 /// Read up to [`MAX_POINTER_SIZE`] bytes from `input` and try to parse them
 /// as a pointer.

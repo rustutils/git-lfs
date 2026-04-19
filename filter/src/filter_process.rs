@@ -10,9 +10,10 @@ use std::collections::HashMap;
 use std::io::{self, Read, Write};
 
 use git_lfs_git::pktline;
+use git_lfs_pointer::Pointer;
 use git_lfs_store::Store;
 
-use crate::{clean, smudge};
+use crate::{FetchError, clean, smudge_with_fetch};
 
 #[derive(Debug, thiserror::Error)]
 pub enum FilterProcessError {
@@ -28,11 +29,23 @@ pub enum FilterProcessError {
 
 /// Run the filter-process protocol against `input`/`output` (typically
 /// stdin/stdout). Returns when git closes its end of the pipe.
-pub fn filter_process<R: Read, W: Write>(
+///
+/// `fetch` is called when a smudge request hits an object that isn't in
+/// the local store; see [`smudge_with_fetch`] for semantics. If fetching
+/// is not supported in the caller's context, pass a closure that always
+/// errors — the protocol will then surface those smudges as `status=error`
+/// to git, same as if [`smudge`](crate::smudge) hit `ObjectMissing`.
+pub fn filter_process<R, W, F>(
     store: &Store,
     input: R,
     output: W,
-) -> Result<(), FilterProcessError> {
+    mut fetch: F,
+) -> Result<(), FilterProcessError>
+where
+    R: Read,
+    W: Write,
+    F: FnMut(&Pointer) -> Result<(), FetchError>,
+{
     let mut reader = pktline::Reader::new(input);
     let mut writer = pktline::Writer::new(output);
 
@@ -58,7 +71,7 @@ pub fn filter_process<R: Read, W: Write>(
 
         match command.as_str() {
             "clean" => process_clean(store, &mut writer, &payload)?,
-            "smudge" => process_smudge(store, &mut writer, &payload)?,
+            "smudge" => process_smudge(store, &mut writer, &payload, &mut fetch)?,
             other => return Err(FilterProcessError::UnknownCommand(other.into())),
         }
         writer.flush()?;
@@ -161,17 +174,22 @@ fn process_clean<W: Write>(
     Ok(())
 }
 
-fn process_smudge<W: Write>(
+fn process_smudge<W, F>(
     store: &Store,
     writer: &mut pktline::Writer<W>,
     payload: &[u8],
-) -> Result<(), FilterProcessError> {
+    fetch: &mut F,
+) -> Result<(), FilterProcessError>
+where
+    W: Write,
+    F: FnMut(&Pointer) -> Result<(), FetchError>,
+{
     write_initial_status(writer)?;
     let result = run_through_sink(writer, |sink| {
         // The protocol only differentiates success vs. error at this layer;
-        // the specific reason (ObjectMissing, Extensions, …) is logged by
-        // the caller's stderr if they care.
-        smudge(store, &mut { payload }, sink)
+        // the specific reason (ObjectMissing, Extensions, FetchFailed, …) is
+        // logged by the caller's stderr if they care.
+        smudge_with_fetch(store, &mut { payload }, sink, |p| fetch(p))
             .map(|_| ())
             .map_err(|e| io::Error::other(e.to_string()))
     });
@@ -287,9 +305,15 @@ mod tests {
             .flush()
     }
 
+    /// Fetcher that always errors — the right default for tests where
+    /// we don't expect any miss. Lies surface as `status=error` to git.
+    fn no_fetch(_p: &Pointer) -> Result<(), FetchError> {
+        Err("test: no fetcher configured".into())
+    }
+
     fn run(store: &Store, input: Vec<u8>) -> Vec<u8> {
         let mut output = Vec::new();
-        filter_process(store, Cursor::new(input), &mut output).unwrap();
+        filter_process(store, Cursor::new(input), &mut output, no_fetch).unwrap();
         output
     }
 
@@ -388,6 +412,45 @@ mod tests {
         assert_eq!(rest[2], Tok::Flush);
         assert_eq!(rest[3], Tok::Text("status=error".into()));
         assert_eq!(rest[4], Tok::Flush);
+    }
+
+    #[test]
+    fn smudge_invokes_fetcher_when_object_missing() {
+        let (_t, store) = fixture();
+        let content = b"fetched on demand\n";
+        // Build the pointer text by cleaning, then wipe the object so the
+        // smudge will miss and exercise the fetch path.
+        let mut pointer = Vec::new();
+        clean(&store, &mut { &content[..] }, &mut pointer).unwrap();
+        let parsed = git_lfs_pointer::Pointer::parse(&pointer).unwrap();
+        std::fs::remove_file(store.object_path(parsed.oid)).unwrap();
+
+        let input = handshake_input()
+            .text("command=smudge")
+            .text("pathname=a.dat")
+            .flush()
+            .data(&pointer)
+            .flush()
+            .build();
+
+        let mut output = Vec::new();
+        let store_ref = &store;
+        filter_process(&store, Cursor::new(input), &mut output, |p: &Pointer| {
+            // Stand in for a real download — re-insert the bytes.
+            store_ref.insert(&mut { &content[..] }).unwrap();
+            assert_eq!(p.oid, parsed.oid);
+            Ok(())
+        })
+        .unwrap();
+
+        let toks = decode(&output);
+        let rest = &toks[6..];
+        assert_eq!(rest[0], Tok::Text("status=success".into()));
+        assert_eq!(rest[1], Tok::Flush);
+        // Content "fetched on demand\n" comes back as a Text token.
+        assert_eq!(rest[2], Tok::Text("fetched on demand".into()));
+        assert_eq!(rest[3], Tok::Flush);
+        assert_eq!(rest[4], Tok::Text("status=success".into()));
     }
 
     #[test]

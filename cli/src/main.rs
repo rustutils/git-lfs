@@ -3,12 +3,15 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use git_lfs_filter::{clean, filter_process, smudge};
+use git_lfs_filter::{clean, filter_process, smudge_with_fetch};
 use git_lfs_git::ConfigScope;
 use git_lfs_store::Store;
 
+mod fetcher;
 mod install;
 mod track;
+
+use fetcher::LfsFetcher;
 
 #[derive(Parser)]
 #[command(name = "git-lfs", version, about = "Git LFS — large file storage for git")]
@@ -79,10 +82,11 @@ fn dispatch(cmd: Command) -> Result<(), Box<dyn std::error::Error>> {
         }
         Command::Smudge { path: _ } => {
             let store = Store::new(git_lfs_git::lfs_dir(&cwd)?);
+            let fetcher = LfsFetcher::from_repo(&cwd, &store)?;
             let stdin = io::stdin().lock();
             let mut input: Box<dyn Read> = Box::new(stdin);
             let mut output: Box<dyn Write> = Box::new(BufWriter::new(io::stdout().lock()));
-            smudge(&store, &mut input, &mut output)?;
+            smudge_with_fetch(&store, &mut input, &mut output, |p| fetcher.fetch(p))?;
             output.flush()?;
         }
         Command::Install { local, force, skip_repo } => {
@@ -96,9 +100,10 @@ fn dispatch(cmd: Command) -> Result<(), Box<dyn std::error::Error>> {
         }
         Command::FilterProcess => {
             let store = Store::new(git_lfs_git::lfs_dir(&cwd)?);
+            let fetcher = LfsFetcher::from_repo(&cwd, &store)?;
             let stdin = io::stdin().lock();
             let stdout = io::stdout().lock();
-            filter_process(&store, stdin, stdout)?;
+            filter_process(&store, stdin, stdout, |p| fetcher.fetch(p))?;
         }
         Command::Track { patterns } => {
             if patterns.is_empty() {

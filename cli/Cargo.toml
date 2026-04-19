@@ -8,6 +8,8 @@ license.workspace = true
 clap      = { version = "4", features = ["derive"] }
 tempfile  = { workspace = true }
 thiserror = { workspace = true }
+tokio     = { workspace = true, features = ["rt-multi-thread"] }
+url       = { workspace = true }
 
 git-lfs-pointer  = { workspace = true }
 git-lfs-store    = { workspace = true }
@@ -16,3 +18,8 @@ git-lfs-api      = { workspace = true }
 git-lfs-transfer = { workspace = true }
 git-lfs-creds    = { workspace = true }
 git-lfs-filter   = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tokio      = { workspace = true, features = ["macros", "rt-multi-thread"] }
+wiremock   = { workspace = true }

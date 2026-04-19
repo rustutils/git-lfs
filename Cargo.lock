@@ -450,8 +450,12 @@ dependencies = [
  "git-lfs-pointer",
  "git-lfs-store",
  "git-lfs-transfer",
+ "serde_json",
  "tempfile",
  "thiserror",
+ "tokio",
+ "url",
+ "wiremock",
 ]
 
 [[package]]
