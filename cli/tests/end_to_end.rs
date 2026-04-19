@@ -152,3 +152,136 @@ fn outside_repo_errors() {
         "unexpected stderr: {stderr}"
     );
 }
+
+// ---------- install ----------
+//
+// All install tests use `--local` so they only touch the test repo's
+// `.git/config` and never the developer's `~/.gitconfig`.
+
+/// Read a single config value from the local repo. Helper for assertions.
+fn read_local_config(repo: &Path, key: &str) -> Option<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["config", "--local", "--get", key])
+        .output()
+        .unwrap();
+    if out.status.success() {
+        Some(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+    } else {
+        None
+    }
+}
+
+#[test]
+fn install_local_sets_filter_config() {
+    let repo = fresh_repo();
+    let out = run_in(repo.path(), &["install", "--local"], b"");
+    assert!(
+        out.status.success(),
+        "install failed: {}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("Git LFS initialized"));
+
+    assert_eq!(
+        read_local_config(repo.path(), "filter.lfs.clean").as_deref(),
+        Some("git-lfs clean -- %f"),
+    );
+    assert_eq!(
+        read_local_config(repo.path(), "filter.lfs.smudge").as_deref(),
+        Some("git-lfs smudge -- %f"),
+    );
+    assert_eq!(
+        read_local_config(repo.path(), "filter.lfs.process").as_deref(),
+        Some("git-lfs filter-process"),
+    );
+    assert_eq!(
+        read_local_config(repo.path(), "filter.lfs.required").as_deref(),
+        Some("true"),
+    );
+}
+
+#[test]
+fn install_local_writes_executable_hooks() {
+    let repo = fresh_repo();
+    run_in(repo.path(), &["install", "--local"], b"");
+
+    for hook in ["pre-push", "post-checkout", "post-commit", "post-merge"] {
+        let path = repo.path().join(".git/hooks").join(hook);
+        assert!(path.is_file(), "missing hook: {path:?}");
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.starts_with("#!/bin/sh\n"));
+        assert!(
+            content.contains(&format!("git lfs {hook} \"$@\"")),
+            "hook {hook} missing dispatch line",
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o755, "hook {hook} not executable");
+        }
+    }
+}
+
+#[test]
+fn install_is_idempotent() {
+    let repo = fresh_repo();
+    let first = run_in(repo.path(), &["install", "--local"], b"");
+    assert!(first.status.success());
+    let second = run_in(repo.path(), &["install", "--local"], b"");
+    assert!(
+        second.status.success(),
+        "second install failed: {}",
+        String::from_utf8_lossy(&second.stderr),
+    );
+}
+
+#[test]
+fn install_errors_on_conflicting_config_without_force() {
+    let repo = fresh_repo();
+    // Pre-populate one of the keys with a different value.
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(repo.path())
+        .args(["config", "--local", "filter.lfs.clean", "/usr/local/bin/old-lfs clean"])
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    let out = run_in(repo.path(), &["install", "--local"], b"");
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--force"),
+        "stderr should suggest --force: {stderr}"
+    );
+}
+
+#[test]
+fn install_force_overwrites_conflicting_config() {
+    let repo = fresh_repo();
+    Command::new("git")
+        .arg("-C")
+        .arg(repo.path())
+        .args(["config", "--local", "filter.lfs.clean", "old"])
+        .status()
+        .unwrap();
+
+    let out = run_in(repo.path(), &["install", "--local", "--force"], b"");
+    assert!(out.status.success());
+    assert_eq!(
+        read_local_config(repo.path(), "filter.lfs.clean").as_deref(),
+        Some("git-lfs clean -- %f"),
+    );
+}
+
+#[test]
+fn install_skip_repo_writes_no_hooks() {
+    let repo = fresh_repo();
+    run_in(repo.path(), &["install", "--local", "--skip-repo"], b"");
+    // Config is set, but no hooks were written.
+    assert!(read_local_config(repo.path(), "filter.lfs.clean").is_some());
+    assert!(!repo.path().join(".git/hooks/pre-push").exists());
+}
