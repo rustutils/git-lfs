@@ -437,3 +437,168 @@ async fn smudge_downloads_missing_object_via_lfs_url() {
         .join(OID);
     assert!(stored.is_file(), "expected stored object at {stored:?}");
 }
+
+// ---------- fetch ---------------------------------------------------------
+
+/// Init a repo and configure a deterministic identity so commits work
+/// regardless of the developer's git config (or lack thereof).
+fn fresh_repo_with_identity() -> TempDir {
+    let repo = fresh_repo();
+    git_in(repo.path(), &["config", "user.email", "test@example.com"]);
+    git_in(repo.path(), &["config", "user.name", "test"]);
+    git_in(repo.path(), &["config", "commit.gpgsign", "false"]);
+    repo
+}
+
+fn git_in(cwd: &Path, args: &[&str]) {
+    let status = Command::new("git").arg("-C").arg(cwd).args(args).status().unwrap();
+    assert!(status.success(), "git {args:?} failed");
+}
+
+/// Write `pointer_text` to `path` in `repo`, then add+commit.
+fn commit_pointer_at(repo: &Path, path: &str, pointer_text: &[u8]) {
+    std::fs::write(repo.join(path), pointer_text).unwrap();
+    git_in(repo, &["add", path]);
+    git_in(repo, &["commit", "-q", "-m", &format!("add {path}")]);
+}
+
+fn pointer_text(oid: &str, size: usize) -> Vec<u8> {
+    format!(
+        "version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {size}\n"
+    )
+    .into_bytes()
+}
+
+#[tokio::test]
+async fn fetch_downloads_objects_referenced_by_head() {
+    use serde_json::json;
+    use wiremock::matchers::{method as m_method, path as m_path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    // Two distinct LFS objects committed under different paths.
+    const OID_A: &str = "30031a9831674dd684c3817399acebc88a116ce5a7a3fbc0cf34d92521a534e6";
+    const A: &[u8] = b"downloaded\n";
+    // sha256("two\n")
+    const OID_B: &str = "27dd8ed44a83ff94d557f9fd0412ed5a8cbca69ea04922d88c01184a07300a5a";
+    const B: &[u8] = b"two\n";
+
+    let server = MockServer::start().await;
+    let url_a = format!("{}/storage/{OID_A}", server.uri());
+    let url_b = format!("{}/storage/{OID_B}", server.uri());
+
+    Mock::given(m_method("POST"))
+        .and(m_path("/objects/batch"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "transfer": "basic",
+            "objects": [
+                { "oid": OID_A, "size": A.len(), "actions": { "download": { "href": url_a } } },
+                { "oid": OID_B, "size": B.len(), "actions": { "download": { "href": url_b } } }
+            ]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(m_method("GET"))
+        .and(m_path(format!("/storage/{OID_A}")))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(A))
+        .mount(&server)
+        .await;
+    Mock::given(m_method("GET"))
+        .and(m_path(format!("/storage/{OID_B}")))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(B))
+        .mount(&server)
+        .await;
+
+    let repo = fresh_repo_with_identity();
+    git_in(repo.path(), &["config", "--local", "lfs.url", &server.uri()]);
+    commit_pointer_at(repo.path(), "a.bin", &pointer_text(OID_A, A.len()));
+    commit_pointer_at(repo.path(), "b.bin", &pointer_text(OID_B, B.len()));
+
+    let path = repo.path().to_owned();
+    let out = tokio::task::spawn_blocking(move || run_in(&path, &["fetch"], b""))
+        .await
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "fetch failed: {}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Fetching 2 object(s)"), "unexpected stdout: {stdout}");
+    assert!(stdout.contains("2 succeeded, 0 failed"), "unexpected stdout: {stdout}");
+
+    for (oid, _content) in [(OID_A, A), (OID_B, B)] {
+        let stored = repo
+            .path()
+            .join(".git/lfs/objects")
+            .join(&oid[0..2])
+            .join(&oid[2..4])
+            .join(oid);
+        assert!(stored.is_file(), "missing stored object: {stored:?}");
+    }
+}
+
+#[tokio::test]
+async fn fetch_is_noop_when_objects_already_in_store() {
+    use wiremock::MockServer;
+
+    // Wiremock with no mocks — any HTTP call would 404. We're proving the
+    // fetch command short-circuits before hitting the network.
+    let server = MockServer::start().await;
+    let repo = fresh_repo_with_identity();
+    git_in(repo.path(), &["config", "--local", "lfs.url", &server.uri()]);
+
+    // Stage an object in the local store via the clean filter so its
+    // OID + content are consistent — same path the smudge tests use.
+    let cleaned = run_in(repo.path(), &["clean"], b"already-here\n");
+    assert!(cleaned.status.success());
+    let pointer_bytes = cleaned.stdout;
+    commit_pointer_at(repo.path(), "a.bin", &pointer_bytes);
+
+    let path = repo.path().to_owned();
+    let out = tokio::task::spawn_blocking(move || run_in(&path, &["fetch"], b""))
+        .await
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Nothing to fetch"), "unexpected stdout: {stdout}");
+}
+
+#[tokio::test]
+async fn fetch_returns_failure_exit_when_some_objects_fail() {
+    use serde_json::json;
+    use wiremock::matchers::{method as m_method, path as m_path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    // Server reports the object as missing in the batch response; should
+    // not be retried, fetch should exit non-zero.
+    const OID: &str = "30031a9831674dd684c3817399acebc88a116ce5a7a3fbc0cf34d92521a534e6";
+    const SIZE: usize = 11;
+
+    let server = MockServer::start().await;
+    Mock::given(m_method("POST"))
+        .and(m_path("/objects/batch"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "transfer": "basic",
+            "objects": [{
+                "oid": OID, "size": SIZE,
+                "error": { "code": 404, "message": "not on server" }
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    let repo = fresh_repo_with_identity();
+    git_in(repo.path(), &["config", "--local", "lfs.url", &server.uri()]);
+    commit_pointer_at(repo.path(), "a.bin", &pointer_text(OID, SIZE));
+
+    let path = repo.path().to_owned();
+    let out = tokio::task::spawn_blocking(move || run_in(&path, &["fetch"], b""))
+        .await
+        .unwrap();
+    assert!(!out.status.success(), "fetch should have exited non-zero");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("not on server") || stderr.contains("failed to download"),
+        "unexpected stderr: {stderr}"
+    );
+}

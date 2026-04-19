@@ -7,6 +7,7 @@ use git_lfs_filter::{clean, filter_process, smudge_with_fetch};
 use git_lfs_git::ConfigScope;
 use git_lfs_store::Store;
 
+mod fetch;
 mod fetcher;
 mod install;
 mod track;
@@ -55,6 +56,12 @@ enum Command {
     /// This is what git invokes via filter.lfs.process and is the batched
     /// alternative to per-invocation `clean`/`smudge`.
     FilterProcess,
+    /// Download every LFS object reachable from the given refs (default: HEAD)
+    /// that isn't already in the local store. Walks history, dedupes by OID.
+    Fetch {
+        /// Refs to scan for LFS pointers. Defaults to `HEAD`.
+        refs: Vec<String>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -104,6 +111,12 @@ fn dispatch(cmd: Command) -> Result<(), Box<dyn std::error::Error>> {
             let stdin = io::stdin().lock();
             let stdout = io::stdout().lock();
             filter_process(&store, stdin, stdout, |p| fetcher.fetch(p))?;
+        }
+        Command::Fetch { refs } => {
+            let report = fetch::fetch(&cwd, &refs)?;
+            if !report.failed.is_empty() {
+                return Err("one or more objects failed to download".into());
+            }
         }
         Command::Track { patterns } => {
             if patterns.is_empty() {

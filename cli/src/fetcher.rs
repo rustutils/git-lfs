@@ -20,7 +20,7 @@ use git_lfs_filter::FetchError;
 use git_lfs_git::ConfigScope;
 use git_lfs_pointer::Pointer;
 use git_lfs_store::Store;
-use git_lfs_transfer::{Transfer, TransferConfig};
+use git_lfs_transfer::{Report, Transfer, TransferConfig};
 use tokio::runtime::Runtime;
 
 /// Owns the tokio runtime and the configured [`Transfer`]. One per CLI
@@ -46,24 +46,33 @@ impl LfsFetcher {
     /// Download the object identified by `pointer` into the local store.
     /// Returns once the bytes are committed (and hash-verified by
     /// [`Store::insert_verified`](git_lfs_store::Store)).
+    ///
+    /// Single-object convenience over [`download_many`](Self::download_many).
+    /// Used by `smudge` / `filter-process`.
     pub fn fetch(&self, pointer: &Pointer) -> Result<(), FetchError> {
-        let transfer = self
-            .transfer
-            .as_ref()
-            .map_err(|msg| -> FetchError { msg.clone().into() })?;
-
-        let oid = pointer.oid.to_string();
-        let size = pointer.size;
-        let report = self.runtime.block_on(transfer.download(
-            vec![ObjectSpec { oid: oid.clone(), size }],
-            None,
-            None,
-        ))?;
-
+        let report = self.download_many(vec![ObjectSpec {
+            oid: pointer.oid.to_string(),
+            size: pointer.size,
+        }])?;
         if let Some((failed_oid, err)) = report.failed.into_iter().next() {
             return Err(format!("download failed for {failed_oid}: {err}").into());
         }
         Ok(())
+    }
+
+    /// Download many objects in one batch. Errors eagerly if `lfs.url`
+    /// isn't configured (vs. [`fetch`](Self::fetch) which only complains
+    /// when actually invoked). Caller inspects the returned [`Report`] for
+    /// per-object outcomes.
+    pub fn download_many(&self, specs: Vec<ObjectSpec>) -> Result<Report, FetchError> {
+        let transfer = self
+            .transfer
+            .as_ref()
+            .map_err(|msg| -> FetchError { msg.clone().into() })?;
+        let report = self
+            .runtime
+            .block_on(transfer.download(specs, None, None))?;
+        Ok(report)
     }
 }
 
