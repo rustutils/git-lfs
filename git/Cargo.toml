@@ -5,7 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-thiserror = { workspace = true }
+git-lfs-pointer = { workspace = true }
+thiserror       = { workspace = true }
 
 [dev-dependencies]
+sha2     = { workspace = true }
 tempfile = { workspace = true }

@@ -7,12 +7,18 @@ use std::io;
 use std::path::Path;
 use std::process::Command;
 
+pub mod cat_file;
 pub mod config;
 pub mod path;
 pub mod pktline;
+pub mod rev_list;
+pub mod scanner;
 
+pub use cat_file::{BlobContent, CatFileBatch, CatFileBatchCheck, CatFileHeader};
 pub use config::ConfigScope;
 pub use path::{git_dir, lfs_dir};
+pub use rev_list::{RevListEntry, rev_list};
+pub use scanner::{PointerEntry, scan_pointers};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -34,4 +40,56 @@ pub(crate) fn run_git(cwd: &Path, args: &[&str]) -> Result<String, Error> {
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
         .trim()
         .to_owned())
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    /// Shared test helpers for setting up real git repos. Each helper
+    /// function shells out to the `git` binary; tests using these are
+    /// integration-level despite living next to their module.
+    pub mod commit_helper {
+        use std::path::Path;
+        use std::process::Command;
+
+        use tempfile::TempDir;
+
+        /// Initialize a fresh repo with a deterministic identity + branch
+        /// so tests don't depend on the developer's git config.
+        pub fn init_repo() -> TempDir {
+            let tmp = TempDir::new().unwrap();
+            run(tmp.path(), &["init", "--quiet", "--initial-branch=main"]);
+            run(tmp.path(), &["config", "user.email", "test@example.com"]);
+            run(tmp.path(), &["config", "user.name", "test"]);
+            // Disable signing so contributor environments with sign.commit
+            // configured globally don't fail tests.
+            run(tmp.path(), &["config", "commit.gpgsign", "false"]);
+            tmp
+        }
+
+        /// Add and commit `content` at `path` (relative to the repo root).
+        /// Returns nothing — call `head_oid` if you need the resulting
+        /// commit's SHA.
+        pub fn commit_file(repo: &TempDir, path: &str, content: &[u8]) {
+            std::fs::write(repo.path().join(path), content).unwrap();
+            run(repo.path(), &["add", path]);
+            run(repo.path(), &["commit", "--quiet", "-m", &format!("add {path}")]);
+        }
+
+        /// Hex OID of the commit currently at HEAD.
+        pub fn head_oid(repo: &TempDir) -> String {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(repo.path())
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+            String::from_utf8_lossy(&out.stdout).trim().to_owned()
+        }
+
+        fn run(cwd: &Path, args: &[&str]) {
+            let status = Command::new("git").arg("-C").arg(cwd).args(args).status().unwrap();
+            assert!(status.success(), "git {args:?} failed");
+        }
+    }
 }

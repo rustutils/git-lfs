@@ -1,0 +1,193 @@
+//! Scanner: walk git history, find LFS pointer blobs.
+//!
+//! This is the entry point used by `git lfs fetch`/`pull`/`push` to
+//! enumerate the LFS pointers reachable from a set of refs. The pipeline
+//! mirrors upstream:
+//!
+//! 1. [`rev_list`](crate::rev_list) emits every reachable object (commits,
+//!    trees, blobs).
+//! 2. [`CatFileBatchCheck`] filters those to blobs whose size could fit in
+//!    a pointer file (≤ [`MAX_POINTER_SIZE`]). Blobs are read from index;
+//!    cheap header-only check, no content I/O.
+//! 3. [`CatFileBatch`] reads the surviving candidates' content. Each is
+//!    parsed as a [`Pointer`]; non-pointers are silently skipped.
+//! 4. The output is deduplicated by LFS OID (the pointer's content OID,
+//!    not the git blob OID): the same LFS object can appear in many
+//!    blobs/paths, but we only need to fetch it once.
+
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+
+use git_lfs_pointer::{MAX_POINTER_SIZE, Oid, Pointer};
+
+use crate::cat_file::{CatFileBatch, CatFileBatchCheck, CatFileHeader};
+use crate::{Error, rev_list};
+
+/// One LFS pointer discovered by the scanner.
+#[derive(Debug, Clone)]
+pub struct PointerEntry {
+    /// LFS object OID (the `oid sha256:...` field of the pointer file).
+    pub oid: Oid,
+    /// Object size in bytes (per the pointer's `size` field).
+    pub size: u64,
+    /// First working-tree path the pointer was found at. A single LFS
+    /// object can appear under many paths in history; we keep the first.
+    /// Useful for progress display ("downloading foo/bar.bin"); not the
+    /// authoritative source — caller should not rely on it for routing.
+    pub path: Option<PathBuf>,
+}
+
+/// Walk history reachable from `include` minus `exclude`, return unique
+/// LFS pointers.
+///
+/// Order is undefined and should not be relied on. Callers that want a
+/// stable order should sort the result.
+///
+/// **History semantics**: matches upstream's `ScanRefs` — every blob in
+/// every commit's tree is examined, including blobs that have since been
+/// deleted or modified. This catches LFS objects from the full history
+/// of the named refs, which is what `git lfs fetch <ref>` is documented
+/// to do.
+pub fn scan_pointers(
+    cwd: &Path,
+    include: &[&str],
+    exclude: &[&str],
+) -> Result<Vec<PointerEntry>, Error> {
+    let entries = rev_list(cwd, include, exclude)?;
+
+    // Phase 1: header-only check. Filter to blobs whose size could plausibly
+    // be a pointer file. Tracking name alongside so we can report it.
+    let mut bcheck = CatFileBatchCheck::spawn(cwd)?;
+    let mut candidates: Vec<(String, Option<String>)> = Vec::new();
+    for entry in entries {
+        match bcheck.check(&entry.oid)? {
+            CatFileHeader::Found { kind, size, .. }
+                if kind == "blob" && (size as usize) < MAX_POINTER_SIZE =>
+            {
+                candidates.push((entry.oid, entry.name));
+            }
+            // Trees, commits, oversized blobs, missing — all skipped.
+            _ => {}
+        }
+    }
+    drop(bcheck);
+
+    // Phase 2: read content of each candidate, parse as pointer, dedup
+    // by LFS OID. Same LFS object referenced from multiple paths/commits
+    // collapses to one entry (its `path` is the first git emitted).
+    let mut batch = CatFileBatch::spawn(cwd)?;
+    let mut seen: HashSet<Oid> = HashSet::new();
+    let mut out = Vec::new();
+    for (oid, name) in candidates {
+        let Some(blob) = batch.read(&oid)? else { continue };
+        let Ok(pointer) = Pointer::parse(&blob.content) else { continue };
+        if seen.insert(pointer.oid) {
+            out.push(PointerEntry {
+                oid: pointer.oid,
+                size: pointer.size,
+                path: name.map(PathBuf::from),
+            });
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tests::commit_helper::*;
+
+    /// Build a canonical pointer text for a known content. Mirrors what
+    /// `git lfs clean` would emit, so we don't need to wire the filter
+    /// crate into git's tests.
+    fn pointer_text(content: &[u8]) -> Vec<u8> {
+        use sha2::{Digest, Sha256};
+        let oid_bytes: [u8; 32] = Sha256::digest(content).into();
+        let oid_hex = oid_bytes.iter().fold(String::new(), |mut s, b| {
+            use std::fmt::Write;
+            let _ = write!(s, "{b:02x}");
+            s
+        });
+        format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{oid_hex}\nsize {}\n",
+            content.len()
+        )
+        .into_bytes()
+    }
+
+    #[test]
+    fn empty_repo_returns_no_pointers() {
+        let repo = init_repo();
+        commit_file(&repo, "a.txt", b"plain content");
+        let result = scan_pointers(repo.path(), &["HEAD"], &[]).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn finds_pointer_blobs_skips_plain_blobs() {
+        let repo = init_repo();
+        // Plain content + LFS pointer side-by-side.
+        commit_file(&repo, "plain.txt", b"just text");
+        let pointer = pointer_text(b"this would be the actual binary content");
+        commit_file(&repo, "big.bin", &pointer);
+
+        let result = scan_pointers(repo.path(), &["HEAD"], &[]).unwrap();
+        assert_eq!(result.len(), 1, "{result:?}");
+        assert_eq!(
+            result[0].size,
+            b"this would be the actual binary content".len() as u64,
+        );
+        assert_eq!(result[0].path.as_deref(), Some(Path::new("big.bin")));
+    }
+
+    #[test]
+    fn dedups_same_lfs_oid_in_multiple_paths() {
+        let repo = init_repo();
+        let pointer = pointer_text(b"shared payload");
+        commit_file(&repo, "first.bin", &pointer);
+        commit_file(&repo, "second.bin", &pointer);
+
+        let result = scan_pointers(repo.path(), &["HEAD"], &[]).unwrap();
+        // Same content → same pointer text → same git blob OID, but we
+        // also want to verify dedup at the LFS-OID layer.
+        assert_eq!(result.len(), 1, "{result:?}");
+    }
+
+    #[test]
+    fn finds_pointers_in_history_not_just_tip() {
+        let repo = init_repo();
+        // A pointer that is later overwritten by plain content. ScanRefs
+        // semantics require we still find it — older commits are part of
+        // history reachable from HEAD.
+        let pointer = pointer_text(b"deleted later");
+        commit_file(&repo, "x.bin", &pointer);
+        commit_file(&repo, "x.bin", b"plain text now");
+
+        let result = scan_pointers(repo.path(), &["HEAD"], &[]).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].size, b"deleted later".len() as u64);
+    }
+
+    #[test]
+    fn excludes_filter_history_walk() {
+        let repo = init_repo();
+        commit_file(&repo, "old.bin", &pointer_text(b"old payload"));
+        let first = head_oid(&repo);
+        commit_file(&repo, "new.bin", &pointer_text(b"new payload"));
+
+        // Include HEAD, exclude the first commit → only new.bin's pointer.
+        let result = scan_pointers(repo.path(), &["HEAD"], &[&first]).unwrap();
+        assert_eq!(result.len(), 1, "{result:?}");
+        assert_eq!(result[0].size, b"new payload".len() as u64);
+    }
+
+    #[test]
+    fn skips_blobs_that_look_like_pointers_but_dont_parse() {
+        let repo = init_repo();
+        // Small, but malformed pointer-shaped content.
+        commit_file(&repo, "fake.bin", b"version foo\nbut not really a pointer");
+
+        let result = scan_pointers(repo.path(), &["HEAD"], &[]).unwrap();
+        assert!(result.is_empty(), "{result:?}");
+    }
+}

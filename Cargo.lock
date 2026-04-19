@@ -494,6 +494,8 @@ dependencies = [
 name = "git-lfs-git"
 version = "0.0.0"
 dependencies = [
+ "git-lfs-pointer",
+ "sha2",
  "tempfile",
  "thiserror",
 ]
