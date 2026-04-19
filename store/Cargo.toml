@@ -6,3 +6,6 @@ license.workspace = true
 
 [dependencies]
 git-lfs-pointer = { workspace = true }
+sha2 = "0.10"
+tempfile = "3"
+thiserror = { workspace = true }

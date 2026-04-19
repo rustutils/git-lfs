@@ -24,6 +24,12 @@ impl Oid {
         0xb8, 0x55,
     ]);
 
+    /// Construct an OID from raw 32 hash bytes (e.g. the output of a
+    /// streaming SHA-256 hasher).
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
     /// Parse an OID from its 64-character lowercase hex form.
     pub fn from_hex(s: &str) -> Result<Self, OidParseError> {
         if s.len() != 64 {

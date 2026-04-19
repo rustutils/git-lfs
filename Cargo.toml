@@ -27,5 +27,5 @@ git-lfs-transfer = { path = "transfer", version = "0.0.0" }
 git-lfs-creds    = { path = "creds",    version = "0.0.0" }
 git-lfs-filter   = { path = "filter",   version = "0.0.0" }
 
-# External crates shared across multiple members will be hoisted here as
-# they're introduced. Per-crate features stay in the member Cargo.toml.
+# External crates shared across multiple members.
+thiserror = "2"
