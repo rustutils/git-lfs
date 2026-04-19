@@ -1,0 +1,11 @@
+[package]
+name = "git-lfs-filter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+git-lfs-pointer  = { workspace = true }
+git-lfs-store    = { workspace = true }
+git-lfs-transfer = { workspace = true }
+git-lfs-git      = { workspace = true }

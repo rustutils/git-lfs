@@ -1,0 +1,16 @@
+[package]
+name = "git-lfs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+
+git-lfs-pointer  = { workspace = true }
+git-lfs-store    = { workspace = true }
+git-lfs-git      = { workspace = true }
+git-lfs-api      = { workspace = true }
+git-lfs-transfer = { workspace = true }
+git-lfs-creds    = { workspace = true }
+git-lfs-filter   = { workspace = true }

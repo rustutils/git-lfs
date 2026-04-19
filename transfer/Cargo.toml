@@ -1,0 +1,10 @@
+[package]
+name = "git-lfs-transfer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+git-lfs-api     = { workspace = true }
+git-lfs-store   = { workspace = true }
+git-lfs-pointer = { workspace = true }
