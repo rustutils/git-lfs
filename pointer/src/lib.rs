@@ -27,7 +27,8 @@ pub use oid::{EMPTY_HEX, Oid, OidParseError};
 /// The version URL we always emit. Older aliases parse but re-encode to this.
 pub const VERSION_LATEST: &str = "https://git-lfs.github.com/spec/v1";
 
-/// Hard size limit on pointer files (per `docs/spec.md`).
+/// Pointer files must be **smaller** than this (per `docs/spec.md`).
+/// Inputs of this size or larger are not pointers.
 pub const MAX_POINTER_SIZE: usize = 1024;
 
 /// Recognized version URLs we accept on the read path.
@@ -125,7 +126,7 @@ impl Pointer {
         if input.is_empty() {
             return Ok(Self::empty());
         }
-        if input.len() > MAX_POINTER_SIZE {
+        if input.len() >= MAX_POINTER_SIZE {
             return Err(DecodeError::NotAPointer(NotAPointerReason::TooLarge {
                 size: input.len(),
             }));
@@ -292,7 +293,7 @@ impl DecodeError {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum NotAPointerReason {
-    #[error("size {size} bytes exceeds the {MAX_POINTER_SIZE}-byte cutoff")]
+    #[error("size {size} bytes is not below the {MAX_POINTER_SIZE}-byte cutoff")]
     TooLarge { size: usize },
     #[error("input is not valid UTF-8")]
     NotUtf8,
@@ -522,6 +523,17 @@ mod tests {
     fn oversized_input_is_not_a_pointer() {
         let big = vec![b'x'; MAX_POINTER_SIZE + 1];
         let err = Pointer::parse(&big).unwrap_err();
+        assert!(matches!(
+            err,
+            DecodeError::NotAPointer(NotAPointerReason::TooLarge { .. })
+        ));
+    }
+
+    #[test]
+    fn exactly_max_size_is_not_a_pointer() {
+        // Spec: pointer files must be *less than* 1024 bytes. At-cutoff is too large.
+        let exact = vec![b'x'; MAX_POINTER_SIZE];
+        let err = Pointer::parse(&exact).unwrap_err();
         assert!(matches!(
             err,
             DecodeError::NotAPointer(NotAPointerReason::TooLarge { .. })

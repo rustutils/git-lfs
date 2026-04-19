@@ -29,3 +29,4 @@ git-lfs-filter   = { path = "filter",   version = "0.0.0" }
 
 # External crates shared across multiple members.
 thiserror = "2"
+tempfile  = "3"
