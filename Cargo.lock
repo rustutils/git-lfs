@@ -239,6 +239,7 @@ dependencies = [
  "git-lfs-store",
  "git-lfs-transfer",
  "tempfile",
+ "thiserror",
 ]
 
 [[package]]

@@ -2,8 +2,10 @@
 
 use std::io::{Read, Write};
 
-use git_lfs_pointer::{MAX_POINTER_SIZE, Pointer};
+use git_lfs_pointer::Pointer;
 use git_lfs_store::{Store, StoreError};
+
+use crate::detect_pointer;
 
 /// Result of running the [`clean`] filter on a piece of input.
 #[derive(Debug)]
@@ -38,8 +40,8 @@ impl CleanOutcome {
 ///
 /// Algorithm (matches upstream `gitfilter_clean.go`):
 /// 1. Read up to `MAX_POINTER_SIZE` bytes.
-/// 2. If we hit EOF before filling the buffer **and** the bytes parse as a
-///    valid pointer, emit the original bytes verbatim ([`CleanOutcome::Passthrough`]).
+/// 2. If those bytes parse as a valid pointer, emit them verbatim
+///    ([`CleanOutcome::Passthrough`]).
 /// 3. Otherwise stream the buffered head + the rest of `input` into the
 ///    [`Store`], computing SHA-256 as we go, and emit the canonical encoding
 ///    of the resulting pointer ([`CleanOutcome::Stored`]).
@@ -48,27 +50,13 @@ pub fn clean<R: Read, W: Write>(
     input: &mut R,
     output: &mut W,
 ) -> Result<CleanOutcome, StoreError> {
-    let mut head = vec![0u8; MAX_POINTER_SIZE];
-    let mut filled = 0;
-    while filled < head.len() {
-        match input.read(&mut head[filled..])? {
-            0 => break,
-            n => filled += n,
-        }
-    }
-    head.truncate(filled);
+    let (head, maybe_pointer) = detect_pointer(input)?;
 
-    // Buffer didn't fill ⇒ entire input is in `head` and is short enough to
-    // possibly be a pointer. (At exactly MAX_POINTER_SIZE bytes the spec says
-    // it can't be a pointer, so we skip parsing in that case.)
-    if filled < MAX_POINTER_SIZE
-        && let Ok(pointer) = Pointer::parse(&head)
-    {
+    if let Some(pointer) = maybe_pointer {
         output.write_all(&head)?;
         return Ok(CleanOutcome::Passthrough(pointer));
     }
 
-    // Content path: hash `head ++ remaining input` and store it.
     let mut combined = head.as_slice().chain(input);
     let (oid, size) = store.insert(&mut combined)?;
     let pointer = Pointer::new(oid, size);
@@ -88,7 +76,6 @@ mod tests {
         (tmp, store)
     }
 
-    /// Run clean and return (outcome, output_bytes).
     fn run(store: &Store, input: &[u8]) -> (CleanOutcome, Vec<u8>) {
         let mut out = Vec::new();
         let outcome = clean(store, &mut { input }, &mut out).unwrap();
@@ -122,8 +109,6 @@ mod tests {
 
     #[test]
     fn pseudo_pointer_with_extra_text_is_hashed() {
-        // Pointer-shaped header but with content after the size line. Parser
-        // returns ExtraLine, so clean must hash this as content.
         let input = b"version https://git-lfs.github.com/spec/v1\n\
                       oid sha256:7cd8be1d2cd0dd22cd9d229bb6b5785009a05e8b39d405615d882caac56562b5\n\
                       size 1024\n\
@@ -142,7 +127,6 @@ mod tests {
 
     #[test]
     fn oversized_pointer_shaped_input_is_hashed() {
-        // Starts looking like a pointer, but >= 1024 bytes total ⇒ content.
         let mut input = Vec::from(
             &b"version https://git-lfs.github.com/spec/v1\n\
                oid sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n\
@@ -181,7 +165,6 @@ mod tests {
             o => panic!("expected Passthrough, got {o:?}"),
         }
         assert_eq!(out, pointer_text.as_bytes(), "output must be input verbatim");
-        // Critically: nothing was added to the store.
         assert!(!store.root().join("objects").exists());
     }
 
@@ -216,10 +199,8 @@ mod tests {
 
     #[test]
     fn passthrough_is_idempotent() {
-        // Cleaning the output of a previous clean must yield the same bytes.
         let (_t, store) = fixture();
         let (_, first) = run(&store, b"some content here");
-        // `first` is now a freshly-emitted pointer.
         let (outcome2, second) = run(&store, &first);
         assert!(matches!(outcome2, CleanOutcome::Passthrough(_)));
         assert_eq!(first, second);
