@@ -9,6 +9,7 @@ use std::process::Command;
 
 pub mod config;
 pub mod path;
+pub mod pktline;
 
 pub use config::ConfigScope;
 pub use path::{git_dir, lfs_dir};

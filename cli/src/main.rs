@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use git_lfs_filter::{clean, smudge};
+use git_lfs_filter::{clean, filter_process, smudge};
 use git_lfs_git::ConfigScope;
 use git_lfs_store::Store;
 
@@ -48,6 +48,10 @@ enum Command {
         /// File patterns to track (e.g. "*.jpg", "data/*.bin").
         patterns: Vec<String>,
     },
+    /// Run the long-running filter-process protocol with git over stdin/stdout.
+    /// This is what git invokes via filter.lfs.process and is the batched
+    /// alternative to per-invocation `clean`/`smudge`.
+    FilterProcess,
 }
 
 fn main() -> ExitCode {
@@ -89,6 +93,12 @@ fn dispatch(cmd: Command) -> Result<(), Box<dyn std::error::Error>> {
             };
             install::install(&cwd, &opts)?;
             println!("Git LFS initialized.");
+        }
+        Command::FilterProcess => {
+            let store = Store::new(git_lfs_git::lfs_dir(&cwd)?);
+            let stdin = io::stdin().lock();
+            let stdout = io::stdout().lock();
+            filter_process(&store, stdin, stdout)?;
         }
         Command::Track { patterns } => {
             if patterns.is_empty() {

@@ -7,9 +7,11 @@ use std::io::{self, Read};
 use git_lfs_pointer::{MAX_POINTER_SIZE, Pointer};
 
 mod clean;
+mod filter_process;
 mod smudge;
 
 pub use clean::{CleanOutcome, clean};
+pub use filter_process::{FilterProcessError, filter_process};
 pub use smudge::{SmudgeError, SmudgeOutcome, smudge};
 
 /// Read up to [`MAX_POINTER_SIZE`] bytes from `input` and try to parse them
