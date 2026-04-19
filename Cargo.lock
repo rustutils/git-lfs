@@ -245,6 +245,10 @@ dependencies = [
 [[package]]
 name = "git-lfs-git"
 version = "0.0.0"
+dependencies = [
+ "tempfile",
+ "thiserror",
+]
 
 [[package]]
 name = "git-lfs-pointer"
