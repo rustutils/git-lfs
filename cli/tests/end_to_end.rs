@@ -480,6 +480,29 @@ fn pointer_text(oid: &str, size: usize) -> Vec<u8> {
     .into_bytes()
 }
 
+/// Extract the OID hex from a pointer file's `oid sha256:` line.
+fn oid_from_pointer(pointer: &[u8]) -> String {
+    let s = std::str::from_utf8(pointer).expect("pointer is utf-8");
+    for line in s.lines() {
+        if let Some(rest) = line.strip_prefix("oid sha256:") {
+            return rest.trim().to_owned();
+        }
+    }
+    panic!("no oid line in pointer: {s}");
+}
+
+/// `git rev-parse HEAD` for the given repo.
+fn head_oid_str(cwd: &Path) -> String {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "rev-parse failed");
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
+}
+
 #[tokio::test]
 async fn fetch_downloads_objects_referenced_by_head() {
     use serde_json::json;
@@ -670,4 +693,154 @@ async fn fetch_returns_failure_exit_when_some_objects_fail() {
         stderr.contains("not on server") || stderr.contains("failed to download"),
         "unexpected stderr: {stderr}"
     );
+}
+
+// ---------- push ---------------------------------------------------------
+
+#[tokio::test]
+async fn push_uploads_only_objects_not_in_remote_tracking() {
+    use serde_json::json;
+    use wiremock::matchers::{body_bytes, method as m_method, path as m_path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    // Two commits: an "old" pointer (already on the remote) and a
+    // "new" pointer (about to be pushed). A fake refs/remotes/origin/main
+    // pointing at the first commit tells push that's the remote's state.
+    const OLD: &[u8] = b"old payload\n";
+    const NEW: &[u8] = b"new payload\n";
+
+    let server = MockServer::start().await;
+    let repo = fresh_repo_with_identity();
+    git_in(repo.path(), &["config", "--local", "lfs.url", &server.uri()]);
+
+    // Use clean to populate the local store + emit canonical pointer text.
+    let cleaned_old = run_in(repo.path(), &["clean"], OLD);
+    assert!(cleaned_old.status.success());
+    commit_pointer_at(repo.path(), "old.bin", &cleaned_old.stdout);
+    let first_commit = head_oid_str(repo.path());
+
+    let cleaned_new = run_in(repo.path(), &["clean"], NEW);
+    assert!(cleaned_new.status.success());
+    commit_pointer_at(repo.path(), "new.bin", &cleaned_new.stdout);
+
+    let new_oid = oid_from_pointer(&cleaned_new.stdout);
+    let old_oid = oid_from_pointer(&cleaned_old.stdout);
+
+    // Fake "origin" tracking ref at the first commit.
+    git_in(
+        repo.path(),
+        &["update-ref", "refs/remotes/origin/main", &first_commit],
+    );
+
+    // Batch should only see the NEW oid in the request — and we'll
+    // assert that with body_bytes-style matching by checking that
+    // wiremock's PUT mock for `old_oid` sees zero hits.
+    let upload_url = format!("{}/storage/{new_oid}", server.uri());
+    Mock::given(m_method("POST"))
+        .and(m_path("/objects/batch"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "transfer": "basic",
+            "objects": [{
+                "oid": new_oid, "size": NEW.len(),
+                "actions": { "upload": { "href": upload_url } }
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(m_method("PUT"))
+        .and(m_path(format!("/storage/{new_oid}")))
+        .and(body_bytes(NEW))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    // No mock for the OLD oid's storage URL — if push attempts a PUT for
+    // it, wiremock returns 404 by default and the test will fail.
+
+    let path = repo.path().to_owned();
+    let out = tokio::task::spawn_blocking(move || {
+        run_in(&path, &["push", "origin", "HEAD"], b"")
+    })
+    .await
+    .unwrap();
+    assert!(
+        out.status.success(),
+        "push failed: {}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Pushing 1 object(s)"), "unexpected stdout: {stdout}");
+    assert!(stdout.contains("1 succeeded, 0 failed"), "unexpected stdout: {stdout}");
+    assert_ne!(new_oid, old_oid, "test fixture sanity");
+}
+
+#[tokio::test]
+async fn push_is_noop_when_remote_tracking_matches_head() {
+    use wiremock::MockServer;
+
+    let server = MockServer::start().await;
+    let repo = fresh_repo_with_identity();
+    git_in(repo.path(), &["config", "--local", "lfs.url", &server.uri()]);
+
+    let cleaned = run_in(repo.path(), &["clean"], b"only commit\n");
+    commit_pointer_at(repo.path(), "a.bin", &cleaned.stdout);
+    let head = head_oid_str(repo.path());
+    // Fake remote already at HEAD → nothing new to push.
+    git_in(repo.path(), &["update-ref", "refs/remotes/origin/main", &head]);
+
+    let path = repo.path().to_owned();
+    let out = tokio::task::spawn_blocking(move || {
+        run_in(&path, &["push", "origin", "HEAD"], b"")
+    })
+    .await
+    .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Nothing to push"), "unexpected stdout: {stdout}");
+}
+
+#[tokio::test]
+async fn push_handles_server_already_has_object() {
+    use serde_json::json;
+    use wiremock::matchers::{method as m_method, path as m_path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    // Server returns the object with no `actions` → batch's "I already
+    // have this" semantics. Transfer should treat as success without
+    // attempting the PUT.
+    let server = MockServer::start().await;
+    let repo = fresh_repo_with_identity();
+    git_in(repo.path(), &["config", "--local", "lfs.url", &server.uri()]);
+
+    let cleaned = run_in(repo.path(), &["clean"], b"already on server\n");
+    commit_pointer_at(repo.path(), "x.bin", &cleaned.stdout);
+    let oid = oid_from_pointer(&cleaned.stdout);
+
+    Mock::given(m_method("POST"))
+        .and(m_path("/objects/batch"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "transfer": "basic",
+            "objects": [{ "oid": oid, "size": "already on server\n".len() }]
+        })))
+        .mount(&server)
+        .await;
+
+    // Note: NO mount for any PUT path. If push attempts an upload,
+    // wiremock 404s and the test fails.
+
+    let path = repo.path().to_owned();
+    let out = tokio::task::spawn_blocking(move || {
+        run_in(&path, &["push", "origin", "HEAD"], b"")
+    })
+    .await
+    .unwrap();
+    assert!(
+        out.status.success(),
+        "push failed: {}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("1 succeeded, 0 failed"), "unexpected stdout: {stdout}");
 }

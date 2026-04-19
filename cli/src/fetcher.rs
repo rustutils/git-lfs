@@ -65,14 +65,29 @@ impl LfsFetcher {
     /// when actually invoked). Caller inspects the returned [`Report`] for
     /// per-object outcomes.
     pub fn download_many(&self, specs: Vec<ObjectSpec>) -> Result<Report, FetchError> {
-        let transfer = self
-            .transfer
-            .as_ref()
-            .map_err(|msg| -> FetchError { msg.clone().into() })?;
+        let transfer = self.transfer()?;
         let report = self
             .runtime
             .block_on(transfer.download(specs, None, None))?;
         Ok(report)
+    }
+
+    /// Upload many objects to the configured LFS endpoint. Server-side
+    /// dedup happens at the batch layer: objects the server already has
+    /// come back with no `actions`, the transfer queue treats those as
+    /// success without any byte transfer.
+    pub fn upload_many(&self, specs: Vec<ObjectSpec>) -> Result<Report, FetchError> {
+        let transfer = self.transfer()?;
+        let report = self
+            .runtime
+            .block_on(transfer.upload(specs, None, None))?;
+        Ok(report)
+    }
+
+    fn transfer(&self) -> Result<&Transfer, FetchError> {
+        self.transfer
+            .as_ref()
+            .map_err(|msg| -> FetchError { msg.clone().into() })
     }
 }
 

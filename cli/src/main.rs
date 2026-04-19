@@ -11,6 +11,7 @@ mod fetch;
 mod fetcher;
 mod install;
 mod pull;
+mod push;
 mod track;
 
 use fetcher::LfsFetcher;
@@ -68,6 +69,17 @@ enum Command {
     /// `git lfs install` to have wired up the smudge filter.
     Pull {
         /// Refs to scan for LFS pointers. Defaults to `HEAD`.
+        refs: Vec<String>,
+    },
+    /// Upload every LFS object reachable from the given refs that the
+    /// remote doesn't already have. The "doesn't have" set is approximated
+    /// by `refs/remotes/<remote>/*`; the LFS server's batch API also
+    /// dedupes server-side so missing exclusions don't waste bandwidth.
+    Push {
+        /// Name of the remote (e.g. "origin") whose tracking refs are
+        /// excluded from the upload set.
+        remote: String,
+        /// Refs to push LFS objects for. Defaults to `HEAD`.
         refs: Vec<String>,
     },
 }
@@ -128,6 +140,12 @@ fn dispatch(cmd: Command) -> Result<(), Box<dyn std::error::Error>> {
         }
         Command::Pull { refs } => {
             pull::pull(&cwd, &refs)?;
+        }
+        Command::Push { remote, refs } => {
+            let report = push::push(&cwd, &remote, &refs)?;
+            if !report.failed.is_empty() {
+                return Err("one or more objects failed to upload".into());
+            }
         }
         Command::Track { patterns } => {
             if patterns.is_empty() {
