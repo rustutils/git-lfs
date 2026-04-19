@@ -26,10 +26,21 @@ fn fresh_repo() -> TempDir {
 }
 
 /// Run `git-lfs <args>` in `cwd` with `input` on stdin and capture the result.
+///
+/// PATH is augmented with the directory containing the test binary so
+/// that `git` can find `git-lfs` when invoking the configured filters
+/// (clean / smudge / process). Without this, anything that goes through
+/// git's filter machinery — `git checkout` notably — silently no-ops on
+/// LFS-tracked files.
 fn run_in(cwd: &Path, args: &[&str], input: &[u8]) -> Output {
+    let bin_dir = Path::new(BIN).parent().unwrap();
+    let path_var = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{path_var}", bin_dir.display());
+
     let mut child = Command::new(BIN)
         .args(args)
         .current_dir(cwd)
+        .env("PATH", new_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -561,6 +572,64 @@ async fn fetch_is_noop_when_objects_already_in_store() {
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("Nothing to fetch"), "unexpected stdout: {stdout}");
+}
+
+#[tokio::test]
+async fn pull_materializes_pointer_files_into_real_content() {
+    use serde_json::json;
+    use wiremock::matchers::{method as m_method, path as m_path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    // Simulates the post-clone state: working tree has pointer text,
+    // store is empty, lfs.url is configured. `git lfs pull` should
+    // download the object and rewrite the working-tree file.
+    const OID: &str = "30031a9831674dd684c3817399acebc88a116ce5a7a3fbc0cf34d92521a534e6";
+    const CONTENT: &[u8] = b"downloaded\n";
+
+    let server = MockServer::start().await;
+    let storage_url = format!("{}/storage/{OID}", server.uri());
+
+    Mock::given(m_method("POST"))
+        .and(m_path("/objects/batch"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "transfer": "basic",
+            "objects": [{
+                "oid": OID, "size": CONTENT.len(),
+                "actions": { "download": { "href": storage_url } }
+            }]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(m_method("GET"))
+        .and(m_path(format!("/storage/{OID}")))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(CONTENT))
+        .mount(&server)
+        .await;
+
+    let repo = fresh_repo_with_identity();
+    git_in(repo.path(), &["config", "--local", "lfs.url", &server.uri()]);
+
+    // Commit the pointer text directly. This simulates the post-clone
+    // state where the working tree holds pointer text (because clone's
+    // smudge was skipped or the store was empty at the time).
+    commit_pointer_at(repo.path(), "data.bin", &pointer_text(OID, CONTENT.len()));
+    // Sanity: working tree currently has pointer text, not real content.
+    let wt_before = std::fs::read(repo.path().join("data.bin")).unwrap();
+    assert!(wt_before.starts_with(b"version https://git-lfs.github.com/spec/v1\n"));
+
+    let path = repo.path().to_owned();
+    let out = tokio::task::spawn_blocking(move || run_in(&path, &["pull"], b""))
+        .await
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "pull failed: {}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+
+    // Working tree now has actual content.
+    let wt_after = std::fs::read(repo.path().join("data.bin")).unwrap();
+    assert_eq!(wt_after, CONTENT, "working tree not materialized");
 }
 
 #[tokio::test]

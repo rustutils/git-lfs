@@ -10,6 +10,7 @@ use git_lfs_store::Store;
 mod fetch;
 mod fetcher;
 mod install;
+mod pull;
 mod track;
 
 use fetcher::LfsFetcher;
@@ -59,6 +60,13 @@ enum Command {
     /// Download every LFS object reachable from the given refs (default: HEAD)
     /// that isn't already in the local store. Walks history, dedupes by OID.
     Fetch {
+        /// Refs to scan for LFS pointers. Defaults to `HEAD`.
+        refs: Vec<String>,
+    },
+    /// `fetch` then re-run the smudge filter so the working tree contains
+    /// real LFS file contents instead of pointer text. Requires
+    /// `git lfs install` to have wired up the smudge filter.
+    Pull {
         /// Refs to scan for LFS pointers. Defaults to `HEAD`.
         refs: Vec<String>,
     },
@@ -117,6 +125,9 @@ fn dispatch(cmd: Command) -> Result<(), Box<dyn std::error::Error>> {
             if !report.failed.is_empty() {
                 return Err("one or more objects failed to download".into());
             }
+        }
+        Command::Pull { refs } => {
+            pull::pull(&cwd, &refs)?;
         }
         Command::Track { patterns } => {
             if patterns.is_empty() {
