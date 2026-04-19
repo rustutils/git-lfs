@@ -8,6 +8,7 @@ use git_lfs_git::ConfigScope;
 use git_lfs_store::Store;
 
 mod install;
+mod track;
 
 #[derive(Parser)]
 #[command(name = "git-lfs", version, about = "Git LFS — large file storage for git")]
@@ -40,6 +41,12 @@ enum Command {
         /// Only set the filter config; don't install hooks.
         #[arg(long)]
         skip_repo: bool,
+    },
+    /// Track a file pattern with git-lfs by adding it to .gitattributes.
+    /// With no patterns, lists currently-tracked patterns.
+    Track {
+        /// File patterns to track (e.g. "*.jpg", "data/*.bin").
+        patterns: Vec<String>,
     },
 }
 
@@ -82,6 +89,22 @@ fn dispatch(cmd: Command) -> Result<(), Box<dyn std::error::Error>> {
             };
             install::install(&cwd, &opts)?;
             println!("Git LFS initialized.");
+        }
+        Command::Track { patterns } => {
+            if patterns.is_empty() {
+                println!("Listing tracked patterns");
+                for p in track::list(&cwd)? {
+                    println!("    {p} (.gitattributes)");
+                }
+            } else {
+                let outcome = track::track(&cwd, &patterns)?;
+                for p in &outcome.added {
+                    println!("Tracking \"{p}\"");
+                }
+                for p in &outcome.already {
+                    println!("\"{p}\" already supported");
+                }
+            }
         }
     }
     Ok(())

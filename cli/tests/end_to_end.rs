@@ -285,3 +285,70 @@ fn install_skip_repo_writes_no_hooks() {
     assert!(read_local_config(repo.path(), "filter.lfs.clean").is_some());
     assert!(!repo.path().join(".git/hooks/pre-push").exists());
 }
+
+// ---------- track ----------
+
+#[test]
+fn track_creates_gitattributes_and_emits_message() {
+    let repo = fresh_repo();
+    let out = run_in(repo.path(), &["track", "*.jpg"], b"");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // Matches the grep in upstream's t-track.sh: "Tracking \"\*.jpg\"".
+    assert!(stdout.contains(r#"Tracking "*.jpg""#), "unexpected stdout: {stdout}");
+
+    let content = std::fs::read_to_string(repo.path().join(".gitattributes")).unwrap();
+    assert_eq!(content, "*.jpg filter=lfs diff=lfs merge=lfs -text\n");
+}
+
+#[test]
+fn track_already_supported_is_idempotent() {
+    let repo = fresh_repo();
+    run_in(repo.path(), &["track", "*.jpg"], b"");
+    let out = run_in(repo.path(), &["track", "*.jpg"], b"");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // Matches upstream's grep: "\"*.jpg\" already supported".
+    assert!(
+        stdout.contains(r#""*.jpg" already supported"#),
+        "unexpected stdout: {stdout}",
+    );
+    let content = std::fs::read_to_string(repo.path().join(".gitattributes")).unwrap();
+    assert_eq!(content.matches("*.jpg").count(), 1);
+}
+
+#[test]
+fn track_preserves_existing_gitattributes() {
+    let repo = fresh_repo();
+    let initial = "* text=auto\n#*.cs diff=csharp\n";
+    std::fs::write(repo.path().join(".gitattributes"), initial).unwrap();
+    run_in(repo.path(), &["track", "*.jpg"], b"");
+    let content = std::fs::read_to_string(repo.path().join(".gitattributes")).unwrap();
+    assert!(content.starts_with("* text=auto\n#*.cs diff=csharp\n"));
+    assert!(content.contains("*.jpg filter=lfs"));
+}
+
+#[test]
+fn track_no_args_lists_patterns() {
+    let repo = fresh_repo();
+    run_in(repo.path(), &["track", "*.jpg"], b"");
+    run_in(repo.path(), &["track", "*.png"], b"");
+    let out = run_in(repo.path(), &["track"], b"");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Listing tracked patterns"));
+    assert!(stdout.contains("*.jpg (.gitattributes)"));
+    assert!(stdout.contains("*.png (.gitattributes)"));
+}
+
+#[test]
+fn track_then_clean_filter_path() {
+    // Track a pattern and then clean a matching file's content. This proves
+    // the two pieces compose: track sets up .gitattributes, the clean filter
+    // turns content into a pointer + populates the store.
+    let repo = fresh_repo();
+    run_in(repo.path(), &["track", "*.bin"], b"");
+    let out = run_in(repo.path(), &["clean", "data.bin"], b"binary blob");
+    assert!(out.status.success());
+    assert!(out.stdout.starts_with(b"version https://git-lfs.github.com/spec/v1\n"));
+}

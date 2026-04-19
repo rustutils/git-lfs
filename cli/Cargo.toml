@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 clap      = { version = "4", features = ["derive"] }
+tempfile  = { workspace = true }
 thiserror = { workspace = true }
 
 git-lfs-pointer  = { workspace = true }
@@ -15,6 +16,3 @@ git-lfs-api      = { workspace = true }
 git-lfs-transfer = { workspace = true }
 git-lfs-creds    = { workspace = true }
 git-lfs-filter   = { workspace = true }
-
-[dev-dependencies]
-tempfile = { workspace = true }
