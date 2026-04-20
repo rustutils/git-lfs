@@ -5,12 +5,16 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-reqwest    = { workspace = true }
-serde      = { workspace = true }
-serde_json = { workspace = true }
-thiserror  = { workspace = true }
-url        = { workspace = true }
+git-lfs-creds    = { workspace = true }
+reqwest          = { workspace = true }
+serde            = { workspace = true }
+serde_json       = { workspace = true }
+serde_urlencoded = "0.7"
+thiserror        = { workspace = true }
+tokio            = { workspace = true, features = ["rt"] }
+url              = { workspace = true }
 
 [dev-dependencies]
+base64   = "0.22"
 tokio    = { workspace = true, features = ["macros", "rt-multi-thread"] }
 wiremock = { workspace = true }

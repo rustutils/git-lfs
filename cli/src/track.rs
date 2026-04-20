@@ -76,6 +76,27 @@ impl Attributes {
         true
     }
 
+    /// Remove every LFS-tracked line for `pattern`. Returns `true` if at
+    /// least one line was removed, `false` if the pattern wasn't tracked.
+    /// Non-LFS lines (no `filter=lfs`) are always preserved, even if their
+    /// first token matches `pattern`.
+    pub fn untrack(&mut self, pattern: &str) -> bool {
+        let before = self.lines.len();
+        self.lines.retain(|line| {
+            let body = line.split('#').next().unwrap_or(line).trim();
+            if body.is_empty() {
+                return true;
+            }
+            let mut tokens = body.split_whitespace();
+            let Some(first) = tokens.next() else {
+                return true;
+            };
+            let is_lfs = tokens.any(|t| t == "filter=lfs");
+            !(is_lfs && first == pattern)
+        });
+        self.lines.len() != before
+    }
+
     /// Persist back to `.gitattributes` via tempfile + atomic rename.
     pub fn write(&self, cwd: &Path) -> Result<(), TrackError> {
         let mut content = String::new();
@@ -124,6 +145,33 @@ pub fn list(cwd: &Path) -> Result<Vec<String>, TrackError> {
         .into_iter()
         .map(String::from)
         .collect())
+}
+
+/// Outcome of an [`untrack`] call: which patterns were removed vs. weren't
+/// tracked to begin with.
+pub struct UntrackOutcome {
+    pub removed: Vec<String>,
+    pub missing: Vec<String>,
+}
+
+/// Remove each `pattern` from `.gitattributes`. Idempotent: untracking a
+/// pattern that wasn't tracked is recorded under `missing` and is not an
+/// error.
+pub fn untrack(cwd: &Path, patterns: &[String]) -> Result<UntrackOutcome, TrackError> {
+    let mut attrs = Attributes::read(cwd)?;
+    let mut removed = Vec::new();
+    let mut missing = Vec::new();
+    for pattern in patterns {
+        if attrs.untrack(pattern) {
+            removed.push(pattern.clone());
+        } else {
+            missing.push(pattern.clone());
+        }
+    }
+    if !removed.is_empty() {
+        attrs.write(cwd)?;
+    }
+    Ok(UntrackOutcome { removed, missing })
 }
 
 #[cfg(test)]
@@ -211,5 +259,57 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         write(tmp.path(), "*.gif -filter -text\n");
         assert!(list(tmp.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn untrack_removes_only_lfs_lines_for_pattern() {
+        let tmp = TempDir::new().unwrap();
+        write(
+            tmp.path(),
+            "* text=auto\n\
+             *.jpg filter=lfs diff=lfs merge=lfs -text\n\
+             *.png filter=lfs diff=lfs merge=lfs -text\n",
+        );
+        let outcome = untrack(tmp.path(), &["*.jpg".into()]).unwrap();
+        assert_eq!(outcome.removed, vec!["*.jpg"]);
+        assert!(outcome.missing.is_empty());
+        let content = fs::read_to_string(tmp.path().join(ATTRIBUTES_FILE)).unwrap();
+        assert_eq!(
+            content,
+            "* text=auto\n\
+             *.png filter=lfs diff=lfs merge=lfs -text\n",
+        );
+    }
+
+    #[test]
+    fn untrack_unknown_pattern_is_recorded_as_missing() {
+        let tmp = TempDir::new().unwrap();
+        write(tmp.path(), "*.jpg filter=lfs diff=lfs merge=lfs -text\n");
+        let outcome = untrack(tmp.path(), &["*.png".into()]).unwrap();
+        assert!(outcome.removed.is_empty());
+        assert_eq!(outcome.missing, vec!["*.png"]);
+        // File untouched.
+        let content = fs::read_to_string(tmp.path().join(ATTRIBUTES_FILE)).unwrap();
+        assert_eq!(content, "*.jpg filter=lfs diff=lfs merge=lfs -text\n");
+    }
+
+    #[test]
+    fn untrack_preserves_non_lfs_line_with_same_first_token() {
+        let tmp = TempDir::new().unwrap();
+        write(tmp.path(), "*.cs diff=csharp\n");
+        let outcome = untrack(tmp.path(), &["*.cs".into()]).unwrap();
+        assert!(outcome.removed.is_empty());
+        assert_eq!(outcome.missing, vec!["*.cs"]);
+        let content = fs::read_to_string(tmp.path().join(ATTRIBUTES_FILE)).unwrap();
+        assert_eq!(content, "*.cs diff=csharp\n");
+    }
+
+    #[test]
+    fn untrack_no_file_is_not_an_error() {
+        let tmp = TempDir::new().unwrap();
+        let outcome = untrack(tmp.path(), &["*.jpg".into()]).unwrap();
+        assert!(outcome.removed.is_empty());
+        assert_eq!(outcome.missing, vec!["*.jpg"]);
+        assert!(!tmp.path().join(ATTRIBUTES_FILE).exists());
     }
 }

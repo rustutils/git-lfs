@@ -136,10 +136,11 @@ fn smudge_passes_through_non_pointer() {
 
 #[test]
 fn smudge_missing_object_without_lfs_url_errors() {
-    // No `lfs.url` configured + missing object → smudge attempts to fetch,
-    // realizes there's nowhere to fetch from, and fails with a config error.
-    // Previously (before transfer wiring) this surfaced as ObjectMissing;
-    // now it surfaces as a fetch failure that names the missing config key.
+    // No `lfs.url` and no `remote.origin.url` configured + missing object →
+    // smudge attempts to fetch, can't resolve an LFS endpoint, and fails
+    // with a clear error. Previously (before transfer wiring) this
+    // surfaced as ObjectMissing; now it surfaces as a fetch failure that
+    // names the unresolved endpoint.
     let repo = fresh_repo();
     let pointer = b"version https://git-lfs.github.com/spec/v1\n\
                     oid sha256:0000000000000000000000000000000000000000000000000000000000000001\n\
@@ -149,7 +150,7 @@ fn smudge_missing_object_without_lfs_url_errors() {
     assert!(out.stdout.is_empty(), "no partial output on miss");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("lfs.url"),
+        stderr.contains("LFS endpoint") || stderr.contains("origin"),
         "unexpected stderr: {stderr}"
     );
 }
@@ -301,6 +302,74 @@ fn install_skip_repo_writes_no_hooks() {
     assert!(!repo.path().join(".git/hooks/pre-push").exists());
 }
 
+// ---------- uninstall ----------
+
+#[test]
+fn uninstall_local_clears_config_and_removes_hooks() {
+    let repo = fresh_repo();
+    run_in(repo.path(), &["install", "--local"], b"");
+    let out = run_in(repo.path(), &["uninstall", "--local"], b"");
+    assert!(
+        out.status.success(),
+        "uninstall failed: {}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("Local Git LFS configuration has been removed"),
+    );
+
+    for key in ["filter.lfs.clean", "filter.lfs.smudge", "filter.lfs.process", "filter.lfs.required"] {
+        assert!(read_local_config(repo.path(), key).is_none(), "{key} still set");
+    }
+    for hook in ["pre-push", "post-checkout", "post-commit", "post-merge"] {
+        assert!(
+            !repo.path().join(".git/hooks").join(hook).exists(),
+            "hook {hook} still present",
+        );
+    }
+}
+
+#[test]
+fn uninstall_is_idempotent_when_nothing_installed() {
+    let repo = fresh_repo();
+    let out = run_in(repo.path(), &["uninstall", "--local"], b"");
+    assert!(
+        out.status.success(),
+        "uninstall on clean repo failed: {}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+}
+
+#[test]
+fn uninstall_preserves_user_modified_hooks() {
+    let repo = fresh_repo();
+    run_in(repo.path(), &["install", "--local"], b"");
+    // Replace the pre-push hook with a user-customized version.
+    let pre_push = repo.path().join(".git/hooks/pre-push");
+    let custom = "#!/bin/sh\necho 'my custom hook'\n";
+    std::fs::write(&pre_push, custom).unwrap();
+
+    let out = run_in(repo.path(), &["uninstall", "--local"], b"");
+    assert!(out.status.success());
+
+    // Customized hook is left in place; the others (still ours) are gone.
+    assert!(pre_push.exists(), "user-modified pre-push was deleted");
+    assert_eq!(std::fs::read_to_string(&pre_push).unwrap(), custom);
+    assert!(!repo.path().join(".git/hooks/post-checkout").exists());
+}
+
+#[test]
+fn uninstall_skip_repo_leaves_hooks_alone() {
+    let repo = fresh_repo();
+    run_in(repo.path(), &["install", "--local"], b"");
+    let out = run_in(repo.path(), &["uninstall", "--local", "--skip-repo"], b"");
+    assert!(out.status.success());
+    // Config gone…
+    assert!(read_local_config(repo.path(), "filter.lfs.clean").is_none());
+    // …but hooks still present.
+    assert!(repo.path().join(".git/hooks/pre-push").exists());
+}
+
 // ---------- track ----------
 
 #[test]
@@ -366,6 +435,59 @@ fn track_then_clean_filter_path() {
     let out = run_in(repo.path(), &["clean", "data.bin"], b"binary blob");
     assert!(out.status.success());
     assert!(out.stdout.starts_with(b"version https://git-lfs.github.com/spec/v1\n"));
+}
+
+// ---------- untrack ----------
+
+#[test]
+fn untrack_removes_pattern_and_emits_message() {
+    let repo = fresh_repo();
+    run_in(repo.path(), &["track", "*.jpg"], b"");
+    run_in(repo.path(), &["track", "*.png"], b"");
+    let out = run_in(repo.path(), &["untrack", "*.jpg"], b"");
+    assert!(
+        out.status.success(),
+        "untrack failed: {}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains(r#"Untracking "*.jpg""#), "unexpected stdout: {stdout}");
+
+    let content = std::fs::read_to_string(repo.path().join(".gitattributes")).unwrap();
+    assert!(!content.contains("*.jpg"));
+    assert!(content.contains("*.png filter=lfs"));
+}
+
+#[test]
+fn untrack_unknown_pattern_reports_not_tracked() {
+    let repo = fresh_repo();
+    run_in(repo.path(), &["track", "*.jpg"], b"");
+    let out = run_in(repo.path(), &["untrack", "*.png"], b"");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains(r#""*.png" was not tracked"#), "unexpected stdout: {stdout}");
+    // *.jpg still tracked, file unchanged.
+    let content = std::fs::read_to_string(repo.path().join(".gitattributes")).unwrap();
+    assert_eq!(content, "*.jpg filter=lfs diff=lfs merge=lfs -text\n");
+}
+
+#[test]
+fn untrack_no_args_errors() {
+    let repo = fresh_repo();
+    let out = run_in(repo.path(), &["untrack"], b"");
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("untrack"), "expected usage hint: {stderr}");
+}
+
+#[test]
+fn untrack_then_track_round_trips() {
+    let repo = fresh_repo();
+    run_in(repo.path(), &["track", "*.jpg"], b"");
+    run_in(repo.path(), &["untrack", "*.jpg"], b"");
+    run_in(repo.path(), &["track", "*.jpg"], b"");
+    let content = std::fs::read_to_string(repo.path().join(".gitattributes")).unwrap();
+    assert_eq!(content.matches("*.jpg filter=lfs").count(), 1);
 }
 
 // ---------- smudge with on-demand download --------------------------------
@@ -447,6 +569,169 @@ async fn smudge_downloads_missing_object_via_lfs_url() {
         .join(&OID[2..4])
         .join(OID);
     assert!(stored.is_file(), "expected stored object at {stored:?}");
+}
+
+#[tokio::test]
+async fn smudge_uses_remote_origin_url_when_no_lfs_url_set() {
+    // Same wiring as `smudge_downloads_missing_object_via_lfs_url`, but
+    // configures `remote.origin.url` instead of `lfs.url` to prove the
+    // endpoint resolver derives `<remote>.git/info/lfs` correctly. The
+    // wiremock stands in for that derived URL.
+    use serde_json::json;
+    use wiremock::matchers::{method as m_method, path as m_path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    const OID: &str = "30031a9831674dd684c3817399acebc88a116ce5a7a3fbc0cf34d92521a534e6";
+    const CONTENT: &[u8] = b"downloaded\n";
+
+    let server = MockServer::start().await;
+    let storage_url = format!("{}/storage/{OID}", server.uri());
+
+    // The derived endpoint will tack `.git/info/lfs` onto the remote URL,
+    // so the path the batch lands on is `/repo.git/info/lfs/objects/batch`.
+    Mock::given(m_method("POST"))
+        .and(m_path("/repo.git/info/lfs/objects/batch"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "transfer": "basic",
+            "objects": [{
+                "oid": OID, "size": CONTENT.len(),
+                "actions": { "download": { "href": storage_url } }
+            }]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(m_method("GET"))
+        .and(m_path(format!("/storage/{OID}")))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(CONTENT))
+        .mount(&server)
+        .await;
+
+    let repo = fresh_repo();
+    let remote_url = format!("{}/repo", server.uri());
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(repo.path())
+        .args(["config", "--local", "remote.origin.url", &remote_url])
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    let pointer = format!(
+        "version https://git-lfs.github.com/spec/v1\n\
+         oid sha256:{OID}\n\
+         size {}\n",
+        CONTENT.len(),
+    );
+
+    let path = repo.path().to_owned();
+    let pointer_bytes = pointer.into_bytes();
+    let out = tokio::task::spawn_blocking(move || run_in(&path, &["smudge"], &pointer_bytes))
+        .await
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "smudge failed: {}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert_eq!(out.stdout, CONTENT);
+}
+
+#[test]
+fn smudge_with_no_endpoint_fails_with_clear_message() {
+    // Repo has neither `lfs.url` nor `remote.origin.url` — the resolver
+    // returns `Unresolved` and the CLI should surface that as a non-zero
+    // exit with a sensible message rather than panicking or hanging.
+    let repo = fresh_repo();
+    let pointer = b"version https://git-lfs.github.com/spec/v1\n\
+                    oid sha256:30031a9831674dd684c3817399acebc88a116ce5a7a3fbc0cf34d92521a534e6\n\
+                    size 11\n";
+    let out = run_in(repo.path(), &["smudge"], pointer);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("LFS endpoint") || stderr.contains("origin"),
+        "expected endpoint-resolution error in stderr: {stderr}",
+    );
+}
+
+#[tokio::test]
+async fn smudge_401_with_no_credentials_fails_cleanly() {
+    // Server demands auth; the configured credential helper chain (in-process
+    // cache → `git credential`) has nothing to give in this throwaway repo,
+    // so the smudge should propagate the 401 as a non-zero exit instead of
+    // hanging or panicking.
+    use serde_json::json;
+    use wiremock::matchers::{method as m_method, path as m_path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    const OID: &str = "30031a9831674dd684c3817399acebc88a116ce5a7a3fbc0cf34d92521a534e6";
+    const CONTENT: &[u8] = b"downloaded\n";
+
+    let server = MockServer::start().await;
+    Mock::given(m_method("POST"))
+        .and(m_path("/objects/batch"))
+        .respond_with(
+            ResponseTemplate::new(401)
+                .insert_header("LFS-Authenticate", "Basic realm=\"x\"")
+                .set_body_json(json!({"message": "auth required"})),
+        )
+        .mount(&server)
+        .await;
+
+    let repo = fresh_repo();
+    // Point lfs.url at the wiremock and disable the user's real credential
+    // helpers so `git credential fill` won't successfully resolve anything
+    // (which would happen on a developer machine with a global helper).
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(repo.path())
+        .args(["config", "--local", "lfs.url", &server.uri()])
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    let pointer = format!(
+        "version https://git-lfs.github.com/spec/v1\n\
+         oid sha256:{OID}\n\
+         size {}\n",
+        CONTENT.len(),
+    );
+
+    let path = repo.path().to_owned();
+    let pointer_bytes = pointer.into_bytes();
+    let out = tokio::task::spawn_blocking(move || {
+        // GIT_TERMINAL_PROMPT=0 + an empty GIT_CONFIG_GLOBAL stop the
+        // user's globally-configured helpers from filling in creds during
+        // the test (which would change the response from 401 to 200 and
+        // make the assertion meaningless).
+        let bin_dir = Path::new(BIN).parent().unwrap();
+        let path_var = std::env::var("PATH").unwrap_or_default();
+        let new_path = format!("{}:{path_var}", bin_dir.display());
+        let mut child = Command::new(BIN)
+            .args(["smudge"])
+            .current_dir(&path)
+            .env("PATH", new_path)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.as_mut().unwrap().write_all(&pointer_bytes).unwrap();
+        drop(child.stdin.take());
+        child.wait_with_output().unwrap()
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        !out.status.success(),
+        "expected smudge to fail with 401; stdout: {} stderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
 }
 
 // ---------- fetch ---------------------------------------------------------

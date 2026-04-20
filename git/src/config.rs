@@ -47,6 +47,51 @@ pub fn get(cwd: &Path, scope: ConfigScope, key: &str) -> Result<Option<String>, 
     }
 }
 
+/// Read a single config value from a specific file (e.g. `.lfsconfig`).
+/// Returns `Ok(None)` if the file doesn't exist or the key isn't set.
+pub fn get_from_file(cwd: &Path, file: &Path, key: &str) -> Result<Option<String>, Error> {
+    if !cwd.join(file).is_file() {
+        // `git config --file` errors loudly on a missing file. The common
+        // case for `.lfsconfig` is "no file" — treat that as "no value".
+        return Ok(None);
+    }
+    let file_arg = format!("--file={}", file.display());
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["config", &file_arg, "--get", key])
+        .output()?;
+    match out.status.code() {
+        Some(0) => Ok(Some(
+            String::from_utf8_lossy(&out.stdout).trim().to_owned(),
+        )),
+        Some(1) => Ok(None),
+        _ => Err(Error::Failed(
+            String::from_utf8_lossy(&out.stderr).trim().to_owned(),
+        )),
+    }
+}
+
+/// Look up `key` across `.lfsconfig` (committed; lowest priority) and
+/// the standard git config scopes (local → global → system). Returns the
+/// first match.
+///
+/// Mirrors upstream's effective config: settings written to `.lfsconfig`
+/// at the repo root are visible without overriding anything explicitly
+/// set in the user's git config.
+pub fn get_effective(cwd: &Path, key: &str) -> Result<Option<String>, Error> {
+    if let Some(v) = get(cwd, ConfigScope::Local, key)? {
+        return Ok(Some(v));
+    }
+    if let Some(v) = get(cwd, ConfigScope::Global, key)? {
+        return Ok(Some(v));
+    }
+    if let Some(v) = get(cwd, ConfigScope::System, key)? {
+        return Ok(Some(v));
+    }
+    get_from_file(cwd, std::path::Path::new(".lfsconfig"), key)
+}
+
 /// Set `key = value` in the given scope.
 pub fn set(cwd: &Path, scope: ConfigScope, key: &str, value: &str) -> Result<(), Error> {
     let out = Command::new("git")

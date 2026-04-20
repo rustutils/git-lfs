@@ -14,10 +14,11 @@
 //! its already-fetched bytes.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use git_lfs_api::{Auth, Client as ApiClient, ObjectSpec};
+use git_lfs_creds::{CachingHelper, GitCredentialHelper, Helper, HelperChain};
 use git_lfs_filter::FetchError;
-use git_lfs_git::ConfigScope;
 use git_lfs_pointer::Pointer;
 use git_lfs_store::Store;
 use git_lfs_transfer::{Report, Transfer, TransferConfig};
@@ -32,14 +33,27 @@ pub struct LfsFetcher {
 }
 
 impl LfsFetcher {
-    /// Build a fetcher rooted at the given repo. Runtime construction is
-    /// the only thing that can fail here; missing LFS config is captured
-    /// and surfaced on the first [`fetch`](Self::fetch) call instead.
+    /// Build a fetcher rooted at the given repo, defaulting the remote
+    /// name to `origin`. Runtime construction is the only thing that can
+    /// fail here; an unresolvable LFS endpoint is captured and surfaced
+    /// on the first [`fetch`](Self::fetch) call instead.
     pub fn from_repo(cwd: &Path, store: &Store) -> std::io::Result<Self> {
+        Self::from_repo_with_remote(cwd, store, None)
+    }
+
+    /// Like [`from_repo`](Self::from_repo) but lets the caller specify
+    /// which remote to resolve against. Used by `push` / `pre-push` so
+    /// the LFS endpoint matches the remote being pushed to (otherwise a
+    /// `git push upstream` would still upload via `origin`'s LFS config).
+    pub fn from_repo_with_remote(
+        cwd: &Path,
+        store: &Store,
+        remote: Option<&str>,
+    ) -> std::io::Result<Self> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        let transfer = build_transfer(cwd, store);
+        let transfer = build_transfer(cwd, store, remote);
         Ok(Self { runtime, transfer })
     }
 
@@ -91,15 +105,25 @@ impl LfsFetcher {
     }
 }
 
-fn build_transfer(cwd: &Path, store: &Store) -> Result<Transfer, String> {
-    // For v0 we only check the repo-local config. Upstream also reads the
-    // `.lfsconfig` file at the repo root and falls back to deriving the
-    // URL from `remote.<name>.url`; both are listed as deferred work in
-    // NOTES.md.
-    let endpoint = git_lfs_git::config::get(cwd, ConfigScope::Local, "lfs.url")
-        .map_err(|e| format!("reading lfs.url: {e}"))?
-        .ok_or_else(|| "lfs.url is not configured".to_string())?;
-    let url = url::Url::parse(&endpoint).map_err(|e| format!("invalid lfs.url: {e}"))?;
-    let api = ApiClient::new(url, Auth::None);
+fn build_transfer(
+    cwd: &Path,
+    store: &Store,
+    remote: Option<&str>,
+) -> Result<Transfer, String> {
+    let endpoint = git_lfs_git::endpoint_for_remote(cwd, remote)
+        .map_err(|e| format!("resolving LFS endpoint: {e}"))?;
+    let url = url::Url::parse(&endpoint).map_err(|e| format!("invalid LFS endpoint: {e}"))?;
+    let api = ApiClient::new(url, Auth::None).with_credential_helper(default_helper_chain());
     Ok(Transfer::new(api, store.clone(), TransferConfig::default()))
+}
+
+/// Default credential resolution chain: in-process cache → `git credential`.
+/// Cache is consulted first so a single CLI invocation only shells out to
+/// `git credential fill` once per host.
+fn default_helper_chain() -> Arc<dyn Helper> {
+    let helpers: Vec<Box<dyn Helper>> = vec![
+        Box::new(CachingHelper::new()),
+        Box::new(GitCredentialHelper::new()),
+    ];
+    Arc::new(HelperChain::new(helpers))
 }

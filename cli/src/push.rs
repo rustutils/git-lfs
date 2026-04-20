@@ -49,7 +49,7 @@ pub fn push(cwd: &Path, remote: &str, refs: &[String]) -> Result<Report, PushCom
     let excludes_owned = remote_tracking_refs(cwd, remote)?;
     let excludes: Vec<&str> = excludes_owned.iter().map(String::as_str).collect();
 
-    upload_in_range(cwd, &ref_strs, &excludes)
+    upload_in_range(cwd, remote, &ref_strs, &excludes)
 }
 
 /// Shared core: scan for pointers reachable from `includes` minus
@@ -61,6 +61,7 @@ pub fn push(cwd: &Path, remote: &str, refs: &[String]) -> Result<Report, PushCom
 /// and the per-object failure list directly to stdout/stderr.
 pub(crate) fn upload_in_range(
     cwd: &Path,
+    remote: &str,
     includes: &[&str],
     excludes: &[&str],
 ) -> Result<Report, PushCommandError> {
@@ -99,7 +100,7 @@ pub(crate) fn upload_in_range(
     }
 
     println!("Pushing {} object(s)", to_push.len());
-    let fetcher = LfsFetcher::from_repo(cwd, &store)?;
+    let fetcher = LfsFetcher::from_repo_with_remote(cwd, &store, Some(remote))?;
     let report = fetcher
         .upload_many(to_push)
         .map_err(PushCommandError::Fetch)?;

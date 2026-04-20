@@ -1,4 +1,5 @@
-//! `git lfs install`: register the LFS filter with git and install the hooks.
+//! `git lfs install` / `uninstall`: register or remove the LFS filter
+//! configuration and git hooks.
 
 use std::fs;
 use std::io;
@@ -140,4 +141,58 @@ fn set_executable(path: &Path) -> io::Result<()> {
 #[cfg(not(unix))]
 fn set_executable(_path: &Path) -> io::Result<()> {
     Ok(())
+}
+
+#[derive(Debug, Clone)]
+pub struct UninstallOptions {
+    pub scope: ConfigScope,
+    /// Skip removing hooks; only unset the config.
+    pub skip_repo: bool,
+}
+
+/// Run the uninstall. Mirrors [`install`]: clears the four `filter.lfs.*`
+/// config keys and (unless `skip_repo`) removes the LFS hooks. Hooks are
+/// only deleted if their contents match what we'd write — a user-edited
+/// hook is left in place so we don't blow away local customizations.
+pub fn uninstall(cwd: &Path, opts: &UninstallOptions) -> Result<(), InstallError> {
+    unset_filter_config(cwd, opts)?;
+
+    let in_repo = git_dir(cwd).is_ok();
+    let touch_hooks = !opts.skip_repo && (opts.scope == ConfigScope::Local || in_repo);
+    if touch_hooks {
+        uninstall_all_hooks(cwd)?;
+    }
+    Ok(())
+}
+
+fn unset_filter_config(cwd: &Path, opts: &UninstallOptions) -> Result<(), InstallError> {
+    for (key, _) in FILTER_KEYS {
+        config::unset(cwd, opts.scope, key)?;
+    }
+    Ok(())
+}
+
+fn uninstall_all_hooks(cwd: &Path) -> Result<(), InstallError> {
+    let hooks_dir = git_dir(cwd)?.join("hooks");
+    for hook in HOOKS {
+        uninstall_one_hook(&hooks_dir, hook)?;
+    }
+    Ok(())
+}
+
+fn uninstall_one_hook(hooks_dir: &Path, hook: &str) -> Result<(), InstallError> {
+    let path = hooks_dir.join(hook);
+    let wanted = HOOK_TEMPLATE.replace("{{Command}}", hook);
+    match fs::read_to_string(&path) {
+        Ok(existing) if existing.trim() == wanted.trim() => {
+            fs::remove_file(&path)?;
+            Ok(())
+        }
+        Ok(_) => {
+            // Hook exists but isn't ours — leave it alone.
+            Ok(())
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(InstallError::Io(e)),
+    }
 }

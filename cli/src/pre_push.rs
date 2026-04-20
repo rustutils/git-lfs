@@ -76,7 +76,7 @@ pub fn pre_push<R: BufRead>(
 
     let inc: Vec<&str> = includes.iter().map(String::as_str).collect();
     let exc: Vec<&str> = excludes.iter().map(String::as_str).collect();
-    upload_in_range(cwd, &inc, &exc)
+    upload_in_range(cwd, remote, &inc, &exc)
 }
 
 /// True if `s` is a non-empty hex string of all zeros — git's marker for

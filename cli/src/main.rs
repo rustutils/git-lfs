@@ -49,10 +49,28 @@ enum Command {
         #[arg(long)]
         skip_repo: bool,
     },
+    /// Reverse of `install`: clear the `filter.lfs.*` config and remove
+    /// the LFS git hooks. Hooks that don't match what we'd write are left
+    /// untouched.
+    Uninstall {
+        /// Operate on the local repo only (default: --global).
+        #[arg(short, long)]
+        local: bool,
+        /// Only unset config; don't touch hooks.
+        #[arg(long)]
+        skip_repo: bool,
+    },
     /// Track a file pattern with git-lfs by adding it to .gitattributes.
     /// With no patterns, lists currently-tracked patterns.
     Track {
         /// File patterns to track (e.g. "*.jpg", "data/*.bin").
+        patterns: Vec<String>,
+    },
+    /// Stop tracking a file pattern with git-lfs by removing it from
+    /// .gitattributes. The matching pointer files in history (and the
+    /// objects in the local store) are left in place.
+    Untrack {
+        /// File patterns to untrack.
         patterns: Vec<String>,
     },
     /// Run the long-running filter-process protocol with git over stdin/stdout.
@@ -136,6 +154,18 @@ fn dispatch(cmd: Command) -> Result<(), Box<dyn std::error::Error>> {
             install::install(&cwd, &opts)?;
             println!("Git LFS initialized.");
         }
+        Command::Uninstall { local, skip_repo } => {
+            let opts = install::UninstallOptions {
+                scope: if local { ConfigScope::Local } else { ConfigScope::Global },
+                skip_repo,
+            };
+            install::uninstall(&cwd, &opts)?;
+            if local {
+                println!("Local Git LFS configuration has been removed.");
+            } else {
+                println!("Global Git LFS configuration has been removed.");
+            }
+        }
         Command::FilterProcess => {
             let store = Store::new(git_lfs_git::lfs_dir(&cwd)?);
             let fetcher = LfsFetcher::from_repo(&cwd, &store)?;
@@ -179,6 +209,18 @@ fn dispatch(cmd: Command) -> Result<(), Box<dyn std::error::Error>> {
                 for p in &outcome.already {
                     println!("\"{p}\" already supported");
                 }
+            }
+        }
+        Command::Untrack { patterns } => {
+            if patterns.is_empty() {
+                return Err("git lfs untrack <pattern> [pattern...]".into());
+            }
+            let outcome = track::untrack(&cwd, &patterns)?;
+            for p in &outcome.removed {
+                println!("Untracking \"{p}\"");
+            }
+            for p in &outcome.missing {
+                println!("\"{p}\" was not tracked");
             }
         }
     }

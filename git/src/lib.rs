@@ -9,6 +9,7 @@ use std::process::Command;
 
 pub mod cat_file;
 pub mod config;
+pub mod endpoint;
 pub mod path;
 pub mod pktline;
 pub mod rev_list;
@@ -16,6 +17,7 @@ pub mod scanner;
 
 pub use cat_file::{BlobContent, CatFileBatch, CatFileBatchCheck, CatFileHeader};
 pub use config::ConfigScope;
+pub use endpoint::{EndpointError, derive_lfs_url, endpoint_for_remote};
 pub use path::{git_dir, lfs_dir};
 pub use rev_list::{RevListEntry, rev_list};
 pub use scanner::{PointerEntry, scan_pointers};

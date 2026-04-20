@@ -3,14 +3,17 @@
 //! building, header injection, JSON encoding, status-code handling, and
 //! response decoding.
 
+use std::sync::Arc;
+
 use git_lfs_api::{
     Auth, BatchRequest, Client, CreateLockError, CreateLockRequest, DeleteLockRequest,
     ListLocksFilter, ObjectSpec, Operation, Ref, VerifyLocksRequest,
 };
+use git_lfs_creds::{Credentials, Helper, HelperError, Query};
 use serde_json::json;
 use url::Url;
-use wiremock::matchers::{body_json, header, method, path, query_param};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::matchers::{body_json, header, header_exists, method, path, query_param};
+use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 const LFS_MEDIA_TYPE: &str = "application/vnd.git-lfs+json";
 
@@ -430,4 +433,203 @@ async fn delete_lock_id_is_url_encoded() {
         .delete_lock("weird/id", &DeleteLockRequest::default())
         .await
         .unwrap();
+}
+
+// ---- credential helper retry loop -----------------------------------------
+
+/// Stub `Helper` that hands out a static set of credentials and records
+/// every approve/reject call. Used by the tests below to verify the
+/// retry/approve/reject lifecycle without actually shelling out.
+#[derive(Default)]
+struct StubHelper {
+    answer: std::sync::Mutex<Option<Credentials>>,
+    approves: std::sync::Mutex<Vec<(Query, Credentials)>>,
+    rejects: std::sync::Mutex<Vec<(Query, Credentials)>>,
+}
+
+impl StubHelper {
+    fn with(answer: Credentials) -> Arc<Self> {
+        Arc::new(Self {
+            answer: std::sync::Mutex::new(Some(answer)),
+            ..Default::default()
+        })
+    }
+    fn empty() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+    fn approve_count(&self) -> usize {
+        self.approves.lock().unwrap().len()
+    }
+    fn reject_count(&self) -> usize {
+        self.rejects.lock().unwrap().len()
+    }
+}
+
+impl Helper for StubHelper {
+    fn fill(&self, _q: &Query) -> Result<Option<Credentials>, HelperError> {
+        Ok(self.answer.lock().unwrap().clone())
+    }
+    fn approve(&self, q: &Query, c: &Credentials) -> Result<(), HelperError> {
+        self.approves.lock().unwrap().push((q.clone(), c.clone()));
+        Ok(())
+    }
+    fn reject(&self, q: &Query, c: &Credentials) -> Result<(), HelperError> {
+        self.rejects.lock().unwrap().push((q.clone(), c.clone()));
+        Ok(())
+    }
+}
+
+/// State machine for a server that 401s the first call (no auth) then
+/// 200s the second call when it sees the Basic header. Pure
+/// `respond_with` mocks can't differentiate by header content easily, so
+/// we hand-roll a `Respond`.
+struct AuthGate {
+    expected_basic: String,
+    body_when_authed: serde_json::Value,
+}
+
+impl Respond for AuthGate {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let auth = request.headers.get("Authorization").map(|v| v.to_str().unwrap_or(""));
+        if auth == Some(self.expected_basic.as_str()) {
+            ResponseTemplate::new(200).set_body_json(&self.body_when_authed)
+        } else {
+            ResponseTemplate::new(401)
+                .insert_header("LFS-Authenticate", "Basic realm=\"GitHub\"")
+                .set_body_json(json!({"message": "auth required"}))
+        }
+    }
+}
+
+fn basic_value(user: &str, pass: &str) -> String {
+    use base64::Engine;
+    let raw = format!("{user}:{pass}");
+    let encoded = base64::engine::general_purpose::STANDARD.encode(raw);
+    format!("Basic {encoded}")
+}
+
+#[tokio::test]
+async fn batch_unauthorized_triggers_helper_fill_and_retry() {
+    let server = MockServer::start().await;
+    let basic = basic_value("alice", "hunter2");
+    Mock::given(method("POST"))
+        .and(path("/objects/batch"))
+        .respond_with(AuthGate {
+            expected_basic: basic.clone(),
+            body_when_authed: json!({
+                "transfer": "basic",
+                "objects": [{ "oid": "abc", "size": 10 }]
+            }),
+        })
+        .mount(&server)
+        .await;
+
+    let helper = StubHelper::with(Credentials::new("alice", "hunter2"));
+    let endpoint = Url::parse(&server.uri()).unwrap();
+    let client = Client::new(endpoint, Auth::None).with_credential_helper(helper.clone());
+
+    let req = BatchRequest::new(
+        Operation::Download,
+        vec![ObjectSpec { oid: "abc".into(), size: 10 }],
+    );
+    let resp = client.batch(&req).await.expect("retry should succeed");
+    assert_eq!(resp.objects.len(), 1);
+
+    assert_eq!(helper.approve_count(), 1, "successful retry should approve");
+    assert_eq!(helper.reject_count(), 0);
+}
+
+#[tokio::test]
+async fn batch_unauthorized_with_no_creds_returns_original_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/objects/batch"))
+        .respond_with(
+            ResponseTemplate::new(401).set_body_json(json!({"message": "no auth"})),
+        )
+        .mount(&server)
+        .await;
+
+    let helper = StubHelper::empty(); // fill returns None
+    let endpoint = Url::parse(&server.uri()).unwrap();
+    let client = Client::new(endpoint, Auth::None).with_credential_helper(helper.clone());
+
+    let req = BatchRequest::new(
+        Operation::Download,
+        vec![ObjectSpec { oid: "abc".into(), size: 10 }],
+    );
+    let err = client.batch(&req).await.unwrap_err();
+    assert!(err.is_unauthorized());
+    // Helper had nothing to give → no approve, no reject.
+    assert_eq!(helper.approve_count(), 0);
+    assert_eq!(helper.reject_count(), 0);
+}
+
+#[tokio::test]
+async fn batch_persistent_unauthorized_rejects_filled_creds() {
+    // Server always 401s, even with the right header. Helper hands out
+    // creds that the server doesn't accept → client should reject() so
+    // those creds get evicted from caches downstream.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/objects/batch"))
+        .and(header_exists("Authorization"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({"message": "nope"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/objects/batch"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({"message": "no auth"})))
+        .mount(&server)
+        .await;
+
+    let helper = StubHelper::with(Credentials::new("alice", "wrong"));
+    let endpoint = Url::parse(&server.uri()).unwrap();
+    let client = Client::new(endpoint, Auth::None).with_credential_helper(helper.clone());
+
+    let req = BatchRequest::new(
+        Operation::Download,
+        vec![ObjectSpec { oid: "abc".into(), size: 10 }],
+    );
+    let err = client.batch(&req).await.unwrap_err();
+    assert!(err.is_unauthorized());
+    assert_eq!(helper.reject_count(), 1, "bad creds should be rejected");
+    assert_eq!(helper.approve_count(), 0);
+}
+
+#[tokio::test]
+async fn second_request_reuses_filled_credentials_no_extra_fill() {
+    // After a successful 401→fill→200 round-trip, the next request should
+    // go straight out with the cached Basic header — proven here because
+    // the server's 200 path requires the header on the FIRST hit, with no
+    // 401 fallback configured.
+    let server = MockServer::start().await;
+    let basic = basic_value("alice", "hunter2");
+    Mock::given(method("POST"))
+        .and(path("/objects/batch"))
+        .respond_with(AuthGate {
+            expected_basic: basic.clone(),
+            body_when_authed: json!({
+                "transfer": "basic",
+                "objects": [{ "oid": "abc", "size": 10 }]
+            }),
+        })
+        .mount(&server)
+        .await;
+
+    let helper = StubHelper::with(Credentials::new("alice", "hunter2"));
+    let endpoint = Url::parse(&server.uri()).unwrap();
+    let client = Client::new(endpoint, Auth::None).with_credential_helper(helper.clone());
+
+    let req = BatchRequest::new(
+        Operation::Download,
+        vec![ObjectSpec { oid: "abc".into(), size: 10 }],
+    );
+    client.batch(&req).await.unwrap();
+    client.batch(&req).await.unwrap();
+
+    // approve fires twice: once after the first retry succeeds, once on
+    // the second request which goes straight through with cached creds.
+    assert_eq!(helper.approve_count(), 2);
+    assert_eq!(helper.reject_count(), 0);
 }
