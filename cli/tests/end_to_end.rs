@@ -1655,6 +1655,87 @@ fn ls_files_marker_star_when_real_content_present_at_right_size() {
     assert!(stdout.contains(" * x.bin"), "expected `*` marker, got: {stdout}");
 }
 
+// ---------- post-checkout / post-commit / post-merge --------------------
+//
+// v0 ships these as exit-0 stubs. The real reason they exist now: our
+// `git lfs install` writes hook scripts that invoke `git lfs
+// post-checkout` etc., so without the subcommands every git checkout
+// would fail with "unrecognized subcommand". These tests pin the
+// argument shapes upstream's hooks expect, so when real lockable
+// behavior lands we don't accidentally change the surface.
+
+#[test]
+fn post_checkout_accepts_three_args_and_exits_zero() {
+    let repo = fresh_repo();
+    let out = run_in(
+        repo.path(),
+        &[
+            "post-checkout",
+            "0000000000000000000000000000000000000000",
+            "1111111111111111111111111111111111111111",
+            "1",
+        ],
+        b"",
+    );
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
+fn post_checkout_with_wrong_arg_count_fails() {
+    let repo = fresh_repo();
+    let out = run_in(repo.path(), &["post-checkout", "only-one-arg"], b"");
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("expected 3 args"), "{stderr}");
+}
+
+#[test]
+fn post_commit_accepts_no_args_and_exits_zero() {
+    let repo = fresh_repo();
+    let out = run_in(repo.path(), &["post-commit"], b"");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
+fn post_merge_accepts_one_arg_and_exits_zero() {
+    let repo = fresh_repo();
+    let out = run_in(repo.path(), &["post-merge", "0"], b"");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
+fn post_merge_with_no_args_fails() {
+    let repo = fresh_repo();
+    let out = run_in(repo.path(), &["post-merge"], b"");
+    assert!(!out.status.success());
+}
+
+#[test]
+fn install_then_real_git_checkout_does_not_fail_via_post_checkout_hook() {
+    // This is the test that justifies the exit-0 stubs. Without them,
+    // installing the hooks then running `git checkout -b new-branch`
+    // (which fires post-checkout) would error out from inside git.
+    let repo = fresh_repo_with_identity();
+    install_lfs(repo.path());
+    std::fs::write(repo.path().join("a.txt"), b"hi").unwrap();
+    git_in(repo.path(), &["add", "a.txt"]);
+    git_in(repo.path(), &["commit", "-q", "-m", "seed"]);
+    // Trigger the post-checkout hook: switch to a new branch.
+    let bin_dir = std::path::Path::new(BIN).parent().unwrap();
+    let path_var = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{path_var}", bin_dir.display());
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(repo.path())
+        .args(["checkout", "-b", "new-branch", "-q"])
+        .env("PATH", new_path)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .status()
+        .unwrap();
+    assert!(status.success(), "git checkout -b failed (post-checkout hook errored?)");
+}
+
 // ---------- checkout -----------------------------------------------------
 
 /// `git lfs install --local` so the smudge filter is configured. Without

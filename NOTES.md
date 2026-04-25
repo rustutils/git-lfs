@@ -381,6 +381,27 @@ missing** and **why it was OK to skip for v0**.
   computing relative paths so the displayed paths look right when the
   user `cd`'d via a symlink. We just print repo-relative paths.
 
+### `cli post-checkout` / `post-commit` / `post-merge`
+- **Lockable read-only flag management.** Upstream uses these hooks to
+  clear the write bit on `lockable`-tracked files that aren't
+  currently locked by the user, so accidental edits become a build-
+  level error rather than a "wait, who's holding this?" mystery. We
+  ship the three subcommands as exit-0 stubs because:
+  - Without them, `git lfs install`'s hook scripts would error on
+    every `git checkout`/`commit`/`merge` (unrecognized subcommand).
+  - Without `track --lockable`, no user has lockable patterns
+    configured, so upstream itself early-exits in this case anyway.
+- **Implementation when lockable lands** needs three pieces:
+  1. `track --lockable` writes the `lockable` attribute alongside
+     `filter=lfs` (also a deferral on `cli track`).
+  2. A "lockable patterns" reader on top of `.gitattributes`.
+  3. Per-platform read-only flag manipulation: chmod on Unix, the
+     read-only file attribute on Windows. `Permissions::set_readonly`
+     in `std::fs` covers both, but only the user-write bit on Unix.
+- **Argument shapes are pinned by tests.** post-checkout takes
+  `<prev-sha> <post-sha> <flag>`, post-commit takes none, post-merge
+  takes `<squash-flag>`. Real implementations land behind these.
+
 ### `cli checkout`
 - **`--to <path> [--ours|--theirs|--base]` conflict-resolution form.**
   Used during merges to extract one stage of a conflicted LFS file.
@@ -451,5 +472,4 @@ missing** and **why it was OK to skip for v0**.
 
 ### Whole-project
 - **Remaining commands** — `migrate` (the big one — history rewriting),
-  post-checkout / post-commit / post-merge hooks, `merge-driver`,
-  `dedup`, `ext`, `standalone-file`, `logs`, `update`.
+  `merge-driver`, `dedup`, `ext`, `standalone-file`, `logs`, `update`.

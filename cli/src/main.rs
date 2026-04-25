@@ -12,6 +12,7 @@ mod env;
 mod fetch;
 mod fetcher;
 mod fsck;
+mod hooks;
 mod install;
 mod lock;
 mod ls_files;
@@ -108,6 +109,23 @@ enum Command {
         remote: String,
         /// Refs to push LFS objects for. Defaults to `HEAD`.
         refs: Vec<String>,
+    },
+    /// Git post-checkout hook entry point. Receives `<prev-sha>
+    /// <post-sha> <flag>` (flag is "1" if HEAD moved). Currently a
+    /// no-op stub — exists so installed hook scripts don't fail. Real
+    /// behavior arrives with `track --lockable`.
+    PostCheckout {
+        args: Vec<String>,
+    },
+    /// Git post-commit hook entry point. No arguments. Currently a
+    /// no-op stub.
+    PostCommit {
+        args: Vec<String>,
+    },
+    /// Git post-merge hook entry point. Receives `<squash-flag>`.
+    /// Currently a no-op stub.
+    PostMerge {
+        args: Vec<String>,
     },
     /// Git pre-push hook entry point — not typically invoked by hand.
     /// Reads `<local-ref> <local-sha> <remote-ref> <remote-sha>` lines
@@ -345,6 +363,15 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             if !report.failed.is_empty() {
                 return Err("one or more objects failed to upload".into());
             }
+        }
+        Command::PostCheckout { args } => {
+            hooks::post_checkout(&args)?;
+        }
+        Command::PostCommit { args } => {
+            hooks::post_commit(&args)?;
+        }
+        Command::PostMerge { args } => {
+            hooks::post_merge(&args)?;
         }
         Command::PrePush { remote, url: _ } => {
             let stdin = io::stdin().lock();
