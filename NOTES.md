@@ -325,6 +325,24 @@ missing** and **why it was OK to skip for v0**.
   written by `track`. We currently do exact-string match. Not an issue
   for typical patterns (`*.jpg`, `data/*.bin`); revisit if a test hits it.
 
+### `cli lock` / `locks` / `unlock`
+- **`locks --local` and `--cached`.** Both rely on an on-disk lock cache
+  upstream maintains under `.git/lfs/cache/locks/<remote>/`; we don't
+  have that cache yet. Adding it is mostly a JSON-on-disk shim around
+  `Client::list_locks` results.
+- **`unlock`'s "abort if file modified, unless --force" guard.** Upstream
+  refuses to unlock a path with uncommitted edits (sane safety net so
+  you don't lose collaborator-protected work). We skip the check
+  entirely for v0; users see no warning. Implementation = run
+  `git status --porcelain -- <path>` and refuse if non-empty.
+- **`unlock --force` path fallback.** When `resolve_lock_path` fails
+  (e.g. file is gone), we currently do a minimal `\\` → `/` + strip
+  `./`. Upstream canonicalizes more carefully. Revisit if tests hit it.
+- **Auth retry through `create_lock` / `delete_lock`.** Already noted
+  under `api`: those two methods bypass the 401 → fill → retry loop in
+  `Client::send_with_auth_retry`. Threading them through is a
+  refactor in `api/`, not a CLI fix.
+
 ### `cli ls-files`
 - **`--include` / `--exclude` path filters.** Upstream filters output by
   working-tree pattern. Builds on the same `filepathfilter/` we haven't
@@ -366,7 +384,7 @@ missing** and **why it was OK to skip for v0**.
   user `cd`'d via a symlink. We just print repo-relative paths.
 
 ### Whole-project
-- **Remaining commands** — `lock` / `unlock` / `locks`, `checkout`,
-  `prune`, `fsck`, `migrate` (the big one — history rewriting), `pointer`
-  (debug), `version`, post-checkout / post-commit / post-merge hooks,
-  `merge-driver`, `dedup`, `ext`, `standalone-file`, `logs`, `update`.
+- **Remaining commands** — `checkout`, `prune`, `fsck`, `migrate` (the
+  big one — history rewriting), `pointer` (debug), `version`,
+  post-checkout / post-commit / post-merge hooks, `merge-driver`,
+  `dedup`, `ext`, `standalone-file`, `logs`, `update`.

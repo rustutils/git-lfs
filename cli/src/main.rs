@@ -11,6 +11,7 @@ mod env;
 mod fetch;
 mod fetcher;
 mod install;
+mod lock;
 mod ls_files;
 mod pre_push;
 mod pull;
@@ -124,6 +125,60 @@ enum Command {
         #[arg(short, long)]
         porcelain: bool,
         /// Stable JSON output for scripts; only LFS entries are reported.
+        #[arg(short, long)]
+        json: bool,
+    },
+    /// Acquire an exclusive server-side lock on one or more files.
+    /// Other users will be unable to push changes to a locked file.
+    Lock {
+        /// Paths to lock (repo-relative or absolute, must resolve inside
+        /// the working tree).
+        paths: Vec<String>,
+        /// Specify which remote to use when interacting with locks.
+        #[arg(short, long)]
+        remote: Option<String>,
+        /// Stable JSON output for scripts.
+        #[arg(short, long)]
+        json: bool,
+    },
+    /// List file locks held on the server.
+    Locks {
+        /// Specify which remote to use when interacting with locks.
+        #[arg(short, long)]
+        remote: Option<String>,
+        /// Filter results to a particular path.
+        #[arg(short, long)]
+        path: Option<String>,
+        /// Filter results to a particular lock id.
+        #[arg(short, long)]
+        id: Option<String>,
+        /// Maximum number of results to return.
+        #[arg(short, long)]
+        limit: Option<u32>,
+        /// Verify ownership: prefix locks owned by the authenticated user
+        /// with `O ` (others get `  `).
+        #[arg(long)]
+        verify: bool,
+        /// Stable JSON output for scripts.
+        #[arg(short, long)]
+        json: bool,
+    },
+    /// Release a file lock previously acquired with `git lfs lock`.
+    /// Either provide one or more paths, or `--id <id>` (mutually
+    /// exclusive).
+    Unlock {
+        /// Paths to unlock; mutually exclusive with `--id`.
+        paths: Vec<String>,
+        /// Lock id to release; mutually exclusive with paths.
+        #[arg(short, long)]
+        id: Option<String>,
+        /// Forcibly break another user's lock(s).
+        #[arg(short, long)]
+        force: bool,
+        /// Specify which remote to use when interacting with locks.
+        #[arg(short, long)]
+        remote: Option<String>,
+        /// Stable JSON output for scripts.
         #[arg(short, long)]
         json: bool,
     },
@@ -263,6 +318,36 @@ fn dispatch(cmd: Command) -> Result<(), Box<dyn std::error::Error>> {
                 status::Format::Default
             };
             status::run(&cwd, format)?;
+        }
+        Command::Lock { paths, remote, json } => {
+            let opts = lock::LockOptions { remote, json };
+            let ok = lock::lock(&cwd, &paths, &opts)?;
+            if !ok {
+                return Err("one or more locks failed".into());
+            }
+        }
+        Command::Locks { remote, path, id, limit, verify, json } => {
+            let opts = lock::LocksOptions {
+                remote,
+                path,
+                id,
+                limit,
+                verify,
+                json,
+            };
+            lock::locks(&cwd, &opts)?;
+        }
+        Command::Unlock { paths, id, force, remote, json } => {
+            let opts = lock::UnlockOptions {
+                remote,
+                id,
+                force,
+                json,
+            };
+            let ok = lock::unlock(&cwd, &paths, &opts)?;
+            if !ok {
+                return Err("one or more unlocks failed".into());
+            }
         }
         Command::LsFiles {
             refspec,

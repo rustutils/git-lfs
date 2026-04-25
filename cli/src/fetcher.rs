@@ -110,11 +110,18 @@ fn build_transfer(
     store: &Store,
     remote: Option<&str>,
 ) -> Result<Transfer, String> {
+    let api = build_api_client(cwd, remote)?;
+    Ok(Transfer::new(api, store.clone(), TransferConfig::default()))
+}
+
+/// Build an [`ApiClient`] for `cwd`+`remote` with our standard credential
+/// helper chain attached. Used both by [`LfsFetcher`] (for transfers) and
+/// by the locking commands (no transfers, just JSON requests).
+pub fn build_api_client(cwd: &Path, remote: Option<&str>) -> Result<ApiClient, String> {
     let endpoint = git_lfs_git::endpoint_for_remote(cwd, remote)
         .map_err(|e| format!("resolving LFS endpoint: {e}"))?;
     let url = url::Url::parse(&endpoint).map_err(|e| format!("invalid LFS endpoint: {e}"))?;
-    let api = ApiClient::new(url, Auth::None).with_credential_helper(default_helper_chain());
-    Ok(Transfer::new(api, store.clone(), TransferConfig::default()))
+    Ok(ApiClient::new(url, Auth::None).with_credential_helper(default_helper_chain()))
 }
 
 /// Default credential resolution chain: in-process cache → `git credential`.

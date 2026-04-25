@@ -1649,3 +1649,337 @@ fn ls_files_marker_star_when_real_content_present_at_right_size() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains(" * x.bin"), "expected `*` marker, got: {stdout}");
 }
+
+// ---------- lock / locks / unlock ----------------------------------------
+//
+// All three speak the locking JSON API; we wiremock the server side and
+// assert on what the binary prints + which endpoints it hits. Each test
+// uses `lfs.url` pointed at the mock so the endpoint resolver doesn't
+// need a real remote.
+
+/// Create a fresh repo + configure `lfs.url` to point at the mock.
+async fn lock_test_repo(server_uri: &str) -> TempDir {
+    let repo = fresh_repo_with_identity();
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(repo.path())
+        .args(["config", "--local", "lfs.url", server_uri])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    repo
+}
+
+#[tokio::test]
+async fn lock_creates_lock_and_prints_locked_message() {
+    use serde_json::json;
+    use wiremock::matchers::{method as m_method, path as m_path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(m_method("POST"))
+        .and(m_path("/locks"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "lock": {
+                "id": "lock-id-1",
+                "path": "data.bin",
+                "locked_at": "2026-04-25T12:00:00Z",
+                "owner": { "name": "test" }
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let repo = lock_test_repo(&server.uri()).await;
+    // Need the file to exist so resolve_lock_path doesn't reject it.
+    std::fs::write(repo.path().join("data.bin"), b"x").unwrap();
+
+    let path = repo.path().to_owned();
+    let out = tokio::task::spawn_blocking(move || run_in(&path, &["lock", "data.bin"], b""))
+        .await
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "lock failed: {}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(stdout.trim_end(), "Locked data.bin");
+}
+
+#[tokio::test]
+async fn lock_conflict_surfaces_existing_owner() {
+    use serde_json::json;
+    use wiremock::matchers::{method as m_method, path as m_path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(m_method("POST"))
+        .and(m_path("/locks"))
+        .respond_with(ResponseTemplate::new(409).set_body_json(json!({
+            "lock": {
+                "id": "existing",
+                "path": "data.bin",
+                "locked_at": "2026-04-25T12:00:00Z",
+                "owner": { "name": "alice" }
+            },
+            "message": "already created lock"
+        })))
+        .mount(&server)
+        .await;
+
+    let repo = lock_test_repo(&server.uri()).await;
+    std::fs::write(repo.path().join("data.bin"), b"x").unwrap();
+
+    let path = repo.path().to_owned();
+    let out = tokio::task::spawn_blocking(move || run_in(&path, &["lock", "data.bin"], b""))
+        .await
+        .unwrap();
+    // Conflict makes the command fail.
+    assert!(!out.status.success(), "expected conflict to fail");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("already created lock"), "{stderr}");
+    assert!(stderr.contains("alice"), "should name conflict owner: {stderr}");
+}
+
+#[tokio::test]
+async fn lock_json_emits_array_of_locks() {
+    use serde_json::json;
+    use wiremock::matchers::{method as m_method, path as m_path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(m_method("POST"))
+        .and(m_path("/locks"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "lock": {
+                "id": "json-lock",
+                "path": "x.bin",
+                "locked_at": "2026-04-25T12:00:00Z",
+                "owner": { "name": "test" }
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let repo = lock_test_repo(&server.uri()).await;
+    std::fs::write(repo.path().join("x.bin"), b"x").unwrap();
+
+    let path = repo.path().to_owned();
+    let out = tokio::task::spawn_blocking(move || run_in(&path, &["lock", "x.bin", "--json"], b""))
+        .await
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("valid JSON");
+    let arr = v.as_array().expect("array");
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["id"], "json-lock");
+    assert_eq!(arr[0]["path"], "x.bin");
+}
+
+#[tokio::test]
+async fn locks_lists_and_paginates_via_cursor() {
+    use serde_json::json;
+    use wiremock::matchers::{method as m_method, path as m_path, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+
+    // Page 1: returns one lock + a next cursor.
+    Mock::given(m_method("GET"))
+        .and(m_path("/locks"))
+        .and(query_param_absent("cursor"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "locks": [
+                { "id": "id-a", "path": "a.bin", "locked_at": "2026-04-25T12:00:00Z",
+                  "owner": { "name": "alice" } }
+            ],
+            "next_cursor": "page2"
+        })))
+        .mount(&server)
+        .await;
+
+    // Page 2: returns the second lock + no next cursor.
+    Mock::given(m_method("GET"))
+        .and(m_path("/locks"))
+        .and(query_param("cursor", "page2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "locks": [
+                { "id": "id-b", "path": "b.bin", "locked_at": "2026-04-25T12:00:00Z",
+                  "owner": { "name": "bob" } }
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    let repo = lock_test_repo(&server.uri()).await;
+    let path = repo.path().to_owned();
+    let out = tokio::task::spawn_blocking(move || run_in(&path, &["locks"], b""))
+        .await
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("a.bin"), "page 1 missing: {stdout}");
+    assert!(stdout.contains("b.bin"), "page 2 missing: {stdout}");
+    assert!(stdout.contains("ID:id-a"), "{stdout}");
+    assert!(stdout.contains("ID:id-b"), "{stdout}");
+}
+
+/// `wiremock` does not provide a built-in matcher for "query param absent",
+/// so we build one. Used by the pagination test to ensure page 1 is the
+/// request without a `cursor` parameter.
+fn query_param_absent(name: &'static str) -> impl wiremock::Match {
+    struct Absent(&'static str);
+    impl wiremock::Match for Absent {
+        fn matches(&self, req: &wiremock::Request) -> bool {
+            !req.url
+                .query_pairs()
+                .any(|(k, _)| k == self.0)
+        }
+    }
+    Absent(name)
+}
+
+#[tokio::test]
+async fn locks_verify_prefixes_owned_with_capital_o() {
+    use serde_json::json;
+    use wiremock::matchers::{method as m_method, path as m_path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(m_method("POST"))
+        .and(m_path("/locks/verify"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ours": [
+                { "id": "mine", "path": "mine.bin", "locked_at": "2026-04-25T12:00:00Z",
+                  "owner": { "name": "me" } }
+            ],
+            "theirs": [
+                { "id": "theirs", "path": "their.bin", "locked_at": "2026-04-25T12:00:00Z",
+                  "owner": { "name": "them" } }
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    let repo = lock_test_repo(&server.uri()).await;
+    let path = repo.path().to_owned();
+    let out = tokio::task::spawn_blocking(move || run_in(&path, &["locks", "--verify"], b""))
+        .await
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // Owned line starts with "O ", others with two spaces.
+    let mine_line = stdout.lines().find(|l| l.contains("mine.bin")).expect("mine line");
+    let their_line = stdout.lines().find(|l| l.contains("their.bin")).expect("their line");
+    assert!(mine_line.starts_with("O "), "expected `O ` prefix on owned: {mine_line:?}");
+    assert!(their_line.starts_with("  "), "expected `  ` prefix on others: {their_line:?}");
+}
+
+#[tokio::test]
+async fn unlock_by_id_calls_delete_and_prints_message() {
+    use serde_json::json;
+    use wiremock::matchers::{method as m_method, path as m_path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(m_method("POST"))
+        .and(m_path("/locks/abc123/unlock"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "lock": {
+                "id": "abc123",
+                "path": "data.bin",
+                "locked_at": "2026-04-25T12:00:00Z",
+                "owner": { "name": "test" }
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let repo = lock_test_repo(&server.uri()).await;
+    let path = repo.path().to_owned();
+    let out = tokio::task::spawn_blocking(move || {
+        run_in(&path, &["unlock", "--id", "abc123"], b"")
+    })
+    .await
+    .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Unlocked Lock abc123"), "{stdout}");
+}
+
+#[tokio::test]
+async fn unlock_by_path_looks_up_id_then_deletes() {
+    use serde_json::json;
+    use wiremock::matchers::{method as m_method, path as m_path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    // Path → id lookup.
+    Mock::given(m_method("GET"))
+        .and(m_path("/locks"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "locks": [
+                { "id": "by-path-id", "path": "data.bin",
+                  "locked_at": "2026-04-25T12:00:00Z", "owner": { "name": "test" } }
+            ]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(m_method("POST"))
+        .and(m_path("/locks/by-path-id/unlock"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "lock": {
+                "id": "by-path-id", "path": "data.bin",
+                "locked_at": "2026-04-25T12:00:00Z", "owner": { "name": "test" }
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let repo = lock_test_repo(&server.uri()).await;
+    std::fs::write(repo.path().join("data.bin"), b"x").unwrap();
+
+    let path = repo.path().to_owned();
+    let out = tokio::task::spawn_blocking(move || run_in(&path, &["unlock", "data.bin"], b""))
+        .await
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Unlocked data.bin"), "{stdout}");
+}
+
+#[tokio::test]
+async fn unlock_by_path_when_not_locked_fails() {
+    use serde_json::json;
+    use wiremock::matchers::{method as m_method, path as m_path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    // List returns no matches for the path.
+    Mock::given(m_method("GET"))
+        .and(m_path("/locks"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"locks": []})))
+        .mount(&server)
+        .await;
+
+    let repo = lock_test_repo(&server.uri()).await;
+    std::fs::write(repo.path().join("data.bin"), b"x").unwrap();
+
+    let path = repo.path().to_owned();
+    let out = tokio::task::spawn_blocking(move || run_in(&path, &["unlock", "data.bin"], b""))
+        .await
+        .unwrap();
+    assert!(!out.status.success(), "expected failure when path not locked");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("not locked"), "{stderr}");
+}
+
+#[test]
+fn unlock_requires_either_id_or_path() {
+    let repo = fresh_repo_with_identity();
+    let out = run_in(repo.path(), &["unlock"], b"");
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("--id or a set of paths"), "{stderr}");
+}
