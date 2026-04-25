@@ -36,6 +36,10 @@ pub struct PointerEntry {
     /// Useful for progress display ("downloading foo/bar.bin"); not the
     /// authoritative source — caller should not rely on it for routing.
     pub path: Option<PathBuf>,
+    /// `true` if the pointer's source bytes were byte-canonical. Used by
+    /// `git lfs fsck --pointers` to flag pointers that parse but don't
+    /// match the canonical encoding.
+    pub canonical: bool,
 }
 
 /// Walk history reachable from `include` minus `exclude`, return unique
@@ -87,6 +91,7 @@ pub fn scan_pointers(
                 oid: pointer.oid,
                 size: pointer.size,
                 path: name.map(PathBuf::from),
+                canonical: pointer.canonical,
             });
         }
     }
@@ -160,6 +165,7 @@ pub fn scan_tree(cwd: &Path, reference: &str) -> Result<Vec<PointerEntry>, Error
             oid: pointer.oid,
             size: pointer.size,
             path: Some(PathBuf::from(path)),
+            canonical: pointer.canonical,
         });
     }
     Ok(entries)

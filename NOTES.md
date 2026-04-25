@@ -383,6 +383,23 @@ missing** and **why it was OK to skip for v0**.
   computing relative paths so the displayed paths look right when the
   user `cd`'d via a symlink. We just print repo-relative paths.
 
+### `cli fsck`
+- **`<a>..<b>` range form.** Upstream parses a single arg as either a
+  ref (e.g. `HEAD`) or a range (e.g. `main..HEAD`); we only accept a
+  single ref. Wire the splitter once we have a range parser worth
+  reusing.
+- **Index scanning when invoked bare.** With no args, upstream scans
+  HEAD's history *and* the index (so newly-staged-but-uncommitted
+  pointers fail fsck if their object isn't in the store). We only
+  scan the named ref's history. Implementation: pair our scan with a
+  `git ls-files -s` index walk.
+- **`unexpectedGitObject` detection.** Upstream's `--pointers` mode
+  flags blobs that *should* be pointers (per `.gitattributes`) but
+  don't parse. Needs gitattribute walking we haven't ported.
+- **`lfs.fetchexclude` honor.** Skip pointers whose paths match the
+  configured exclude pattern, otherwise users who fetched a subset
+  see false-positive "missing" reports.
+
 ### `cli pointer`
 - **`--no-extensions`.** Skipped because we don't honor pointer
   extensions on the clean path either; once `lfs.extension.<n>.*`
@@ -395,7 +412,7 @@ missing** and **why it was OK to skip for v0**.
   worth flagging.
 
 ### Whole-project
-- **Remaining commands** — `checkout`, `prune`, `fsck`, `migrate` (the
-  big one — history rewriting), post-checkout / post-commit /
-  post-merge hooks, `merge-driver`, `dedup`, `ext`, `standalone-file`,
-  `logs`, `update`.
+- **Remaining commands** — `checkout`, `prune`, `migrate` (the big one
+  — history rewriting), post-checkout / post-commit / post-merge
+  hooks, `merge-driver`, `dedup`, `ext`, `standalone-file`, `logs`,
+  `update`.

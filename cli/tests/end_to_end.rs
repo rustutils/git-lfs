@@ -1650,6 +1650,161 @@ fn ls_files_marker_star_when_real_content_present_at_right_size() {
     assert!(stdout.contains(" * x.bin"), "expected `*` marker, got: {stdout}");
 }
 
+// ---------- fsck ---------------------------------------------------------
+
+/// Helper: write the LFS object for `content` directly into a repo's
+/// store, sharded under `.git/lfs/objects/<aa>/<bb>/<oid>`. Sidesteps
+/// having to wire the clean filter just to populate test fixtures.
+fn put_object_in_store(repo: &Path, content: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let oid_bytes: [u8; 32] = Sha256::digest(content).into();
+    let oid = oid_bytes.iter().fold(String::new(), |mut s, b| {
+        use std::fmt::Write;
+        let _ = write!(s, "{b:02x}");
+        s
+    });
+    let dir = repo.join(".git/lfs/objects").join(&oid[0..2]).join(&oid[2..4]);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(&oid), content).unwrap();
+    oid
+}
+
+#[test]
+fn fsck_reports_ok_when_pointers_match_store() {
+    let repo = fresh_repo_with_identity();
+    let oid = put_object_in_store(repo.path(), b"hello world\n");
+    commit_pointer_at(repo.path(), "x.bin", &pointer_text(&oid, 12));
+
+    let out = run_in(repo.path(), &["fsck"], b"");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Git LFS fsck OK"), "{stdout}");
+}
+
+#[test]
+fn fsck_reports_missing_object_and_exits_one() {
+    let repo = fresh_repo_with_identity();
+    // Pointer references an OID we never put in the store.
+    commit_pointer_at(
+        repo.path(),
+        "missing.bin",
+        &pointer_text(HELLO_OID, HELLO_LEN),
+    );
+
+    let out = run_in(repo.path(), &["fsck", "--dry-run"], b"");
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("openError"), "expected openError, got: {stdout}");
+    assert!(stdout.contains("missing.bin"), "{stdout}");
+}
+
+#[test]
+fn fsck_reports_corrupt_object_and_quarantines_it() {
+    let repo = fresh_repo_with_identity();
+    // Put an object whose contents don't match its filename's OID.
+    let claimed_oid = HELLO_OID; // OID of "hello world\n"
+    let dir = repo
+        .path()
+        .join(".git/lfs/objects")
+        .join(&claimed_oid[0..2])
+        .join(&claimed_oid[2..4]);
+    std::fs::create_dir_all(&dir).unwrap();
+    // Wrong content — would hash to something else entirely.
+    std::fs::write(dir.join(claimed_oid), b"wrong content").unwrap();
+
+    commit_pointer_at(
+        repo.path(),
+        "tamper.bin",
+        &pointer_text(claimed_oid, HELLO_LEN),
+    );
+
+    let out = run_in(repo.path(), &["fsck"], b"");
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("corruptObject"), "{stdout}");
+    assert!(stdout.contains("moving corrupt objects"), "{stdout}");
+    // Quarantined file lives at .git/lfs/bad/<oid>.
+    let bad = repo.path().join(".git/lfs/bad").join(claimed_oid);
+    assert!(bad.is_file(), "expected quarantined file at {bad:?}");
+    // Original location is gone.
+    assert!(!dir.join(claimed_oid).exists(), "store still has corrupt file");
+}
+
+#[test]
+fn fsck_dry_run_does_not_quarantine() {
+    let repo = fresh_repo_with_identity();
+    let claimed_oid = HELLO_OID;
+    let dir = repo
+        .path()
+        .join(".git/lfs/objects")
+        .join(&claimed_oid[0..2])
+        .join(&claimed_oid[2..4]);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(claimed_oid), b"wrong content").unwrap();
+    commit_pointer_at(
+        repo.path(),
+        "tamper.bin",
+        &pointer_text(claimed_oid, HELLO_LEN),
+    );
+
+    let out = run_in(repo.path(), &["fsck", "--dry-run"], b"");
+    assert_eq!(out.status.code(), Some(1));
+    // File is still in the store (not quarantined).
+    assert!(dir.join(claimed_oid).is_file(), "dry-run should not move files");
+    // No bad/ directory created at all.
+    assert!(!repo.path().join(".git/lfs/bad").exists());
+}
+
+#[test]
+fn fsck_pointers_only_skips_object_check() {
+    // A pointer that references a missing object would normally fail
+    // `--objects`; with `--pointers` only, we ignore that and only
+    // report non-canonical pointers.
+    let repo = fresh_repo_with_identity();
+    commit_pointer_at(
+        repo.path(),
+        "missing.bin",
+        &pointer_text(HELLO_OID, HELLO_LEN),
+    );
+
+    let out = run_in(repo.path(), &["fsck", "--pointers"], b"");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Git LFS fsck OK"), "{stdout}");
+}
+
+#[test]
+fn fsck_pointers_flags_non_canonical_pointer() {
+    let repo = fresh_repo_with_identity();
+    // Pointer with no trailing newline — parses, isn't canonical.
+    let mut p = pointer_text(HELLO_OID, HELLO_LEN);
+    assert_eq!(p.last(), Some(&b'\n'));
+    p.pop();
+    commit_pointer_at(repo.path(), "non.bin", &p);
+
+    let out = run_in(repo.path(), &["fsck", "--pointers"], b"");
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("nonCanonicalPointer"), "{stdout}");
+    assert!(stdout.contains("non.bin"), "{stdout}");
+}
+
+#[test]
+fn fsck_objects_only_skips_pointer_canonicality_check() {
+    // A non-canonical pointer should NOT fail --objects; the missing
+    // object it references should.
+    let repo = fresh_repo_with_identity();
+    let mut p = pointer_text(HELLO_OID, HELLO_LEN);
+    p.pop(); // strip trailing newline → non-canonical
+    commit_pointer_at(repo.path(), "non.bin", &p);
+
+    let out = run_in(repo.path(), &["fsck", "--objects", "--dry-run"], b"");
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("openError"), "expected openError: {stdout}");
+    assert!(!stdout.contains("nonCanonicalPointer"), "should skip canonical check: {stdout}");
+}
+
 // ---------- version ------------------------------------------------------
 
 #[test]

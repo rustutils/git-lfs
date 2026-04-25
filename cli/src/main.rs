@@ -10,6 +10,7 @@ use git_lfs_store::Store;
 mod env;
 mod fetch;
 mod fetcher;
+mod fsck;
 mod install;
 mod lock;
 mod ls_files;
@@ -144,6 +145,21 @@ enum Command {
     /// Show the LFS environment: version, endpoints, on-disk paths, and
     /// the three `filter.lfs.*` config values.
     Env,
+    /// Check the integrity of LFS objects and pointers reachable from
+    /// `<refspec>` (default: HEAD). Exit 1 if anything is corrupt.
+    Fsck {
+        /// Ref to scan. Defaults to HEAD.
+        refspec: Option<String>,
+        /// Only check objects (verify store contents match pointer OIDs).
+        #[arg(long)]
+        objects: bool,
+        /// Only check pointers (flag non-canonical pointer encodings).
+        #[arg(long)]
+        pointers: bool,
+        /// Report problems but don't move corrupt objects to `<lfs>/bad/`.
+        #[arg(short, long)]
+        dry_run: bool,
+    },
     /// Show staged + unstaged changes, classifying each blob as LFS,
     /// Git, or working-tree File.
     Status {
@@ -351,6 +367,16 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
         }
         Command::Env => {
             env::run(&cwd)?;
+        }
+        Command::Fsck { refspec, objects, pointers, dry_run } => {
+            let mode = match (objects, pointers) {
+                (true, false) => fsck::Mode::Objects,
+                (false, true) => fsck::Mode::Pointers,
+                _ => fsck::Mode::Both,
+            };
+            let opts = fsck::Options { mode, dry_run };
+            let code = fsck::run(&cwd, refspec.as_deref(), &opts)?;
+            return Ok(code as u8);
         }
         Command::Status { porcelain, json } => {
             let format = if json {
