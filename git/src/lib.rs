@@ -9,6 +9,7 @@ use std::process::Command;
 
 pub mod cat_file;
 pub mod config;
+pub mod diff_index;
 pub mod endpoint;
 pub mod path;
 pub mod pktline;
@@ -17,10 +18,11 @@ pub mod scanner;
 
 pub use cat_file::{BlobContent, CatFileBatch, CatFileBatchCheck, CatFileHeader};
 pub use config::ConfigScope;
+pub use diff_index::{DiffEntry, diff_index};
 pub use endpoint::{EndpointError, derive_lfs_url, endpoint_for_remote};
 pub use path::{git_dir, lfs_dir};
 pub use rev_list::{RevListEntry, rev_list};
-pub use scanner::{PointerEntry, scan_pointers};
+pub use scanner::{PointerEntry, scan_pointers, scan_tree};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

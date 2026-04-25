@@ -1330,3 +1330,322 @@ async fn push_handles_server_already_has_object() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("1 succeeded, 0 failed"), "unexpected stdout: {stdout}");
 }
+
+// ---------- ls-files -----------------------------------------------------
+
+/// SHA-256 of `b"hello world\n"` — used in several ls-files / status tests
+/// because it's also what `clean` produces for that content, so we can
+/// cross-check the marker logic against a real store entry.
+const HELLO_OID: &str = "a948904f2f0f479b8f8197694b30184b0d2ed1c1cd2a1ec0fb85d299a192a447";
+const HELLO_LEN: usize = 12;
+
+#[test]
+fn ls_files_lists_committed_pointer_with_short_oid_and_marker() {
+    let repo = fresh_repo_with_identity();
+    let p = pointer_text(HELLO_OID, HELLO_LEN);
+    commit_pointer_at(repo.path(), "big.bin", &p);
+
+    let out = run_in(repo.path(), &["ls-files"], b"");
+    assert!(out.status.success(), "ls-files failed: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // Format: "<oid10> <marker> <name>". File is on disk at `big.bin` —
+    // but it's a *pointer*, not the real 12-byte content, so the marker
+    // is `-` (size mismatch).
+    assert_eq!(stdout.trim(), format!("{} - big.bin", &HELLO_OID[..10]), "got: {stdout:?}");
+}
+
+#[test]
+fn ls_files_long_emits_full_oid() {
+    let repo = fresh_repo_with_identity();
+    commit_pointer_at(repo.path(), "big.bin", &pointer_text(HELLO_OID, HELLO_LEN));
+
+    let out = run_in(repo.path(), &["ls-files", "--long"], b"");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains(HELLO_OID), "long form should contain full OID: {stdout}");
+}
+
+#[test]
+fn ls_files_name_only_emits_just_path() {
+    let repo = fresh_repo_with_identity();
+    std::fs::create_dir_all(repo.path().join("data")).unwrap();
+    commit_pointer_at(repo.path(), "data/blob.bin", &pointer_text(HELLO_OID, HELLO_LEN));
+
+    let out = run_in(repo.path(), &["ls-files", "--name-only"], b"");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(stdout.trim(), "data/blob.bin");
+}
+
+#[test]
+fn ls_files_size_appends_humanized_bytes() {
+    let repo = fresh_repo_with_identity();
+    commit_pointer_at(repo.path(), "big.bin", &pointer_text(HELLO_OID, 1_572_864));
+
+    let out = run_in(repo.path(), &["ls-files", "--size"], b"");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // 1.5 MiB → "1.50 MB" with our humanizer.
+    assert!(stdout.contains("(1.50 MB)"), "expected size suffix, got: {stdout}");
+}
+
+#[test]
+fn ls_files_skips_plain_blobs() {
+    let repo = fresh_repo_with_identity();
+    std::fs::write(repo.path().join("plain.txt"), b"just text").unwrap();
+    git_in(repo.path(), &["add", "plain.txt"]);
+    git_in(repo.path(), &["commit", "-q", "-m", "plain"]);
+
+    let out = run_in(repo.path(), &["ls-files"], b"");
+    assert!(out.status.success());
+    assert!(out.stdout.is_empty(), "expected empty output, got: {:?}", String::from_utf8_lossy(&out.stdout));
+}
+
+#[test]
+fn ls_files_empty_repo_prints_nothing() {
+    // No commits yet — must not panic, must succeed silently.
+    let repo = fresh_repo_with_identity();
+    let out = run_in(repo.path(), &["ls-files"], b"");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(out.stdout.is_empty());
+}
+
+#[test]
+fn ls_files_explicit_ref_walks_that_tree() {
+    let repo = fresh_repo_with_identity();
+    commit_pointer_at(repo.path(), "first.bin", &pointer_text(HELLO_OID, HELLO_LEN));
+    let first = head_oid_str(repo.path());
+    // Second commit replaces the pointer with plain content.
+    std::fs::write(repo.path().join("first.bin"), b"plain text now").unwrap();
+    git_in(repo.path(), &["add", "first.bin"]);
+    git_in(repo.path(), &["commit", "-q", "-m", "overwrite"]);
+
+    // At HEAD, no pointers visible.
+    let head_out = run_in(repo.path(), &["ls-files"], b"");
+    assert!(head_out.stdout.is_empty(), "{:?}", String::from_utf8_lossy(&head_out.stdout));
+
+    // At the older commit, the pointer is visible.
+    let old_out = run_in(repo.path(), &["ls-files", &first], b"");
+    let stdout = String::from_utf8_lossy(&old_out.stdout);
+    assert!(stdout.contains("first.bin"), "expected first.bin in output, got: {stdout}");
+}
+
+#[test]
+fn ls_files_all_walks_history_across_refs() {
+    let repo = fresh_repo_with_identity();
+    commit_pointer_at(repo.path(), "first.bin", &pointer_text(HELLO_OID, HELLO_LEN));
+    // Replace with plain content. Without --all, ls-files (HEAD tree)
+    // would no longer see the pointer.
+    std::fs::write(repo.path().join("first.bin"), b"plain text").unwrap();
+    git_in(repo.path(), &["add", "first.bin"]);
+    git_in(repo.path(), &["commit", "-q", "-m", "overwrite"]);
+
+    let out = run_in(repo.path(), &["ls-files", "--all"], b"");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains(&HELLO_OID[..10]), "--all should resurrect historical pointer: {stdout}");
+}
+
+#[test]
+fn ls_files_json_is_parseable_and_complete() {
+    let repo = fresh_repo_with_identity();
+    commit_pointer_at(repo.path(), "x.bin", &pointer_text(HELLO_OID, HELLO_LEN));
+
+    let out = run_in(repo.path(), &["ls-files", "--json"], b"");
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("valid JSON");
+    let files = v["files"].as_array().expect("files array");
+    assert_eq!(files.len(), 1);
+    let f = &files[0];
+    assert_eq!(f["name"], "x.bin");
+    assert_eq!(f["size"], HELLO_LEN);
+    assert_eq!(f["oid"], HELLO_OID);
+    assert_eq!(f["oid_type"], "sha256");
+    assert_eq!(f["version"], "https://git-lfs.github.com/spec/v1");
+    assert_eq!(f["checkout"], false);
+    assert_eq!(f["downloaded"], false);
+}
+
+#[test]
+fn ls_files_debug_emits_per_file_block() {
+    let repo = fresh_repo_with_identity();
+    commit_pointer_at(repo.path(), "x.bin", &pointer_text(HELLO_OID, HELLO_LEN));
+
+    let out = run_in(repo.path(), &["ls-files", "--debug"], b"");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("filepath: x.bin"), "{stdout}");
+    assert!(stdout.contains(&format!("size: {HELLO_LEN}")), "{stdout}");
+    assert!(stdout.contains("oid: sha256 "), "{stdout}");
+    assert!(stdout.contains("version: https://git-lfs.github.com/spec/v1"), "{stdout}");
+}
+
+// ---------- status -------------------------------------------------------
+
+#[test]
+fn status_default_lists_staged_and_unstaged_lfs_changes() {
+    let repo = fresh_repo_with_identity();
+    // Commit a pointer at HEAD so we have something to diff against.
+    commit_pointer_at(repo.path(), "x.bin", &pointer_text(HELLO_OID, HELLO_LEN));
+
+    // Stage a modification: new pointer pointing at a different OID.
+    let other_oid = "1111111111111111111111111111111111111111111111111111111111111111";
+    std::fs::write(repo.path().join("x.bin"), pointer_text(other_oid, 99)).unwrap();
+    git_in(repo.path(), &["add", "x.bin"]);
+
+    // Then make an *additional* unstaged modification on top.
+    std::fs::write(repo.path().join("x.bin"), pointer_text(other_oid, 12345)).unwrap();
+
+    let out = run_in(repo.path(), &["status"], b"");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("On branch "), "{stdout}");
+    assert!(stdout.contains("Objects to be committed:"), "{stdout}");
+    assert!(stdout.contains("Objects not staged for commit:"), "{stdout}");
+    assert!(stdout.contains("x.bin"), "{stdout}");
+    assert!(stdout.contains("LFS:"), "expected LFS classification: {stdout}");
+}
+
+#[test]
+fn status_classifies_non_lfs_blob_as_git() {
+    let repo = fresh_repo_with_identity();
+    // Plain (non-pointer) blob, modified+staged.
+    std::fs::write(repo.path().join("plain.txt"), b"first\n").unwrap();
+    git_in(repo.path(), &["add", "plain.txt"]);
+    git_in(repo.path(), &["commit", "-q", "-m", "add plain"]);
+
+    std::fs::write(repo.path().join("plain.txt"), b"second\n").unwrap();
+    git_in(repo.path(), &["add", "plain.txt"]);
+
+    let out = run_in(repo.path(), &["status"], b"");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("plain.txt"), "{stdout}");
+    assert!(stdout.contains("Git:"), "expected Git classification, got: {stdout}");
+    assert!(!stdout.contains("LFS:"), "non-pointer should not be LFS: {stdout}");
+}
+
+#[test]
+fn status_porcelain_one_line_per_change() {
+    let repo = fresh_repo_with_identity();
+    commit_pointer_at(repo.path(), "x.bin", &pointer_text(HELLO_OID, HELLO_LEN));
+    let other = "1111111111111111111111111111111111111111111111111111111111111111";
+    std::fs::write(repo.path().join("x.bin"), pointer_text(other, 99)).unwrap();
+    git_in(repo.path(), &["add", "x.bin"]);
+
+    let out = run_in(repo.path(), &["status", "--porcelain"], b"");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // 'M' modification → " M x.bin" (leading space, single-letter status).
+    // trim_end keeps the leading space, which is significant.
+    assert_eq!(stdout.trim_end(), " M x.bin", "got: {stdout:?}");
+}
+
+#[test]
+fn status_json_only_emits_lfs_entries() {
+    let repo = fresh_repo_with_identity();
+    // Two committed files: one LFS pointer, one plain.
+    commit_pointer_at(repo.path(), "p.bin", &pointer_text(HELLO_OID, HELLO_LEN));
+    std::fs::write(repo.path().join("plain.txt"), b"first\n").unwrap();
+    git_in(repo.path(), &["add", "plain.txt"]);
+    git_in(repo.path(), &["commit", "-q", "-m", "add plain"]);
+
+    // Stage a modification to BOTH.
+    let other = "2222222222222222222222222222222222222222222222222222222222222222";
+    std::fs::write(repo.path().join("p.bin"), pointer_text(other, 99)).unwrap();
+    std::fs::write(repo.path().join("plain.txt"), b"second\n").unwrap();
+    git_in(repo.path(), &["add", "p.bin", "plain.txt"]);
+
+    let out = run_in(repo.path(), &["status", "--json"], b"");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("valid JSON");
+    let files = v["files"].as_object().expect("files object");
+    // Only the LFS file should appear.
+    assert!(files.contains_key("p.bin"), "missing p.bin: {v}");
+    assert!(!files.contains_key("plain.txt"), "plain.txt leaked into JSON: {v}");
+    assert_eq!(files["p.bin"]["status"], "M");
+}
+
+#[test]
+fn status_empty_repo_says_no_commits() {
+    let repo = fresh_repo_with_identity();
+    let out = run_in(repo.path(), &["status"], b"");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("No commits yet"), "{stdout}");
+}
+
+#[test]
+fn status_handles_addition_with_zero_src_sha() {
+    // Stage a brand-new pointer file. Diff-index will report src_sha as
+    // zero; status must classify the dst side and not crash on the
+    // "from" lookup.
+    let repo = fresh_repo_with_identity();
+    // Need an initial commit so diff-index has a HEAD to compare against.
+    std::fs::write(repo.path().join("seed"), b"x").unwrap();
+    git_in(repo.path(), &["add", "seed"]);
+    git_in(repo.path(), &["commit", "-q", "-m", "seed"]);
+
+    std::fs::write(repo.path().join("new.bin"), pointer_text(HELLO_OID, HELLO_LEN)).unwrap();
+    git_in(repo.path(), &["add", "new.bin"]);
+
+    let out = run_in(repo.path(), &["status"], b"");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("new.bin"), "{stdout}");
+    assert!(stdout.contains("LFS:"), "{stdout}");
+}
+
+// ---------- env ----------------------------------------------------------
+
+#[test]
+fn env_in_repo_emits_version_paths_and_filter_config() {
+    let repo = fresh_repo_with_identity();
+    git_in(repo.path(), &["config", "--local", "lfs.url", "https://example.test/lfs"]);
+    // Pretend `git lfs install --local` ran by setting one filter
+    // explicitly — env should reflect it back.
+    git_in(repo.path(), &["config", "--local", "filter.lfs.clean", "git-lfs clean -- %f"]);
+
+    let out = run_in(repo.path(), &["env"], b"");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(stdout.starts_with("git-lfs/"), "missing version banner: {stdout}");
+    assert!(stdout.contains("git version "), "missing git version: {stdout}");
+    assert!(stdout.contains("Endpoint=https://example.test/lfs"), "missing endpoint: {stdout}");
+    assert!(stdout.contains("LocalGitDir="), "missing LocalGitDir: {stdout}");
+    assert!(stdout.contains("LocalMediaDir="), "missing LocalMediaDir: {stdout}");
+    assert!(stdout.contains("TempDir="), "missing TempDir: {stdout}");
+    assert!(
+        stdout.contains(r#"git config filter.lfs.clean = "git-lfs clean -- %f""#),
+        "missing filter config line: {stdout}",
+    );
+}
+
+#[test]
+fn env_outside_repo_skips_repo_specific_lines_and_succeeds() {
+    let tmp = TempDir::new().unwrap();
+    // Note: NOT a git repo. env should still run.
+    let out = run_in(tmp.path(), &["env"], b"");
+    assert!(
+        out.status.success(),
+        "env outside repo should succeed; stderr: {}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("git-lfs/"), "version still expected: {stdout}");
+    // No repo-specific paths; the filter config block still prints
+    // (with empty values) because it's read from global scope.
+    assert!(!stdout.contains("LocalGitDir="), "should not emit LocalGitDir: {stdout}");
+    assert!(stdout.contains("git config filter.lfs.process ="), "{stdout}");
+}
+
+#[test]
+fn ls_files_marker_star_when_real_content_present_at_right_size() {
+    // Simulate "checkout already happened": commit a pointer in git, but
+    // also write the real content (12 bytes of "hello world\n") at the
+    // working-tree path. Then the marker should flip from `-` to `*`.
+    let repo = fresh_repo_with_identity();
+    commit_pointer_at(repo.path(), "x.bin", &pointer_text(HELLO_OID, HELLO_LEN));
+    std::fs::write(repo.path().join("x.bin"), b"hello world\n").unwrap();
+
+    let out = run_in(repo.path(), &["ls-files"], b"");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains(" * x.bin"), "expected `*` marker, got: {stdout}");
+}

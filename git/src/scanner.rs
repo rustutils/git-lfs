@@ -17,6 +17,7 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use git_lfs_pointer::{MAX_POINTER_SIZE, Oid, Pointer};
 
@@ -90,6 +91,78 @@ pub fn scan_pointers(
         }
     }
     Ok(out)
+}
+
+/// Walk the tree at `reference`, returning one entry per LFS pointer blob.
+///
+/// Unlike [`scan_pointers`], this does *not* walk history and does *not*
+/// dedupe by LFS OID — each path in the tree that points at an LFS
+/// pointer becomes its own entry. Multiple paths pointing at the same
+/// LFS object yield multiple entries, with their working-tree paths
+/// preserved. This matches upstream's `ScanTree` semantics, used by
+/// `ls-files` and `status`.
+///
+/// Paths are read from `git ls-tree -r -z` so embedded newlines or
+/// quoting metacharacters round-trip cleanly.
+pub fn scan_tree(cwd: &Path, reference: &str) -> Result<Vec<PointerEntry>, Error> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["ls-tree", "-r", "-z", reference])
+        .output()?;
+    if !out.status.success() {
+        return Err(Error::Failed(format!(
+            "git ls-tree failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+
+    // Phase 1: parse `<mode> <type> <oid>\t<path>` records, keep blobs
+    // small enough to be a pointer.
+    let mut bcheck = CatFileBatchCheck::spawn(cwd)?;
+    let mut candidates: Vec<(String, String)> = Vec::new();
+    for record in out.stdout.split(|&b| b == 0).filter(|s| !s.is_empty()) {
+        let s = std::str::from_utf8(record).map_err(|e| {
+            Error::Failed(format!("ls-tree: non-utf8 record: {e}"))
+        })?;
+        let (header, path) = s
+            .split_once('\t')
+            .ok_or_else(|| Error::Failed(format!("ls-tree: malformed record {s:?}")))?;
+        let mut parts = header.split_whitespace();
+        let _mode = parts.next();
+        let kind = parts.next();
+        let oid = parts
+            .next()
+            .ok_or_else(|| Error::Failed(format!("ls-tree: missing oid in {s:?}")))?;
+        if kind != Some("blob") {
+            continue;
+        }
+        if let CatFileHeader::Found { kind, size, .. } = bcheck.check(oid)?
+            && kind == "blob"
+            && (size as usize) < MAX_POINTER_SIZE
+        {
+            candidates.push((oid.to_owned(), path.to_owned()));
+        }
+    }
+    drop(bcheck);
+
+    // Phase 2: read each candidate blob, parse as pointer, emit one
+    // entry per path. No OID dedup — that's intentional, callers may
+    // want to know every path an object lives at in this tree.
+    let mut batch = CatFileBatch::spawn(cwd)?;
+    let mut entries = Vec::new();
+    for (oid, path) in candidates {
+        let Some(blob) = batch.read(&oid)? else { continue };
+        let Ok(pointer) = Pointer::parse(&blob.content) else {
+            continue;
+        };
+        entries.push(PointerEntry {
+            oid: pointer.oid,
+            size: pointer.size,
+            path: Some(PathBuf::from(path)),
+        });
+    }
+    Ok(entries)
 }
 
 #[cfg(test)]
@@ -189,5 +262,63 @@ mod tests {
 
         let result = scan_pointers(repo.path(), &["HEAD"], &[]).unwrap();
         assert!(result.is_empty(), "{result:?}");
+    }
+
+    #[test]
+    fn scan_tree_returns_only_tree_entries_not_history() {
+        let repo = init_repo();
+        // A pointer that exists historically but is gone at HEAD must
+        // NOT show up in scan_tree (this is the point of the helper —
+        // ls-files should only see what's in the named tree).
+        let pointer = pointer_text(b"deleted later");
+        commit_file(&repo, "x.bin", &pointer);
+        commit_file(&repo, "x.bin", b"plain text now");
+
+        let result = scan_tree(repo.path(), "HEAD").unwrap();
+        assert!(result.is_empty(), "{result:?}");
+    }
+
+    #[test]
+    fn scan_tree_emits_one_entry_per_path_not_per_oid() {
+        let repo = init_repo();
+        // Same pointer at two paths in the current tree → two entries.
+        // (scan_pointers would dedupe to one; scan_tree must not.)
+        let pointer = pointer_text(b"shared payload");
+        commit_file(&repo, "first.bin", &pointer);
+        commit_file(&repo, "second.bin", &pointer);
+
+        let mut result = scan_tree(repo.path(), "HEAD").unwrap();
+        result.sort_by(|a, b| a.path.cmp(&b.path));
+        assert_eq!(result.len(), 2, "{result:?}");
+        assert_eq!(result[0].path.as_deref(), Some(Path::new("first.bin")));
+        assert_eq!(result[1].path.as_deref(), Some(Path::new("second.bin")));
+        // Same OID under both paths.
+        assert_eq!(result[0].oid, result[1].oid);
+    }
+
+    #[test]
+    fn scan_tree_skips_plain_blobs_and_keeps_pointers() {
+        let repo = init_repo();
+        commit_file(&repo, "plain.txt", b"just text");
+        let pointer = pointer_text(b"binary content");
+        commit_file(&repo, "big.bin", &pointer);
+
+        let result = scan_tree(repo.path(), "HEAD").unwrap();
+        assert_eq!(result.len(), 1, "{result:?}");
+        assert_eq!(result[0].path.as_deref(), Some(Path::new("big.bin")));
+    }
+
+    #[test]
+    fn scan_tree_unknown_ref_errors() {
+        let repo = init_repo();
+        commit_file(&repo, "a.txt", b"x");
+        let err = scan_tree(repo.path(), "does-not-exist").unwrap_err();
+        match err {
+            Error::Failed(msg) => assert!(
+                msg.contains("does-not-exist") || msg.contains("Not a valid"),
+                "unexpected message: {msg}"
+            ),
+            _ => panic!("expected Failed, got {err:?}"),
+        }
     }
 }

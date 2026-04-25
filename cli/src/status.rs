@@ -1,0 +1,420 @@
+//! `git lfs status` — show staged + unstaged LFS-tracked changes.
+//!
+//! Output mirrors upstream's three modes:
+//! - default: human-readable, one section per (committed | not staged), each
+//!   line classifying its blobs as LFS / Git / File with a short content-hash
+//!   prefix.
+//! - `--porcelain`: one line per change, deduplicated.
+//! - `--json`: stable structured output for scripts; only LFS entries are
+//!   reported.
+//!
+//! For v0 we omit the "Objects to be pushed to <remote/branch>" section that
+//! upstream prints; that's a separate scan against the upstream tracking ref
+//! and is deferred — see NOTES.md.
+
+use std::collections::HashSet;
+use std::path::Path;
+
+use git_lfs_git::{CatFileBatch, DiffEntry, diff_index};
+use git_lfs_pointer::Pointer;
+use serde::Serialize;
+use sha2::{Digest, Sha256};
+
+#[derive(Debug, thiserror::Error)]
+pub enum StatusError {
+    #[error(transparent)]
+    Git(#[from] git_lfs_git::Error),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error("could not serialize JSON: {0}")]
+    Json(#[from] serde_json::Error),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Format {
+    Default,
+    Porcelain,
+    Json,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BlobKind {
+    Lfs,
+    Git,
+    File,
+}
+
+impl BlobKind {
+    fn label(self) -> &'static str {
+        match self {
+            BlobKind::Lfs => "LFS",
+            BlobKind::Git => "Git",
+            BlobKind::File => "File",
+        }
+    }
+}
+
+/// One blob's classification + a short content-hash prefix for display.
+#[derive(Debug, Clone)]
+struct BlobInfo {
+    kind: BlobKind,
+    /// `Some` with a 7-char hex prefix, or `None` if the file was deleted
+    /// from the working tree (deletion sentinel).
+    sha7: Option<String>,
+}
+
+impl BlobInfo {
+    fn deleted() -> Self {
+        Self { kind: BlobKind::File, sha7: None }
+    }
+}
+
+pub fn run(cwd: &Path, format: Format) -> Result<(), StatusError> {
+    let head = current_head(cwd);
+
+    // Empty repo / no HEAD: nothing to compare against. Print a friendly
+    // line and exit; upstream uses the empty tree here, but our tree
+    // walk wouldn't produce anything useful and the diff-index path
+    // doesn't accept the empty tree on every git version.
+    let Some(refname) = head.as_deref() else {
+        if format == Format::Default {
+            println!("No commits yet.");
+        }
+        return Ok(());
+    };
+
+    let staged = diff_index(cwd, refname, true)?;
+    let combined = diff_index(cwd, refname, false)?;
+    let unstaged = subtract(&combined, &staged);
+
+    match format {
+        Format::Default => emit_default(cwd, refname, &staged, &unstaged),
+        Format::Porcelain => emit_porcelain(&staged, &unstaged),
+        Format::Json => emit_json(cwd, &staged, &unstaged),
+    }
+}
+
+fn emit_default(
+    cwd: &Path,
+    refname: &str,
+    staged: &[DiffEntry],
+    unstaged: &[DiffEntry],
+) -> Result<(), StatusError> {
+    if let Some(branch) = current_branch(cwd) {
+        println!("On branch {branch}");
+    } else {
+        // Detached or otherwise; show the ref we resolved against.
+        println!("HEAD detached at {}", &refname[..refname.len().min(7)]);
+    }
+
+    let mut batch = CatFileBatch::spawn(cwd)?;
+
+    println!();
+    println!("Objects to be committed:");
+    for e in staged {
+        println!("\t{}", format_entry_line(cwd, &mut batch, e)?);
+    }
+
+    println!();
+    println!("Objects not staged for commit:");
+    for e in unstaged {
+        println!("\t{}", format_entry_line(cwd, &mut batch, e)?);
+    }
+    println!();
+    Ok(())
+}
+
+fn format_entry_line(
+    cwd: &Path,
+    batch: &mut CatFileBatch,
+    e: &DiffEntry,
+) -> Result<String, StatusError> {
+    let from = blob_info_from(cwd, batch, e)?;
+    let to = blob_info_to(cwd, batch, e)?;
+
+    let render_from = render_blob(&from);
+    let render_to = render_blob(&to);
+
+    let info = if e.status == 'A' {
+        // For pure additions, the "from" side is empty. Show only the
+        // dst classification, sourced via blob_info_from (which falls
+        // back to dst_sha when src is zero).
+        format!("({render_from})")
+    } else {
+        format!("({render_from} -> {render_to})")
+    };
+
+    let path_part = match e.status {
+        'R' | 'C' => format!(
+            "{} -> {}",
+            e.src_name,
+            e.dst_name.as_deref().unwrap_or(&e.src_name)
+        ),
+        _ => e.src_name.clone(),
+    };
+    Ok(format!("{path_part} {info}"))
+}
+
+fn render_blob(b: &BlobInfo) -> String {
+    match (&b.kind, &b.sha7) {
+        (BlobKind::File, None) => "<deleted>".to_owned(),
+        (kind, Some(sha)) => format!("{}: {sha}", kind.label()),
+        // File with a sha (working-tree contents); fall through to default.
+        (kind, None) => kind.label().to_owned(),
+    }
+}
+
+fn emit_porcelain(staged: &[DiffEntry], unstaged: &[DiffEntry]) -> Result<(), StatusError> {
+    let mut seen: HashSet<String> = HashSet::new();
+    for e in staged.iter().chain(unstaged.iter()) {
+        let name = e.dst_name.as_deref().unwrap_or(&e.src_name).to_owned();
+        if !seen.insert(name) {
+            continue;
+        }
+        println!("{}", porcelain_line(e));
+    }
+    Ok(())
+}
+
+fn porcelain_line(e: &DiffEntry) -> String {
+    match e.status {
+        'R' | 'C' => format!(
+            "{}  {} -> {}",
+            e.status,
+            e.src_name,
+            e.dst_name.as_deref().unwrap_or(&e.src_name)
+        ),
+        'M' => format!(" {} {}", e.status, e.src_name),
+        _ => format!("{}  {}", e.status, e.src_name),
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct JsonOutput {
+    files: std::collections::BTreeMap<String, JsonEntry>,
+}
+
+#[derive(Debug, Serialize)]
+struct JsonEntry {
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    from: Option<String>,
+}
+
+fn emit_json(
+    cwd: &Path,
+    staged: &[DiffEntry],
+    unstaged: &[DiffEntry],
+) -> Result<(), StatusError> {
+    let mut batch = CatFileBatch::spawn(cwd)?;
+    let mut files = std::collections::BTreeMap::new();
+    for e in staged.iter().chain(unstaged.iter()) {
+        // Upstream JSON output only reports LFS-related entries.
+        let from = blob_info_from(cwd, &mut batch, e)?;
+        if from.kind != BlobKind::Lfs {
+            continue;
+        }
+        let key = e.dst_name.as_deref().unwrap_or(&e.src_name).to_owned();
+        let entry = match e.status {
+            'R' | 'C' => JsonEntry {
+                status: e.status.to_string(),
+                from: Some(e.src_name.clone()),
+            },
+            _ => JsonEntry {
+                status: e.status.to_string(),
+                from: None,
+            },
+        };
+        files.insert(key, entry);
+    }
+    println!("{}", serde_json::to_string(&JsonOutput { files })?);
+    Ok(())
+}
+
+/// Subtract `b` from `a` by the (src_sha, dst_sha, name) key upstream
+/// uses. Preserves the order of `a`.
+fn subtract(a: &[DiffEntry], b: &[DiffEntry]) -> Vec<DiffEntry> {
+    let key = |e: &DiffEntry| {
+        format!(
+            "{}:{}:{}",
+            e.src_sha,
+            e.dst_sha,
+            e.dst_name.as_deref().unwrap_or(&e.src_name)
+        )
+    };
+    let exclude: HashSet<String> = b.iter().map(key).collect();
+    a.iter().filter(|e| !exclude.contains(&key(e))).cloned().collect()
+}
+
+fn current_head(cwd: &Path) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["rev-parse", "--verify", "--quiet", "HEAD"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    if s.is_empty() { None } else { Some(s) }
+}
+
+fn current_branch(cwd: &Path) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["symbolic-ref", "--short", "-q", "HEAD"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    if s.is_empty() { None } else { Some(s) }
+}
+
+/// Classify the "from" side of a diff entry. For additions (src zero) we
+/// fall back to the dst sha; this matches upstream so additions report
+/// their content classification on the single line they emit.
+fn blob_info_from(
+    cwd: &Path,
+    batch: &mut CatFileBatch,
+    e: &DiffEntry,
+) -> Result<BlobInfo, StatusError> {
+    let blob_sha = if is_zero_sha(&e.src_sha) {
+        &e.dst_sha
+    } else {
+        &e.src_sha
+    };
+    blob_info(cwd, batch, blob_sha, &e.src_name)
+}
+
+/// Classify the "to" side. Falls back to the working-tree file when
+/// dst_sha is zero (e.g. unstaged modifications, where the new content
+/// isn't yet in any git object).
+fn blob_info_to(
+    cwd: &Path,
+    batch: &mut CatFileBatch,
+    e: &DiffEntry,
+) -> Result<BlobInfo, StatusError> {
+    let name = e.dst_name.as_deref().unwrap_or(&e.src_name);
+    blob_info(cwd, batch, &e.dst_sha, name)
+}
+
+fn blob_info(
+    cwd: &Path,
+    batch: &mut CatFileBatch,
+    sha: &str,
+    name: &str,
+) -> Result<BlobInfo, StatusError> {
+    if !is_zero_sha(sha) {
+        let Some(blob) = batch.read(sha)? else {
+            // Object missing from the repo — shouldn't happen for a
+            // freshly-emitted diff-index sha but be defensive.
+            return Ok(BlobInfo { kind: BlobKind::Git, sha7: Some(short(sha)) });
+        };
+        if let Ok(p) = Pointer::parse(&blob.content) {
+            // Pointer's OID is the LFS content sha; matches what
+            // upstream reports as ContentsSha for pointer blobs.
+            return Ok(BlobInfo {
+                kind: BlobKind::Lfs,
+                sha7: Some(short(&p.oid.to_string())),
+            });
+        }
+        // Non-pointer blob — use sha256 of the blob's bytes for display
+        // so we have something stable that doesn't depend on the git
+        // object hash format (sha1 vs sha256 repos).
+        let mut hasher = Sha256::new();
+        hasher.update(&blob.content);
+        let sha = hex32(hasher.finalize().into());
+        return Ok(BlobInfo { kind: BlobKind::Git, sha7: Some(short(&sha)) });
+    }
+
+    // Zero src/dst sha: read the working-tree file directly.
+    let path = cwd.join(name);
+    match std::fs::read(&path) {
+        Ok(bytes) => {
+            let mut hasher = Sha256::new();
+            hasher.update(&bytes);
+            let sha = hex32(hasher.finalize().into());
+            Ok(BlobInfo { kind: BlobKind::File, sha7: Some(short(&sha)) })
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BlobInfo::deleted()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+fn is_zero_sha(sha: &str) -> bool {
+    sha.bytes().all(|b| b == b'0')
+}
+
+fn short(s: &str) -> String {
+    s.chars().take(7).collect()
+}
+
+fn hex32(bytes: [u8; 32]) -> String {
+    use std::fmt::Write;
+    let mut s = String::with_capacity(64);
+    for b in bytes {
+        let _ = write!(s, "{b:02x}");
+    }
+    s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_zero_sha_handles_lengths() {
+        assert!(is_zero_sha("0000000"));
+        assert!(is_zero_sha("0000000000000000000000000000000000000000"));
+        assert!(!is_zero_sha("0000001"));
+        assert!(!is_zero_sha("abc"));
+    }
+
+    #[test]
+    fn porcelain_modification_has_leading_space() {
+        let e = DiffEntry {
+            src_sha: "a".into(),
+            dst_sha: "b".into(),
+            status: 'M',
+            similarity: None,
+            src_name: "f.txt".into(),
+            dst_name: None,
+        };
+        assert_eq!(porcelain_line(&e), " M f.txt");
+    }
+
+    #[test]
+    fn porcelain_rename_has_two_paths() {
+        let e = DiffEntry {
+            src_sha: "a".into(),
+            dst_sha: "b".into(),
+            status: 'R',
+            similarity: Some(86),
+            src_name: "old".into(),
+            dst_name: Some("new".into()),
+        };
+        assert_eq!(porcelain_line(&e), "R  old -> new");
+    }
+
+    #[test]
+    fn subtract_removes_matching_keys_only() {
+        let mk = |status: char, src: &str| DiffEntry {
+            src_sha: "src".into(),
+            dst_sha: "dst".into(),
+            status,
+            similarity: None,
+            src_name: src.into(),
+            dst_name: None,
+        };
+        let a = vec![mk('M', "a"), mk('M', "b"), mk('M', "c")];
+        let b = vec![mk('M', "b")];
+        let r = subtract(&a, &b);
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[0].src_name, "a");
+        assert_eq!(r[1].src_name, "c");
+    }
+}

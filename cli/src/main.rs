@@ -7,12 +7,15 @@ use git_lfs_filter::{clean, filter_process, smudge_with_fetch};
 use git_lfs_git::ConfigScope;
 use git_lfs_store::Store;
 
+mod env;
 mod fetch;
 mod fetcher;
 mod install;
+mod ls_files;
 mod pre_push;
 mod pull;
 mod push;
+mod status;
 mod track;
 
 use fetcher::LfsFetcher;
@@ -110,6 +113,43 @@ enum Command {
         remote: String,
         /// URL of the remote (informational; we use `lfs.url` config).
         url: Option<String>,
+    },
+    /// Show the LFS environment: version, endpoints, on-disk paths, and
+    /// the three `filter.lfs.*` config values.
+    Env,
+    /// Show staged + unstaged changes, classifying each blob as LFS,
+    /// Git, or working-tree File.
+    Status {
+        /// Stable one-line-per-change format for scripts.
+        #[arg(short, long)]
+        porcelain: bool,
+        /// Stable JSON output for scripts; only LFS entries are reported.
+        #[arg(short, long)]
+        json: bool,
+    },
+    /// List LFS-tracked files visible at a ref (default: HEAD), or across
+    /// all reachable history with `--all`.
+    LsFiles {
+        /// Ref to list. Defaults to HEAD.
+        refspec: Option<String>,
+        /// Show full 64-char OID instead of the 10-char prefix.
+        #[arg(short, long)]
+        long: bool,
+        /// Append humanized size in parens.
+        #[arg(short, long)]
+        size: bool,
+        /// Print only the path.
+        #[arg(short, long)]
+        name_only: bool,
+        /// Walk every reachable ref's full history.
+        #[arg(short, long)]
+        all: bool,
+        /// Multi-line per-file block (size, checkout, download, oid, version).
+        #[arg(short, long)]
+        debug: bool,
+        /// Stable JSON output for scripts.
+        #[arg(short, long)]
+        json: bool,
     },
 }
 
@@ -210,6 +250,44 @@ fn dispatch(cmd: Command) -> Result<(), Box<dyn std::error::Error>> {
                     println!("\"{p}\" already supported");
                 }
             }
+        }
+        Command::Env => {
+            env::run(&cwd)?;
+        }
+        Command::Status { porcelain, json } => {
+            let format = if json {
+                status::Format::Json
+            } else if porcelain {
+                status::Format::Porcelain
+            } else {
+                status::Format::Default
+            };
+            status::run(&cwd, format)?;
+        }
+        Command::LsFiles {
+            refspec,
+            long,
+            size,
+            name_only,
+            all,
+            debug,
+            json,
+        } => {
+            let format = if json {
+                ls_files::Format::Json
+            } else if debug {
+                ls_files::Format::Debug
+            } else {
+                ls_files::Format::Default
+            };
+            let opts = ls_files::Options {
+                long,
+                show_size: size,
+                name_only,
+                all,
+                format,
+            };
+            ls_files::run(&cwd, refspec.as_deref(), &opts)?;
         }
         Command::Untrack { patterns } => {
             if patterns.is_empty() {
