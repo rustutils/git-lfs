@@ -41,6 +41,11 @@ fn run_in(cwd: &Path, args: &[&str], input: &[u8]) -> Output {
         .args(args)
         .current_dir(cwd)
         .env("PATH", new_path)
+        // Hermetic: ignore the developer's ~/.gitconfig and /etc/gitconfig
+        // so behavior doesn't change based on whether the dev has Git LFS
+        // (or any other filter) installed globally.
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1648,6 +1653,127 @@ fn ls_files_marker_star_when_real_content_present_at_right_size() {
     let out = run_in(repo.path(), &["ls-files"], b"");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains(" * x.bin"), "expected `*` marker, got: {stdout}");
+}
+
+// ---------- checkout -----------------------------------------------------
+
+/// `git lfs install --local` so the smudge filter is configured. Without
+/// this, checkout returns early with the "not installed" message, which
+/// is a useful safety net but obscures the assertions we want to make.
+fn install_lfs(repo: &Path) {
+    let bin_dir = std::path::Path::new(BIN).parent().unwrap();
+    let path_var = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{path_var}", bin_dir.display());
+    let status = Command::new(BIN)
+        .args(["install", "--local"])
+        .current_dir(repo)
+        .env("PATH", new_path)
+        .status()
+        .unwrap();
+    assert!(status.success(), "git lfs install --local failed");
+}
+
+#[test]
+fn checkout_without_install_emits_friendly_message() {
+    let repo = fresh_repo_with_identity();
+    let oid = put_object_in_store(repo.path(), b"hello world\n");
+    commit_pointer_at(repo.path(), "x.bin", &pointer_text(&oid, 12));
+
+    let out = run_in(repo.path(), &["checkout"], b"");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Git LFS is not installed"), "{stdout}");
+}
+
+#[test]
+fn checkout_materializes_pointer_text_into_real_content() {
+    let repo = fresh_repo_with_identity();
+    install_lfs(repo.path());
+    let oid = put_object_in_store(repo.path(), b"hello world\n");
+    // Working-tree file is currently the pointer text (just-after-clone state).
+    commit_pointer_at(repo.path(), "x.bin", &pointer_text(&oid, 12));
+
+    let before = std::fs::read(repo.path().join("x.bin")).unwrap();
+    assert!(before.starts_with(b"version https://git-lfs.github.com/spec/v1\n"));
+
+    let out = run_in(repo.path(), &["checkout"], b"");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let after = std::fs::read(repo.path().join("x.bin")).unwrap();
+    assert_eq!(after, b"hello world\n");
+}
+
+#[test]
+fn checkout_with_path_filters_only_those_files() {
+    let repo = fresh_repo_with_identity();
+    install_lfs(repo.path());
+    let oid_a = put_object_in_store(repo.path(), b"alpha bytes\n");
+    let oid_b = put_object_in_store(repo.path(), b"beta bytes!\n");
+    commit_pointer_at(repo.path(), "a.bin", &pointer_text(&oid_a, 12));
+    commit_pointer_at(repo.path(), "b.bin", &pointer_text(&oid_b, 12));
+
+    // Only check out a.bin.
+    let out = run_in(repo.path(), &["checkout", "a.bin"], b"");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(std::fs::read(repo.path().join("a.bin")).unwrap(), b"alpha bytes\n");
+    // b.bin still has its pointer text — we filtered it out.
+    let b = std::fs::read(repo.path().join("b.bin")).unwrap();
+    assert!(b.starts_with(b"version https://git-lfs.github.com/spec/v1\n"), "b.bin should still be a pointer");
+}
+
+#[test]
+fn checkout_with_directory_pattern_matches_subtree() {
+    let repo = fresh_repo_with_identity();
+    install_lfs(repo.path());
+    std::fs::create_dir_all(repo.path().join("data")).unwrap();
+    let oid_top = put_object_in_store(repo.path(), b"top-level!!!\n");
+    let oid_sub = put_object_in_store(repo.path(), b"in subtree!!\n");
+    commit_pointer_at(repo.path(), "top.bin", &pointer_text(&oid_top, 13));
+    commit_pointer_at(repo.path(), "data/sub.bin", &pointer_text(&oid_sub, 13));
+
+    let out = run_in(repo.path(), &["checkout", "data/"], b"");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        std::fs::read(repo.path().join("data/sub.bin")).unwrap(),
+        b"in subtree!!\n",
+    );
+    // top.bin is outside the data/ pattern → still pointer text.
+    let top = std::fs::read(repo.path().join("top.bin")).unwrap();
+    assert!(top.starts_with(b"version https://git-lfs.github.com/spec/v1\n"));
+}
+
+#[test]
+fn checkout_no_pointers_says_nothing_to_checkout() {
+    let repo = fresh_repo_with_identity();
+    install_lfs(repo.path());
+    std::fs::write(repo.path().join("plain.txt"), b"plain\n").unwrap();
+    git_in(repo.path(), &["add", "plain.txt"]);
+    git_in(repo.path(), &["commit", "-q", "-m", "plain"]);
+
+    let out = run_in(repo.path(), &["checkout"], b"");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Nothing to checkout"), "{stdout}");
+}
+
+#[test]
+fn checkout_skips_pointer_when_object_missing_locally() {
+    // Pointer references an OID we never put in the store, and there's
+    // no remote to fetch from. checkout should leave the pointer text
+    // alone rather than truncating the file.
+    let repo = fresh_repo_with_identity();
+    install_lfs(repo.path());
+    commit_pointer_at(repo.path(), "x.bin", &pointer_text(HELLO_OID, HELLO_LEN));
+
+    let out = run_in(repo.path(), &["checkout"], b"");
+    // The command exits non-zero because the fetch attempt fails (no remote).
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    // Whichever way it exits, the file must still be pointer text — never truncated.
+    let after = std::fs::read(repo.path().join("x.bin")).unwrap();
+    assert!(
+        after.starts_with(b"version https://git-lfs.github.com/spec/v1\n"),
+        "x.bin should remain pointer text, got: {:?}, stderr: {stderr}",
+        String::from_utf8_lossy(&after),
+    );
 }
 
 // ---------- prune --------------------------------------------------------

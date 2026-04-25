@@ -381,6 +381,26 @@ missing** and **why it was OK to skip for v0**.
   computing relative paths so the displayed paths look right when the
   user `cd`'d via a symlink. We just print repo-relative paths.
 
+### `cli checkout`
+- **`--to <path> [--ours|--theirs|--base]` conflict-resolution form.**
+  Used during merges to extract one stage of a conflicted LFS file.
+  Needs index-stage parsing (`git ls-files -s` reports stage 1/2/3 for
+  conflicted entries, plus the blob shas at each stage). v0 only ships
+  the bulk re-smudge mode.
+- **Glob / wildcard path patterns.** v0 supports exact paths and
+  trailing-slash directory prefixes only. Shells handle `*.bin` and
+  `data/*.bin` for the common case (expanded against cwd before
+  invocation), so the gap mostly bites recursive globs and patterns
+  intended to match files that aren't in the user's cwd.
+- **Progress meter.** Upstream emits a TQ-style "checking out N files"
+  meter. We just print a one-line summary at the end.
+- **`filepathfilter` parity.** Upstream uses gitignore-syntax matching
+  (negative patterns, comments, escapes). v0's matcher is straight
+  literal/prefix. When wiring this up, reach for `globset` (compile
+  patterns, match strings) — `ignore` is overkill for our use case
+  because we don't need its directory walker or hierarchical
+  `.gitignore` traversal.
+
 ### `cli prune`
 - **Recent-refs / recent-commits retention windows.** `lfs.fetchrecentrefsdays`
   and `lfs.fetchrecentcommitsdays` keep pointers from refs / commits
@@ -430,6 +450,6 @@ missing** and **why it was OK to skip for v0**.
   worth flagging.
 
 ### Whole-project
-- **Remaining commands** — `checkout`, `migrate` (the big one —
-  history rewriting), post-checkout / post-commit / post-merge hooks,
-  `merge-driver`, `dedup`, `ext`, `standalone-file`, `logs`, `update`.
+- **Remaining commands** — `migrate` (the big one — history rewriting),
+  post-checkout / post-commit / post-merge hooks, `merge-driver`,
+  `dedup`, `ext`, `standalone-file`, `logs`, `update`.

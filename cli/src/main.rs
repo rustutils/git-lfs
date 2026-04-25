@@ -7,6 +7,7 @@ use git_lfs_filter::{clean, filter_process, smudge_with_fetch};
 use git_lfs_git::ConfigScope;
 use git_lfs_store::Store;
 
+mod checkout;
 mod env;
 mod fetch;
 mod fetcher;
@@ -146,6 +147,14 @@ enum Command {
     /// Show the LFS environment: version, endpoints, on-disk paths, and
     /// the three `filter.lfs.*` config values.
     Env,
+    /// Replace pointer text in the working tree with actual LFS object
+    /// content. With no args, materializes every LFS pointer in HEAD's
+    /// tree. With paths (literal file names or trailing-slash directory
+    /// prefixes), restricts to matching pointers.
+    Checkout {
+        /// Paths to check out. Empty = everything in HEAD's tree.
+        paths: Vec<String>,
+    },
     /// Delete local LFS objects that aren't reachable from HEAD or any
     /// unpushed commit. Reclaims disk for repos whose history has moved
     /// past their objects.
@@ -379,6 +388,10 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
         }
         Command::Env => {
             env::run(&cwd)?;
+        }
+        Command::Checkout { paths } => {
+            let opts = checkout::Options { paths };
+            checkout::run(&cwd, &opts)?;
         }
         Command::Prune { dry_run, verbose } => {
             let opts = prune::Options { dry_run, verbose };
