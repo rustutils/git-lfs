@@ -97,6 +97,46 @@ impl Store {
             .unwrap_or(false)
     }
 
+    /// Walk every object file in the store, yielding (oid, size_on_disk).
+    ///
+    /// Traverses the sharded `objects/<aa>/<bb>/<oid>` layout. Filenames
+    /// that don't parse as 64-char SHA-256 hex are silently skipped, as
+    /// are unexpected directories. The store directory not existing is
+    /// not an error — the result is just empty.
+    ///
+    /// Used by `git lfs prune` and (eventually) `fsck --orphaned`.
+    pub fn each_object(&self) -> io::Result<Vec<(Oid, u64)>> {
+        let objects_dir = self.root.join("objects");
+        if !objects_dir.exists() {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::new();
+        for aa in std::fs::read_dir(&objects_dir)? {
+            let aa = aa?;
+            if !aa.file_type()?.is_dir() {
+                continue;
+            }
+            for bb in std::fs::read_dir(aa.path())? {
+                let bb = bb?;
+                if !bb.file_type()?.is_dir() {
+                    continue;
+                }
+                for entry in std::fs::read_dir(bb.path())? {
+                    let entry = entry?;
+                    let name = entry.file_name();
+                    let Some(name_str) = name.to_str() else { continue };
+                    let Ok(oid) = name_str.parse::<Oid>() else { continue };
+                    let meta = entry.metadata()?;
+                    if !meta.is_file() {
+                        continue;
+                    }
+                    out.push((oid, meta.len()));
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// Open an object for reading. Errors with [`io::ErrorKind::NotFound`]
     /// if the object isn't in the store.
     pub fn open(&self, oid: Oid) -> io::Result<File> {
@@ -323,6 +363,45 @@ mod tests {
         let mut readback = Vec::new();
         store.open(oid).unwrap().read_to_end(&mut readback).unwrap();
         assert_eq!(readback, content);
+    }
+
+    #[test]
+    fn each_object_returns_empty_when_no_objects_dir() {
+        let (_tmp, store) = fixture();
+        // Store dir doesn't exist yet.
+        assert!(store.each_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn each_object_finds_inserted_objects_with_correct_size() {
+        let (_tmp, store) = fixture();
+        let (oid_a, _) = store.insert(&mut b"hello".as_slice()).unwrap();
+        let (oid_b, _) = store.insert(&mut b"world!!!".as_slice()).unwrap();
+        let mut got = store.each_object().unwrap();
+        got.sort_by_key(|(_, size)| *size);
+        assert_eq!(got.len(), 2);
+        // Order by size: "hello" (5 bytes) first, then "world!!!" (8 bytes).
+        assert_eq!(got[0].0, oid_a);
+        assert_eq!(got[0].1, 5);
+        assert_eq!(got[1].0, oid_b);
+        assert_eq!(got[1].1, 8);
+    }
+
+    #[test]
+    fn each_object_skips_unrecognized_filenames() {
+        let (_tmp, store) = fixture();
+        let (oid, _) = store.insert(&mut b"hi".as_slice()).unwrap();
+        // Drop a stray file in the same shard directory that isn't a
+        // 64-char hex name — must not crash or be reported.
+        let shard = store
+            .root()
+            .join("objects")
+            .join(&oid.to_string()[0..2])
+            .join(&oid.to_string()[2..4]);
+        std::fs::write(shard.join("README"), b"ignored").unwrap();
+        let got = store.each_object().unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].0, oid);
     }
 
     #[test]

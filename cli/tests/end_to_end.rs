@@ -1650,6 +1650,178 @@ fn ls_files_marker_star_when_real_content_present_at_right_size() {
     assert!(stdout.contains(" * x.bin"), "expected `*` marker, got: {stdout}");
 }
 
+// ---------- prune --------------------------------------------------------
+
+#[test]
+fn prune_no_objects_says_so() {
+    let repo = fresh_repo_with_identity();
+    let out = run_in(repo.path(), &["prune"], b"");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("No local LFS objects to prune"), "{stdout}");
+}
+
+#[test]
+fn prune_retains_objects_referenced_by_head_tree() {
+    let repo = fresh_repo_with_identity();
+    let oid = put_object_in_store(repo.path(), b"hello world\n");
+    commit_pointer_at(repo.path(), "x.bin", &pointer_text(&oid, 12));
+
+    let out = run_in(repo.path(), &["prune"], b"");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Nothing to prune"), "{stdout}");
+
+    // Object still on disk.
+    let path = repo
+        .path()
+        .join(".git/lfs/objects")
+        .join(&oid[0..2])
+        .join(&oid[2..4])
+        .join(&oid);
+    assert!(path.is_file(), "expected object preserved at {path:?}");
+}
+
+#[test]
+fn prune_deletes_object_not_referenced_anywhere() {
+    let repo = fresh_repo_with_identity();
+    // Make a HEAD with no LFS pointers (just plain content) — anything
+    // in the store is fair game.
+    std::fs::write(repo.path().join("plain.txt"), b"hi").unwrap();
+    git_in(repo.path(), &["add", "plain.txt"]);
+    git_in(repo.path(), &["commit", "-q", "-m", "plain"]);
+
+    let orphan_oid = put_object_in_store(repo.path(), b"orphan content");
+    let path = repo
+        .path()
+        .join(".git/lfs/objects")
+        .join(&orphan_oid[0..2])
+        .join(&orphan_oid[2..4])
+        .join(&orphan_oid);
+    assert!(path.is_file(), "fixture pre-condition");
+
+    let out = run_in(repo.path(), &["prune"], b"");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Pruning 1 object"), "{stdout}");
+    assert!(!path.is_file(), "orphan object should be deleted at {path:?}");
+}
+
+#[test]
+fn prune_dry_run_does_not_delete() {
+    let repo = fresh_repo_with_identity();
+    std::fs::write(repo.path().join("plain.txt"), b"hi").unwrap();
+    git_in(repo.path(), &["add", "plain.txt"]);
+    git_in(repo.path(), &["commit", "-q", "-m", "plain"]);
+
+    let orphan_oid = put_object_in_store(repo.path(), b"orphan");
+    let path = repo
+        .path()
+        .join(".git/lfs/objects")
+        .join(&orphan_oid[0..2])
+        .join(&orphan_oid[2..4])
+        .join(&orphan_oid);
+
+    let out = run_in(repo.path(), &["prune", "--dry-run"], b"");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Would prune 1 object"), "{stdout}");
+    // File still there.
+    assert!(path.is_file(), "dry-run should not delete: {path:?}");
+}
+
+#[test]
+fn prune_verbose_lists_each_pruned_object() {
+    let repo = fresh_repo_with_identity();
+    std::fs::write(repo.path().join("plain.txt"), b"hi").unwrap();
+    git_in(repo.path(), &["add", "plain.txt"]);
+    git_in(repo.path(), &["commit", "-q", "-m", "plain"]);
+
+    let orphan_oid = put_object_in_store(repo.path(), b"orphan content goes here");
+
+    let out = run_in(repo.path(), &["prune", "--verbose"], b"");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // First 10 chars of the OID appear (full OID actually) on a `* ` line.
+    assert!(stdout.contains(&orphan_oid), "expected OID in verbose output: {stdout}");
+}
+
+#[test]
+fn prune_retains_unpushed_commits() {
+    // The pointer is in HEAD but NOT in any old version of HEAD's tree
+    // — it's only reachable via the most recent commit, which hasn't
+    // been pushed. Prune must retain it.
+    let repo = fresh_repo_with_identity();
+    // First commit: plain content, simulates "what's on the remote".
+    std::fs::write(repo.path().join("plain.txt"), b"hi").unwrap();
+    git_in(repo.path(), &["add", "plain.txt"]);
+    git_in(repo.path(), &["commit", "-q", "-m", "plain"]);
+    // Mark this commit as the remote tip.
+    git_in(repo.path(), &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+
+    // Now add an LFS pointer locally and commit (unpushed).
+    let oid = put_object_in_store(repo.path(), b"unpushed content");
+    let p = pointer_text(&oid, b"unpushed content".len());
+    std::fs::write(repo.path().join("data.bin"), &p).unwrap();
+    git_in(repo.path(), &["add", "data.bin"]);
+    git_in(repo.path(), &["commit", "-q", "-m", "add data"]);
+
+    // Replace HEAD's data.bin with plain content so HEAD's *tree* no
+    // longer references the LFS pointer — but the unpushed commit still
+    // does, so we must retain.
+    std::fs::write(repo.path().join("data.bin"), b"plain replacement").unwrap();
+    git_in(repo.path(), &["add", "data.bin"]);
+    git_in(repo.path(), &["commit", "-q", "-m", "replace"]);
+
+    let path = repo
+        .path()
+        .join(".git/lfs/objects")
+        .join(&oid[0..2])
+        .join(&oid[2..4])
+        .join(&oid);
+
+    let out = run_in(repo.path(), &["prune", "--dry-run"], b"");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("Nothing to prune"),
+        "expected unpushed pointer to be retained, got: {stdout}",
+    );
+    assert!(path.is_file(), "object must still exist");
+}
+
+#[test]
+fn prune_with_no_remote_falls_back_to_head_tree_only() {
+    // No remote configured — unpushed retain step degrades to
+    // "everything in HEAD's tree." An object ONLY in earlier history
+    // is then prunable, just like upstream.
+    let repo = fresh_repo_with_identity();
+    let oid = put_object_in_store(repo.path(), b"old content");
+    commit_pointer_at(repo.path(), "old.bin", &pointer_text(&oid, b"old content".len()));
+    // Replace with plain content. Earlier commit still references the
+    // pointer (history), but HEAD's tree doesn't.
+    std::fs::write(repo.path().join("old.bin"), b"plain text").unwrap();
+    git_in(repo.path(), &["add", "old.bin"]);
+    git_in(repo.path(), &["commit", "-q", "-m", "replace"]);
+
+    let path = repo
+        .path()
+        .join(".git/lfs/objects")
+        .join(&oid[0..2])
+        .join(&oid[2..4])
+        .join(&oid);
+    assert!(path.is_file(), "fixture pre-condition");
+
+    let out = run_in(repo.path(), &["prune"], b"");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    // No origin remote → unpushed scan returns the FULL HEAD history
+    // (since exclude set is empty), which still references this OID,
+    // so it's retained even without a remote.
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Nothing to prune"), "{stdout}");
+    assert!(path.is_file());
+}
+
 // ---------- fsck ---------------------------------------------------------
 
 /// Helper: write the LFS object for `content` directly into a repo's

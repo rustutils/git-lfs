@@ -16,6 +16,7 @@ mod lock;
 mod ls_files;
 mod pointer_cmd;
 mod pre_push;
+mod prune;
 mod pull;
 mod push;
 mod status;
@@ -145,6 +146,17 @@ enum Command {
     /// Show the LFS environment: version, endpoints, on-disk paths, and
     /// the three `filter.lfs.*` config values.
     Env,
+    /// Delete local LFS objects that aren't reachable from HEAD or any
+    /// unpushed commit. Reclaims disk for repos whose history has moved
+    /// past their objects.
+    Prune {
+        /// Don't delete anything; just report what would go.
+        #[arg(short, long)]
+        dry_run: bool,
+        /// Print each prunable object's OID and size.
+        #[arg(short, long)]
+        verbose: bool,
+    },
     /// Check the integrity of LFS objects and pointers reachable from
     /// `<refspec>` (default: HEAD). Exit 1 if anything is corrupt.
     Fsck {
@@ -367,6 +379,10 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
         }
         Command::Env => {
             env::run(&cwd)?;
+        }
+        Command::Prune { dry_run, verbose } => {
+            let opts = prune::Options { dry_run, verbose };
+            prune::run(&cwd, &opts)?;
         }
         Command::Fsck { refspec, objects, pointers, dry_run } => {
             let mode = match (objects, pointers) {

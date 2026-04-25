@@ -83,8 +83,6 @@ missing** and **why it was OK to skip for v0**.
 - **Permission/umask handling.** Needed by `t-umask.sh`. Tempfile defaults
   are 0600; multi-user shared repos may need 0660. Add `repo_perms` field
   on Store + `RepositoryPermissions` helper.
-- **`EachObject` iteration.** Needed by `fsck --objects` and `prune`. Walk
-  the sharded `objects/` tree, validate filename matches OID regex.
 - **Path encoding/decoding.** Git escapes non-ASCII paths (octal `\NNN`
   sequences) when emitting. Belongs in `git/` not `store/` — the working-
   tree path layer.
@@ -383,6 +381,26 @@ missing** and **why it was OK to skip for v0**.
   computing relative paths so the displayed paths look right when the
   user `cd`'d via a symlink. We just print repo-relative paths.
 
+### `cli prune`
+- **Recent-refs / recent-commits retention windows.** `lfs.fetchrecentrefsdays`
+  and `lfs.fetchrecentcommitsdays` keep pointers from refs / commits
+  touched within those windows (plus `lfs.pruneoffsetdays` cushion). v0
+  retains only HEAD's tree + unpushed; older history is fair game.
+- **Worktree + stash + index walks.** Upstream also retains pointers
+  reachable from other worktrees' HEADs and indexes, plus stash
+  entries. We skip all three. Niche, but matters for users who lean on
+  stashes or worktree-heavy workflows.
+- **`--verify-remote`.** Confirm each prunable object exists on the
+  remote before deleting (talks to the batch API in download-check
+  mode). Needs the transfer queue's verify-only path. Useful safety net
+  for users who don't fully trust their backups.
+- **`--recent` / `--force`.** Inverses of "keep recent refs / keep
+  unpushed." We don't have those retention paths yet, so the flags
+  would be no-ops. Add when the paths exist.
+- **`lfs.fetchexclude` honor.** Same gap as fsck — paths the user opted
+  out of fetching shouldn't generate "missing" reports or affect
+  retention.
+
 ### `cli fsck`
 - **`<a>..<b>` range form.** Upstream parses a single arg as either a
   ref (e.g. `HEAD`) or a range (e.g. `main..HEAD`); we only accept a
@@ -412,7 +430,6 @@ missing** and **why it was OK to skip for v0**.
   worth flagging.
 
 ### Whole-project
-- **Remaining commands** — `checkout`, `prune`, `migrate` (the big one
-  — history rewriting), post-checkout / post-commit / post-merge
-  hooks, `merge-driver`, `dedup`, `ext`, `standalone-file`, `logs`,
-  `update`.
+- **Remaining commands** — `checkout`, `migrate` (the big one —
+  history rewriting), post-checkout / post-commit / post-merge hooks,
+  `merge-driver`, `dedup`, `ext`, `standalone-file`, `logs`, `update`.
