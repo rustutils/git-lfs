@@ -13,6 +13,7 @@ mod fetcher;
 mod install;
 mod lock;
 mod ls_files;
+mod pointer_cmd;
 mod pre_push;
 mod pull;
 mod push;
@@ -115,6 +116,31 @@ enum Command {
         /// URL of the remote (informational; we use `lfs.url` config).
         url: Option<String>,
     },
+    /// Print the git-lfs version and exit.
+    Version,
+    /// Debug helper: build a pointer from a file, parse one from disk
+    /// or stdin, or just check whether some bytes are a valid pointer.
+    Pointer {
+        /// Build a pointer from this file (read content, hash, encode).
+        #[arg(short, long)]
+        file: Option<PathBuf>,
+        /// Parse and display this existing pointer file.
+        #[arg(short, long)]
+        pointer: Option<PathBuf>,
+        /// Read a pointer from stdin (mutually exclusive with --pointer).
+        #[arg(long)]
+        stdin: bool,
+        /// Validity check mode: exit 0 if input parses, 1 if not, 2 if
+        /// `--strict` and not byte-canonical.
+        #[arg(long)]
+        check: bool,
+        /// In `--check`, also reject non-canonical pointers.
+        #[arg(long)]
+        strict: bool,
+        /// Explicitly disable strict mode (paired with `--strict`).
+        #[arg(long)]
+        no_strict: bool,
+    },
     /// Show the LFS environment: version, endpoints, on-disk paths, and
     /// the three `filter.lfs.*` config values.
     Env,
@@ -211,7 +237,7 @@ enum Command {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match dispatch(cli.command) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => ExitCode::from(code),
         Err(e) => {
             eprintln!("git-lfs: {e}");
             ExitCode::FAILURE
@@ -219,7 +245,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn dispatch(cmd: Command) -> Result<(), Box<dyn std::error::Error>> {
+fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
     let cwd = std::env::current_dir()?;
 
     match cmd {
@@ -306,6 +332,23 @@ fn dispatch(cmd: Command) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
+        Command::Version => {
+            println!("git-lfs/{} (rust)", env!("CARGO_PKG_VERSION"));
+        }
+        Command::Pointer { file, pointer, stdin, check, strict, no_strict } => {
+            let opts = pointer_cmd::Options {
+                file,
+                pointer,
+                stdin,
+                check,
+                strict,
+                no_strict,
+            };
+            // Pointer's exit codes are semantic: 1 = mismatch / parse
+            // failure, 2 = `--strict` non-canonical. Propagate verbatim.
+            let code = pointer_cmd::run(&opts)?;
+            return Ok(code as u8);
+        }
         Command::Env => {
             env::run(&cwd)?;
         }
@@ -387,5 +430,5 @@ fn dispatch(cmd: Command) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
-    Ok(())
+    Ok(0)
 }

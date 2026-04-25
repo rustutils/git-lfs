@@ -1650,6 +1650,130 @@ fn ls_files_marker_star_when_real_content_present_at_right_size() {
     assert!(stdout.contains(" * x.bin"), "expected `*` marker, got: {stdout}");
 }
 
+// ---------- version ------------------------------------------------------
+
+#[test]
+fn version_prints_banner_and_succeeds() {
+    let repo = fresh_repo();
+    let out = run_in(repo.path(), &["version"], b"");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.starts_with("git-lfs/"), "{stdout}");
+}
+
+#[test]
+fn version_works_outside_repo_too() {
+    let tmp = TempDir::new().unwrap();
+    let out = run_in(tmp.path(), &["version"], b"");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+// ---------- pointer ------------------------------------------------------
+
+#[test]
+fn pointer_check_returns_zero_for_valid_pointer() {
+    let repo = fresh_repo();
+    let p = pointer_text(HELLO_OID, HELLO_LEN);
+    std::fs::write(repo.path().join("p.txt"), &p).unwrap();
+    let out = run_in(repo.path(), &["pointer", "--check", "--file", "p.txt"], b"");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
+fn pointer_check_exits_one_for_non_pointer() {
+    let repo = fresh_repo();
+    std::fs::write(repo.path().join("p.txt"), b"this is plain text\n").unwrap();
+    let out = run_in(repo.path(), &["pointer", "--check", "--file", "p.txt"], b"");
+    assert_eq!(out.status.code(), Some(1), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
+fn pointer_check_strict_exits_two_for_noncanonical() {
+    let repo = fresh_repo();
+    // Missing trailing newline parses but isn't byte-canonical.
+    let mut p = pointer_text(HELLO_OID, HELLO_LEN);
+    assert_eq!(p.last(), Some(&b'\n'));
+    p.pop(); // strip trailing newline
+    std::fs::write(repo.path().join("p.txt"), &p).unwrap();
+    let out = run_in(
+        repo.path(),
+        &["pointer", "--check", "--strict", "--file", "p.txt"],
+        b"",
+    );
+    assert_eq!(out.status.code(), Some(2), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
+fn pointer_file_emits_canonical_pointer_for_a_blob() {
+    let repo = fresh_repo();
+    std::fs::write(repo.path().join("data.bin"), b"hello world\n").unwrap();
+    let out = run_in(repo.path(), &["pointer", "--file", "data.bin"], b"");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let expected = pointer_text(HELLO_OID, HELLO_LEN);
+    let expected_str = String::from_utf8_lossy(&expected);
+    assert_eq!(stdout, expected_str, "got: {stdout:?}");
+    // The "Git LFS pointer for ..." banner goes to stderr.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("Git LFS pointer for data.bin"), "{stderr}");
+}
+
+#[test]
+fn pointer_compare_succeeds_when_canonical_match() {
+    let repo = fresh_repo();
+    std::fs::write(repo.path().join("data.bin"), b"hello world\n").unwrap();
+    // Pre-built canonical pointer for that exact content.
+    std::fs::write(repo.path().join("ref.ptr"), pointer_text(HELLO_OID, HELLO_LEN)).unwrap();
+
+    let out = run_in(
+        repo.path(),
+        &["pointer", "--file", "data.bin", "--pointer", "ref.ptr"],
+        b"",
+    );
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("Pointers do not match"), "{stderr}");
+}
+
+#[test]
+fn pointer_compare_fails_on_mismatch() {
+    let repo = fresh_repo();
+    std::fs::write(repo.path().join("data.bin"), b"hello world\n").unwrap();
+    // Pointer for a *different* OID — should mismatch.
+    let other_oid = "0000000000000000000000000000000000000000000000000000000000000001";
+    std::fs::write(repo.path().join("ref.ptr"), pointer_text(other_oid, HELLO_LEN)).unwrap();
+
+    let out = run_in(
+        repo.path(),
+        &["pointer", "--file", "data.bin", "--pointer", "ref.ptr"],
+        b"",
+    );
+    assert_eq!(out.status.code(), Some(1), "expected mismatch exit");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("Pointers do not match"), "{stderr}");
+}
+
+#[test]
+fn pointer_stdin_mode_parses_pointer_from_stdin() {
+    let repo = fresh_repo();
+    let p = pointer_text(HELLO_OID, HELLO_LEN);
+    let out = run_in(repo.path(), &["pointer", "--stdin"], &p);
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("Pointer from STDIN"), "{stderr}");
+    // The echoed pointer text appears in stderr.
+    assert!(stderr.contains(HELLO_OID), "{stderr}");
+}
+
+#[test]
+fn pointer_no_args_says_nothing_to_do() {
+    let repo = fresh_repo();
+    let out = run_in(repo.path(), &["pointer"], b"");
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("Nothing to do"), "{stderr}");
+}
+
 // ---------- lock / locks / unlock ----------------------------------------
 //
 // All three speak the locking JSON API; we wiremock the server side and

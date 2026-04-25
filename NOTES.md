@@ -383,8 +383,19 @@ missing** and **why it was OK to skip for v0**.
   computing relative paths so the displayed paths look right when the
   user `cd`'d via a symlink. We just print repo-relative paths.
 
+### `cli pointer`
+- **`--no-extensions`.** Skipped because we don't honor pointer
+  extensions on the clean path either; once `lfs.extension.<n>.*`
+  config support lands, build a non-extension-aware pointer when this
+  flag is set.
+- **Compare via `git hash-object`.** Upstream computes git blob OIDs
+  for both pointer texts and compares those. We compare raw byte
+  equality of our canonical encoding against the supplied bytes —
+  semantically identical for any real input but a small fidelity gap
+  worth flagging.
+
 ### Whole-project
 - **Remaining commands** — `checkout`, `prune`, `fsck`, `migrate` (the
-  big one — history rewriting), `pointer` (debug), `version`,
-  post-checkout / post-commit / post-merge hooks, `merge-driver`,
-  `dedup`, `ext`, `standalone-file`, `logs`, `update`.
+  big one — history rewriting), post-checkout / post-commit /
+  post-merge hooks, `merge-driver`, `dedup`, `ext`, `standalone-file`,
+  `logs`, `update`.
