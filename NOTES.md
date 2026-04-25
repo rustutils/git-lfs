@@ -1,11 +1,11 @@
 # Porting notes
 
-Personal porting log for the Rust reimplementation of git-lfs. Not tracked in
-git (see `.git/info/exclude`).
+Working log for the Rust reimplementation of git-lfs: deferred items, open
+questions, and milestone tracking.
 
 ## Upstream reference
 
-The original Go implementation lives at `/home/patrick/Projects/temp/git-lfs`.
+The original Go implementation lives at <https://github.com/git-lfs/git-lfs>.
 When behavior is ambiguous in the docs, that is the source of truth — grep
 there before guessing.
 
@@ -215,8 +215,8 @@ missing** and **why it was OK to skip for v0**.
 
 ### `cli fetch`
 - **Remote arg.** Upstream's CLI is `git lfs fetch [<remote>] [<ref>...]`;
-  v0 only accepts refs. Once server discovery lands (derive LFS URL from
-  `remote.<name>.url`), the remote arg can drive endpoint selection.
+  v0 only accepts refs. Server discovery is done — derive endpoint from
+  the named remote when wiring this up.
 - **`--all`.** Walk every ref in the repo (`git rev-list --all`).
 - **`--recent`.** Apply `lfs.fetchrecentrefsdays` and
   `lfs.fetchrecentcommitsdays` to add recent refs + recent history.
@@ -241,19 +241,9 @@ missing** and **why it was OK to skip for v0**.
   `git.MapRemoteURL` honors this; we use the remote name verbatim.
 
 ### `cli push`
-- **Pre-push hook integration.** Upstream's `git push` runs `git lfs
-  pre-push <remote> <url>` which receives `<local-ref> <local-sha>
-  <remote-ref> <remote-sha>` lines on stdin per ref being pushed.
-  Right now we ship `pre-push` hook scripts (via `install`) but they
-  invoke `git lfs pre-push` which doesn't exist yet — the hook is a
-  no-op. Wire it up so `git push origin main` automatically uploads
-  LFS objects without users needing to run `git lfs push` manually.
 - **`--all`.** Push every ref in the repo.
 - **`--object-id <oid>`.** Upload a specific object regardless of refs.
 - **`--dry-run`.** Print what would upload without doing it.
-- **Per-remote LFS endpoint.** v0 uses the global `lfs.url`; upstream
-  derives the endpoint from `remote.<name>.url` (server discovery).
-  Same NOTES item as the `fetch` remote arg.
 - **Local-only objects warning policy.** v0 warns and skips pointers
   whose bytes aren't in the local store. Upstream errors hard. We may
   want to expose a flag for either behavior.
@@ -335,6 +325,48 @@ missing** and **why it was OK to skip for v0**.
   written by `track`. We currently do exact-string match. Not an issue
   for typical patterns (`*.jpg`, `data/*.bin`); revisit if a test hits it.
 
+### `cli ls-files`
+- **`--include` / `--exclude` path filters.** Upstream filters output by
+  working-tree pattern. Builds on the same `filepathfilter/` we haven't
+  ported yet (see also `cli fetch`).
+- **`--deleted`.** Include deleted-but-still-reachable LFS pointers from
+  history. Pairs naturally with `scan_pointers` (which does walk history),
+  but we need to surface deletions distinctly.
+- **Two-ref range form** — `git lfs ls-files <a> <b>` walks pointers
+  added between two refs. Maps onto `rev_list(include=[b], exclude=[a])`
+  but the CLI parsing must distinguish "second arg is a ref" from "second
+  arg is a path".
+- **Index scan when no args.** Upstream additionally scans the index when
+  invoked bare, so newly-staged-but-uncommitted pointers show up. We only
+  scan the tree at HEAD.
+
+### `cli env`
+- **Trimmed output fields.** Upstream emits `LocalGitStorageDir`,
+  `LocalReferenceDirs`, `ConcurrentTransfers`, `TusTransfers`,
+  `BasicTransfersOnly`, `SkipDownloadErrors`, `FetchRecentAlways`,
+  `FetchRecentRefsDays`, `FetchRecentCommitsDays`, `FetchRecentRemoteRefs`,
+  `PruneOffsetDays`, `PruneVerifyRemoteAlways`, `PruneRemoteName`,
+  `LfsExtensions`, `GitProtocol`, …. We skip these for now because most
+  refer to config knobs we don't honor yet — adding stubs would lie. Add
+  each as the corresponding feature lands.
+- **`auth=<mode>` annotation.** Upstream prints `Endpoint=… (auth=basic)`
+  / `(auth=none)` / etc. We don't track access mode per endpoint.
+- **`--help` content.** Upstream's `env` is also where users go to copy a
+  bug report. We could format ours as a fenced markdown block for paste-
+  friendliness once the surface stabilizes.
+
+### `cli status`
+- **"Objects to be pushed to <remote>/<branch>" section.** Upstream
+  prefixes its output with the LFS pointers reachable from HEAD but not
+  the upstream tracking ref. Skipped for v0 because it requires resolving
+  the upstream tracking ref + a separate `scan_pointers` range walk per
+  invocation. Useful but not core.
+- **Symlinked working dir.** Upstream resolves symlinks in `cwd` before
+  computing relative paths so the displayed paths look right when the
+  user `cd`'d via a symlink. We just print repo-relative paths.
+
 ### Whole-project
-- **Most other commands** — `status`, `ls-files`, `prune`, `fsck`, `lock`,
-  `unlock`, `migrate`, `env`, …. Each is its own piece of work.
+- **Remaining commands** — `lock` / `unlock` / `locks`, `checkout`,
+  `prune`, `fsck`, `migrate` (the big one — history rewriting), `pointer`
+  (debug), `version`, post-checkout / post-commit / post-merge hooks,
+  `merge-driver`, `dedup`, `ext`, `standalone-file`, `logs`, `update`.

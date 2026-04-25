@@ -8,7 +8,7 @@ level, with a better `--help`/UX and a cleaner library split.
 
 Milestone 1 (pointer + store + filter clean/smudge + filter-process + `install` + `track`) shipped, sync.
 
-Milestone 2 complete: `api/` (batch + locking), `transfer/` (queue + basic adapter, up + down + verify), smudge → on-demand-download, `git/`'s scanner (`rev_list` + `cat_file --batch[-check]` + `scan_pointers`), `git lfs fetch`, `pull`, `push`, and `pre-push` (the hook command — `git push` now transparently uploads LFS objects, branch deletes are no-ops, new branches use `refs/remotes/<remote>/*` as exclude, `GIT_LFS_SKIP_PUSH` honored). `uninstall` and `untrack` round out the install/track pair (uninstall preserves user-modified hooks). `creds/` provides credential resolution (in-memory cache + `git credential fill/approve/reject` bridge); `api::Client` does the 401 → fill → retry once → approve/reject loop and caches working creds for subsequent requests. `git::endpoint` resolves the LFS URL via the full priority chain: `GIT_LFS_URL` env → `lfs.url` (git config + `.lfsconfig`) → `remote.<name>.lfsurl` → derived from `remote.<name>.url` (with SSH/git URL → HTTPS rewriting). The full read+write loop works end-to-end against authenticated LFS endpoints with no explicit `lfs.url` config. Milestone 3 territory: locking command surface (`lock`/`unlock`/`locks`), custom transfer adapter protocol, SSH `git-lfs-authenticate`, netrc / askpass / NTLM / Kerberos.
+Milestone 2 complete: `api/` (batch + locking), `transfer/` (queue + basic adapter, up + down + verify), smudge → on-demand-download, `git/`'s scanner (`rev_list` + `cat_file --batch[-check]` + `scan_pointers` + `scan_tree`), `diff_index` parser, `git lfs fetch`, `pull`, `push`, and `pre-push` (the hook command — `git push` now transparently uploads LFS objects, branch deletes are no-ops, new branches use `refs/remotes/<remote>/*` as exclude, `GIT_LFS_SKIP_PUSH` honored). `uninstall` and `untrack` round out the install/track pair (uninstall preserves user-modified hooks). `creds/` provides credential resolution (in-memory cache + `git credential fill/approve/reject` bridge); `api::Client` does the 401 → fill → retry once → approve/reject loop and caches working creds for subsequent requests. `git::endpoint` resolves the LFS URL via the full priority chain: `GIT_LFS_URL` env → `lfs.url` (git config + `.lfsconfig`) → `remote.<name>.lfsurl` → derived from `remote.<name>.url` (with SSH/git URL → HTTPS rewriting). Read-only inspection trio shipped: `ls-files` (default tree walk, `--all` history walk, `-l/-s/-n/-d/-j` flags), `env` (version, endpoints, paths, filter config), `status` (default / `--porcelain` / `--json`, classifies blobs as LFS / Git / File). The full read+write loop works end-to-end against authenticated LFS endpoints with no explicit `lfs.url` config. Milestone 3 territory: locking command surface (`lock`/`unlock`/`locks`), custom transfer adapter protocol, SSH `git-lfs-authenticate`, netrc / askpass / NTLM / Kerberos.
 
 ## Layout
 
@@ -21,8 +21,11 @@ Milestone 2 complete: `api/` (batch + locking), `transfer/` (queue + basic adapt
   (`cli/`, `pointer/`, `store/`, …). Package names inside their `Cargo.toml`
   use the full `git-lfs-*` prefix. See Architecture below.
 - `LICENSE.md` — MIT, with attribution to upstream Git LFS contributors.
-- `NOTES.md`, `PLAN.md`, `CLAUDE.md` — local-only working notes (gitignored
-  via `.git/info/exclude`). Use these for project state instead of memory.
+- `NOTES.md` — deferred items, open questions, milestone tracking.
+  Source-code comments (`see NOTES.md`) point here; keep entries scoped
+  to one crate or command so they're easy to find by section.
+- `CLAUDE.md` (this file) — present-tense project conventions, layout, and
+  working rules. Auto-loaded when working with Claude.
 
 ## Architecture
 
@@ -73,8 +76,8 @@ inventing a new one.
 ## Working with this repo
 
 - **Source of truth for behavior:** when docs are ambiguous, grep the upstream
-  Go code at `/home/patrick/Projects/temp/git-lfs`. Don't guess — they've
-  already solved it.
+  Go code at <https://github.com/git-lfs/git-lfs> (`commands/command_*.go`
+  for CLI surface). Don't guess — they've already solved it.
 - **Don't translate Go to Rust line-for-line.** The point of the rewrite is to
   use idiomatic Rust + better libraries. Match behavior, not structure.
 - **CLI compatibility is a hard constraint.** The shell tests in `t/` assume
