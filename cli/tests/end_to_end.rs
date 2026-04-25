@@ -1655,6 +1655,163 @@ fn ls_files_marker_star_when_real_content_present_at_right_size() {
     assert!(stdout.contains(" * x.bin"), "expected `*` marker, got: {stdout}");
 }
 
+// ---------- migrate info -------------------------------------------------
+
+/// Helper: write `path` with `content` and commit it. Used for migrate
+/// info fixtures where we don't care about LFS pointer-ness.
+fn commit_plain_file(repo: &Path, path: &str, content: &[u8]) {
+    if let Some(parent) = std::path::Path::new(path).parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(repo.join(parent)).unwrap();
+    }
+    std::fs::write(repo.join(path), content).unwrap();
+    git_in(repo, &["add", path]);
+    git_in(repo, &["commit", "-q", "-m", &format!("add {path}")]);
+}
+
+#[test]
+fn migrate_info_groups_by_extension_and_sorts_by_size() {
+    let repo = fresh_repo_with_identity();
+    // Two .png files (totaling 30 bytes), one .jpg (5 bytes).
+    commit_plain_file(repo.path(), "a.png", &[b'a'; 20]);
+    commit_plain_file(repo.path(), "b.png", &[b'b'; 10]);
+    commit_plain_file(repo.path(), "c.jpg", &[b'c'; 5]);
+
+    let out = run_in(repo.path(), &["migrate", "info"], b"");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let png_pos = stdout.find("*.png").unwrap_or(usize::MAX);
+    let jpg_pos = stdout.find("*.jpg").unwrap_or(usize::MAX);
+    assert!(png_pos < jpg_pos, "*.png should sort above *.jpg by size: {stdout}");
+    assert!(stdout.contains("2/2 files"), "expected png to count 2 files: {stdout}");
+}
+
+#[test]
+fn migrate_info_above_threshold_excludes_smaller_files() {
+    let repo = fresh_repo_with_identity();
+    commit_plain_file(repo.path(), "small.bin", &[0u8; 50]);
+    commit_plain_file(repo.path(), "large.bin", &vec![0u8; 5_000]);
+
+    let out = run_in(repo.path(), &["migrate", "info", "--above", "1k"], b"");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // Two total .bin, one above threshold.
+    assert!(stdout.contains("1/2 files") || stdout.contains("1/1 files"), "{stdout}");
+    // The percentage shown should reflect "1 above out of 2 total" =
+    // 50%. (If our pipeline only ever sees files matching the filter,
+    // it'd report 100% — assert against the wrong-path interpretation.)
+    assert!(stdout.contains("50%"), "expected 50% (1/2 above), got: {stdout}");
+}
+
+#[test]
+fn migrate_info_top_n_caps_extension_rows() {
+    let repo = fresh_repo_with_identity();
+    commit_plain_file(repo.path(), "a.aaa", b"x");
+    commit_plain_file(repo.path(), "b.bbb", b"x");
+    commit_plain_file(repo.path(), "c.ccc", b"x");
+
+    let out = run_in(repo.path(), &["migrate", "info", "--top", "1"], b"");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // Exactly one *.<ext> row should appear.
+    let ext_lines: Vec<_> = stdout.lines().filter(|l| l.starts_with("*.")).collect();
+    assert_eq!(ext_lines.len(), 1, "expected 1 row, got: {ext_lines:?}");
+}
+
+#[test]
+fn migrate_info_include_filter_restricts_to_matching_paths() {
+    let repo = fresh_repo_with_identity();
+    commit_plain_file(repo.path(), "data.png", b"X");
+    commit_plain_file(repo.path(), "other.txt", b"Y");
+
+    let out = run_in(
+        repo.path(),
+        &["migrate", "info", "--include", "*.png"],
+        b"",
+    );
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("*.png"), "{stdout}");
+    assert!(!stdout.contains("*.txt"), "*.txt should be excluded by include filter: {stdout}");
+}
+
+#[test]
+fn migrate_info_pointers_follow_buckets_lfs_separately() {
+    let repo = fresh_repo_with_identity();
+    // Plain files vs. LFS pointer files — pointer should land in the
+    // "LFS Objects" bucket, not under *.bin.
+    commit_plain_file(repo.path(), "plain.bin", &[b'X'; 100]);
+    commit_pointer_at(repo.path(), "pointer.bin", &pointer_text(HELLO_OID, 999_999));
+
+    let out = run_in(repo.path(), &["migrate", "info"], b"");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("LFS Objects"), "expected LFS Objects bucket: {stdout}");
+    // *.bin should still appear (plain.bin), but with only 1 file (not 2).
+    let bin_line = stdout.lines().find(|l| l.starts_with("*.bin"));
+    assert!(bin_line.is_some(), "expected *.bin row: {stdout}");
+    assert!(bin_line.unwrap().contains("1/1"), "expected only plain.bin in *.bin: {stdout}");
+}
+
+#[test]
+fn migrate_info_pointers_ignore_drops_lfs_files_entirely() {
+    let repo = fresh_repo_with_identity();
+    commit_plain_file(repo.path(), "plain.bin", &[b'X'; 100]);
+    commit_pointer_at(repo.path(), "pointer.bin", &pointer_text(HELLO_OID, 999_999));
+
+    let out = run_in(repo.path(), &["migrate", "info", "--pointers", "ignore"], b"");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!stdout.contains("LFS Objects"), "ignore should drop LFS bucket: {stdout}");
+}
+
+#[test]
+fn migrate_info_pointers_no_follow_treats_pointers_as_regular_blobs() {
+    let repo = fresh_repo_with_identity();
+    commit_pointer_at(repo.path(), "x.bin", &pointer_text(HELLO_OID, 999_999));
+
+    let out = run_in(
+        repo.path(),
+        &["migrate", "info", "--pointers", "no-follow"],
+        b"",
+    );
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // No special LFS bucket; the pointer's blob is counted under *.bin
+    // using the actual blob size on disk (~133 bytes), not the pointer's
+    // recorded 999999.
+    assert!(!stdout.contains("LFS Objects"), "{stdout}");
+    assert!(stdout.contains("*.bin"), "{stdout}");
+}
+
+#[test]
+fn migrate_info_empty_repo_prints_nothing() {
+    let repo = fresh_repo_with_identity();
+    let out = run_in(repo.path(), &["migrate", "info"], b"");
+    // No commits; HEAD doesn't exist. Should succeed silently.
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(out.stdout.is_empty(), "stdout: {:?}", String::from_utf8_lossy(&out.stdout));
+}
+
+#[test]
+fn migrate_info_above_with_invalid_size_errors() {
+    let repo = fresh_repo_with_identity();
+    let out = run_in(repo.path(), &["migrate", "info", "--above", "garbage"], b"");
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("invalid size"), "{stderr}");
+}
+
+#[test]
+fn migrate_info_unknown_pointers_value_errors() {
+    let repo = fresh_repo_with_identity();
+    let out = run_in(repo.path(), &["migrate", "info", "--pointers", "yolo"], b"");
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("unknown value"), "{stderr}");
+}
+
 // ---------- post-checkout / post-commit / post-merge --------------------
 //
 // v0 ships these as exit-0 stubs. The real reason they exist now: our

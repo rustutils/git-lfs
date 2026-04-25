@@ -381,6 +381,26 @@ missing** and **why it was OK to skip for v0**.
   computing relative paths so the displayed paths look right when the
   user `cd`'d via a symlink. We just print repo-relative paths.
 
+### `cli migrate`
+Phase 1 (`info`) shipped. Phases 2 (`import`) and 3 (`export`) follow.
+
+**Phase 1 deferrals (info):**
+- **`--include-ref` / `--exclude-ref`.** v0 only honors positional
+  branch args + `--everything`. Append-style refspec flags are a small
+  follow-on; left out so the first cut keeps the CLI surface tight.
+- **`--unit <unit>`.** v0 always prints with auto-scaling KB/MB/GB.
+  Wire when someone needs a fixed unit for piping into a script.
+- **`--fixup`.** Infer the include set from existing `.gitattributes`
+  entries; defer with the rest of `gitattr` parsing (cf. `cli track`'s
+  recursive-scan deferral).
+- **`--object-map`.** Records old→new commit SHAs for tooling that
+  follows up a rewrite. Belongs with `import`/`export`, not `info`.
+
+**Phase 2/3 plan:** rewrite history via `git fast-export | transform |
+git fast-import` rather than reaching for a native git-object library
+(`gix`). Matches our "shell out to git" architecture; leaves the
+performance question for a v2 conversation.
+
 ### `cli post-checkout` / `post-commit` / `post-merge`
 - **Lockable read-only flag management.** Upstream uses these hooks to
   clear the write bit on `lockable`-tracked files that aren't
@@ -471,5 +491,6 @@ missing** and **why it was OK to skip for v0**.
   worth flagging.
 
 ### Whole-project
-- **Remaining commands** — `migrate` (the big one — history rewriting),
-  `merge-driver`, `dedup`, `ext`, `standalone-file`, `logs`, `update`.
+- **Remaining commands** — `migrate import` and `migrate export`
+  (Phase 2 and 3 of the migrate effort), `merge-driver`, `dedup`,
+  `ext`, `standalone-file`, `logs`, `update`.

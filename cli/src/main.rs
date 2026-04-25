@@ -16,6 +16,7 @@ mod hooks;
 mod install;
 mod lock;
 mod ls_files;
+mod migrate;
 mod pointer_cmd;
 mod pre_push;
 mod prune;
@@ -31,6 +32,35 @@ use fetcher::LfsFetcher;
 struct Cli {
     #[command(subcommand)]
     command: Command,
+}
+
+#[derive(Subcommand)]
+enum MigrateCmd {
+    /// Walk history and report file extensions by total size.
+    /// Read-only — no objects or history change.
+    Info {
+        /// Branches / refs to scan. Empty = current branch.
+        branches: Vec<String>,
+        /// Walk every local branch and tag.
+        #[arg(long)]
+        everything: bool,
+        /// Only include paths matching this glob (repeatable).
+        #[arg(short = 'I', long = "include")]
+        include: Vec<String>,
+        /// Exclude paths matching this glob (repeatable).
+        #[arg(short = 'X', long = "exclude")]
+        exclude: Vec<String>,
+        /// Only count files at least this large (e.g. `1mb`, `500k`).
+        #[arg(long, default_value = "")]
+        above: String,
+        /// Maximum extension rows to show.
+        #[arg(long, default_value_t = 5)]
+        top: usize,
+        /// How to handle existing LFS pointer blobs:
+        /// `follow` (default), `ignore`, or `no-follow`.
+        #[arg(long, default_value = "follow")]
+        pointers: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -165,6 +195,12 @@ enum Command {
     /// Show the LFS environment: version, endpoints, on-disk paths, and
     /// the three `filter.lfs.*` config values.
     Env,
+    /// Analyze or rewrite history for LFS conversion. Phase 1 ships
+    /// `info` only; `import` and `export` will land in subsequent phases.
+    Migrate {
+        #[command(subcommand)]
+        cmd: MigrateCmd,
+    },
     /// Replace pointer text in the working tree with actual LFS object
     /// content. With no args, materializes every LFS pointer in HEAD's
     /// tree. With paths (literal file names or trailing-slash directory
@@ -416,6 +452,35 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
         Command::Env => {
             env::run(&cwd)?;
         }
+        Command::Migrate { cmd } => match cmd {
+            MigrateCmd::Info {
+                branches,
+                everything,
+                include,
+                exclude,
+                above,
+                top,
+                pointers,
+            } => {
+                let pointer_mode = match pointers.as_str() {
+                    "follow" => migrate::PointerMode::Follow,
+                    "no-follow" => migrate::PointerMode::NoFollow,
+                    "ignore" => migrate::PointerMode::Ignore,
+                    other => return Err(format!("--pointers: unknown value {other:?}").into()),
+                };
+                let above_bytes = migrate::parse_size(&above)?;
+                let opts = migrate::InfoOptions {
+                    branches,
+                    everything,
+                    include,
+                    exclude,
+                    above: above_bytes,
+                    top,
+                    pointers: pointer_mode,
+                };
+                migrate::info(&cwd, &opts)?;
+            }
+        },
         Command::Checkout { paths } => {
             let opts = checkout::Options { paths };
             checkout::run(&cwd, &opts)?;
