@@ -382,24 +382,44 @@ missing** and **why it was OK to skip for v0**.
   user `cd`'d via a symlink. We just print repo-relative paths.
 
 ### `cli migrate`
-Phase 1 (`info`) shipped. Phases 2 (`import`) and 3 (`export`) follow.
+Phases 1 (`info`) and 2 (`import`) shipped. Phase 3 (`export`) follows.
 
 **Phase 1 deferrals (info):**
 - **`--include-ref` / `--exclude-ref`.** v0 only honors positional
   branch args + `--everything`. Append-style refspec flags are a small
   follow-on; left out so the first cut keeps the CLI surface tight.
 - **`--unit <unit>`.** v0 always prints with auto-scaling KB/MB/GB.
-  Wire when someone needs a fixed unit for piping into a script.
 - **`--fixup`.** Infer the include set from existing `.gitattributes`
-  entries; defer with the rest of `gitattr` parsing (cf. `cli track`'s
-  recursive-scan deferral).
-- **`--object-map`.** Records old→new commit SHAs for tooling that
-  follows up a rewrite. Belongs with `import`/`export`, not `info`.
+  entries; defer with the rest of `gitattr` parsing.
+- **`--object-map`.** Records old→new commit SHAs.
 
-**Phase 2/3 plan:** rewrite history via `git fast-export | transform |
-git fast-import` rather than reaching for a native git-object library
-(`gix`). Matches our "shell out to git" architecture; leaves the
-performance question for a v2 conversation.
+**Phase 2 deferrals (import):**
+- **First-commit-wins for shared blobs.** If the same blob OID appears
+  at two paths with conflicting filter outcomes, the first commit's
+  decision wins. Real-world impact is low (typical filters either
+  match or don't match by extension) but documented for clarity.
+- **In-memory blob buffering.** `--full-tree` emits every blob before
+  any commit; we buffer them all in RAM until commits drain them.
+  Massive repos may hit memory pressure. v2 fix: a streaming convert
+  that decides without knowing the path.
+- **No automatic ref backup.** We print pre-migrate ref SHAs so the
+  user can roll back manually. Upstream doesn't auto-backup either.
+- **`--object-map <file>`.** Same gap as info — emit old→new SHA
+  mapping for downstream tooling.
+- **`--verbose` per-commit progress.** v0 prints a one-line summary.
+- **`--fixup` mode.** Same `gitattr` parser dependency.
+- **Working-copy-clean prompt.** v0 errors out on a dirty tree;
+  upstream prompts. The friendly prompt requires TTY interaction.
+- **Pattern accumulation timing.** Patterns visible to commit N
+  reflect only what was discovered in commits ≤ N (matches upstream).
+  An ambitious v2 could two-pass the stream so every commit's
+  `.gitattributes` shows the *full* eventual pattern set.
+
+**Phase 3 plan:** `migrate export` is the inverse — pointer blobs
+become raw content via the same fast-export → transform → fast-import
+pipeline. Reuses parser/emitter; the transform side is roughly half
+the LOC of import (no `.gitattributes` rewrite, just pointer→content
+substitution).
 
 ### `cli post-checkout` / `post-commit` / `post-merge`
 - **Lockable read-only flag management.** Upstream uses these hooks to
@@ -491,6 +511,6 @@ performance question for a v2 conversation.
   worth flagging.
 
 ### Whole-project
-- **Remaining commands** — `migrate import` and `migrate export`
-  (Phase 2 and 3 of the migrate effort), `merge-driver`, `dedup`,
-  `ext`, `standalone-file`, `logs`, `update`.
+- **Remaining commands** — `migrate export` (Phase 3 of the migrate
+  effort), `merge-driver`, `dedup`, `ext`, `standalone-file`, `logs`,
+  `update`.

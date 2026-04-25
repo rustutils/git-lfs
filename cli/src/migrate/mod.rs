@@ -12,15 +12,13 @@
 //! This module hosts the shared types and helpers; subcommands live in
 //! sibling files.
 
-// Phase 2a: parser + emitter for the fast-export wire format. They're
-// still unused outside their own tests until Phase 2b lands the
-// transform layer, so silence dead-code warnings until then.
-#[allow(dead_code)]
 mod fast_export;
-#[allow(dead_code)]
 mod fast_import;
+mod import;
 mod info;
+mod transform;
 
+pub use import::{ImportOptions, import};
 pub use info::{InfoOptions, PointerMode, info};
 
 use std::path::Path;

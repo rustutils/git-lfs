@@ -1655,6 +1655,202 @@ fn ls_files_marker_star_when_real_content_present_at_right_size() {
     assert!(stdout.contains(" * x.bin"), "expected `*` marker, got: {stdout}");
 }
 
+// ---------- migrate import -----------------------------------------------
+
+#[test]
+fn migrate_import_rewrites_history_so_matching_blobs_become_pointers() {
+    let repo = fresh_repo_with_identity();
+    commit_plain_file(repo.path(), "readme.txt", b"plain text\n");
+    commit_plain_file(repo.path(), "data.bin", &vec![b'X'; 256]);
+
+    let out = run_in(
+        repo.path(),
+        &["migrate", "import", "--include", "*.bin"],
+        b"",
+    );
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Converted 1 blob"), "{stdout}");
+
+    let bin_after = std::fs::read(repo.path().join("data.bin")).unwrap();
+    let s = String::from_utf8_lossy(&bin_after);
+    assert!(
+        s.starts_with("version https://git-lfs.github.com/spec/v1\n"),
+        "data.bin should be pointer text: {s:?}",
+    );
+    let attrs = std::fs::read_to_string(repo.path().join(".gitattributes")).unwrap();
+    assert!(
+        attrs.contains("*.bin filter=lfs diff=lfs merge=lfs -text"),
+        "{attrs}",
+    );
+}
+
+#[test]
+fn migrate_import_preserves_non_matching_files() {
+    let repo = fresh_repo_with_identity();
+    commit_plain_file(repo.path(), "keep.txt", b"plain content\n");
+    commit_plain_file(repo.path(), "data.bin", &[b'X'; 100]);
+
+    let out = run_in(
+        repo.path(),
+        &["migrate", "import", "--include", "*.bin"],
+        b"",
+    );
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    let txt = std::fs::read(repo.path().join("keep.txt")).unwrap();
+    assert_eq!(txt, b"plain content\n");
+}
+
+#[test]
+fn migrate_import_above_filters_by_size() {
+    let repo = fresh_repo_with_identity();
+    commit_plain_file(repo.path(), "small.bin", &[0u8; 50]);
+    commit_plain_file(repo.path(), "large.bin", &vec![0u8; 5_000]);
+
+    let out = run_in(
+        repo.path(),
+        &["migrate", "import", "--include", "*.bin", "--above", "1k"],
+        b"",
+    );
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    let small = std::fs::read(repo.path().join("small.bin")).unwrap();
+    assert_eq!(small.len(), 50, "small.bin should remain plain");
+
+    let large = std::fs::read(repo.path().join("large.bin")).unwrap();
+    let s = String::from_utf8_lossy(&large);
+    assert!(
+        s.starts_with("version https://git-lfs.github.com/spec/v1\n"),
+        "large.bin should be pointer text: {s:?}",
+    );
+}
+
+#[test]
+fn migrate_import_refuses_with_no_filter_or_threshold() {
+    let repo = fresh_repo_with_identity();
+    commit_plain_file(repo.path(), "x.bin", b"x");
+
+    let out = run_in(repo.path(), &["migrate", "import"], b"");
+    assert!(!out.status.success(), "expected refusal");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("requires --include or --above"),
+        "{stderr}",
+    );
+}
+
+#[test]
+fn migrate_import_refuses_dirty_working_tree() {
+    let repo = fresh_repo_with_identity();
+    commit_plain_file(repo.path(), "x.bin", b"x");
+    std::fs::write(repo.path().join("x.bin"), b"changed").unwrap();
+
+    let out = run_in(
+        repo.path(),
+        &["migrate", "import", "--include", "*.bin"],
+        b"",
+    );
+    assert!(!out.status.success(), "expected refusal");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("uncommitted changes"), "{stderr}");
+}
+
+#[test]
+fn migrate_import_no_rewrite_appends_one_commit() {
+    let repo = fresh_repo_with_identity();
+    commit_plain_file(repo.path(), "x.bin", &[b'X'; 100]);
+
+    let head_before = head_oid_str(repo.path());
+
+    let out = run_in(
+        repo.path(),
+        &["migrate", "import", "--no-rewrite", "x.bin"],
+        b"",
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+
+    let head_after = head_oid_str(repo.path());
+    assert_ne!(head_before, head_after, "HEAD should advance");
+
+    let bin = std::fs::read(repo.path().join("x.bin")).unwrap();
+    let s = String::from_utf8_lossy(&bin);
+    assert!(s.starts_with("version https://git-lfs.github.com/spec/v1\n"), "{s:?}");
+
+    let parent_out = Command::new("git")
+        .arg("-C")
+        .arg(repo.path())
+        .args(["rev-parse", "HEAD~1"])
+        .output()
+        .unwrap();
+    let parent = String::from_utf8_lossy(&parent_out.stdout).trim().to_owned();
+    assert_eq!(parent, head_before);
+}
+
+#[test]
+fn migrate_import_no_rewrite_skips_already_pointer_files() {
+    let repo = fresh_repo_with_identity();
+    commit_pointer_at(repo.path(), "x.bin", &pointer_text(HELLO_OID, HELLO_LEN));
+    let head_before = head_oid_str(repo.path());
+
+    let out = run_in(
+        repo.path(),
+        &["migrate", "import", "--no-rewrite", "x.bin"],
+        b"",
+    );
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("Nothing to convert"),
+        "expected no-op message: {stdout}",
+    );
+    let head_after = head_oid_str(repo.path());
+    assert_eq!(head_before, head_after, "no commit should be appended");
+}
+
+#[test]
+fn migrate_import_no_rewrite_requires_paths() {
+    let repo = fresh_repo_with_identity();
+    let out = run_in(repo.path(), &["migrate", "import", "--no-rewrite"], b"");
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("requires one or more paths"), "{stderr}");
+}
+
+#[test]
+fn migrate_import_writes_lfs_object_to_store() {
+    let repo = fresh_repo_with_identity();
+    commit_plain_file(repo.path(), "data.bin", &[b'Y'; 200]);
+
+    let out = run_in(
+        repo.path(),
+        &["migrate", "import", "--include", "*.bin"],
+        b"",
+    );
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    use sha2::{Digest, Sha256};
+    let oid_bytes: [u8; 32] = Sha256::digest(vec![b'Y'; 200].as_slice()).into();
+    let oid_hex: String = oid_bytes.iter().fold(String::new(), |mut s, b| {
+        use std::fmt::Write;
+        let _ = write!(s, "{b:02x}");
+        s
+    });
+    let stored = repo
+        .path()
+        .join(".git/lfs/objects")
+        .join(&oid_hex[0..2])
+        .join(&oid_hex[2..4])
+        .join(&oid_hex);
+    assert!(stored.is_file(), "expected stored object at {stored:?}");
+    let content = std::fs::read(&stored).unwrap();
+    assert_eq!(content, vec![b'Y'; 200]);
+}
+
 // ---------- migrate info -------------------------------------------------
 
 /// Helper: write `path` with `content` and commit it. Used for migrate

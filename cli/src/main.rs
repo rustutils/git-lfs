@@ -36,6 +36,38 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum MigrateCmd {
+    /// Rewrite history so files matching the include filter become LFS
+    /// pointers. With `--no-rewrite`, history is preserved and one
+    /// new commit is appended on top of HEAD with the named paths
+    /// converted in place.
+    Import {
+        /// Without `--no-rewrite`: branches/refs to rewrite (empty =
+        /// current branch). With `--no-rewrite`: working-tree paths
+        /// to convert.
+        args: Vec<String>,
+        /// Walk every local branch and tag.
+        #[arg(long)]
+        everything: bool,
+        /// Convert paths matching this glob (repeatable). Required
+        /// unless `--above` is set or `--no-rewrite` is given.
+        #[arg(short = 'I', long = "include")]
+        include: Vec<String>,
+        /// Exclude paths matching this glob (repeatable).
+        #[arg(short = 'X', long = "exclude")]
+        exclude: Vec<String>,
+        /// Only convert files at least this large (e.g. `1mb`,
+        /// `500k`).
+        #[arg(long, default_value = "")]
+        above: String,
+        /// Don't rewrite history. Read named paths from the working
+        /// tree, convert in place, append one new commit on top of
+        /// HEAD.
+        #[arg(long)]
+        no_rewrite: bool,
+        /// Commit message for the `--no-rewrite` commit.
+        #[arg(short, long)]
+        message: Option<String>,
+    },
     /// Walk history and report file extensions by total size.
     /// Read-only — no objects or history change.
     Info {
@@ -453,6 +485,35 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             env::run(&cwd)?;
         }
         Command::Migrate { cmd } => match cmd {
+            MigrateCmd::Import {
+                args,
+                everything,
+                include,
+                exclude,
+                above,
+                no_rewrite,
+                message,
+            } => {
+                let above_bytes = migrate::parse_size(&above)?;
+                // Split: in --no-rewrite mode the positional args are
+                // working-tree paths; otherwise they're branches.
+                let (branches, paths) = if no_rewrite {
+                    (Vec::new(), args)
+                } else {
+                    (args, Vec::new())
+                };
+                let opts = migrate::ImportOptions {
+                    branches,
+                    everything,
+                    include,
+                    exclude,
+                    above: above_bytes,
+                    no_rewrite,
+                    message,
+                    paths,
+                };
+                migrate::import(&cwd, &opts)?;
+            }
             MigrateCmd::Info {
                 branches,
                 everything,
