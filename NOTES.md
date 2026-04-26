@@ -98,14 +98,6 @@ missing** and **why it was OK to skip for v0**.
 - **Working-tree path argument.** Both clean and smudge accept a path arg
   (e.g. `git-lfs clean -- foo.bin`); upstream uses it for progress/log
   messages and to stat the file for size. We currently ignore it.
-- **filter-process hangs the upstream shell test suite.** Any test that
-  does `git lfs track *.dat` then `git add *.dat` (e.g. `t-fsck.sh`,
-  `t-status.sh`, `t-ls-files.sh`) deadlocks: our worker is stuck in
-  `read_exact` on stdin while git is waiting for output. Cargo
-  integration tests pass, so the protocol is *almost* right. Needs a
-  detailed pkt-line trace against upstream Go's filter-process to
-  pinpoint the missing/extra flush. Until fixed, those upstream tests
-  can't run end-to-end against our binary.
 
 ### `cli` smudge / filter-process fetcher
 - **`lfs.url` discovery.** `LfsFetcher` only reads `lfs.url` from the local

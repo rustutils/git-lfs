@@ -104,8 +104,22 @@ fn handshake<R: Read, W: Write>(
     writer.write_text("version=2")?;
     writer.write_flush()?;
 
-    // Capability negotiation. We require clean + smudge; we don't yet
-    // advertise `delay`, so even if git offers it we just won't reply with it.
+    // Send our capabilities *before* reading the client's. The protocol
+    // doc reads as if the client speaks first ("capability=…" then a
+    // flush, then server replies), but real git serializes the two
+    // exchanges and won't send its capabilities until it has seen the
+    // server's. Upstream Go's filter-process advertises preemptively for
+    // the same reason — diverging from that reordering deadlocks any
+    // shell-test that does `git add` of an LFS-tracked path.
+    writer.write_text("capability=clean")?;
+    writer.write_text("capability=smudge")?;
+    writer.write_flush()?;
+    writer.flush()?;
+
+    // Drain the client's advertised capabilities (informational — we
+    // don't gate on them). We *do* require clean + smudge to be in the
+    // set so that misconfigured callers get a clear error rather than
+    // silent "command not understood" later.
     let mut caps = Vec::new();
     while let Some(line) = reader.read_text()? {
         caps.push(line);
@@ -117,10 +131,6 @@ fn handshake<R: Read, W: Write>(
             )));
         }
     }
-    writer.write_text("capability=clean")?;
-    writer.write_text("capability=smudge")?;
-    writer.write_flush()?;
-    writer.flush()?;
 
     Ok(())
 }
