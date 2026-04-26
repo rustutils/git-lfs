@@ -7,6 +7,7 @@ use std::io;
 use std::path::Path;
 use std::process::Command;
 
+pub mod attr;
 pub mod cat_file;
 pub mod config;
 pub mod diff_index;
@@ -16,6 +17,7 @@ pub mod pktline;
 pub mod rev_list;
 pub mod scanner;
 
+pub use attr::AttrSet;
 pub use cat_file::{BlobContent, CatFileBatch, CatFileBatchCheck, CatFileHeader};
 pub use config::ConfigScope;
 pub use diff_index::{DiffEntry, diff_index};

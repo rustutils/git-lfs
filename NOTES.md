@@ -274,8 +274,10 @@ missing** and **why it was OK to skip for v0**.
   walks every `.gitattributes` from cwd to repo root, plus `.git/info/attributes`,
   and shows each pattern's source. `t-track.sh` greps for `(a/.gitattributes)`,
   `(.git/info/attributes)`, etc.
-- **Macro processor / proper gitattr parser.** We split on whitespace; this
-  fails on quoted patterns and macro expansions.
+- **Macro processor / proper gitattr parser.** ~~We split on whitespace; this
+  fails on quoted patterns and macro expansions.~~ Parser landed in
+  `git-lfs-git::attr` (backed by `gix-attributes`); wire it into `track`'s
+  recursive listing when `--recursive` arrives.
 - **`--lockable` / `--not-lockable`.** Lockable files get an extra `lockable`
   attribute and become read-only on checkout. File-locking territory —
   milestone 3.
@@ -403,7 +405,9 @@ import and export share it.
   follow-on; left out so the first cut keeps the CLI surface tight.
 - **`--unit <unit>`.** v0 always prints with auto-scaling KB/MB/GB.
 - **`--fixup`.** Infer the include set from existing `.gitattributes`
-  entries; defer with the rest of `gitattr` parsing.
+  entries. Parser is now available (`git-lfs-git::attr`); the remaining
+  work is reading `.gitattributes` from history rather than the working
+  tree (the parser only knows about the live workdir today).
 - **`--object-map`.** Records old→new commit SHAs.
 
 **Phase 2 deferrals (import):**
@@ -420,7 +424,8 @@ import and export share it.
 - **`--object-map <file>`.** Same gap as info — emit old→new SHA
   mapping for downstream tooling.
 - **`--verbose` per-commit progress.** v0 prints a one-line summary.
-- **`--fixup` mode.** Same `gitattr` parser dependency.
+- **`--fixup` mode.** Parser available; needs history-aware
+  `.gitattributes` loading (see info above).
 - **Working-copy-clean prompt.** v0 errors out on a dirty tree;
   upstream prompts. The friendly prompt requires TTY interaction.
 - **Pattern accumulation timing.** Patterns visible to commit N
@@ -457,7 +462,8 @@ import and export share it.
 - **Implementation when lockable lands** needs three pieces:
   1. `track --lockable` writes the `lockable` attribute alongside
      `filter=lfs` (also a deferral on `cli track`).
-  2. A "lockable patterns" reader on top of `.gitattributes`.
+  2. A "lockable patterns" reader on top of `.gitattributes`. Parser
+     available — see `git-lfs-git::attr::AttrSet::is_lockable`.
   3. Per-platform read-only flag manipulation: chmod on Unix, the
      read-only file attribute on Windows. `Permissions::set_readonly`
      in `std::fs` covers both, but only the user-write bit on Unix.
@@ -517,7 +523,8 @@ import and export share it.
   `git ls-files -s` index walk.
 - **`unexpectedGitObject` detection.** Upstream's `--pointers` mode
   flags blobs that *should* be pointers (per `.gitattributes`) but
-  don't parse. Needs gitattribute walking we haven't ported.
+  don't parse. Parser available (`git-lfs-git::attr::AttrSet`); just
+  needs wiring through fsck's blob walk.
 - **`lfs.fetchexclude` honor.** Skip pointers whose paths match the
   configured exclude pattern, otherwise users who fetched a subset
   see false-positive "missing" reports.

@@ -28,9 +28,12 @@ git-lfs-creds    = { path = "creds",    version = "0.0.0" }
 git-lfs-filter   = { path = "filter",   version = "0.0.0" }
 
 # External crates shared across multiple members.
-thiserror   = "2"
-globset     = "0.4"
-tempfile    = "3"
+thiserror      = "2"
+globset        = "0.4"
+tempfile       = "3"
+gix-attributes = "0.32"
+gix-glob       = "0.25"
+bstr           = "1"
 serde       = { version = "1", features = ["derive"] }
 serde_json  = "1"
 sha1        = "0.10"

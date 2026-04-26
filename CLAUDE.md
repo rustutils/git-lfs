@@ -54,6 +54,12 @@ inventing a new one.
   (attributes, refs, filter-process framing) without chasing pure-Rust git
   library coverage gaps. Hot-path optimization to `gix` is a possible v2
   move, not a v0 concern.
+  - The "no gix" rule is about *runtime operations* — git-lfs uses whichever
+    `git` binary the user has installed, never bundling its own. Pulling
+    `gix-*` crates as parsing libraries (`gix-attributes`, `gix-glob`, …)
+    is fine: those parse stable file formats and don't replace the system
+    git. The rule kicks in when proposing to use `gix` to *do* git
+    operations (refs, rev-list, cat-file) instead of shelling out.
 - **Edition: 2024.** No MSRV pinned for now.
 - **Async stack: tokio + reqwest (rustls).** Sync everywhere disk I/O dominates
   (`pointer/`, `store/`, `git/`, `filter/`); async kicks in at `api/` (HTTP)

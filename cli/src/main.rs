@@ -490,9 +490,16 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
         }
         Command::Track { patterns } => {
             if patterns.is_empty() {
+                let listing = git_lfs_git::attr::list_lfs_patterns(&cwd)?;
                 println!("Listing tracked patterns");
-                for p in track::list(&cwd)? {
-                    println!("    {p} (.gitattributes)");
+                for p in &listing.tracked {
+                    println!("    {} ({})", p.pattern, p.source);
+                }
+                if !listing.excluded.is_empty() {
+                    println!("Listing excluded patterns");
+                    for p in &listing.excluded {
+                        println!("    {} ({})", p.pattern, p.source);
+                    }
                 }
             } else {
                 let outcome = track::track(&cwd, &patterns)?;

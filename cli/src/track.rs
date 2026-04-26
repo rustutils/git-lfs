@@ -138,15 +138,6 @@ pub fn track(cwd: &Path, patterns: &[String]) -> Result<TrackOutcome, TrackError
     Ok(TrackOutcome { added, already })
 }
 
-/// Return the LFS-tracked patterns from `.gitattributes` in `cwd`.
-pub fn list(cwd: &Path) -> Result<Vec<String>, TrackError> {
-    Ok(Attributes::read(cwd)?
-        .lfs_patterns()
-        .into_iter()
-        .map(String::from)
-        .collect())
-}
-
 /// Outcome of an [`untrack`] call: which patterns were removed vs. weren't
 /// tracked to begin with.
 pub struct UntrackOutcome {
@@ -181,26 +172,6 @@ mod tests {
 
     fn write(dir: &Path, content: &str) {
         fs::write(dir.join(ATTRIBUTES_FILE), content).unwrap();
-    }
-
-    #[test]
-    fn list_empty_when_no_file() {
-        let tmp = TempDir::new().unwrap();
-        assert!(list(tmp.path()).unwrap().is_empty());
-    }
-
-    #[test]
-    fn list_returns_only_filter_lfs_patterns() {
-        let tmp = TempDir::new().unwrap();
-        write(
-            tmp.path(),
-            "* text=auto\n\
-             *.jpg filter=lfs diff=lfs merge=lfs -text\n\
-             # comment\n\
-             *.zip filter=lfs -text\n\
-             *.cs diff=csharp\n",
-        );
-        assert_eq!(list(tmp.path()).unwrap(), vec!["*.jpg", "*.zip"]);
     }
 
     #[test]
@@ -251,14 +222,16 @@ mod tests {
         )
         .unwrap();
         assert_eq!(outcome.added.len(), 3);
-        assert_eq!(list(tmp.path()).unwrap(), vec!["*.jpg", "*.png", "*.zip"]);
+        let attrs = Attributes::read(tmp.path()).unwrap();
+        assert_eq!(attrs.lfs_patterns(), vec!["*.jpg", "*.png", "*.zip"]);
     }
 
     #[test]
     fn negative_filter_lines_are_not_tracked() {
         let tmp = TempDir::new().unwrap();
         write(tmp.path(), "*.gif -filter -text\n");
-        assert!(list(tmp.path()).unwrap().is_empty());
+        let attrs = Attributes::read(tmp.path()).unwrap();
+        assert!(attrs.lfs_patterns().is_empty());
     }
 
     #[test]
