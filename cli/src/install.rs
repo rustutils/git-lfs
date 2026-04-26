@@ -101,6 +101,33 @@ fn install_all_hooks(cwd: &Path, opts: &InstallOptions) -> Result<(), InstallErr
     Ok(())
 }
 
+/// Best-effort hook installer used by `git lfs track`'s auto-install
+/// pathway: writes any of our four hooks that don't already exist (or
+/// already match our template), silently *skips* hooks that exist with
+/// user-edited contents. Never errors on conflict — track shouldn't
+/// fail because someone has a custom pre-push hook.
+pub fn try_install_hooks(cwd: &Path) -> Result<(), InstallError> {
+    let hooks_dir = git_dir(cwd)?.join("hooks");
+    fs::create_dir_all(&hooks_dir)?;
+    for hook in HOOKS {
+        let path = hooks_dir.join(hook);
+        let wanted = HOOK_TEMPLATE.replace("{{Command}}", hook);
+        match fs::read_to_string(&path) {
+            Ok(existing) => {
+                if existing.trim() == wanted.trim() || existing.trim().is_empty() {
+                    write_hook(&path, &wanted)?;
+                }
+                // Otherwise: a user-edited hook lives there. Leave it.
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                write_hook(&path, &wanted)?;
+            }
+            Err(e) => return Err(InstallError::Io(e)),
+        }
+    }
+    Ok(())
+}
+
 fn install_one_hook(hooks_dir: &Path, hook: &str, opts: &InstallOptions) -> Result<(), InstallError> {
     let path = hooks_dir.join(hook);
     let wanted = HOOK_TEMPLATE.replace("{{Command}}", hook);

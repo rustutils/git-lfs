@@ -15,6 +15,7 @@ mod fsck;
 mod hooks;
 mod install;
 mod lock;
+mod lockable;
 mod ls_files;
 mod migrate;
 mod pointer_cmd;
@@ -496,13 +497,13 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             }
         }
         Command::PostCheckout { args } => {
-            hooks::post_checkout(&args)?;
+            hooks::post_checkout(&cwd, &args)?;
         }
         Command::PostCommit { args } => {
-            hooks::post_commit(&args)?;
+            hooks::post_commit(&cwd, &args)?;
         }
         Command::PostMerge { args } => {
-            hooks::post_merge(&args)?;
+            hooks::post_merge(&cwd, &args)?;
         }
         Command::PrePush { remote, url: _ } => {
             let stdin = io::stdin().lock();

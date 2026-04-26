@@ -270,14 +270,6 @@ missing** and **why it was OK to skip for v0**.
   will hit the conflict path; mention this once we care about that audience.
 
 ### `cli track`
-- **`--lockable` working-tree side** — write-side shipped (lines in
-  `.gitattributes` get the `lockable` attribute; re-tracking with
-  `--lockable` / `--not-lockable` rewrites the line in place). Upstream
-  *also* `chmod -w`s every working-tree file matching a `lockable`
-  pattern at track time (and `chmod +w` on `--not-lockable`); deferred
-  alongside the lockable post-checkout/post-commit/post-merge hook
-  bodies. `t-track.sh::track lockable read-only/read-write` covers
-  this.
 - **`--filename`.** Escape glob characters in a literal filename so
   `[foo]bar.txt` matches the literal file rather than the glob.
   `t-track.sh::track: escaped glob pattern …` (×2) and the second
@@ -294,10 +286,6 @@ missing** and **why it was OK to skip for v0**.
   walks per-directory `.gitattributes` + `.git/info/attributes`, but
   doesn't read the file pointed at by `core.attributesfile`.
   `t-track.sh::track (global gitattributes)` covers this.
-- **Auto-install hooks.** Upstream `track` calls `installHooks(false)` so
-  users can bootstrap LFS via track alone. We keep the responsibilities
-  separate and require explicit `git lfs install` — and the
-  `GIT_LFS_TRACK_NO_INSTALL_HOOKS` test passes for free as a result.
 
 ### Tests
 - **Native `cargo test` port of the upstream `t-*.sh` suite.** The
@@ -457,26 +445,17 @@ import and export share it.
   first-encountered M directive's path decides.
 
 ### `cli post-checkout` / `post-commit` / `post-merge`
-- **Lockable read-only flag management.** Upstream uses these hooks to
-  clear the write bit on `lockable`-tracked files that aren't
-  currently locked by the user, so accidental edits become a build-
-  level error rather than a "wait, who's holding this?" mystery. We
-  ship the three subcommands as exit-0 stubs because:
-  - Without them, `git lfs install`'s hook scripts would error on
-    every `git checkout`/`commit`/`merge` (unrecognized subcommand).
-  - Without `track --lockable`, no user has lockable patterns
-    configured, so upstream itself early-exits in this case anyway.
-- **Implementation when lockable lands** needs three pieces:
-  1. `track --lockable` writes the `lockable` attribute alongside
-     `filter=lfs` (also a deferral on `cli track`).
-  2. A "lockable patterns" reader on top of `.gitattributes`. Parser
-     available — see `git-lfs-git::attr::AttrSet::is_lockable`.
-  3. Per-platform read-only flag manipulation: chmod on Unix, the
-     read-only file attribute on Windows. `Permissions::set_readonly`
-     in `std::fs` covers both, but only the user-write bit on Unix.
-- **Argument shapes are pinned by tests.** post-checkout takes
-  `<prev-sha> <post-sha> <flag>`, post-commit takes none, post-merge
-  takes `<squash-flag>`. Real implementations land behind these.
+- **Diff-tree optimization.** All three hooks currently call
+  `enforce_workdir`, which `git ls-files`-walks the entire index and
+  chmods every lockable match. Upstream optimizes by diffing the
+  before/after tree (post-checkout/post-merge) or the index (post-
+  commit) and only re-stating changed paths. Worth doing once we hit a
+  large-repo perf complaint; correctness is the same either way.
+- **`t-post-checkout.sh` and `t-post-merge.sh`** depend on the excluded
+  `lfstest-testutils` helper (`addcommits` with
+  `GIT_LFS_SET_LOCKABLE_READONLY=0`), so they can't run end-to-end
+  here even with full lockable support — same skip rationale as the
+  other three excluded helpers.
 
 ### `cli checkout`
 - **`--to <path> [--ours|--theirs|--base]` conflict-resolution form.**

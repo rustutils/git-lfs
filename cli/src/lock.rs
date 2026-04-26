@@ -16,6 +16,7 @@ use serde::Serialize;
 use tokio::runtime::Runtime;
 
 use crate::fetcher::build_api_client;
+use crate::lockable;
 
 #[derive(Debug, thiserror::Error)]
 pub enum LockCommandError {
@@ -85,6 +86,12 @@ pub fn lock(cwd: &Path, paths: &[String], opts: &LockOptions) -> Result<bool, Lo
                 if !opts.json {
                     println!("Locked {path}");
                 }
+                // The user took the lock to edit the file; if the
+                // file is currently read-only (because it matches a
+                // lockable pattern and the previous post-* hook
+                // chmod'd it), they need it writable. Best-effort —
+                // a chmod failure shouldn't fail the lock op.
+                let _ = lockable::force_writable(&root, &path);
                 locks.push(lock);
             }
             Err(CreateLockError::Conflict { existing, message }) => {
@@ -280,6 +287,10 @@ pub fn unlock(
         }
     } else {
         let root = repo_root(cwd).map_err(LockCommandError::Build)?;
+        // Built once so we can flip a successfully-released lockable
+        // path back to read-only without re-parsing .gitattributes
+        // for every path.
+        let attrs = git_lfs_git::AttrSet::from_workdir(&root).ok();
         for raw in paths {
             let path = match resolve_lock_path(cwd, &root, raw) {
                 Ok(p) => p,
@@ -350,7 +361,14 @@ pub fn unlock(
                 Ok(_) => {
                     if !opts.json {
                         println!("Unlocked {path}");
-                    } else {
+                    }
+                    // Restore the read-only invariant for lockable
+                    // paths now that we no longer hold the lock.
+                    if let Some(attrs) = attrs.as_ref() {
+                        let _ =
+                            lockable::enforce_readonly_if_lockable(&root, attrs, &path);
+                    }
+                    if opts.json {
                         report.push(UnlockJsonEntry {
                             id: Some(id),
                             path: Some(path),

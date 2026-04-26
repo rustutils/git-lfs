@@ -7,6 +7,8 @@ use std::process::Command;
 
 use serde::Serialize;
 
+use crate::install;
+use crate::lockable::{self, HeldLocks};
 use crate::track::{self, LockableMode, TrackOptions, TrackResult};
 
 pub struct Args<'a> {
@@ -30,6 +32,14 @@ pub fn run(args: Args<'_>) -> Result<u8, Box<dyn std::error::Error>> {
     // tree" failures.
     if let Some(code) = check_repo_context(args.cwd) {
         return Ok(code);
+    }
+
+    // Auto-install hooks (mirroring upstream's `installHooks(false)`
+    // call from `git lfs track`). Honors `GIT_LFS_TRACK_NO_INSTALL_HOOKS`
+    // so users who deliberately skip hook installation aren't bothered.
+    // Best-effort — we never fail the track on hook trouble.
+    if std::env::var_os("GIT_LFS_TRACK_NO_INSTALL_HOOKS").is_none() {
+        let _ = install::try_install_hooks(args.cwd);
     }
 
     if args.patterns.is_empty() {
@@ -71,26 +81,66 @@ pub fn run(args: Args<'_>) -> Result<u8, Box<dyn std::error::Error>> {
         }
     }
 
-    // Re-stage files already in the index that match the new pattern,
-    // so they go through the LFS clean filter on the next commit. With
-    // `--dry-run`, just print what would happen.
+    // Re-stage files already in the index that match the new pattern
+    // (so they go through the LFS clean filter on the next commit) and
+    // apply the lockable invariant. The chmod side-effects happen even
+    // for `AlreadyTracked` patterns so a re-issued `--lockable` /
+    // `--not-lockable` against a previously-tracked pattern still
+    // converges the working tree. With `--dry-run`, neither side
+    // happens.
+    //
+    // Both `attrs` and `held` are lazy: built only when the first
+    // pattern with matching files needs them. This avoids the
+    // credential-helper churn of an unnecessary `verify_locks` call
+    // when there are no .dat-or-whatever files in the index yet.
+    let mut attrs: Option<git_lfs_git::AttrSet> = None;
+    let mut held: Option<HeldLocks> = None;
+
     for p in &outcome.patterns {
-        if matches!(p.result, TrackResult::AlreadyTracked) {
+        let restage = !matches!(p.result, TrackResult::AlreadyTracked);
+        let matches = lockable::ls_files_matching(args.cwd, &p.pattern)?;
+        if restage {
+            if args.verbose {
+                println!(
+                    "Found {} files previously added to Git matching pattern: {}",
+                    matches.len(),
+                    p.pattern
+                );
+            }
+            for path in &matches {
+                println!("Touching \"{path}\"");
+            }
+            if !args.dry_run && !matches.is_empty() {
+                git_add(args.cwd, &matches)?;
+            }
+        }
+
+        if args.dry_run || matches.is_empty() {
             continue;
         }
-        let matches = ls_files_matching(args.cwd, &p.pattern)?;
-        if args.verbose {
-            println!(
-                "Found {} files previously added to Git matching pattern: {}",
-                matches.len(),
-                p.pattern
-            );
-        }
-        for path in &matches {
-            println!("Touching \"{path}\"");
-        }
-        if !args.dry_run && !matches.is_empty() {
-            git_add(args.cwd, &matches)?;
+        match lockable {
+            LockableMode::Yes => {
+                if attrs.is_none() {
+                    attrs = Some(git_lfs_git::AttrSet::from_workdir(args.cwd)?);
+                }
+                if held.is_none() {
+                    held = Some(HeldLocks::from_server(args.cwd));
+                }
+                lockable::apply_modes(
+                    args.cwd,
+                    matches.into_iter(),
+                    attrs.as_ref().unwrap(),
+                    held.as_ref().unwrap(),
+                )?;
+            }
+            LockableMode::No => {
+                // Pattern just lost its `lockable` attribute; undo any
+                // earlier read-only state on matching files.
+                for path in &matches {
+                    lockable::force_writable(args.cwd, path)?;
+                }
+            }
+            LockableMode::Default => {}
         }
     }
 
@@ -188,27 +238,6 @@ fn git_bool(cwd: &Path, flag: &str) -> Option<bool> {
         "false" => Some(false),
         _ => None,
     }
-}
-
-/// Run `git ls-files -z -- <pattern>` and return the matched paths.
-fn ls_files_matching(cwd: &Path, pattern: &str) -> std::io::Result<Vec<String>> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(cwd)
-        .args(["ls-files", "-z", "--", pattern])
-        .output()?;
-    if !out.status.success() {
-        // ls-files with an unmatched pattern (or an unusual one git
-        // can't make sense of) just returns empty — only treat it as a
-        // hard error if git itself crashed.
-        return Ok(Vec::new());
-    }
-    Ok(out
-        .stdout
-        .split(|&b| b == 0)
-        .filter(|chunk| !chunk.is_empty())
-        .map(|b| String::from_utf8_lossy(b).into_owned())
-        .collect())
 }
 
 fn git_add(cwd: &Path, paths: &[String]) -> std::io::Result<()> {
