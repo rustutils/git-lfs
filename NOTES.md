@@ -98,6 +98,14 @@ missing** and **why it was OK to skip for v0**.
 - **Working-tree path argument.** Both clean and smudge accept a path arg
   (e.g. `git-lfs clean -- foo.bin`); upstream uses it for progress/log
   messages and to stat the file for size. We currently ignore it.
+- **filter-process hangs the upstream shell test suite.** Any test that
+  does `git lfs track *.dat` then `git add *.dat` (e.g. `t-fsck.sh`,
+  `t-status.sh`, `t-ls-files.sh`) deadlocks: our worker is stuck in
+  `read_exact` on stdin while git is waiting for output. Cargo
+  integration tests pass, so the protocol is *almost* right. Needs a
+  detailed pkt-line trace against upstream Go's filter-process to
+  pinpoint the missing/extra flush. Until fixed, those upstream tests
+  can't run end-to-end against our binary.
 
 ### `cli` smudge / filter-process fetcher
 - **`lfs.url` discovery.** `LfsFetcher` only reads `lfs.url` from the local
@@ -521,10 +529,11 @@ import and export share it.
   pointers fail fsck if their object isn't in the store). We only
   scan the named ref's history. Implementation: pair our scan with a
   `git ls-files -s` index walk.
-- **`unexpectedGitObject` detection.** Upstream's `--pointers` mode
+- ~~**`unexpectedGitObject` detection.** Upstream's `--pointers` mode
   flags blobs that *should* be pointers (per `.gitattributes`) but
-  don't parse. Parser available (`git-lfs-git::attr::AttrSet`); just
-  needs wiring through fsck's blob walk.
+  don't parse.~~ Shipped — fsck loads `AttrSet::from_workdir`, walks
+  every blob via `scan_tree_blobs`, and flags any LFS-tracked path
+  whose blob fails to parse as a canonical pointer (or is too big).
 - **`lfs.fetchexclude` honor.** Skip pointers whose paths match the
   configured exclude pattern, otherwise users who fetched a subset
   see false-positive "missing" reports.

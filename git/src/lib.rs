@@ -24,7 +24,7 @@ pub use diff_index::{DiffEntry, diff_index};
 pub use endpoint::{EndpointError, derive_lfs_url, endpoint_for_remote};
 pub use path::{git_dir, lfs_dir};
 pub use rev_list::{RevListEntry, rev_list};
-pub use scanner::{PointerEntry, scan_pointers, scan_tree};
+pub use scanner::{PointerEntry, TreeBlob, scan_pointers, scan_tree, scan_tree_blobs};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

@@ -752,7 +752,18 @@ fn fresh_repo_with_identity() -> TempDir {
 }
 
 fn git_in(cwd: &Path, args: &[&str]) {
-    let status = Command::new("git").arg("-C").arg(cwd).args(args).status().unwrap();
+    // Hermetic: the developer's ~/.gitconfig may have `filter.lfs.clean`
+    // installed globally, which would clean-filter test fixtures behind
+    // our back. Strip global + system config so test repos see only what
+    // the test sets up.
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(args)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .status()
+        .unwrap();
     assert!(status.success(), "git {args:?} failed");
 }
 
@@ -761,6 +772,15 @@ fn commit_pointer_at(repo: &Path, path: &str, pointer_text: &[u8]) {
     std::fs::write(repo.join(path), pointer_text).unwrap();
     git_in(repo, &["add", path]);
     git_in(repo, &["commit", "-q", "-m", &format!("add {path}")]);
+}
+
+/// Write `.gitattributes` content to `repo` and commit it. Used by tests
+/// that need an `.gitattributes`-aware command (e.g. fsck) to know which
+/// paths are LFS-tracked.
+fn commit_gitattributes(repo: &Path, content: &str) {
+    std::fs::write(repo.join(".gitattributes"), content).unwrap();
+    git_in(repo, &["add", ".gitattributes"]);
+    git_in(repo, &["commit", "-q", "-m", "add .gitattributes"]);
 }
 
 fn pointer_text(oid: &str, size: usize) -> Vec<u8> {
@@ -2638,6 +2658,7 @@ fn fsck_pointers_only_skips_object_check() {
     // `--objects`; with `--pointers` only, we ignore that and only
     // report non-canonical pointers.
     let repo = fresh_repo_with_identity();
+    commit_gitattributes(repo.path(), "*.bin filter=lfs diff=lfs merge=lfs -text\n");
     commit_pointer_at(
         repo.path(),
         "missing.bin",
@@ -2653,6 +2674,7 @@ fn fsck_pointers_only_skips_object_check() {
 #[test]
 fn fsck_pointers_flags_non_canonical_pointer() {
     let repo = fresh_repo_with_identity();
+    commit_gitattributes(repo.path(), "*.bin filter=lfs diff=lfs merge=lfs -text\n");
     // Pointer with no trailing newline — parses, isn't canonical.
     let mut p = pointer_text(HELLO_OID, HELLO_LEN);
     assert_eq!(p.last(), Some(&b'\n'));
@@ -2663,7 +2685,36 @@ fn fsck_pointers_flags_non_canonical_pointer() {
     assert_eq!(out.status.code(), Some(1));
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("nonCanonicalPointer"), "{stdout}");
-    assert!(stdout.contains("non.bin"), "{stdout}");
+}
+
+#[test]
+fn fsck_pointers_flags_unexpected_git_object_for_non_pointer_blob() {
+    // A path that .gitattributes tracks as filter=lfs but whose
+    // committed blob isn't a valid pointer should be reported as
+    // `unexpectedGitObject` — matches upstream's t-fsck.sh behavior.
+    let repo = fresh_repo_with_identity();
+    commit_gitattributes(repo.path(), "*.bin filter=lfs diff=lfs merge=lfs -text\n");
+    // Plain text content — definitely not a pointer.
+    commit_pointer_at(repo.path(), "rogue.bin", b"not a pointer at all\n");
+
+    let out = run_in(repo.path(), &["fsck", "--pointers"], b"");
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("unexpectedGitObject"), "{stdout}");
+    assert!(stdout.contains("rogue.bin"), "{stdout}");
+}
+
+#[test]
+fn fsck_pointers_skips_blobs_for_paths_not_lfs_tracked() {
+    // A non-canonical pointer at a path that isn't filter=lfs should
+    // not be flagged — fsck classifies *against* .gitattributes.
+    let repo = fresh_repo_with_identity();
+    let mut p = pointer_text(HELLO_OID, HELLO_LEN);
+    p.pop();
+    commit_pointer_at(repo.path(), "untracked.bin", &p);
+
+    let out = run_in(repo.path(), &["fsck", "--pointers"], b"");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
 }
 
 #[test]

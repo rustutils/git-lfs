@@ -98,6 +98,65 @@ pub fn scan_pointers(
     Ok(out)
 }
 
+/// One blob found while walking a tree, before any pointer-parsing or
+/// size-based filtering. Paths and OIDs are reported verbatim from
+/// `git ls-tree`.
+#[derive(Debug, Clone)]
+pub struct TreeBlob {
+    /// Working-tree path of the blob.
+    pub path: PathBuf,
+    /// Git blob OID (the SHA-1 of the blob in the object database).
+    pub blob_oid: String,
+    /// Size of the blob in bytes, per `cat-file --batch-check`.
+    pub size: u64,
+}
+
+/// Walk the tree at `reference` and return *every* blob — no size filter,
+/// no pointer parsing. Used by `fsck --pointers` for its full-tree sweep
+/// when classifying paths against `.gitattributes`.
+pub fn scan_tree_blobs(cwd: &Path, reference: &str) -> Result<Vec<TreeBlob>, Error> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["ls-tree", "-r", "-z", reference])
+        .output()?;
+    if !out.status.success() {
+        return Err(Error::Failed(format!(
+            "git ls-tree failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    let mut bcheck = CatFileBatchCheck::spawn(cwd)?;
+    let mut blobs = Vec::new();
+    for record in out.stdout.split(|&b| b == 0).filter(|s| !s.is_empty()) {
+        let s = std::str::from_utf8(record).map_err(|e| {
+            Error::Failed(format!("ls-tree: non-utf8 record: {e}"))
+        })?;
+        let (header, path) = s
+            .split_once('\t')
+            .ok_or_else(|| Error::Failed(format!("ls-tree: malformed record {s:?}")))?;
+        let mut parts = header.split_whitespace();
+        let _mode = parts.next();
+        let kind = parts.next();
+        let oid = parts
+            .next()
+            .ok_or_else(|| Error::Failed(format!("ls-tree: missing oid in {s:?}")))?;
+        if kind != Some("blob") {
+            continue;
+        }
+        if let CatFileHeader::Found { kind, size, .. } = bcheck.check(oid)?
+            && kind == "blob"
+        {
+            blobs.push(TreeBlob {
+                path: PathBuf::from(path),
+                blob_oid: oid.to_owned(),
+                size,
+            });
+        }
+    }
+    Ok(blobs)
+}
+
 /// Walk the tree at `reference`, returning one entry per LFS pointer blob.
 ///
 /// Unlike [`scan_pointers`], this does *not* walk history and does *not*

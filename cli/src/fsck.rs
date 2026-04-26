@@ -6,22 +6,24 @@
 //!   history, verify the local store has its bytes and that re-hashing
 //!   them matches the pointer's OID. Missing or corrupt files are
 //!   reported and (unless `--dry-run`) moved to `<lfs>/bad/<oid>`.
-//! - **`--pointers`**: for every blob in the named ref's tree that parses
-//!   as a pointer, flag any that aren't byte-canonical.
+//! - **`--pointers`**: for every blob in the named ref's tree, classify
+//!   it against `.gitattributes`. A blob whose path matches `filter=lfs`
+//!   is expected to be a canonical pointer; if it parses but isn't
+//!   canonical we report `nonCanonicalPointer`, and if it doesn't parse
+//!   at all (or is too big to be a pointer) we report
+//!   `unexpectedGitObject`.
 //!
 //! Defaults to running both. Exit code: 0 if everything is fine,
 //! 1 otherwise.
 //!
 //! Out of scope (see NOTES.md): the `<a>..<b>` range form, scanning the
-//! index alongside HEAD when no ref is given, `lfs.fetchexclude` honor,
-//! and the "unexpectedGitObject" detection that requires gitattribute
-//! awareness.
+//! index alongside HEAD when no ref is given, `lfs.fetchexclude` honor.
 
 use std::io::Read;
 use std::path::Path;
 
-use git_lfs_git::{scan_pointers, scan_tree};
-use git_lfs_pointer::Oid;
+use git_lfs_git::{AttrSet, CatFileBatch, scan_pointers, scan_tree_blobs};
+use git_lfs_pointer::{MAX_POINTER_SIZE, Oid, Pointer};
 use git_lfs_store::Store;
 use sha2::{Digest, Sha256};
 
@@ -91,25 +93,52 @@ pub fn run(cwd: &Path, refspec: Option<&str>, opts: &Options) -> Result<i32, Fsc
         }
     }
 
+    let mut unexpected: usize = 0;
     if matches!(opts.mode, Mode::Pointers | Mode::Both) {
-        let pointers = scan_tree(cwd, r)?;
-        for entry in &pointers {
-            if !entry.canonical {
-                let name = entry
-                    .path
-                    .as_deref()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_default();
+        let attrs = AttrSet::from_workdir(cwd)?;
+        let blobs = scan_tree_blobs(cwd, r)?;
+        let mut batch = CatFileBatch::spawn(cwd)?;
+        for blob in &blobs {
+            // Use forward slashes for path matching — gix-attributes
+            // works in repo-relative `/`-separated paths.
+            let path_str = blob.path.to_string_lossy().replace('\\', "/");
+            if !attrs.is_lfs_tracked(&path_str) {
+                continue;
+            }
+            // Blobs above the pointer size ceiling can't be pointers; flag
+            // and skip the read entirely.
+            if (blob.size as usize) >= MAX_POINTER_SIZE {
                 println!(
-                    "pointer: nonCanonicalPointer: Pointer for {name} ({}) was not canonical",
-                    entry.oid,
+                    "pointer: unexpectedGitObject: \"{path_str}\" (treeish {}) should have been a pointer but was not",
+                    blob.blob_oid,
                 );
-                non_canonical += 1;
+                unexpected += 1;
+                continue;
+            }
+            let Some(content) = batch.read(&blob.blob_oid)? else {
+                continue;
+            };
+            match Pointer::parse(&content.content) {
+                Err(_) => {
+                    println!(
+                        "pointer: unexpectedGitObject: \"{path_str}\" (treeish {}) should have been a pointer but was not",
+                        blob.blob_oid,
+                    );
+                    unexpected += 1;
+                }
+                Ok(p) if !p.canonical => {
+                    println!(
+                        "pointer: nonCanonicalPointer: Pointer for {} (blob {}) was not canonical",
+                        p.oid, blob.blob_oid,
+                    );
+                    non_canonical += 1;
+                }
+                Ok(_) => {}
             }
         }
     }
 
-    let ok = corrupt_oids.is_empty() && non_canonical == 0;
+    let ok = corrupt_oids.is_empty() && non_canonical == 0 && unexpected == 0;
     if ok {
         println!("Git LFS fsck OK");
         return Ok(0);
