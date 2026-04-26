@@ -49,10 +49,20 @@ const ATTRS_PATH: &str = ".gitattributes";
 /// stream won't collide — fast-export starts at :1 and increments.
 const FRESH_MARK_BASE: u32 = 1 << 30;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// Plain blob → LFS pointer. `--above` threshold respected.
+    Import,
+    /// LFS pointer → raw content from local store. `--above` ignored
+    /// since pointer files are tiny by definition.
+    Export,
+}
+
 #[derive(Debug, Clone)]
 pub struct Options {
     pub include: Option<GlobSet>,
     pub exclude: Option<GlobSet>,
+    /// Only consulted in [`Mode::Import`].
     pub above: u64,
 }
 
@@ -67,6 +77,7 @@ pub struct Stats {
 pub struct Transform<'a> {
     store: &'a Store,
     opts: Options,
+    mode: Mode,
     /// Buffered blobs keyed by their input mark, awaiting the first
     /// commit to reveal their path.
     blob_buffer: HashMap<u32, Vec<u8>>,
@@ -76,22 +87,27 @@ pub struct Transform<'a> {
     emitted: HashSet<u32>,
     /// Next free mark for our own injected blobs.
     next_fresh: u32,
-    /// `*.<ext> filter=lfs diff=lfs merge=lfs -text` lines, stable
-    /// alphabetical order so the rewritten `.gitattributes` is
-    /// deterministic.
-    patterns: BTreeSet<String>,
+    /// `.gitattributes` lines to ensure are present, in stable order.
+    /// Import: `*.<ext> filter=lfs diff=lfs merge=lfs -text`.
+    /// Export: `*.<ext> !text !filter !merge !diff`.
+    attrs_add: BTreeSet<String>,
+    /// `.gitattributes` lines to drop. Only populated in
+    /// [`Mode::Export`] — those patterns are no longer LFS-tracked.
+    attrs_remove: BTreeSet<String>,
     pub stats: Stats,
 }
 
 impl<'a> Transform<'a> {
-    pub fn new(store: &'a Store, opts: Options) -> Self {
+    pub fn new(store: &'a Store, opts: Options, mode: Mode) -> Self {
         Self {
             store,
             opts,
+            mode,
             blob_buffer: HashMap::new(),
             emitted: HashSet::new(),
             next_fresh: FRESH_MARK_BASE,
-            patterns: BTreeSet::new(),
+            attrs_add: BTreeSet::new(),
+            attrs_remove: BTreeSet::new(),
             stats: Stats::default(),
         }
     }
@@ -109,7 +125,7 @@ impl<'a> Transform<'a> {
             self.process(cmd, &mut writer)?;
         }
         writer.flush()?;
-        self.stats.patterns = self.patterns;
+        self.stats.patterns = self.attrs_add.clone();
         Ok(self.stats)
     }
 
@@ -167,11 +183,10 @@ impl<'a> Transform<'a> {
         }
 
         // Pass 2: rewrite `.gitattributes` for this commit. The new
-        // content is the union of (a) whatever the commit's existing
-        // `.gitattributes` had, and (b) every pattern accumulated so
-        // far in stream order.
+        // content is the existing content with the `attrs_remove`
+        // lines stripped, then any `attrs_add` lines appended.
         let existing_attrs = self.read_existing_attrs(&c);
-        let new_attrs = build_attrs(&existing_attrs, &self.patterns);
+        let new_attrs = build_attrs(&existing_attrs, &self.attrs_add, &self.attrs_remove);
         let needs_attrs = !new_attrs.is_empty();
         if needs_attrs {
             let attrs_mark = self.alloc_fresh();
@@ -187,34 +202,33 @@ impl<'a> Transform<'a> {
         writer.write(&Command::Commit(c))
     }
 
-    /// Decide whether to clean a blob given its path, and run the
+    /// Decide whether to convert a blob given its path, and run the
     /// conversion if so. Returns `(content_to_emit, was_converted)`.
     fn transform_blob(
         &mut self,
         path: &str,
         content: Vec<u8>,
     ) -> io::Result<(Vec<u8>, bool)> {
-        let size = content.len() as u64;
-
-        // Don't convert pointer-already-encoded blobs — they're already
-        // LFS. Detect by parse success.
-        if Pointer::parse(&content).is_ok() {
+        if !path_matches(path, &self.opts.include, &self.opts.exclude) {
             return Ok((content, false));
         }
+        match self.mode {
+            Mode::Import => self.import_blob(path, content),
+            Mode::Export => self.export_blob(path, content),
+        }
+    }
 
-        if !path_matches(path, &self.opts.include, &self.opts.exclude) {
+    fn import_blob(&mut self, _path: &str, content: Vec<u8>) -> io::Result<(Vec<u8>, bool)> {
+        let size = content.len() as u64;
+        // Don't re-convert blobs that already encode an LFS pointer.
+        if Pointer::parse(&content).is_ok() {
             return Ok((content, false));
         }
         if size < self.opts.above {
             return Ok((content, false));
         }
-
-        // Hash → store → pointer text.
         let oid_bytes: [u8; 32] = Sha256::digest(&content).into();
         let oid = Oid::from_bytes(oid_bytes);
-        // Store::insert_verified writes the bytes and verifies the
-        // hash matches. We pass the just-computed OID so a mid-write
-        // disk corruption surfaces here.
         self.store
             .insert_verified(oid, &mut content.as_slice())
             .map_err(|e| io::Error::other(format!("storing object: {e}")))?;
@@ -222,6 +236,30 @@ impl<'a> Transform<'a> {
         self.stats.blobs_converted += 1;
         self.stats.bytes_converted += size;
         Ok((pointer_text, true))
+    }
+
+    fn export_blob(&mut self, _path: &str, content: Vec<u8>) -> io::Result<(Vec<u8>, bool)> {
+        // Only pointer-encoded blobs convert; everything else passes
+        // through (matching upstream's `IsNotAPointerError` skip).
+        let pointer = match Pointer::parse(&content) {
+            Ok(p) => p,
+            Err(_) => return Ok((content, false)),
+        };
+        // Resolve the LFS object's bytes from the local store. If
+        // we can't find them we can't expand — leave the pointer in
+        // place so the user can re-fetch and try again.
+        let mut file = match self.store.open(pointer.oid) {
+            Ok(f) => f,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                return Ok((content, false));
+            }
+            Err(e) => return Err(e),
+        };
+        let mut buf = Vec::with_capacity(pointer.size as usize);
+        std::io::Read::read_to_end(&mut file, &mut buf)?;
+        self.stats.blobs_converted += 1;
+        self.stats.bytes_converted += pointer.size;
+        Ok((buf, true))
     }
 
     fn read_existing_attrs(&self, c: &Commit) -> String {
@@ -247,18 +285,28 @@ impl<'a> Transform<'a> {
 
     fn add_pattern_for_path(&mut self, path: &str) {
         let leaf = path.rsplit('/').next().unwrap_or(path);
-        if let Some(idx) = leaf.rfind('.')
-            && idx > 0
-            && idx < leaf.len() - 1
-        {
-            self.patterns.insert(format!(
-                "*{} filter=lfs diff=lfs merge=lfs -text",
-                &leaf[idx..]
-            ));
+        let Some(idx) = leaf.rfind('.') else { return };
+        if idx == 0 || idx >= leaf.len() - 1 {
+            return;
         }
-        // Files without an extension don't get a pattern in v0 —
-        // matching upstream's behavior of preferring `*.<ext>` over
-        // path-literal entries.
+        let ext = &leaf[idx..];
+        match self.mode {
+            Mode::Import => {
+                self.attrs_add.insert(format!(
+                    "*{ext} filter=lfs diff=lfs merge=lfs -text"
+                ));
+            }
+            Mode::Export => {
+                // Stop tracking this extension as LFS, and emit an
+                // explicit !filter line so a more permissive parent
+                // pattern doesn't re-apply LFS filtering.
+                self.attrs_remove.insert(format!(
+                    "*{ext} filter=lfs diff=lfs merge=lfs -text"
+                ));
+                self.attrs_add
+                    .insert(format!("*{ext} !text !filter !merge !diff"));
+            }
+        }
     }
 
     fn alloc_fresh(&mut self) -> u32 {
@@ -284,22 +332,30 @@ fn path_matches(
     }
 }
 
-/// Union the existing `.gitattributes` content (preserved verbatim
-/// modulo our pattern lines) with the accumulated LFS pattern lines.
-/// Output is line-stable: existing lines first in their original
-/// order, then any new patterns that weren't already present.
-fn build_attrs(existing: &str, patterns: &BTreeSet<String>) -> String {
-    let mut have: HashSet<String> = existing
-        .lines()
-        .map(|l| l.trim().to_owned())
-        .collect();
-
-    let mut out = String::with_capacity(existing.len() + patterns.len() * 64);
+/// Combine the existing `.gitattributes` content with our accumulated
+/// `add` / `remove` policy.
+///
+/// - Lines whose trimmed form matches anything in `remove` are dropped.
+/// - Lines in `add` are appended after the surviving existing content,
+///   preserving alphabetical order from the input `BTreeSet`. Lines
+///   already present in the existing content are not duplicated.
+fn build_attrs(
+    existing: &str,
+    add: &BTreeSet<String>,
+    remove: &BTreeSet<String>,
+) -> String {
+    let mut have: HashSet<String> = HashSet::new();
+    let mut out = String::with_capacity(existing.len() + add.len() * 64);
     for line in existing.lines() {
+        let trimmed = line.trim();
+        if remove.contains(trimmed) {
+            continue;
+        }
         out.push_str(line);
         out.push('\n');
+        have.insert(trimmed.to_owned());
     }
-    for p in patterns {
+    for p in add {
         if have.insert(p.clone()) {
             out.push_str(p);
             out.push('\n');
@@ -357,7 +413,17 @@ mod tests {
     fn run_transform(input: &[u8], opts: Options) -> (Vec<u8>, Stats) {
         let (_tmp, store) = fixture_store();
         let mut out: Vec<u8> = Vec::new();
-        let stats = Transform::new(&store, opts).run(input, &mut out).unwrap();
+        let stats = Transform::new(&store, opts, Mode::Import)
+            .run(input, &mut out)
+            .unwrap();
+        (out, stats)
+    }
+
+    fn run_export(input: &[u8], opts: Options, store: &Store) -> (Vec<u8>, Stats) {
+        let mut out: Vec<u8> = Vec::new();
+        let stats = Transform::new(store, opts, Mode::Export)
+            .run(input, &mut out)
+            .unwrap();
         (out, stats)
     }
 
@@ -505,16 +571,112 @@ mod tests {
     #[test]
     fn build_attrs_unions_without_duplicating_existing_pattern() {
         let existing = "*.bin filter=lfs diff=lfs merge=lfs -text\n*.txt diff=text\n";
-        let mut patterns = BTreeSet::new();
-        patterns.insert("*.bin filter=lfs diff=lfs merge=lfs -text".to_string());
-        patterns.insert("*.png filter=lfs diff=lfs merge=lfs -text".to_string());
-        let out = build_attrs(existing, &patterns);
+        let mut add = BTreeSet::new();
+        add.insert("*.bin filter=lfs diff=lfs merge=lfs -text".to_string());
+        add.insert("*.png filter=lfs diff=lfs merge=lfs -text".to_string());
+        let remove = BTreeSet::new();
+        let out = build_attrs(existing, &add, &remove);
         let bin_count = out
             .lines()
             .filter(|l| *l == "*.bin filter=lfs diff=lfs merge=lfs -text")
             .count();
         assert_eq!(bin_count, 1, "should not duplicate existing pattern");
         assert!(out.contains("*.png filter=lfs"));
+    }
+
+    #[test]
+    fn build_attrs_drops_removed_patterns() {
+        let existing = "*.bin filter=lfs diff=lfs merge=lfs -text\n*.txt diff=text\n";
+        let add = BTreeSet::new();
+        let mut remove = BTreeSet::new();
+        remove.insert("*.bin filter=lfs diff=lfs merge=lfs -text".to_string());
+        let out = build_attrs(existing, &add, &remove);
+        assert!(!out.contains("*.bin filter=lfs"), "removed line still present: {out}");
+        assert!(out.contains("*.txt diff=text"), "preserved line missing: {out}");
+    }
+
+    #[test]
+    fn export_expands_pointer_blob_to_real_content() {
+        let (_tmp, store) = fixture_store();
+        // Seed the store with the bytes the pointer references.
+        let real = b"hello world\n";
+        let (oid, _) = store.insert(&mut real.as_slice()).unwrap();
+        let pointer = format!(
+            "version https://git-lfs.github.com/spec/v1\n\
+             oid sha256:{oid}\n\
+             size {}\n",
+            real.len(),
+        );
+
+        let input = format!(
+            "blob\nmark :1\ndata {n}\n{pointer}\
+             commit refs/heads/main\n\
+             committer A <a@b> 1 +0000\n\
+             data 1\nm\n\
+             M 100644 :1 data.bin\n\n",
+            n = pointer.len(),
+        );
+        let opts = Options {
+            include: Some(glob("*.bin")),
+            exclude: None,
+            above: 0,
+        };
+        let (out, stats) = run_export(input.as_bytes(), opts, &store);
+        assert_eq!(stats.blobs_converted, 1);
+        let s = String::from_utf8_lossy(&out);
+        // Output should contain the raw "hello world\n" bytes for
+        // blob :1 (no longer pointer text).
+        assert!(s.contains("\nhello world\n"), "expected raw content in stream: {s}");
+        assert!(!s.contains("oid sha256:"), "pointer text should be gone: {s}");
+        // Tracked-as-not-LFS line in the rewritten .gitattributes.
+        assert!(
+            s.contains("*.bin !text !filter !merge !diff"),
+            "expected un-track line: {s}",
+        );
+    }
+
+    #[test]
+    fn export_passes_through_non_pointer_blobs() {
+        let (_tmp, store) = fixture_store();
+        let input = b"blob\nmark :1\ndata 5\nhello\n\
+                      commit refs/heads/main\n\
+                      committer A <a@b> 1 +0000\n\
+                      data 1\nm\n\
+                      M 100644 :1 plain.txt\n\n";
+        let opts = Options {
+            include: Some(glob("*.bin")),
+            exclude: None,
+            above: 0,
+        };
+        let (_, stats) = run_export(input, opts, &store);
+        assert_eq!(stats.blobs_converted, 0);
+    }
+
+    #[test]
+    fn export_leaves_pointer_alone_when_object_missing_from_store() {
+        let (_tmp, store) = fixture_store();
+        // Pointer references an OID we never put in the store.
+        let oid = "1111111111111111111111111111111111111111111111111111111111111111";
+        let pointer = format!(
+            "version https://git-lfs.github.com/spec/v1\n\
+             oid sha256:{oid}\nsize 5\n",
+        );
+        let input = format!(
+            "blob\nmark :1\ndata {n}\n{pointer}\
+             commit refs/heads/main\n\
+             committer A <a@b> 1 +0000\n\
+             data 1\nm\n\
+             M 100644 :1 data.bin\n\n",
+            n = pointer.len(),
+        );
+        let opts = Options {
+            include: Some(glob("*.bin")),
+            exclude: None,
+            above: 0,
+        };
+        let (_, stats) = run_export(input.as_bytes(), opts, &store);
+        // No conversion when object isn't locally available.
+        assert_eq!(stats.blobs_converted, 0);
     }
 
     #[test]

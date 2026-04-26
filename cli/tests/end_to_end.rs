@@ -1655,6 +1655,151 @@ fn ls_files_marker_star_when_real_content_present_at_right_size() {
     assert!(stdout.contains(" * x.bin"), "expected `*` marker, got: {stdout}");
 }
 
+// ---------- migrate export -----------------------------------------------
+//
+// Round-trip: run import to convert plain blobs into pointers, then
+// run export to convert them back. The end state of the working tree
+// should match the original content, and the .gitattributes lines
+// should reflect the un-tracked patterns.
+
+#[test]
+fn migrate_export_inverts_import_via_round_trip() {
+    let repo = fresh_repo_with_identity();
+    let original = vec![b'Z'; 256];
+    commit_plain_file(repo.path(), "data.bin", &original);
+
+    // Forward: convert to LFS.
+    let imp = run_in(
+        repo.path(),
+        &["migrate", "import", "--include", "*.bin"],
+        b"",
+    );
+    assert!(imp.status.success(), "import stderr: {}", String::from_utf8_lossy(&imp.stderr));
+    let after_import = std::fs::read(repo.path().join("data.bin")).unwrap();
+    assert!(
+        String::from_utf8_lossy(&after_import).starts_with("version https://"),
+        "import should leave pointer text",
+    );
+
+    // Inverse: expand pointers back to raw content.
+    let exp = run_in(
+        repo.path(),
+        &["migrate", "export", "--include", "*.bin"],
+        b"",
+    );
+    assert!(exp.status.success(), "export stderr: {}", String::from_utf8_lossy(&exp.stderr));
+    let after_export = std::fs::read(repo.path().join("data.bin")).unwrap();
+    assert_eq!(after_export, original, "round-trip should restore original bytes");
+
+    // .gitattributes should now declare the path as un-tracked.
+    let attrs = std::fs::read_to_string(repo.path().join(".gitattributes")).unwrap();
+    assert!(
+        attrs.contains("*.bin !text !filter !merge !diff"),
+        "expected un-track line: {attrs}",
+    );
+    // And the original `filter=lfs` line should be gone.
+    assert!(
+        !attrs.contains("*.bin filter=lfs"),
+        "filter=lfs line should be removed: {attrs}",
+    );
+}
+
+#[test]
+fn migrate_export_requires_include() {
+    let repo = fresh_repo_with_identity();
+    commit_plain_file(repo.path(), "x.bin", b"x");
+
+    let out = run_in(repo.path(), &["migrate", "export"], b"");
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("requires --include"), "{stderr}");
+}
+
+#[test]
+fn migrate_export_refuses_dirty_working_tree() {
+    let repo = fresh_repo_with_identity();
+    commit_plain_file(repo.path(), "x.bin", b"x");
+    std::fs::write(repo.path().join("x.bin"), b"changed").unwrap();
+
+    let out = run_in(
+        repo.path(),
+        &["migrate", "export", "--include", "*.bin"],
+        b"",
+    );
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("uncommitted changes"), "{stderr}");
+}
+
+#[test]
+fn migrate_export_leaves_pointer_alone_when_object_missing_from_store() {
+    // Hand-craft a repo where the working tree contains a pointer
+    // file referencing an OID we never put in the store. Export
+    // should leave the pointer in place rather than silently
+    // truncating it.
+    let repo = fresh_repo_with_identity();
+    commit_pointer_at(
+        repo.path(),
+        "missing.bin",
+        &pointer_text(HELLO_OID, HELLO_LEN),
+    );
+
+    let out = run_in(
+        repo.path(),
+        &["migrate", "export", "--include", "*.bin"],
+        b"",
+    );
+    assert!(
+        out.status.success(),
+        "export should still succeed; stderr: {}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Expanded 0 pointer"), "expected zero conversions: {stdout}");
+    // Working-tree file is still pointer text — not truncated.
+    let bin = std::fs::read(repo.path().join("missing.bin")).unwrap();
+    assert!(
+        String::from_utf8_lossy(&bin).starts_with("version https://"),
+        "missing.bin should still be pointer text",
+    );
+}
+
+#[test]
+fn migrate_export_only_unconverts_paths_matching_include() {
+    let repo = fresh_repo_with_identity();
+    // Distinct content per file so each gets its own git blob OID —
+    // see the "first-reference wins" deferral in NOTES.md for why
+    // identical content across paths can't be split selectively.
+    commit_plain_file(repo.path(), "convert.bin", &[b'A'; 200]);
+    commit_plain_file(repo.path(), "keep.bin", &[b'B'; 200]);
+
+    // Import both into LFS.
+    let imp = run_in(
+        repo.path(),
+        &["migrate", "import", "--include", "*.bin"],
+        b"",
+    );
+    assert!(imp.status.success(), "{}", String::from_utf8_lossy(&imp.stderr));
+
+    // Export only convert.bin back. keep.bin should stay as a pointer.
+    let exp = run_in(
+        repo.path(),
+        &["migrate", "export", "--include", "convert.bin"],
+        b"",
+    );
+    assert!(exp.status.success(), "{}", String::from_utf8_lossy(&exp.stderr));
+
+    let convert = std::fs::read(repo.path().join("convert.bin")).unwrap();
+    assert_eq!(convert, vec![b'A'; 200], "convert.bin restored");
+
+    let keep = std::fs::read(repo.path().join("keep.bin")).unwrap();
+    assert!(
+        String::from_utf8_lossy(&keep).starts_with("version https://"),
+        "keep.bin must stay pointer-form: {:?}",
+        String::from_utf8_lossy(&keep),
+    );
+}
+
 // ---------- migrate import -----------------------------------------------
 
 #[test]

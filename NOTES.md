@@ -382,7 +382,10 @@ missing** and **why it was OK to skip for v0**.
   user `cd`'d via a symlink. We just print repo-relative paths.
 
 ### `cli migrate`
-Phases 1 (`info`) and 2 (`import`) shipped. Phase 3 (`export`) follows.
+All three phases shipped: `info`, `import`, `export`. Subprocess
+plumbing (fast-export → transform → fast-import + working-tree
+refresh + dirty-tree refusal) lives in `migrate/pipeline.rs` so
+import and export share it.
 
 **Phase 1 deferrals (info):**
 - **`--include-ref` / `--exclude-ref`.** v0 only honors positional
@@ -415,11 +418,21 @@ Phases 1 (`info`) and 2 (`import`) shipped. Phase 3 (`export`) follows.
   An ambitious v2 could two-pass the stream so every commit's
   `.gitattributes` shows the *full* eventual pattern set.
 
-**Phase 3 plan:** `migrate export` is the inverse — pointer blobs
-become raw content via the same fast-export → transform → fast-import
-pipeline. Reuses parser/emitter; the transform side is roughly half
-the LOC of import (no `.gitattributes` rewrite, just pointer→content
-substitution).
+**Phase 3 deferrals (export):**
+- **Pre-download missing objects.** Upstream's `migrate export` runs
+  a download queue against the configured remote first, so any
+  pointer whose object isn't local gets fetched before the rewrite.
+  We skip this — pointers without local content pass through
+  unchanged (no truncation), and the user's expected to
+  `git lfs fetch` first if they care.
+- **`--remote <name>`.** Picks which remote to pre-download from.
+  Tied to the deferral above.
+- **Post-export `prune`.** Upstream prunes the now-orphaned LFS
+  objects automatically; ours leaves them — `git lfs prune`
+  manually does the job.
+- **First-reference-wins.** Same caveat as import: if the same git
+  blob OID lives at two paths with different filter outcomes, the
+  first-encountered M directive's path decides.
 
 ### `cli post-checkout` / `post-commit` / `post-merge`
 - **Lockable read-only flag management.** Upstream uses these hooks to
@@ -511,6 +524,5 @@ substitution).
   worth flagging.
 
 ### Whole-project
-- **Remaining commands** — `migrate export` (Phase 3 of the migrate
-  effort), `merge-driver`, `dedup`, `ext`, `standalone-file`, `logs`,
-  `update`.
+- **Remaining commands** — `merge-driver`, `dedup`, `ext`,
+  `standalone-file`, `logs`, `update`. All niche; mostly polish.

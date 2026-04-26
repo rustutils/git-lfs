@@ -12,12 +12,15 @@
 //! This module hosts the shared types and helpers; subcommands live in
 //! sibling files.
 
+mod export;
 mod fast_export;
 mod fast_import;
 mod import;
 mod info;
+mod pipeline;
 mod transform;
 
+pub use export::{ExportOptions, export};
 pub use import::{ImportOptions, import};
 pub use info::{InfoOptions, PointerMode, info};
 

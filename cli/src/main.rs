@@ -68,6 +68,24 @@ enum MigrateCmd {
         #[arg(short, long)]
         message: Option<String>,
     },
+    /// Inverse of import: rewrite history so LFS pointers become the
+    /// raw bytes they reference. Requires the LFS objects to already
+    /// be in the local store — `git lfs fetch` first if not. Pointers
+    /// whose objects are missing are left as-is.
+    Export {
+        /// Branches / refs to rewrite. Empty = current branch.
+        branches: Vec<String>,
+        /// Walk every local branch and tag.
+        #[arg(long)]
+        everything: bool,
+        /// Convert pointers at paths matching this glob (repeatable).
+        /// Required.
+        #[arg(short = 'I', long = "include")]
+        include: Vec<String>,
+        /// Don't convert pointers at paths matching this glob.
+        #[arg(short = 'X', long = "exclude")]
+        exclude: Vec<String>,
+    },
     /// Walk history and report file extensions by total size.
     /// Read-only — no objects or history change.
     Info {
@@ -485,6 +503,20 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             env::run(&cwd)?;
         }
         Command::Migrate { cmd } => match cmd {
+            MigrateCmd::Export {
+                branches,
+                everything,
+                include,
+                exclude,
+            } => {
+                let opts = migrate::ExportOptions {
+                    branches,
+                    everything,
+                    include,
+                    exclude,
+                };
+                migrate::export(&cwd, &opts)?;
+            }
             MigrateCmd::Import {
                 args,
                 everything,
