@@ -160,17 +160,33 @@ pub struct PatternEntry {
     /// pattern was found in, relative to the repo root and with `/`
     /// separators.
     pub source: String,
+    /// True if the line establishes LFS tracking (`filter=lfs`); false if
+    /// it explicitly removes / unspecifies the filter (`-filter`,
+    /// `!filter`, `-filter=...`).
+    pub tracked: bool,
+    /// True if the same line carries the `lockable` attribute (in `set`
+    /// form — `lockable=false` is treated as not lockable).
+    pub lockable: bool,
 }
 
-/// All LFS-related patterns visible in a workdir, partitioned into ones
-/// configured *as* LFS (`filter=lfs`) and ones that explicitly *exclude*
-/// LFS (`-filter` / `-filter=lfs`).
+/// All LFS-related patterns visible in a workdir, in load order
+/// (`.git/info/attributes` first, then `.gitattributes` from shallow to
+/// deep).
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct PatternListing {
-    /// `filter=lfs` lines.
-    pub tracked: Vec<PatternEntry>,
-    /// `-filter` or `-filter=lfs` lines (intentionally excluded from LFS).
-    pub excluded: Vec<PatternEntry>,
+    pub patterns: Vec<PatternEntry>,
+}
+
+impl PatternListing {
+    /// Lines that establish LFS tracking (`filter=lfs`).
+    pub fn tracked(&self) -> impl Iterator<Item = &PatternEntry> {
+        self.patterns.iter().filter(|p| p.tracked)
+    }
+
+    /// Lines that explicitly remove / unspecify the LFS filter.
+    pub fn excluded(&self) -> impl Iterator<Item = &PatternEntry> {
+        self.patterns.iter().filter(|p| !p.tracked)
+    }
 }
 
 /// Walk `.gitattributes` across the workdir plus `.git/info/attributes`,
@@ -206,32 +222,38 @@ pub fn list_lfs_patterns(repo_root: &Path) -> io::Result<PatternListing> {
 fn scan_attr_lines(bytes: &[u8], source: &str, listing: &mut PatternListing) {
     for raw in bytes.split(|&b| b == b'\n') {
         let line = String::from_utf8_lossy(raw);
-        let body = line.split('#').next().unwrap_or(&line).trim();
-        if body.is_empty() || body.starts_with("[attr]") {
+        // Per `gitattributes(5)`, `#` only starts a comment when it's
+        // the first non-whitespace character on the line — patterns like
+        // `\#` are valid and must not be cropped here.
+        let body = line.trim();
+        if body.is_empty() || body.starts_with('#') || body.starts_with("[attr]") {
             continue;
         }
         let mut tokens = body.split_whitespace();
         let Some(pattern) = tokens.next() else {
             continue;
         };
-        let mut filter = None;
+        let mut filter: Option<bool> = None;
+        let mut lockable = false;
         for tok in tokens {
             if tok == "filter=lfs" {
                 filter = Some(true);
-            } else if tok == "-filter" || tok.starts_with("-filter=") {
+            } else if tok == "-filter"
+                || tok == "!filter"
+                || tok.starts_with("-filter=")
+            {
                 filter = Some(false);
+            } else if tok == "lockable" {
+                lockable = true;
             }
         }
-        match filter {
-            Some(true) => listing.tracked.push(PatternEntry {
+        if let Some(tracked) = filter {
+            listing.patterns.push(PatternEntry {
                 pattern: pattern.to_owned(),
                 source: source.to_owned(),
-            }),
-            Some(false) => listing.excluded.push(PatternEntry {
-                pattern: pattern.to_owned(),
-                source: source.to_owned(),
-            }),
-            None => {}
+                tracked,
+                lockable,
+            });
         }
     }
 }
@@ -401,13 +423,11 @@ mod tests {
 
         let listing = list_lfs_patterns(tmp.path()).unwrap();
         let tracked: Vec<(&str, &str)> = listing
-            .tracked
-            .iter()
+            .tracked()
             .map(|p| (p.pattern.as_str(), p.source.as_str()))
             .collect();
         let excluded: Vec<(&str, &str)> = listing
-            .excluded
-            .iter()
+            .excluded()
             .map(|p| (p.pattern.as_str(), p.source.as_str()))
             .collect();
 
@@ -441,8 +461,42 @@ mod tests {
         )
         .unwrap();
         let listing = list_lfs_patterns(tmp.path()).unwrap();
-        assert_eq!(listing.tracked.len(), 1);
-        assert_eq!(listing.tracked[0].pattern, "*.bin");
+        let tracked: Vec<&PatternEntry> = listing.tracked().collect();
+        assert_eq!(tracked.len(), 1);
+        assert_eq!(tracked[0].pattern, "*.bin");
+    }
+
+    #[test]
+    fn list_picks_up_lockable_attribute() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join(".gitattributes"),
+            "*.psd filter=lfs diff=lfs merge=lfs lockable\n\
+             *.bin filter=lfs diff=lfs merge=lfs\n",
+        )
+        .unwrap();
+        let listing = list_lfs_patterns(tmp.path()).unwrap();
+        assert_eq!(listing.patterns.len(), 2);
+        assert_eq!(listing.patterns[0].pattern, "*.psd");
+        assert!(listing.patterns[0].lockable);
+        assert_eq!(listing.patterns[1].pattern, "*.bin");
+        assert!(!listing.patterns[1].lockable);
+    }
+
+    #[test]
+    fn bang_filter_treated_as_excluded() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join(".gitattributes"),
+            "*.dat filter=lfs\n\
+             a.dat !filter\n",
+        )
+        .unwrap();
+        let listing = list_lfs_patterns(tmp.path()).unwrap();
+        assert_eq!(listing.patterns.len(), 2);
+        assert!(listing.patterns[0].tracked);
+        assert_eq!(listing.patterns[1].pattern, "a.dat");
+        assert!(!listing.patterns[1].tracked);
     }
 
     #[test]

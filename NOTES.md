@@ -270,27 +270,34 @@ missing** and **why it was OK to skip for v0**.
   will hit the conflict path; mention this once we care about that audience.
 
 ### `cli track`
-- **Recursive scan.** v0 only reads `./.gitattributes`. Real `git lfs track`
-  walks every `.gitattributes` from cwd to repo root, plus `.git/info/attributes`,
-  and shows each pattern's source. `t-track.sh` greps for `(a/.gitattributes)`,
-  `(.git/info/attributes)`, etc.
-- **Macro processor / proper gitattr parser.** ~~We split on whitespace; this
-  fails on quoted patterns and macro expansions.~~ Parser landed in
-  `git-lfs-git::attr` (backed by `gix-attributes`); wire it into `track`'s
-  recursive listing when `--recursive` arrives.
-- **`--lockable` / `--not-lockable`.** Lockable files get an extra `lockable`
-  attribute and become read-only on checkout. File-locking territory —
-  milestone 3.
-- **`--filename`.** Escape glob characters so a literal filename matches
-  exactly.
-- **`--dry-run`, `--verbose`, `--no-modify-attrs`, `--no-excluded`, `--json`.**
-  Various display modes.
+- **`--lockable` working-tree side** — write-side shipped (lines in
+  `.gitattributes` get the `lockable` attribute; re-tracking with
+  `--lockable` / `--not-lockable` rewrites the line in place). Upstream
+  *also* `chmod -w`s every working-tree file matching a `lockable`
+  pattern at track time (and `chmod +w` on `--not-lockable`); deferred
+  alongside the lockable post-checkout/post-commit/post-merge hook
+  bodies. `t-track.sh::track lockable read-only/read-write` covers
+  this.
+- **`--filename`.** Escape glob characters in a literal filename so
+  `[foo]bar.txt` matches the literal file rather than the glob.
+  `t-track.sh::track: escaped glob pattern …` (×2) and the second
+  invocation of `track: verbose logging` exercise it.
+- **`--no-modify-attrs`.** Display-only mode that skips the
+  `.gitattributes` write entirely (we already have `--dry-run`, which
+  also skips the re-stage).
+- **Cwd-relative pattern normalization.** When run from a subdirectory,
+  upstream rewrites bare patterns relative to the repo root (so
+  `cd a; git lfs track test.file` records `a/test.file`). We pass
+  patterns through verbatim. `t-track.sh::track representation` covers
+  this.
+- **`core.attributesfile` global gitattributes** — `list_lfs_patterns`
+  walks per-directory `.gitattributes` + `.git/info/attributes`, but
+  doesn't read the file pointed at by `core.attributesfile`.
+  `t-track.sh::track (global gitattributes)` covers this.
 - **Auto-install hooks.** Upstream `track` calls `installHooks(false)` so
   users can bootstrap LFS via track alone. We keep the responsibilities
-  separate and require explicit `git lfs install`.
-- **Touch matching files** so `git status` shows them as modified after
-  tracking (otherwise the user has to `git add --renormalize`).
-- **Pattern blocklist** (`.git`, `.lfs`). Don't let users LFS-track these.
+  separate and require explicit `git lfs install` — and the
+  `GIT_LFS_TRACK_NO_INSTALL_HOOKS` test passes for free as a result.
 
 ### Tests
 - **Native `cargo test` port of the upstream `t-*.sh` suite.** The

@@ -24,6 +24,7 @@ mod pull;
 mod push;
 mod status;
 mod track;
+mod track_cmd;
 
 use fetcher::LfsFetcher;
 
@@ -167,6 +168,28 @@ enum Command {
     Track {
         /// File patterns to track (e.g. "*.jpg", "data/*.bin").
         patterns: Vec<String>,
+        /// Mark the tracked pattern as `lockable` (`*.psd lockable`).
+        #[arg(short = 'l', long)]
+        lockable: bool,
+        /// Re-track an existing pattern, removing its `lockable` flag.
+        #[arg(long)]
+        not_lockable: bool,
+        /// Print what would happen without modifying `.gitattributes` or
+        /// re-staging files.
+        #[arg(long)]
+        dry_run: bool,
+        /// Extra logging: print "Found N files previously added to Git
+        /// matching pattern" lines.
+        #[arg(short, long)]
+        verbose: bool,
+        /// Listing mode only: emit JSON instead of the human-readable
+        /// listing.
+        #[arg(long)]
+        json: bool,
+        /// Listing mode only: suppress the "Listing excluded patterns"
+        /// section.
+        #[arg(long)]
+        no_excluded: bool,
     },
     /// Stop tracking a file pattern with git-lfs by removing it from
     /// .gitattributes. The matching pointer files in history (and the
@@ -488,28 +511,25 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 return Err("pre-push: one or more objects failed to upload".into());
             }
         }
-        Command::Track { patterns } => {
-            if patterns.is_empty() {
-                let listing = git_lfs_git::attr::list_lfs_patterns(&cwd)?;
-                println!("Listing tracked patterns");
-                for p in &listing.tracked {
-                    println!("    {} ({})", p.pattern, p.source);
-                }
-                if !listing.excluded.is_empty() {
-                    println!("Listing excluded patterns");
-                    for p in &listing.excluded {
-                        println!("    {} ({})", p.pattern, p.source);
-                    }
-                }
-            } else {
-                let outcome = track::track(&cwd, &patterns)?;
-                for p in &outcome.added {
-                    println!("Tracking \"{p}\"");
-                }
-                for p in &outcome.already {
-                    println!("\"{p}\" already supported");
-                }
-            }
+        Command::Track {
+            patterns,
+            lockable,
+            not_lockable,
+            dry_run,
+            verbose,
+            json,
+            no_excluded,
+        } => {
+            return track_cmd::run(track_cmd::Args {
+                cwd: &cwd,
+                patterns: &patterns,
+                lockable,
+                not_lockable,
+                dry_run,
+                verbose,
+                json,
+                no_excluded,
+            });
         }
         Command::Version => {
             println!("git-lfs/{} (rust)", env!("CARGO_PKG_VERSION"));
