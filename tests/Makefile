@@ -70,8 +70,13 @@ clean :
 
 # The Rust binary that the tests drive. Built in release mode for
 # realistic runtime behavior. Phony — `cargo build` is the cache.
+#
+# We symlink rather than copy so macOS on Apple Silicon doesn't
+# SIGKILL the copy: a `cp` of an ad-hoc-signed Mach-O loses kernel-
+# level provenance metadata and the loader refuses to run it. A
+# symlink resolves to the original file, which the kernel trusts.
 .PHONY : $(GIT_LFS_BIN)
 $(GIT_LFS_BIN) :
 	cd .. && $(CARGO) build --release
 	@mkdir -p ../bin
-	cp ../target/release/git-lfs$X $@
+	ln -sf ../target/release/git-lfs$X $@
