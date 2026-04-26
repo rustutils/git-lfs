@@ -291,10 +291,20 @@ missing** and **why it was OK to skip for v0**.
 - **Pattern blocklist** (`.git`, `.lfs`). Don't let users LFS-track these.
 
 ### Tests
-- **Run upstream shell tests in `tests/`.** Blocked on `lfstest-gitserver`,
-  `lfstest-count-tests`, env wiring, and a couple more Go helpers. Worth
-  picking up once milestone 2 is in flight (transfer/api give the gitserver
-  something to talk to).
+- **Native `cargo test` port of the upstream `t-*.sh` suite.** The
+  current setup vendors upstream's Go helpers and runs the shell tests
+  via `prove`. Long-term goal: rewrite as native Rust integration
+  tests so `cargo test` runs them, no `make` step, no Go toolchain.
+  Big undertaking (~100 test files, ~200 assertions) — handle one
+  test file at a time as we touch each command.
+- **Three upstream helpers excluded** because they import internal
+  upstream Go packages (`lfsapi`, `tools`, `config`):
+  `lfstest-customadapter`, `lfstest-standalonecustomadapter`,
+  `lfstest-testutils`. The first two are referenced only by
+  `t-custom-transfers.sh`; `lfstest-testutils` is build-tag-gated
+  (`//go:build testtools`) so upstream's default build skips it too,
+  but if a test does need it we'd have to vendor the upstream
+  packages or rewrite the helper.
 
 ### `filter-process`
 - **`delay` capability.** v0 handshake doesn't advertise it. Once `transfer/`

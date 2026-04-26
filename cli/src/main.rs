@@ -2,7 +2,7 @@ use std::io::{self, BufWriter, Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use git_lfs_filter::{clean, filter_process, smudge_with_fetch};
 use git_lfs_git::ConfigScope;
 use git_lfs_store::Store;
@@ -28,10 +28,23 @@ mod track;
 use fetcher::LfsFetcher;
 
 #[derive(Parser)]
-#[command(name = "git-lfs", version, about = "Git LFS — large file storage for git")]
+#[command(
+    name = "git-lfs",
+    about = "Git LFS — large file storage for git",
+    // We want `git lfs --version` to print the same banner as
+    // `git lfs version`. clap's auto-derived `--version` would
+    // emit `git-lfs <version>` (one token, no `/` separator),
+    // which doesn't match the user-agent style upstream uses.
+    // Suppress clap's flag and handle --version ourselves.
+    disable_version_flag = true,
+)]
 struct Cli {
+    /// Print the version banner and exit.
+    #[arg(long, short = 'V', global = true)]
+    version: bool,
+
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
@@ -377,7 +390,16 @@ enum Command {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    match dispatch(cli.command) {
+    if cli.version {
+        println!("git-lfs/{} (rust)", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
+    let Some(command) = cli.command else {
+        // Mimic clap's default error path when no subcommand is given.
+        Cli::command().print_help().ok();
+        return ExitCode::FAILURE;
+    };
+    match dispatch(command) {
         Ok(code) => ExitCode::from(code),
         Err(e) => {
             eprintln!("git-lfs: {e}");

@@ -102,7 +102,7 @@ TRASHDIR="$TMPDIR/$(basename "$0")-$$"
 
 # The directory that the test Git server works from.  This cleared at the
 # beginning of every test run.
-REMOTEDIR="$ROOTDIR/t/remote"
+REMOTEDIR="$ROOTDIR/tests/remote"
 
 # The directory that stores credentials. Credentials are stored in files with
 # the username:password with filenames identifying the host (port numbers are
@@ -145,13 +145,13 @@ TESTHOME="$REMOTEDIR/home"
 
 # This directory contains the expected output of the "git lfs completion"
 # command for different shells.
-COMPLETIONSDIR="$ROOTDIR/t/fixtures/completions"
+COMPLETIONSDIR="$ROOTDIR/tests/fixtures/completions"
 
 GIT_LFS_FORCE_PROGRESS=1
 GIT_CONFIG_NOSYSTEM=1
 GIT_TERMINAL_PROMPT=0
 GIT_SSH=lfs-ssh-echo
-GIT_TEMPLATE_DIR="$(native_path "$ROOTDIR/t/fixtures/templates")"
+GIT_TEMPLATE_DIR="$(native_path "$ROOTDIR/tests/fixtures/templates")"
 LC_ALL=C
 
 export CREDSDIR

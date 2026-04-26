@@ -1,1 +1,5 @@
 /target
+/bin
+/tests/remote
+/tests/test_count
+/tests/test_count.lock

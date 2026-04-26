@@ -78,6 +78,13 @@ inventing a new one.
 - **Source of truth for behavior:** when docs are ambiguous, grep the upstream
   Go code at <https://github.com/git-lfs/git-lfs> (`commands/command_*.go`
   for CLI surface). Don't guess — they've already solved it.
+- **Running upstream integration tests:** `cd tests && make test` builds the
+  Go test helpers (vendored under `tests/cmd/`), the Rust release binary
+  (copied to `bin/git-lfs`), and runs the upstream `t-*.sh` shell tests via
+  `prove`. A single test: `cd tests && make ./t-version.sh`. Three upstream
+  helpers are excluded (need internal Go packages we'd have to vendor); the
+  tests that exercise them are listed as skipped in NOTES.md. Long-term we
+  want to port the suite to native `cargo test`; tracked in NOTES.md.
 - **Don't translate Go to Rust line-for-line.** The point of the rewrite is to
   use idiomatic Rust + better libraries. Match behavior, not structure.
 - **CLI compatibility is a hard constraint.** The shell tests in `t/` assume
