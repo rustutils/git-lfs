@@ -39,9 +39,11 @@ pub enum EndpointError {
 }
 
 /// Resolve the LFS endpoint URL for `cwd` + `remote`. Pass `None` for the
-/// default (`origin`).
+/// default (`origin`, with a "single remote" fallback when origin doesn't
+/// exist and exactly one other remote does).
 pub fn endpoint_for_remote(cwd: &Path, remote: Option<&str>) -> Result<String, EndpointError> {
-    let remote = remote.unwrap_or(DEFAULT_REMOTE);
+    let caller_specified_remote = remote.is_some();
+    let mut remote = remote.unwrap_or(DEFAULT_REMOTE).to_owned();
 
     if let Some(v) = std::env::var_os("GIT_LFS_URL") {
         let s = v.to_string_lossy().into_owned();
@@ -54,12 +56,24 @@ pub fn endpoint_for_remote(cwd: &Path, remote: Option<&str>) -> Result<String, E
         return Ok(v);
     }
 
+    // When the caller didn't pin a remote name and `origin` doesn't
+    // exist, fall back to the only configured remote. Mirrors
+    // upstream's `git remote` discovery in `lfsfetch` and is what
+    // `t-fetch.sh::fetch with no origin remote` exercises (rename
+    // origin → something, then bare `git lfs fetch`).
+    if !caller_specified_remote && remote_url(cwd, &remote)?.is_none() {
+        let remotes = list_remotes(cwd)?;
+        if remotes.len() == 1 {
+            remote = remotes.into_iter().next().expect("len==1");
+        }
+    }
+
     let remote_lfsurl_key = format!("remote.{remote}.lfsurl");
     if let Some(v) = config::get_effective(cwd, &remote_lfsurl_key)? {
         return Ok(v);
     }
 
-    if let Some(remote_url) = remote_url(cwd, remote)? {
+    if let Some(remote_url) = remote_url(cwd, &remote)? {
         return derive_lfs_url(&remote_url);
     }
 
@@ -69,11 +83,31 @@ pub fn endpoint_for_remote(cwd: &Path, remote: Option<&str>) -> Result<String, E
     // it through the same rewriter — same outcome as if they'd added
     // a `remote.x.url = <URL>` entry first. Bare-SSH (`git@host:path`)
     // also covers the SCP-style case the rewriter understands.
-    if looks_like_url(remote) {
-        return derive_lfs_url(remote);
+    if looks_like_url(&remote) {
+        return derive_lfs_url(&remote);
     }
 
-    Err(EndpointError::Unresolved(remote.to_owned()))
+    Err(EndpointError::Unresolved(remote))
+}
+
+/// `git remote` enumeration. Returns the configured remote names in
+/// definition order. Used by [`endpoint_for_remote`] to fall back from
+/// `origin` to the "only remote" when one exists.
+fn list_remotes(cwd: &Path) -> Result<Vec<String>, Error> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["remote"])
+        .output()
+        .map_err(Error::Io)?;
+    if !out.status.success() {
+        return Ok(Vec::new());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(str::to_owned)
+        .collect())
 }
 
 /// Quick syntactic check: does `s` look like one of the URL forms
