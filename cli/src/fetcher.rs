@@ -13,10 +13,13 @@
 //! has to talk to git config, so a stripped-down repo can still smudge
 //! its already-fetched bytes.
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 
-use git_lfs_api::{Auth, Client as ApiClient, ObjectSpec, Ref};
+use git_lfs_api::{
+    Auth, BatchRequest, Client as ApiClient, ObjectSpec, Operation, Ref,
+};
 use git_lfs_creds::{CachingHelper, GitCredentialHelper, Helper, HelperChain};
 use git_lfs_filter::FetchError;
 use git_lfs_pointer::Pointer;
@@ -30,6 +33,11 @@ use tokio::runtime::Runtime;
 pub struct LfsFetcher {
     runtime: Runtime,
     transfer: Result<Transfer, String>,
+    /// API client used directly for `check_server_has` (so push can ask
+    /// the server which "missing locally" objects the server already
+    /// holds before deciding whether to fail). Same client the
+    /// `Transfer` uses for its batch calls.
+    api: Result<ApiClient, String>,
     /// Refspec sent on every batch request. Resolved once at
     /// construction (current branch's tracked upstream, falling back
     /// to the current branch's full ref). Required by servers that
@@ -59,11 +67,15 @@ impl LfsFetcher {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        let transfer = build_transfer(cwd, store, remote);
+        let api = build_api_client(cwd, remote);
+        let transfer = api
+            .clone()
+            .map(|c| Transfer::new(c, store.clone(), TransferConfig::default()));
         let refspec = git_lfs_git::refs::current_refspec(cwd).map(Ref::new);
         Ok(Self {
             runtime,
             transfer,
+            api,
             refspec,
         })
     }
@@ -119,20 +131,46 @@ impl LfsFetcher {
         Ok(report)
     }
 
+    /// Ask the server which of the given OIDs it already holds. Used by
+    /// `push` / `pre-push` to distinguish "missing locally but server
+    /// has it" (silent skip — see `lfs.allowincompletepush`) from
+    /// "missing both places" (the failure case).
+    ///
+    /// Sends one upload-direction batch and returns the OIDs that came
+    /// back with neither `actions` nor `error` (the spec's no-op
+    /// signal — server already has the object).
+    pub fn check_server_has(
+        &self,
+        specs: Vec<ObjectSpec>,
+    ) -> Result<HashSet<String>, FetchError> {
+        if specs.is_empty() {
+            return Ok(HashSet::new());
+        }
+        let api = self
+            .api
+            .as_ref()
+            .map_err(|m| -> FetchError { m.clone().into() })?;
+        let mut req = BatchRequest::new(Operation::Upload, specs);
+        if let Some(r) = self.refspec.clone() {
+            req = req.with_ref(r);
+        }
+        let resp = self
+            .runtime
+            .block_on(api.batch(&req))
+            .map_err(|e| -> FetchError { e.to_string().into() })?;
+        Ok(resp
+            .objects
+            .into_iter()
+            .filter(|o| o.actions.is_none() && o.error.is_none())
+            .map(|o| o.oid)
+            .collect())
+    }
+
     fn transfer(&self) -> Result<&Transfer, FetchError> {
         self.transfer
             .as_ref()
             .map_err(|msg| -> FetchError { msg.clone().into() })
     }
-}
-
-fn build_transfer(
-    cwd: &Path,
-    store: &Store,
-    remote: Option<&str>,
-) -> Result<Transfer, String> {
-    let api = build_api_client(cwd, remote)?;
-    Ok(Transfer::new(api, store.clone(), TransferConfig::default()))
 }
 
 /// Build an [`ApiClient`] for `cwd`+`remote` with our standard credential

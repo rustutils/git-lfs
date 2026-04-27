@@ -20,18 +20,17 @@
 use std::io::BufRead;
 use std::path::Path;
 
-use git_lfs_transfer::Report;
-
-use crate::push::{PushCommandError, remote_tracking_refs, upload_in_range};
+use crate::push::{PushCommandError, PushOutcome, remote_tracking_refs, upload_in_range};
 
 /// Run the pre-push command. `stdin_lines` is typically `io::stdin().lock()`.
 pub fn pre_push<R: BufRead>(
     cwd: &Path,
     remote: &str,
     stdin: R,
-) -> Result<Report, PushCommandError> {
+    dry_run: bool,
+) -> Result<PushOutcome, PushCommandError> {
     if std::env::var_os("GIT_LFS_SKIP_PUSH").is_some_and(|v| v != "0" && !v.is_empty()) {
-        return Ok(Report::default());
+        return Ok(PushOutcome::default());
     }
 
     let mut includes: Vec<String> = Vec::new();
@@ -70,7 +69,7 @@ pub fn pre_push<R: BufRead>(
     }
 
     if includes.is_empty() {
-        return Ok(Report::default());
+        return Ok(PushOutcome::default());
     }
 
     if needs_remote_tracking {
@@ -92,7 +91,7 @@ pub fn pre_push<R: BufRead>(
 
     let inc: Vec<&str> = includes.iter().map(String::as_str).collect();
     let exc: Vec<&str> = excludes.iter().map(String::as_str).collect();
-    upload_in_range(cwd, remote, &inc, &exc, refspec)
+    upload_in_range(cwd, remote, &inc, &exc, refspec, dry_run)
 }
 
 /// True if `s` is a non-empty hex string of all zeros — git's marker for

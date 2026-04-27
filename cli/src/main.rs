@@ -226,6 +226,10 @@ enum Command {
         remote: String,
         /// Refs to push LFS objects for. Defaults to `HEAD`.
         refs: Vec<String>,
+        /// List the objects that would be pushed without actually
+        /// uploading them (one `push <oid> => <path>` line per object).
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Git post-checkout hook entry point. Receives `<prev-sha>
     /// <post-sha> <flag>` (flag is "1" if HEAD moved). Currently a
@@ -253,6 +257,10 @@ enum Command {
         remote: String,
         /// URL of the remote (informational; we use `lfs.url` config).
         url: Option<String>,
+        /// List the objects that would be pushed without actually
+        /// uploading them.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Print the git-lfs version and exit.
     Version,
@@ -503,9 +511,12 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
         Command::Pull { refs } => {
             pull::pull(&cwd, &refs)?;
         }
-        Command::Push { remote, refs } => {
-            let report = push::push(&cwd, &remote, &refs)?;
-            if !report.failed.is_empty() {
+        Command::Push { remote, refs, dry_run } => {
+            let outcome = push::push(&cwd, &remote, &refs, dry_run)?;
+            if outcome.aborted {
+                return Ok(2);
+            }
+            if !outcome.report.failed.is_empty() {
                 return Err("one or more objects failed to upload".into());
             }
         }
@@ -518,10 +529,13 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
         Command::PostMerge { args } => {
             hooks::post_merge(&cwd, &args)?;
         }
-        Command::PrePush { remote, url: _ } => {
+        Command::PrePush { remote, url: _, dry_run } => {
             let stdin = io::stdin().lock();
-            let report = pre_push::pre_push(&cwd, &remote, stdin)?;
-            if !report.failed.is_empty() {
+            let outcome = pre_push::pre_push(&cwd, &remote, stdin, dry_run)?;
+            if outcome.aborted {
+                return Ok(2);
+            }
+            if !outcome.report.failed.is_empty() {
                 return Err("pre-push: one or more objects failed to upload".into());
             }
         }

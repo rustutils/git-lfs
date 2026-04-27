@@ -81,13 +81,24 @@ pub fn run(args: Args<'_>) -> Result<u8, Box<dyn std::error::Error>> {
         }
     }
 
-    // Re-stage files already in the index that match the new pattern
-    // (so they go through the LFS clean filter on the next commit) and
-    // apply the lockable invariant. The chmod side-effects happen even
-    // for `AlreadyTracked` patterns so a re-issued `--lockable` /
-    // `--not-lockable` against a previously-tracked pattern still
-    // converges the working tree. With `--dry-run`, neither side
-    // happens.
+    // For each newly-added pattern, walk the index for files that
+    // match. We print a `Touching "<path>"` line and bump the file's
+    // mtime — that's it. We do NOT run `git add` on them, even though
+    // the freshly-tracked attribute means a future `git add` would
+    // route them through the LFS clean filter.
+    //
+    // Why mtime-only: if the user has already committed `existing.dat`
+    // as a raw blob, the blunt `git add` approach silently re-stages
+    // it as a pointer the next time they commit something else.
+    // Upstream (`commands/command_track.go`) only touches the mtime so
+    // git's stat cache invalidates and the user sees the file as
+    // "modified" on the next status — explicit `git add` is left to
+    // them.
+    //
+    // The chmod side-effects happen even for `AlreadyTracked` patterns
+    // so a re-issued `--lockable` / `--not-lockable` against a
+    // previously-tracked pattern still converges the working tree.
+    // With `--dry-run`, neither chmod nor the mtime touch fires.
     //
     // Both `attrs` and `held` are lazy: built only when the first
     // pattern with matching files needs them. This avoids the
@@ -109,9 +120,9 @@ pub fn run(args: Args<'_>) -> Result<u8, Box<dyn std::error::Error>> {
             }
             for path in &matches {
                 println!("Touching \"{path}\"");
-            }
-            if !args.dry_run && !matches.is_empty() {
-                git_add(args.cwd, &matches)?;
+                if !args.dry_run {
+                    let _ = touch_mtime(args.cwd, path);
+                }
             }
         }
 
@@ -240,15 +251,13 @@ fn git_bool(cwd: &Path, flag: &str) -> Option<bool> {
     }
 }
 
-fn git_add(cwd: &Path, paths: &[String]) -> std::io::Result<()> {
-    let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(cwd).args(["add", "--"]);
-    for p in paths {
-        cmd.arg(p);
-    }
-    let status = cmd.status()?;
-    if !status.success() {
-        return Err(std::io::Error::other("git add failed during track"));
-    }
-    Ok(())
+/// Bump `<cwd>/<path>`'s mtime to now (matches upstream's
+/// `os.Chtimes`). Errors are swallowed by the caller — a file that
+/// vanished between `git ls-files` and now isn't a hard failure for
+/// `track`, so we don't want to abort the whole command for it.
+fn touch_mtime(cwd: &Path, path: &str) -> std::io::Result<()> {
+    let full = cwd.join(path);
+    let now = std::time::SystemTime::now();
+    let f = std::fs::OpenOptions::new().write(true).open(&full)?;
+    f.set_modified(now)
 }

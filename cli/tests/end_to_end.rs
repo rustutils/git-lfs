@@ -1080,9 +1080,11 @@ async fn push_uploads_only_objects_not_in_remote_tracking() {
         "push failed: {}",
         String::from_utf8_lossy(&out.stderr),
     );
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("Pushing 1 object(s)"), "unexpected stdout: {stdout}");
-    assert!(stdout.contains("1 succeeded, 0 failed"), "unexpected stdout: {stdout}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("Uploading LFS objects: 100% (1/1)"),
+        "unexpected stderr: {stderr}",
+    );
     assert_ne!(new_oid, old_oid, "test fixture sanity");
 }
 
@@ -1108,7 +1110,13 @@ async fn push_is_noop_when_remote_tracking_matches_head() {
     .unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("Nothing to push"), "unexpected stdout: {stdout}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(stdout, "", "unexpected stdout: {stdout}");
+    // No upload attempted, so no progress meter — silent success.
+    assert!(
+        !stderr.contains("Uploading LFS objects:"),
+        "unexpected progress on no-op: {stderr}",
+    );
 }
 
 #[tokio::test]
@@ -1352,8 +1360,11 @@ async fn push_handles_server_already_has_object() {
         "push failed: {}",
         String::from_utf8_lossy(&out.stderr),
     );
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("1 succeeded, 0 failed"), "unexpected stdout: {stdout}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("Uploading LFS objects: 100% (1/1)"),
+        "unexpected stderr: {stderr}",
+    );
 }
 
 // ---------- ls-files -----------------------------------------------------
