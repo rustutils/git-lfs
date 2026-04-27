@@ -591,7 +591,11 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 Err(fetch::FetchCommandError::Usage(msg))
                     if msg == "Not in a Git repository." =>
                 {
-                    eprintln!("{msg}");
+                    // Test `t-fetch.sh::fetch: outside git repository`
+                    // greps for this on stdout (`2>&1 > fetch.log`
+                    // captures stdout only). Match upstream and emit
+                    // here, then exit 128.
+                    println!("{msg}");
                     return Ok(128);
                 }
                 Err(e) => return Err(e.into()),

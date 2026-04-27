@@ -94,11 +94,12 @@ pub fn fetch(
     // refs. With `--stdin`, all stdin lines are refs (no remote in
     // stdin); the remote is taken from argv[0] if argv had one.
     //
-    // The split is a hint to `LfsFetcher` (which queries the matching
-    // remote's LFS endpoint); the *scan* always treats refs as
-    // rev-list-resolvable strings, so misclassifying is recoverable.
+    // Disambiguation rule (matching upstream): when argv[0] resolves
+    // as neither a remote nor a ref, prefer the "remote name" error
+    // — the upstream test asks for `Invalid remote name` when the
+    // first arg is genuinely bogus (`t-fetch.sh::fetch with invalid
+    // remote`).
     let (remote, ref_args): (Option<String>, Vec<String>) = if opts.stdin {
-        // With --stdin, argv (if any non-empty) holds the remote.
         let remote = opts
             .args
             .first()
@@ -109,6 +110,13 @@ pub fn fetch(
         match effective_args.split_first() {
             Some((first, rest)) if is_remote_or_url(cwd, first) => {
                 (Some(first.clone()), rest.to_vec())
+            }
+            Some((first, rest))
+                if rest.is_empty() && !is_resolvable_ref(cwd, first) =>
+            {
+                return Err(FetchCommandError::Usage(format!(
+                    "Invalid remote name: {first:?}"
+                )));
             }
             _ => (None, effective_args.to_vec()),
         }
@@ -336,6 +344,17 @@ fn print_json_transfers(
     Ok(())
 }
 
+/// Read `<config_key>` (e.g. `lfs.fetchinclude`) and turn its
+/// comma-separated globs into a [`GlobSet`]. `None` if the key isn't
+/// set or has no patterns. Used by `fsck` to honor the same
+/// include/exclude policy as `fetch` without going through CLI flags.
+pub(crate) fn fetch_filter_set(
+    cwd: &Path,
+    config_key: &str,
+) -> Result<Option<GlobSet>, FetchCommandError> {
+    build_pattern_set(cwd, &[], config_key)
+}
+
 /// Build a [`GlobSet`] from CLI patterns + a config-key fallback. Empty
 /// pattern strings (e.g. `--include ""`) clear the set entirely. Empty
 /// list of patterns falls back to the config value (which is itself
@@ -378,8 +397,9 @@ fn build_pattern_set(
 /// Apply include/exclude logic to a single pointer's working-tree
 /// path. Pointers without a path always pass (orphan blobs from
 /// rev-list — keep them, since the user can't filter what they can't
-/// see).
-fn path_passes_filter(
+/// see). Exposed pub(crate) so `fsck` can apply the same
+/// `lfs.fetchinclude` / `lfs.fetchexclude` semantics.
+pub(crate) fn path_passes_filter(
     path: Option<&Path>,
     include: &Option<GlobSet>,
     exclude: &Option<GlobSet>,

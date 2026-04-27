@@ -2600,7 +2600,10 @@ fn fsck_reports_ok_when_pointers_match_store() {
 #[test]
 fn fsck_reports_missing_object_and_exits_one() {
     let repo = fresh_repo_with_identity();
-    // Pointer references an OID we never put in the store.
+    // Pointer references an OID we never put in the store and there's
+    // no `lfs.fetchexclude` covering it, so fsck reports it as
+    // openError and exits 1 — matching upstream + `t-fsck.sh::fsck
+    // detects invalid objects`.
     commit_pointer_at(
         repo.path(),
         "missing.bin",
@@ -2612,6 +2615,28 @@ fn fsck_reports_missing_object_and_exits_one() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("openError"), "expected openError, got: {stdout}");
     assert!(stdout.contains("missing.bin"), "{stdout}");
+}
+
+#[test]
+fn fsck_skips_objects_excluded_by_lfs_fetchexclude() {
+    let repo = fresh_repo_with_identity();
+    // Set up a pointer whose object is missing locally. Without
+    // exclude config, fsck would flag it; with `lfs.fetchexclude`
+    // covering the path, fsck silently skips and exits 0.
+    git_in(repo.path(), &["config", "lfs.fetchexclude", "missing*"]);
+    commit_pointer_at(
+        repo.path(),
+        "missing.bin",
+        &pointer_text(HELLO_OID, HELLO_LEN),
+    );
+
+    let out = run_in(repo.path(), &["fsck", "--dry-run"], b"");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("openError"),
+        "should skip excluded path: {stdout}",
+    );
 }
 
 #[test]

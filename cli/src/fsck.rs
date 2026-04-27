@@ -21,11 +21,23 @@
 
 use std::io::Read;
 use std::path::Path;
+use std::process::Command;
 
 use git_lfs_git::{AttrSet, CatFileBatch, scan_pointers, scan_tree_blobs};
 use git_lfs_pointer::{MAX_POINTER_SIZE, Oid, Pointer};
 use git_lfs_store::Store;
 use sha2::{Digest, Sha256};
+
+use crate::fetch::fetch_filter_set;
+
+fn is_inside_work_tree(cwd: &Path) -> bool {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .output();
+    matches!(out, Ok(o) if o.status.success() && o.stdout.starts_with(b"true"))
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum FsckError {
@@ -33,6 +45,8 @@ pub enum FsckError {
     Git(#[from] git_lfs_git::Error),
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Fetch(#[from] crate::fetch::FetchCommandError),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,8 +66,15 @@ pub struct Options {
 }
 
 /// Returns the intended process exit code (0 = OK, 1 = at least one
-/// problem found).
+/// problem found, 128 = not in a git repo).
 pub fn run(cwd: &Path, refspec: Option<&str>, opts: &Options) -> Result<i32, FsckError> {
+    // Outside-a-repo guard. `t-fsck.sh::fsck: outside git repository`
+    // greps `Not in a Git repository` on stdout (`2>&1 > fsck.log`
+    // captures stdout only) and asserts exit 128.
+    if !is_inside_work_tree(cwd) {
+        println!("Not in a Git repository.");
+        return Ok(128);
+    }
     let store = Store::new(git_lfs_git::lfs_dir(cwd)?);
     let r = refspec.unwrap_or("HEAD");
 
@@ -64,8 +85,25 @@ pub fn run(cwd: &Path, refspec: Option<&str>, opts: &Options) -> Result<i32, Fsc
         // Scan the full reachable history; this is what upstream's
         // ScanRef does, and it's what most users mean by "fsck this
         // ref's LFS objects."
+        //
+        // Honor `lfs.fetchinclude` / `lfs.fetchexclude`: pointers
+        // whose working-tree path matches an exclude (or doesn't
+        // match an include) are skipped, because the user has
+        // explicitly opted out of having those objects locally.
+        // `t-fsck.sh::fsck detects invalid objects except in
+        // excluded paths` and `t-fetch.sh::fetch with exclude
+        // filters in gitconfig` both rely on this.
+        let include_set = fetch_filter_set(cwd, "lfs.fetchinclude")?;
+        let exclude_set = fetch_filter_set(cwd, "lfs.fetchexclude")?;
         let pointers = scan_pointers(cwd, &[r], &[])?;
         for entry in &pointers {
+            if !crate::fetch::path_passes_filter(
+                entry.path.as_deref(),
+                &include_set,
+                &exclude_set,
+            ) {
+                continue;
+            }
             match verify_object(&store, entry.oid, entry.size)? {
                 ObjectVerify::Ok => {}
                 ObjectVerify::Missing => {
