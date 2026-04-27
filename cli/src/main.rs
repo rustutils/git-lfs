@@ -1,4 +1,4 @@
-use std::io::{self, BufWriter, Read, Write};
+use std::io::{self, BufRead, BufWriter, Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -225,12 +225,27 @@ enum Command {
         /// Name of the remote (e.g. "origin") whose tracking refs are
         /// excluded from the upload set.
         remote: String,
-        /// Refs to push LFS objects for. Defaults to `HEAD`.
-        refs: Vec<String>,
+        /// Refs (or, with `--object-id`, raw OIDs) to push. With
+        /// `--all`, restricts the all-refs walk to these; with
+        /// `--stdin`, ignored (a warning is emitted).
+        args: Vec<String>,
         /// List the objects that would be pushed without actually
         /// uploading them (one `push <oid> => <path>` line per object).
         #[arg(long)]
         dry_run: bool,
+        /// Push every local ref under `refs/heads/*` and `refs/tags/*`
+        /// (intersected with `args` if any are given).
+        #[arg(long)]
+        all: bool,
+        /// Read refs (or OIDs, with `--object-id`) from stdin, one per
+        /// line. Blank lines are skipped.
+        #[arg(long)]
+        stdin: bool,
+        /// Treat positional args / stdin entries as raw LFS OIDs
+        /// rather than git refs, and upload those objects directly
+        /// from the local store.
+        #[arg(long)]
+        object_id: bool,
     },
     /// Git post-checkout hook entry point. Receives `<prev-sha>
     /// <post-sha> <flag>` (flag is "1" if HEAD moved). Currently a
@@ -512,8 +527,34 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
         Command::Pull { refs } => {
             pull::pull(&cwd, &refs)?;
         }
-        Command::Push { remote, refs, dry_run } => {
-            let outcome = push::push(&cwd, &remote, &refs, dry_run)?;
+        Command::Push {
+            remote,
+            args,
+            dry_run,
+            all,
+            stdin,
+            object_id,
+        } => {
+            let stdin_lines: Vec<String> = if stdin {
+                io::stdin()
+                    .lock()
+                    .lines()
+                    .filter_map(|l| l.ok())
+                    .map(|l| l.trim().to_owned())
+                    .filter(|l| !l.is_empty())
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let opts = push::PushOptions {
+                args: &args,
+                stdin_lines: &stdin_lines,
+                dry_run,
+                all,
+                stdin,
+                object_id,
+            };
+            let outcome = push::push(&cwd, &remote, &opts)?;
             if outcome.aborted {
                 return Ok(2);
             }

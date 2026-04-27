@@ -63,7 +63,32 @@ pub fn endpoint_for_remote(cwd: &Path, remote: Option<&str>) -> Result<String, E
         return derive_lfs_url(&remote_url);
     }
 
+    // Last fallback: the caller may have passed a URL directly in
+    // place of a remote name (e.g. `git lfs push https://host/repo`).
+    // Treat anything that looks URL-shaped as the remote URL and run
+    // it through the same rewriter — same outcome as if they'd added
+    // a `remote.x.url = <URL>` entry first. Bare-SSH (`git@host:path`)
+    // also covers the SCP-style case the rewriter understands.
+    if looks_like_url(remote) {
+        return derive_lfs_url(remote);
+    }
+
     Err(EndpointError::Unresolved(remote.to_owned()))
+}
+
+/// Quick syntactic check: does `s` look like one of the URL forms
+/// [`derive_lfs_url`] recognizes? Used to decide whether to treat a
+/// "remote name" argument as a literal URL.
+fn looks_like_url(s: &str) -> bool {
+    s.starts_with("http://")
+        || s.starts_with("https://")
+        || s.starts_with("ssh://")
+        || s.starts_with("git+ssh://")
+        || s.starts_with("ssh+git://")
+        || s.starts_with("git://")
+        || s.starts_with("file://")
+        || s.contains("://")
+        || s.contains('@')
 }
 
 /// Read `remote.<name>.url` from the standard git config scopes.

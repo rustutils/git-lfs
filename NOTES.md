@@ -244,22 +244,27 @@ missing** and **why it was OK to skip for v0**.
   `install --skip-repo` global behavior.
 
 ### `cli push`
-- **`--all`.** Push every ref in the repo. `t-push.sh::push --all *`
-  blocked on this.
-- **`--object-id <oid>`.** Upload specific objects regardless of refs.
-  `t-push.sh::push object id(s)`, `push --object-id (invalid value)`.
-- **`--stdin`.** Read refs from stdin instead of argv.
-  `t-push.sh::push via stdin with extra arguments`,
-  `push (multiple refs and data the server already has)`.
-- **`At least one ref must be supplied without --all` error.**
-  `t-push.sh::push with nothing` greps for this.
-- **`Invalid remote name` error.** `t-push.sh::push with invalid
-  remote` and `t-pre-push.sh::pre-push with bad remote` grep for this.
-- **`--dry-run` "shows missing-locally objects too"** — currently we
-  list every reachable pointer (matches upstream behavior since both
-  ours and upstream's dry-run is path-based, not store-aware), but
-  the t-push tests also check `lfs.allowincompletepush=true` paths.
-  Confirm dry-run + missing interaction matches upstream.
+- **Batch error message format.** `t-push.sh::push with bad ref`
+  greps `batch response: Expected ref "refs/heads/X", got
+  "refs/heads/Y"` against the branch-required server's 403 body.
+  We surface the body via `FetchError`, but format it as
+  `upload failed: server returned status 403: …`. Need a custom
+  formatter for batch failures.
+- **Negative size in batch response.** `t-push.sh::push (with
+  invalid object size)` — server returns `size: -1`. We bail at
+  serde decode; upstream prints `invalid size (got: -1)`. Either
+  loosen the deserializer to `i64` and validate downstream, or
+  intercept the decode error.
+- **Deprecated `_links` field.** `t-push.sh::push with deprecated
+  _links` — old servers send `_links` instead of `actions`. Add it
+  as a serde alias (or tolerant `flatten`).
+- **`lfs.transfer.enablehrefrewrite` + `url.<base>.pushInsteadOf`.**
+  `t-push.sh::push with invalid pushInsteadof` exercises rewriting
+  the action URL via `url.<base>.pushInsteadOf` when
+  `lfs.transfer.enablehrefrewrite=true`. Skipped for now.
+- **Custom-namespace refs in `--all` setup.** `t-push.sh::push
+  custom reference` uses `lfstest-testutils addcommits` (excluded),
+  so it's gated on porting that helper.
 
 ### `cli pull`
 - **Don't read every tracked file.** `pull` currently walks every tracked
