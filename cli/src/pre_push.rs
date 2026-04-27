@@ -36,6 +36,7 @@ pub fn pre_push<R: BufRead>(
 
     let mut includes: Vec<String> = Vec::new();
     let mut excludes: Vec<String> = Vec::new();
+    let mut remote_refs: Vec<String> = Vec::new();
     let mut needs_remote_tracking = false;
 
     for line in stdin.lines() {
@@ -48,6 +49,7 @@ pub fn pre_push<R: BufRead>(
             continue;
         }
         let local_sha = parts[1];
+        let remote_ref = parts[2];
         let remote_sha = parts[3];
 
         if is_zero_oid(local_sha) {
@@ -56,6 +58,7 @@ pub fn pre_push<R: BufRead>(
         }
 
         includes.push(local_sha.to_owned());
+        remote_refs.push(remote_ref.to_owned());
         if is_zero_oid(remote_sha) {
             // New branch — remote has nothing for this ref. Fall back
             // to "everything else the remote tracks" as the exclude
@@ -74,9 +77,22 @@ pub fn pre_push<R: BufRead>(
         excludes.extend(remote_tracking_refs(cwd, remote)?);
     }
 
+    // Branch-required servers reject batch requests without a refspec
+    // matching the destination ref. Use the remote ref from stdin —
+    // single-ref pushes are unambiguous; multi-ref pushes don't get a
+    // refspec since one batch can only carry one. Drop duplicates so
+    // `git push origin main main` doesn't look like a multi-ref push.
+    remote_refs.sort();
+    remote_refs.dedup();
+    let refspec = if remote_refs.len() == 1 {
+        remote_refs.pop()
+    } else {
+        None
+    };
+
     let inc: Vec<&str> = includes.iter().map(String::as_str).collect();
     let exc: Vec<&str> = excludes.iter().map(String::as_str).collect();
-    upload_in_range(cwd, remote, &inc, &exc)
+    upload_in_range(cwd, remote, &inc, &exc, refspec)
 }
 
 /// True if `s` is a non-empty hex string of all zeros — git's marker for

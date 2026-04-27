@@ -16,7 +16,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use git_lfs_api::{Auth, Client as ApiClient, ObjectSpec};
+use git_lfs_api::{Auth, Client as ApiClient, ObjectSpec, Ref};
 use git_lfs_creds::{CachingHelper, GitCredentialHelper, Helper, HelperChain};
 use git_lfs_filter::FetchError;
 use git_lfs_pointer::Pointer;
@@ -30,6 +30,12 @@ use tokio::runtime::Runtime;
 pub struct LfsFetcher {
     runtime: Runtime,
     transfer: Result<Transfer, String>,
+    /// Refspec sent on every batch request. Resolved once at
+    /// construction (current branch's tracked upstream, falling back
+    /// to the current branch's full ref). Required by servers that
+    /// scope LFS operations per-branch — without it, branch-required
+    /// repos return `403 Expected ref ..., got ""` to push/pull.
+    refspec: Option<Ref>,
 }
 
 impl LfsFetcher {
@@ -54,7 +60,22 @@ impl LfsFetcher {
             .enable_all()
             .build()?;
         let transfer = build_transfer(cwd, store, remote);
-        Ok(Self { runtime, transfer })
+        let refspec = git_lfs_git::refs::current_refspec(cwd).map(Ref::new);
+        Ok(Self {
+            runtime,
+            transfer,
+            refspec,
+        })
+    }
+
+    /// Override the auto-resolved refspec. Used by `pre-push`, where
+    /// the relevant ref is the *remote* ref being pushed (parsed from
+    /// the hook's stdin), not the local branch the user happens to be
+    /// on.
+    #[must_use]
+    pub fn with_refspec(mut self, refspec: Option<String>) -> Self {
+        self.refspec = refspec.map(Ref::new);
+        self
     }
 
     /// Download the object identified by `pointer` into the local store.
@@ -82,7 +103,7 @@ impl LfsFetcher {
         let transfer = self.transfer()?;
         let report = self
             .runtime
-            .block_on(transfer.download(specs, None, None))?;
+            .block_on(transfer.download(specs, self.refspec.clone(), None))?;
         Ok(report)
     }
 
@@ -94,7 +115,7 @@ impl LfsFetcher {
         let transfer = self.transfer()?;
         let report = self
             .runtime
-            .block_on(transfer.upload(specs, None, None))?;
+            .block_on(transfer.upload(specs, self.refspec.clone(), None))?;
         Ok(report)
     }
 

@@ -303,6 +303,7 @@ async fn create_lock_conflict_returns_existing_lock() {
 
     match err {
         CreateLockError::Conflict { existing, message } => {
+            let existing = existing.expect("existing lock attached to 409");
             assert_eq!(existing.id, "existing");
             assert_eq!(existing.owner.unwrap().name, "Other Person");
             assert_eq!(message, "already created lock");

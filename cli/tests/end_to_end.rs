@@ -2877,6 +2877,25 @@ async fn lock_test_repo(server_uri: &str) -> TempDir {
     repo
 }
 
+/// Stage and commit `rel_path` in `repo`. Used by lock/unlock tests so
+/// our uncommitted-changes guard doesn't block path-based unlock paths.
+fn commit_path(repo: &Path, rel_path: &str) {
+    let add = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["add", "--", rel_path])
+        .status()
+        .unwrap();
+    assert!(add.success(), "git add {rel_path} failed");
+    let commit = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["commit", "-q", "-m", "test"])
+        .status()
+        .unwrap();
+    assert!(commit.success(), "git commit failed");
+}
+
 #[tokio::test]
 async fn lock_creates_lock_and_prints_locked_message() {
     use serde_json::json;
@@ -2911,7 +2930,9 @@ async fn lock_creates_lock_and_prints_locked_message() {
         String::from_utf8_lossy(&out.stderr),
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert_eq!(stdout.trim_end(), "Locked data.bin");
+    // Upstream's `t-lock.sh` greps for "Locked <path>" and extracts
+    // the id from the trailing parens (`Locked data.bin (lock-id-1)`).
+    assert_eq!(stdout.trim_end(), "Locked data.bin (lock-id-1)");
 }
 
 #[tokio::test]
@@ -3145,7 +3166,10 @@ async fn unlock_by_path_looks_up_id_then_deletes() {
         .await;
 
     let repo = lock_test_repo(&server.uri()).await;
+    // Commit the file so unlock's uncommitted-changes guard doesn't
+    // block the path-based flow before it reaches the API.
     std::fs::write(repo.path().join("data.bin"), b"x").unwrap();
+    commit_path(repo.path(), "data.bin");
 
     let path = repo.path().to_owned();
     let out = tokio::task::spawn_blocking(move || run_in(&path, &["unlock", "data.bin"], b""))
@@ -3172,6 +3196,7 @@ async fn unlock_by_path_when_not_locked_fails() {
 
     let repo = lock_test_repo(&server.uri()).await;
     std::fs::write(repo.path().join("data.bin"), b"x").unwrap();
+    commit_path(repo.path(), "data.bin");
 
     let path = repo.path().to_owned();
     let out = tokio::task::spawn_blocking(move || run_in(&path, &["unlock", "data.bin"], b""))

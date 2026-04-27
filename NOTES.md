@@ -332,18 +332,11 @@ missing** and **why it was OK to skip for v0**.
   upstream maintains under `.git/lfs/cache/locks/<remote>/`; we don't
   have that cache yet. Adding it is mostly a JSON-on-disk shim around
   `Client::list_locks` results.
-- **`unlock`'s "abort if file modified, unless --force" guard.** Upstream
-  refuses to unlock a path with uncommitted edits (sane safety net so
-  you don't lose collaborator-protected work). We skip the check
-  entirely for v0; users see no warning. Implementation = run
-  `git status --porcelain -- <path>` and refuse if non-empty.
 - **`unlock --force` path fallback.** When `resolve_lock_path` fails
   (e.g. file is gone), we currently do a minimal `\\` → `/` + strip
   `./`. Upstream canonicalizes more carefully. Revisit if tests hit it.
-- **Auth retry through `create_lock` / `delete_lock`.** Already noted
-  under `api`: those two methods bypass the 401 → fill → retry loop in
-  `Client::send_with_auth_retry`. Threading them through is a
-  refactor in `api/`, not a CLI fix.
+- **`--cached` / `--local`** for `locks` (require an on-disk lock cache
+  we don't have). Tracked alongside the rest of the cache work.
 
 ### `cli ls-files`
 - **`--include` / `--exclude` path filters.** Upstream filters output by

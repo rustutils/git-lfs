@@ -49,7 +49,10 @@ pub fn push(cwd: &Path, remote: &str, refs: &[String]) -> Result<Report, PushCom
     let excludes_owned = remote_tracking_refs(cwd, remote)?;
     let excludes: Vec<&str> = excludes_owned.iter().map(String::as_str).collect();
 
-    upload_in_range(cwd, remote, &ref_strs, &excludes)
+    // CLI `push` doesn't have a remote-ref hint to pass — fall back
+    // to LfsFetcher's auto-resolution (current branch's tracked
+    // upstream).
+    upload_in_range(cwd, remote, &ref_strs, &excludes, None)
 }
 
 /// Shared core: scan for pointers reachable from `includes` minus
@@ -64,6 +67,7 @@ pub(crate) fn upload_in_range(
     remote: &str,
     includes: &[&str],
     excludes: &[&str],
+    refspec: Option<String>,
 ) -> Result<Report, PushCommandError> {
     let store = Store::new(git_lfs_git::lfs_dir(cwd)?);
     let pointers = scan_pointers(cwd, includes, excludes)?;
@@ -100,7 +104,10 @@ pub(crate) fn upload_in_range(
     }
 
     println!("Pushing {} object(s)", to_push.len());
-    let fetcher = LfsFetcher::from_repo_with_remote(cwd, &store, Some(remote))?;
+    let mut fetcher = LfsFetcher::from_repo_with_remote(cwd, &store, Some(remote))?;
+    if refspec.is_some() {
+        fetcher = fetcher.with_refspec(refspec);
+    }
     let report = fetcher
         .upload_many(to_push)
         .map_err(PushCommandError::Fetch)?;

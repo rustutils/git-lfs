@@ -34,21 +34,33 @@ struct LockEnvelope {
     lock: Lock,
 }
 
+/// Flexible POST `/locks` response decoder. The reference test server
+/// returns `{"message": "lock already created"}` at HTTP 200 for the
+/// "path is already locked" case (no `lock` field, no 409 status), so a
+/// strict envelope deserialize would blow up with a missing-field
+/// error. We accept `lock` and `message` independently and let
+/// [`Client::create_lock`] interpret which arrived.
 #[derive(Debug, Deserialize)]
-struct LockExistsBody {
-    lock: Lock,
-    message: String,
+struct CreateLockResponse {
+    #[serde(default)]
+    lock: Option<Lock>,
+    #[serde(default)]
+    message: Option<String>,
 }
 
 /// Errors specific to [`Client::create_lock`].
 ///
-/// Wraps [`ApiError`] but adds a typed `Conflict` for the 409 case where
-/// the server returns the existing lock alongside the error message.
+/// Wraps [`ApiError`] but adds a typed `Conflict` for the in-band
+/// "already locked" case. `existing` is `Some` for servers that return
+/// HTTP 409 with the conflicting lock attached; `None` for servers that
+/// only ship a message.
 #[derive(Debug, thiserror::Error)]
 pub enum CreateLockError {
-    /// The path is already locked. Returned for HTTP 409.
     #[error("lock conflict: {message}")]
-    Conflict { existing: Lock, message: String },
+    Conflict {
+        existing: Option<Lock>,
+        message: String,
+    },
 
     #[error(transparent)]
     Api(#[from] ApiError),
@@ -142,6 +154,10 @@ where
 
 impl Client {
     /// POST `/locks` to create a new lock.
+    ///
+    /// Body decoding is flexible to accommodate both spec'd 409 → existing
+    /// lock responses and the reference test server's "200 with `message`
+    /// but no `lock`" in-band-conflict pattern.
     pub async fn create_lock(&self, req: &CreateLockRequest) -> Result<Lock, CreateLockError> {
         let url = self.url("locks").map_err(CreateLockError::Api)?;
         // Serialize once so the closure (which may run twice — once
@@ -158,23 +174,50 @@ impl Client {
             .await
             .map_err(CreateLockError::Api)?;
 
-        if resp.status() == reqwest::StatusCode::CONFLICT {
-            let bytes = resp.bytes().await.unwrap_or_default();
-            return match serde_json::from_slice::<LockExistsBody>(&bytes) {
-                Ok(body) => Err(CreateLockError::Conflict {
-                    existing: body.lock,
-                    message: body.message,
-                }),
-                Err(_) => Err(CreateLockError::Api(ApiError::Status {
-                    status: 409,
-                    lfs_authenticate: None,
-                    body: serde_json::from_slice(&bytes).ok(),
-                })),
-            };
+        let status = resp.status();
+        let bytes = resp.bytes().await.map_err(|e| {
+            CreateLockError::Api(ApiError::Transport(e))
+        })?;
+
+        // 409 = standard conflict, with the existing lock spelled out in
+        // the body. Decode flexibly: server may or may not include a
+        // `message` alongside the lock.
+        if status.as_u16() == 409 {
+            let parsed: CreateLockResponse = serde_json::from_slice(&bytes)
+                .map_err(|e| CreateLockError::Api(ApiError::Decode(e.to_string())))?;
+            return Err(CreateLockError::Conflict {
+                existing: parsed.lock,
+                message: parsed.message.unwrap_or_else(|| "lock conflict".into()),
+            });
         }
 
-        let env: LockEnvelope = decode(resp).await?;
-        Ok(env.lock)
+        // Other non-success statuses fall through as plain ApiError::Status.
+        if !status.is_success() {
+            let body: Option<crate::error::ServerError> =
+                serde_json::from_slice(&bytes).ok();
+            return Err(CreateLockError::Api(ApiError::Status {
+                status: status.as_u16(),
+                lfs_authenticate: None,
+                body,
+            }));
+        }
+
+        // 2xx — could be {lock: ...} success or {message: ...}
+        // in-band conflict.
+        let parsed: CreateLockResponse = serde_json::from_slice(&bytes)
+            .map_err(|e| CreateLockError::Api(ApiError::Decode(e.to_string())))?;
+        if let Some(lock) = parsed.lock {
+            return Ok(lock);
+        }
+        if let Some(message) = parsed.message {
+            return Err(CreateLockError::Conflict {
+                existing: None,
+                message,
+            });
+        }
+        Err(CreateLockError::Api(ApiError::Decode(
+            "create-lock response had neither lock nor message".into(),
+        )))
     }
 
     /// GET `/locks` with optional filters.
@@ -281,16 +324,23 @@ mod tests {
     }
 
     #[test]
-    fn parses_lock_exists_body() {
+    fn parses_create_lock_response_with_lock() {
         let body = r#"{
-            "lock": { "id": "x", "path": "foo", "locked_at": "2016-01-01T00:00:00Z" },
-            "message": "already created lock",
-            "documentation_url": "https://example.com/docs",
-            "request_id": "req-1"
+            "lock": { "id": "x", "path": "foo", "locked_at": "2016-01-01T00:00:00Z" }
         }"#;
-        let parsed: LockExistsBody = serde_json::from_str(body).unwrap();
-        assert_eq!(parsed.message, "already created lock");
-        assert_eq!(parsed.lock.id, "x");
+        let parsed: CreateLockResponse = serde_json::from_str(body).unwrap();
+        assert!(parsed.lock.is_some());
+        assert_eq!(parsed.lock.unwrap().id, "x");
+        assert!(parsed.message.is_none());
+    }
+
+    #[test]
+    fn parses_create_lock_response_message_only() {
+        // Reference test server's "already locked" response shape.
+        let body = r#"{"message":"lock already created"}"#;
+        let parsed: CreateLockResponse = serde_json::from_str(body).unwrap();
+        assert!(parsed.lock.is_none());
+        assert_eq!(parsed.message.as_deref(), Some("lock already created"));
     }
 
     #[test]

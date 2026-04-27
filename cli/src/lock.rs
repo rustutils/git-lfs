@@ -2,15 +2,15 @@
 //! command surface. All three speak the locking API in `api/src/locks.rs`;
 //! this module is mostly path-resolution + flag dispatch + display logic.
 //!
-//! Deferred (see NOTES.md): `--local` / `--cached` for `locks` (require an
-//! on-disk lock cache we don't have), and the "abort if file modified
-//! unless --force" guard for `unlock`.
+//! Deferred (see NOTES.md): `--local` / `--cached` for `locks` (require
+//! an on-disk lock cache we don't have).
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use git_lfs_api::{
-    Client as ApiClient, CreateLockError, CreateLockRequest, DeleteLockRequest,
-    ListLocksFilter, Lock, LockList, VerifyLocksRequest, VerifyLocksResponse,
+    ApiError, Client as ApiClient, CreateLockError, CreateLockRequest, DeleteLockRequest,
+    ListLocksFilter, Lock, LockList, Ref, VerifyLocksRequest, VerifyLocksResponse,
 };
 use serde::Serialize;
 use tokio::runtime::Runtime;
@@ -33,12 +33,16 @@ pub enum LockCommandError {
 #[derive(Debug, Default, Clone)]
 pub struct LockOptions {
     pub remote: Option<String>,
+    /// Override the auto-detected refspec (`branch.<current>.merge` or
+    /// the current branch). `None` means "auto".
+    pub refspec: Option<String>,
     pub json: bool,
 }
 
 #[derive(Debug, Default, Clone)]
 pub struct LocksOptions {
     pub remote: Option<String>,
+    pub refspec: Option<String>,
     pub path: Option<String>,
     pub id: Option<String>,
     pub limit: Option<u32>,
@@ -49,6 +53,7 @@ pub struct LocksOptions {
 #[derive(Debug, Default, Clone)]
 pub struct UnlockOptions {
     pub remote: Option<String>,
+    pub refspec: Option<String>,
     pub id: Option<String>,
     pub force: bool,
     pub json: bool,
@@ -68,6 +73,7 @@ pub fn lock(cwd: &Path, paths: &[String], opts: &LockOptions) -> Result<bool, Lo
         .map_err(LockCommandError::Build)?;
     let runtime = build_runtime()?;
     let root = repo_root(cwd).map_err(LockCommandError::Build)?;
+    let refspec = resolve_refspec(&root, opts.refspec.as_deref());
 
     let mut success = true;
     let mut locks: Vec<Lock> = Vec::new();
@@ -80,11 +86,14 @@ pub fn lock(cwd: &Path, paths: &[String], opts: &LockOptions) -> Result<bool, Lo
                 continue;
             }
         };
-        let req = CreateLockRequest::new(path.clone());
+        let mut req = CreateLockRequest::new(path.clone());
+        if let Some(name) = &refspec {
+            req = req.with_ref(Ref::new(name.clone()));
+        }
         match runtime.block_on(api.create_lock(&req)) {
             Ok(lock) => {
                 if !opts.json {
-                    println!("Locked {path}");
+                    println!("Locked {path} ({})", lock.id);
                 }
                 // The user took the lock to edit the file; if the
                 // file is currently read-only (because it matches a
@@ -95,16 +104,17 @@ pub fn lock(cwd: &Path, paths: &[String], opts: &LockOptions) -> Result<bool, Lo
                 locks.push(lock);
             }
             Err(CreateLockError::Conflict { existing, message }) => {
-                let owner = existing
-                    .owner
-                    .as_ref()
-                    .map(|o| o.name.as_str())
-                    .unwrap_or("<unknown>");
-                eprintln!("git-lfs: lock conflict on {path}: {message} (held by {owner})");
+                // Match upstream's "Locking <path> failed: <reason>"
+                // shape (see `t-lock.sh::locking a previously locked
+                // file`). Owner goes on its own follow-up line.
+                eprintln!("Locking {path} failed: {message}");
+                if let Some(owner) = existing.as_ref().and_then(|l| l.owner.as_ref()) {
+                    eprintln!("  Lock owner: {}", owner.name);
+                }
                 success = false;
             }
             Err(CreateLockError::Api(e)) => {
-                eprintln!("git-lfs: locking {path} failed: {e}");
+                eprintln!("Locking {path} failed: {}", api_error_reason(&e));
                 success = false;
             }
         }
@@ -130,11 +140,14 @@ pub fn locks(cwd: &Path, opts: &LocksOptions) -> Result<(), LockCommandError> {
     let api = build_api_client(cwd, opts.remote.as_deref())
         .map_err(LockCommandError::Build)?;
     let runtime = build_runtime()?;
+    let root = repo_root(cwd).map_err(LockCommandError::Build)?;
+    let refspec = resolve_refspec(&root, opts.refspec.as_deref());
 
     if opts.verify {
         let resp = runtime
-            .block_on(verify_all(&api, opts.limit))
-            .map_err(|e| LockCommandError::Api(e.to_string()))?;
+            .block_on(verify_all(&api, opts.limit, refspec.clone()))
+            .map_err(|e| format_api_error(&e))
+            .map_err(LockCommandError::Api)?;
         if opts.json {
             println!(
                 "{}",
@@ -154,7 +167,6 @@ pub fn locks(cwd: &Path, opts: &LocksOptions) -> Result<(), LockCommandError> {
     // wouldn't match anything otherwise.
     let path_filter = match opts.path.as_deref() {
         Some(raw) => {
-            let root = repo_root(cwd).map_err(LockCommandError::Build)?;
             Some(resolve_lock_path(cwd, &root, raw).map_err(LockCommandError::Build)?)
         }
         None => None,
@@ -164,23 +176,28 @@ pub fn locks(cwd: &Path, opts: &LocksOptions) -> Result<(), LockCommandError> {
         path: path_filter,
         id: opts.id.clone(),
         limit: opts.limit,
+        refspec: refspec.clone(),
         ..Default::default()
     };
     let mut all_locks: Vec<Lock> = Vec::new();
     loop {
         let page: LockList = runtime
             .block_on(api.list_locks(&filter))
-            .map_err(|e| LockCommandError::Api(e.to_string()))?;
+            .map_err(|e| LockCommandError::Api(format_api_error(&e)))?;
         all_locks.extend(page.locks);
-        match page.next_cursor {
-            Some(c) if !c.is_empty() => filter.cursor = Some(c),
-            _ => break,
-        }
+        // Check the limit BEFORE the cursor — a server that ignores
+        // `?limit=N` and returns more on the last page would otherwise
+        // sneak past us (we'd see no next_cursor and exit before the
+        // truncate would have fired).
         if let Some(limit) = opts.limit
             && all_locks.len() >= limit as usize
         {
             all_locks.truncate(limit as usize);
             break;
+        }
+        match page.next_cursor {
+            Some(c) if !c.is_empty() => filter.cursor = Some(c),
+            _ => break,
         }
     }
 
@@ -197,9 +214,11 @@ pub fn locks(cwd: &Path, opts: &LocksOptions) -> Result<(), LockCommandError> {
 async fn verify_all(
     api: &ApiClient,
     limit: Option<u32>,
+    refspec: Option<String>,
 ) -> Result<VerifyLocksResponse, git_lfs_api::ApiError> {
     let mut req = VerifyLocksRequest {
         limit,
+        r#ref: refspec.map(Ref::new),
         ..Default::default()
     };
     let mut combined = VerifyLocksResponse {
@@ -242,25 +261,27 @@ pub fn unlock(
     let has_path = !paths.is_empty();
     let has_id = opts.id.is_some();
     if has_path == has_id {
+        // Capital "E" matches the upstream test grep.
         return Err(LockCommandError::Build(
-            "exactly one of --id or a set of paths must be provided".into(),
+            "Exactly one of --id or a set of paths must be provided".into(),
         ));
     }
 
     let api = build_api_client(cwd, opts.remote.as_deref())
         .map_err(LockCommandError::Build)?;
     let runtime = build_runtime()?;
+    let root = repo_root(cwd).map_err(LockCommandError::Build)?;
+    let refspec = resolve_refspec(&root, opts.refspec.as_deref());
+    let lockable_readonly = lockable_readonly_enabled(&root);
     let mut success = true;
     let mut report: Vec<UnlockJsonEntry> = Vec::new();
 
     if has_id {
         let id = opts.id.clone().expect("checked above");
-        let req = DeleteLockRequest {
-            force: opts.force,
-            ..Default::default()
-        };
+        let req = build_delete_request(opts.force, refspec.as_deref());
+        let attrs = git_lfs_git::AttrSet::from_workdir(&root).ok();
         match runtime.block_on(api.delete_lock(&id, &req)) {
-            Ok(_) => {
+            Ok(lock) => {
                 if !opts.json {
                     println!("Unlocked Lock {id}");
                 } else {
@@ -271,24 +292,33 @@ pub fn unlock(
                         reason: None,
                     });
                 }
+                // The server hands back the unlocked lock's path in
+                // the response; use it to restore the read-only
+                // invariant for lockable patterns. Without this,
+                // `unlock --id=<id>` doesn't chmod even though
+                // path-based unlock does.
+                if lockable_readonly && let Some(attrs) = attrs.as_ref() {
+                    let _ = lockable::enforce_readonly_if_lockable(
+                        &root, attrs, &lock.path,
+                    );
+                }
             }
             Err(e) => {
-                eprintln!("git-lfs: unable to unlock {id}: {e}");
+                eprintln!("Unlocking {id} failed: {}", api_error_reason(&e));
                 success = false;
                 if opts.json {
                     report.push(UnlockJsonEntry {
                         id: Some(id),
                         path: None,
                         unlocked: false,
-                        reason: Some(e.to_string()),
+                        reason: Some(api_error_reason(&e)),
                     });
                 }
             }
         }
     } else {
-        let root = repo_root(cwd).map_err(LockCommandError::Build)?;
         // Built once so we can flip a successfully-released lockable
-        // path back to read-only without re-parsing .gitattributes
+        // path back to read-only without re-parsing `.gitattributes`
         // for every path.
         let attrs = git_lfs_git::AttrSet::from_workdir(&root).ok();
         for raw in paths {
@@ -314,10 +344,34 @@ pub fn unlock(
                     continue;
                 }
             };
+
+            // Refuse to unlock a path with uncommitted edits unless
+            // `--force` is given (in which case we warn and continue,
+            // matching upstream).
+            if has_uncommitted_changes(&root, &path) {
+                if opts.force {
+                    eprintln!("warning: unlocking with uncommitted changes");
+                } else {
+                    let msg = "Cannot unlock file with uncommitted changes";
+                    eprintln!("{msg}");
+                    success = false;
+                    if opts.json {
+                        report.push(UnlockJsonEntry {
+                            id: None,
+                            path: Some(path.clone()),
+                            unlocked: false,
+                            reason: Some(msg.into()),
+                        });
+                    }
+                    continue;
+                }
+            }
+
             // Look up the lock id by path. Use a bounded list — we want
             // exact-path matches, of which there's at most one.
             let lookup = ListLocksFilter {
                 path: Some(path.clone()),
+                refspec: refspec.clone(),
                 ..Default::default()
             };
             let id = match runtime.block_on(api.list_locks(&lookup)) {
@@ -327,14 +381,14 @@ pub fn unlock(
                     .find(|l| l.path == path)
                     .map(|l| l.id.clone()),
                 Err(e) => {
-                    eprintln!("git-lfs: lookup failed for {path}: {e}");
+                    eprintln!("git-lfs: lookup failed for {path}: {}", format_api_error(&e));
                     success = false;
                     if opts.json {
                         report.push(UnlockJsonEntry {
                             id: None,
                             path: Some(path.clone()),
                             unlocked: false,
-                            reason: Some(e.to_string()),
+                            reason: Some(format_api_error(&e)),
                         });
                     }
                     continue;
@@ -353,24 +407,29 @@ pub fn unlock(
                 }
                 continue;
             };
-            let req = DeleteLockRequest {
-                force: opts.force,
-                ..Default::default()
-            };
+            let req = build_delete_request(opts.force, refspec.as_deref());
             match runtime.block_on(api.delete_lock(&id, &req)) {
                 Ok(_) => {
                     if !opts.json {
                         println!("Unlocked {path}");
                     }
                     // Restore the read-only invariant for lockable
-                    // paths now that we no longer hold the lock.
-                    if let Some(attrs) = attrs.as_ref() {
-                        let _ =
-                            lockable::enforce_readonly_if_lockable(&root, attrs, &path);
+                    // paths now that we no longer hold the lock —
+                    // unless `lfs.setlockablereadonly=false` opts out.
+                    if lockable_readonly {
+                        if let Some(attrs) = attrs.as_ref() {
+                            let _ = lockable::enforce_readonly_if_lockable(
+                                &root, attrs, &path,
+                            );
+                        }
                     }
                     if opts.json {
+                        // Path-based unlocks emit only `path` and
+                        // `unlocked` per upstream's JSON schema; the
+                        // id field is reserved for `--id`-keyed
+                        // unlocks.
                         report.push(UnlockJsonEntry {
-                            id: Some(id),
+                            id: None,
                             path: Some(path),
                             unlocked: true,
                             reason: None,
@@ -378,14 +437,14 @@ pub fn unlock(
                     }
                 }
                 Err(e) => {
-                    eprintln!("git-lfs: unable to unlock {path}: {e}");
+                    eprintln!("Unlocking {path} failed: {}", api_error_reason(&e));
                     success = false;
                     if opts.json {
                         report.push(UnlockJsonEntry {
-                            id: Some(id),
+                            id: None,
                             path: Some(path),
                             unlocked: false,
-                            reason: Some(e.to_string()),
+                            reason: Some(api_error_reason(&e)),
                         });
                     }
                 }
@@ -399,6 +458,13 @@ pub fn unlock(
     Ok(success)
 }
 
+fn build_delete_request(force: bool, refspec: Option<&str>) -> DeleteLockRequest {
+    DeleteLockRequest {
+        force,
+        r#ref: refspec.map(|n| Ref::new(n.to_string())),
+    }
+}
+
 // --------------------------------------------------------------------------
 // helpers
 // --------------------------------------------------------------------------
@@ -407,6 +473,72 @@ fn build_runtime() -> std::io::Result<Runtime> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
+}
+
+/// Resolve the refspec to send with lock-API requests: caller-supplied
+/// override wins, else `git_lfs_git::refs::current_refspec`. `None`
+/// means "send no ref" (detached HEAD with no override).
+fn resolve_refspec(repo_root: &Path, override_ref: Option<&str>) -> Option<String> {
+    if let Some(s) = override_ref {
+        return Some(s.to_owned());
+    }
+    git_lfs_git::refs::current_refspec(repo_root)
+}
+
+/// Pull just the human-readable reason out of an `ApiError`. For
+/// `Status` with a server-supplied error body, use the body's
+/// `message` directly so the user sees what the LFS server said
+/// without our "server returned status N:" wrapper. The wrapper makes
+/// the test grep brittle (e.g. `grep 'Locking a.dat failed: Expected
+/// ref ...'`).
+fn api_error_reason(e: &ApiError) -> String {
+    match e {
+        ApiError::Status {
+            body: Some(b),
+            ..
+        } => b.message.clone(),
+        _ => e.to_string(),
+    }
+}
+
+/// Same idea as [`api_error_reason`], used at call sites where the
+/// command is wrapping the error as a string for upper layers (e.g.
+/// `lookup failed for {path}: {…}`).
+fn format_api_error(e: &ApiError) -> String {
+    api_error_reason(e)
+}
+
+/// True if `path` (relative to `root`) has staged or unstaged
+/// modifications. `git status --porcelain -- <path>` prints a line
+/// only for dirty paths; an empty result means clean. Errors fall
+/// back to "clean" so a `git status` failure doesn't block unlock.
+fn has_uncommitted_changes(root: &Path, path: &str) -> bool {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["status", "--porcelain", "--", path])
+        .output();
+    match out {
+        Ok(o) if o.status.success() => !o.stdout.is_empty(),
+        _ => false,
+    }
+}
+
+/// `lfs.setlockablereadonly` defaults to true. Only `false` (or `0` /
+/// `no`) disables the post-unlock chmod-to-read-only step.
+fn lockable_readonly_enabled(root: &Path) -> bool {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["config", "--get", "lfs.setlockablereadonly"])
+        .output();
+    match out {
+        Ok(o) if o.status.success() => {
+            let v = String::from_utf8_lossy(&o.stdout).trim().to_lowercase();
+            !matches!(v.as_str(), "false" | "0" | "no" | "off")
+        }
+        _ => true,
+    }
 }
 
 fn repo_root(cwd: &Path) -> Result<PathBuf, String> {
@@ -473,7 +605,9 @@ fn resolve_lock_path(cwd: &Path, repo_root: &Path, file: &str) -> Result<String,
     }
 
     if canonical.is_dir() {
-        return Err(format!("cannot lock a directory: {file}"));
+        // Test grep expects "cannot lock directory" verbatim
+        // (`t-lock.sh::locking a directory`).
+        return Err(format!("cannot lock directory: {file}"));
     }
 
     Ok(s)

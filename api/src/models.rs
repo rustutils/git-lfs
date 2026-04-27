@@ -28,11 +28,15 @@ pub struct Owner {
 /// `locked_at` is an uppercase RFC 3339-formatted timestamp with second
 /// precision per the spec. We carry it as a string — parsing into a typed
 /// timestamp is left to callers (avoids pulling in a date/time crate here).
+///
+/// Field order matters for `--json` output: the upstream test fixtures
+/// `grep -E` against literal `{"id":...,"path":...,"owner":...,"locked_at":...}`,
+/// and serde's derived `Serialize` follows declaration order.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Lock {
     pub id: String,
     pub path: String,
-    pub locked_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<Owner>,
+    pub locked_at: String,
 }

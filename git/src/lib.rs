@@ -14,6 +14,7 @@ pub mod diff_index;
 pub mod endpoint;
 pub mod path;
 pub mod pktline;
+pub mod refs;
 pub mod rev_list;
 pub mod scanner;
 

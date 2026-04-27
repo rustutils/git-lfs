@@ -341,6 +341,11 @@ enum Command {
         /// Specify which remote to use when interacting with locks.
         #[arg(short, long)]
         remote: Option<String>,
+        /// Refspec to associate the lock with. Defaults to the current
+        /// branch's tracked upstream (`branch.<current>.merge`) or the
+        /// current branch's full ref (`refs/heads/<branch>`).
+        #[arg(long = "ref")]
+        refspec: Option<String>,
         /// Stable JSON output for scripts.
         #[arg(short, long)]
         json: bool,
@@ -359,6 +364,10 @@ enum Command {
         /// Maximum number of results to return.
         #[arg(short, long)]
         limit: Option<u32>,
+        /// Refspec to filter locks by (defaults to current branch /
+        /// tracked upstream — same auto-resolution as `git lfs lock`).
+        #[arg(long = "ref")]
+        refspec: Option<String>,
         /// Verify ownership: prefix locks owned by the authenticated user
         /// with `O ` (others get `  `).
         #[arg(long)]
@@ -382,6 +391,10 @@ enum Command {
         /// Specify which remote to use when interacting with locks.
         #[arg(short, long)]
         remote: Option<String>,
+        /// Refspec to send with the unlock request (defaults to current
+        /// branch / tracked upstream).
+        #[arg(long = "ref")]
+        refspec: Option<String>,
         /// Stable JSON output for scripts.
         #[arg(short, long)]
         json: bool,
@@ -652,16 +665,17 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             };
             status::run(&cwd, format)?;
         }
-        Command::Lock { paths, remote, json } => {
-            let opts = lock::LockOptions { remote, json };
+        Command::Lock { paths, remote, refspec, json } => {
+            let opts = lock::LockOptions { remote, refspec, json };
             let ok = lock::lock(&cwd, &paths, &opts)?;
             if !ok {
                 return Err("one or more locks failed".into());
             }
         }
-        Command::Locks { remote, path, id, limit, verify, json } => {
+        Command::Locks { remote, path, id, limit, refspec, verify, json } => {
             let opts = lock::LocksOptions {
                 remote,
+                refspec,
                 path,
                 id,
                 limit,
@@ -670,9 +684,10 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             };
             lock::locks(&cwd, &opts)?;
         }
-        Command::Unlock { paths, id, force, remote, json } => {
+        Command::Unlock { paths, id, force, remote, refspec, json } => {
             let opts = lock::UnlockOptions {
                 remote,
+                refspec,
                 id,
                 force,
                 json,
