@@ -74,6 +74,9 @@ pub struct ListLocksFilter {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LockList {
+    /// Go LFS servers serialize an empty result as `"locks": null`
+    /// rather than `"locks": []`; treat null as the empty list.
+    #[serde(default, deserialize_with = "deserialize_null_as_default")]
     pub locks: Vec<Lock>,
     /// Opaque cursor; pass back as `cursor` in the next request to continue.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -94,9 +97,13 @@ pub struct VerifyLocksRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VerifyLocksResponse {
-    /// Locks owned by the authenticated user.
+    /// Locks owned by the authenticated user. Servers may serialize an
+    /// empty list as `null`; `deserialize_null_as_default` normalizes
+    /// that to `Vec::new()`.
+    #[serde(default, deserialize_with = "deserialize_null_as_default")]
     pub ours: Vec<Lock>,
-    /// Locks owned by other users.
+    /// Locks owned by other users. Same null-handling as `ours`.
+    #[serde(default, deserialize_with = "deserialize_null_as_default")]
     pub theirs: Vec<Lock>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
@@ -117,19 +124,39 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+/// Treat a JSON `null` as `T::default()`. Go's `encoding/json` serializes
+/// a `nil` slice as `null` rather than `[]`, and the LFS reference server
+/// (and lfstest-gitserver) inherits that — so a request that legitimately
+/// returns "no locks" looks like `{"ours": null}`. Without this, our
+/// `Vec<Lock>` deserialize bombs on the null.
+fn deserialize_null_as_default<'de, D, T>(d: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + serde::Deserialize<'de>,
+{
+    let opt = Option::<T>::deserialize(d)?;
+    Ok(opt.unwrap_or_default())
+}
+
 // ---- client ---------------------------------------------------------------
 
 impl Client {
     /// POST `/locks` to create a new lock.
     pub async fn create_lock(&self, req: &CreateLockRequest) -> Result<Lock, CreateLockError> {
         let url = self.url("locks").map_err(CreateLockError::Api)?;
+        // Serialize once so the closure (which may run twice — once
+        // with current auth, once after a 401 → fill) doesn't re-encode
+        // the body each time.
+        let body_bytes = serde_json::to_vec(req)
+            .map_err(|e| CreateLockError::Api(ApiError::Decode(e.to_string())))?;
         let resp = self
-            .request(reqwest::Method::POST, url)
-            .header(reqwest::header::CONTENT_TYPE, crate::client::LFS_MEDIA_TYPE)
-            .json(req)
-            .send()
+            .send_with_auth_retry_response(|| {
+                self.request(reqwest::Method::POST, url.clone())
+                    .header(reqwest::header::CONTENT_TYPE, crate::client::LFS_MEDIA_TYPE)
+                    .body(body_bytes.clone())
+            })
             .await
-            .map_err(|e| CreateLockError::Api(ApiError::Transport(e)))?;
+            .map_err(CreateLockError::Api)?;
 
         if resp.status() == reqwest::StatusCode::CONFLICT {
             let bytes = resp.bytes().await.unwrap_or_default();
@@ -178,11 +205,14 @@ impl Client {
         let encoded = url_path_segment(id);
         let path = format!("locks/{encoded}/unlock");
         let url = self.url(&path)?;
+        let body_bytes = serde_json::to_vec(req)
+            .map_err(|e| ApiError::Decode(e.to_string()))?;
         let resp = self
-            .request(reqwest::Method::POST, url)
-            .header(reqwest::header::CONTENT_TYPE, crate::client::LFS_MEDIA_TYPE)
-            .json(req)
-            .send()
+            .send_with_auth_retry_response(|| {
+                self.request(reqwest::Method::POST, url.clone())
+                    .header(reqwest::header::CONTENT_TYPE, crate::client::LFS_MEDIA_TYPE)
+                    .body(body_bytes.clone())
+            })
             .await?;
         let env: LockEnvelope = decode(resp).await?;
         Ok(env.lock)

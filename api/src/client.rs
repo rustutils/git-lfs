@@ -156,67 +156,78 @@ impl Client {
         .await
     }
 
-    /// Drive a single request through the credential helper retry loop.
+    /// Drive a single request through the credential-helper retry loop
+    /// and return the (possibly second) raw `Response`. Caller is on the
+    /// hook for decoding it — used by endpoints with bespoke status
+    /// handling (`create_lock`'s 409 → Conflict path, mostly).
     ///
-    /// `build` produces a fresh `RequestBuilder` each call — it's invoked
-    /// at most twice (once with whatever auth is in place, once after a
-    /// 401 → fill).
+    /// `build` produces a fresh `RequestBuilder` each call — it's
+    /// invoked at most twice (once with whatever auth is in place, once
+    /// after a 401 → fill).
+    ///
+    /// Approve / reject semantics (intentionally narrow):
+    /// - 2xx response: approve cached creds (in case they were freshly
+    ///   filled this call, or stayed valid from a prior call).
+    /// - 401 response: reject + clear cached creds. After fill+retry, a
+    ///   second 401 rejects the freshly-filled creds too.
+    /// - Anything else (4xx not-401, 5xx): leave the credential helper
+    ///   alone; we can't tell whether auth was the problem.
+    pub(crate) async fn send_with_auth_retry_response<F>(
+        &self,
+        build: F,
+    ) -> Result<Response, ApiError>
+    where
+        F: Fn() -> RequestBuilder,
+    {
+        let resp = build().send().await?;
+        if resp.status().is_success() {
+            self.approve_filled().await;
+            return Ok(resp);
+        }
+        if resp.status().as_u16() != 401 {
+            return Ok(resp);
+        }
+        // 401 — try the fill+retry dance.
+        let Some(helper) = self.credentials.clone() else {
+            return Ok(resp);
+        };
+        let query = self.cred_query();
+        self.reject_filled().await;
+        let creds = match fill_blocking(helper.clone(), query.clone()).await? {
+            Some(c) => c,
+            None => return Ok(resp),
+        };
+        {
+            let mut auth = self.auth.lock().unwrap();
+            *auth = Auth::Basic {
+                username: creds.username.clone(),
+                password: creds.password.clone(),
+            };
+        }
+        {
+            let mut filled = self.filled.lock().unwrap();
+            *filled = Some((query.clone(), creds.clone()));
+        }
+        let resp2 = build().send().await?;
+        if resp2.status().is_success() {
+            approve_blocking(helper, query, creds).await?;
+        } else if resp2.status().as_u16() == 401 {
+            reject_blocking(helper, query, creds).await?;
+            *self.filled.lock().unwrap() = None;
+            *self.auth.lock().unwrap() = Auth::None;
+        }
+        Ok(resp2)
+    }
+
+    /// Like [`send_with_auth_retry_response`] but decodes a JSON body.
+    /// Used by `post_json` / `get_json`.
     async fn send_with_auth_retry<F, R>(&self, build: F) -> Result<R, ApiError>
     where
         F: Fn() -> RequestBuilder,
         R: DeserializeOwned,
     {
-        let resp = build().send().await?;
-        let first = decode::<R>(resp).await;
-
-        match first {
-            Ok(r) => {
-                // First attempt succeeded. If we'd previously filled creds
-                // (in an earlier request), this confirms they still work.
-                self.approve_filled().await;
-                Ok(r)
-            }
-            Err(e) if !e.is_unauthorized() => Err(e),
-            Err(initial) => {
-                let Some(helper) = self.credentials.clone() else {
-                    return Err(initial);
-                };
-                let query = self.cred_query();
-                // Tell the helper our current cached creds (if any) didn't
-                // work, then ask for fresh ones.
-                self.reject_filled().await;
-                let creds = match fill_blocking(helper.clone(), query.clone()).await? {
-                    Some(c) => c,
-                    None => return Err(initial),
-                };
-                {
-                    let mut auth = self.auth.lock().unwrap();
-                    *auth = Auth::Basic {
-                        username: creds.username.clone(),
-                        password: creds.password.clone(),
-                    };
-                }
-                {
-                    let mut filled = self.filled.lock().unwrap();
-                    *filled = Some((query.clone(), creds.clone()));
-                }
-                let resp = build().send().await?;
-                match decode::<R>(resp).await {
-                    Ok(r) => {
-                        approve_blocking(helper, query, creds).await?;
-                        Ok(r)
-                    }
-                    Err(e) => {
-                        reject_blocking(helper, query, creds).await?;
-                        // Wipe the now-known-bad cache so the next call
-                        // re-fills from scratch.
-                        *self.filled.lock().unwrap() = None;
-                        *self.auth.lock().unwrap() = Auth::None;
-                        Err(e)
-                    }
-                }
-            }
-        }
+        let resp = self.send_with_auth_retry_response(build).await?;
+        decode::<R>(resp).await
     }
 
     async fn approve_filled(&self) {

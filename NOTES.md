@@ -158,9 +158,6 @@ missing** and **why it was OK to skip for v0**.
 - **Multi-stage auth (`state[]`, `wwwauth[]`).** Upstream forwards these
   between credential fills for stateful helpers (e.g. token providers).
   Our retry loop is single-stage.
-- **`create_lock` / `delete_lock` bypass the auth retry loop.** They have
-  bespoke 409/conflict handling and call `self.request(...)` directly. Will
-  need to thread the same retry plumbing through them once locking ships.
 - **Per-storage-URL auth.** Only the batch endpoint goes through the
   retry loop. Pre-signed action URLs (S3 etc) typically don't need creds,
   but custom storage that 401s on the action would need its own pass.
