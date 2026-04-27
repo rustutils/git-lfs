@@ -36,9 +36,21 @@ pub enum PullCommandError {
 }
 
 pub fn pull(cwd: &Path, refs: &[String]) -> Result<(), PullCommandError> {
-    let report = fetch::fetch(cwd, refs)?;
-    if !report.failed.is_empty() {
-        return Err(PullCommandError::FetchFailures(report.failed.len()));
+    let opts = fetch::FetchOptions {
+        args: refs,
+        stdin_lines: &[],
+        dry_run: false,
+        json: false,
+        all: false,
+        refetch: false,
+        stdin: false,
+        prune: false,
+        include: &[],
+        exclude: &[],
+    };
+    let outcome = fetch::fetch(cwd, &opts)?;
+    if !outcome.report.failed.is_empty() {
+        return Err(PullCommandError::FetchFailures(outcome.report.failed.len()));
     }
 
     let store = Store::new(git_lfs_git::lfs_dir(cwd)?);

@@ -82,6 +82,13 @@ pub struct BatchResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ObjectResult {
     pub oid: String,
+    /// Size in bytes. Per the spec this is required, but the upstream
+    /// `lfstest-gitserver` (and at least one production server in the
+    /// wild) omit it on the action path — they assume the client
+    /// already knows. Default to 0 so we don't refuse the response;
+    /// callers that need the real size should look it up from the
+    /// matching request entry.
+    #[serde(default)]
     pub size: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authenticated: Option<bool>,

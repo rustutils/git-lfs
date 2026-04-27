@@ -99,6 +99,12 @@ impl Transfer {
             return Ok(Report::default());
         }
 
+        // Index the request's sizes by oid so we can fill them back in
+        // for servers that omit `size` from the response (the upstream
+        // test fixture, plus at least one production server, drop it).
+        let req_sizes: std::collections::HashMap<String, u64> =
+            objects.iter().map(|o| (o.oid.clone(), o.size)).collect();
+
         let mut req = BatchRequest::new(dir.into(), objects);
         if let Some(r) = r#ref {
             req = req.with_ref(r);
@@ -108,7 +114,12 @@ impl Transfer {
         let limit = Arc::new(Semaphore::new(self.config.concurrency.max(1)));
         let mut join: JoinSet<(String, Result<(), TransferError>)> = JoinSet::new();
 
-        for obj in resp.objects {
+        for mut obj in resp.objects {
+            if obj.size == 0 {
+                if let Some(s) = req_sizes.get(&obj.oid) {
+                    obj.size = *s;
+                }
+            }
             let permit_src = limit.clone();
             let http = self.http.clone();
             let store = self.store.clone();

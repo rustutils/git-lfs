@@ -866,9 +866,11 @@ async fn fetch_downloads_objects_referenced_by_head() {
         "fetch failed: {}",
         String::from_utf8_lossy(&out.stderr),
     );
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("Fetching 2 object(s)"), "unexpected stdout: {stdout}");
-    assert!(stdout.contains("2 succeeded, 0 failed"), "unexpected stdout: {stdout}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("Downloading LFS objects: 100% (2/2)"),
+        "unexpected stderr: {stderr}",
+    );
 
     for (oid, _content) in [(OID_A, A), (OID_B, B)] {
         let stored = repo
@@ -904,7 +906,13 @@ async fn fetch_is_noop_when_objects_already_in_store() {
         .unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("Nothing to fetch"), "unexpected stdout: {stdout}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(stdout, "", "unexpected stdout: {stdout}");
+    // No download attempt — silent success matches upstream's no-op.
+    assert!(
+        !stderr.contains("Downloading LFS objects:"),
+        "unexpected progress on no-op: {stderr}",
+    );
 }
 
 #[tokio::test]

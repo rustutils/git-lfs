@@ -207,8 +207,38 @@ enum Command {
     /// Download every LFS object reachable from the given refs (default: HEAD)
     /// that isn't already in the local store. Walks history, dedupes by OID.
     Fetch {
-        /// Refs to scan for LFS pointers. Defaults to `HEAD`.
-        refs: Vec<String>,
+        /// First positional arg is treated as a remote name (if it
+        /// resolves); subsequent args are refs.
+        args: Vec<String>,
+        /// List the objects that would be fetched without downloading
+        /// them (one `fetch <oid> => <path>` line per object).
+        #[arg(long)]
+        dry_run: bool,
+        /// JSON output. With `--dry-run`, queries the server's batch
+        /// endpoint to populate `actions` URLs.
+        #[arg(long)]
+        json: bool,
+        /// Walk every local ref under `refs/heads/*` + `refs/tags/*`.
+        #[arg(long)]
+        all: bool,
+        /// Re-download objects we already have (e.g. recovery from a
+        /// corrupt local store).
+        #[arg(long)]
+        refetch: bool,
+        /// Read refs from stdin, one per line. Blank lines dropped.
+        #[arg(long)]
+        stdin: bool,
+        /// Run `prune` after the fetch completes.
+        #[arg(long)]
+        prune: bool,
+        /// Comma-separated globs; only matching paths are fetched.
+        /// Falls back to `lfs.fetchinclude` when omitted.
+        #[arg(short = 'I', long)]
+        include: Vec<String>,
+        /// Comma-separated globs; matching paths are skipped. Falls
+        /// back to `lfs.fetchexclude` when omitted.
+        #[arg(short = 'X', long)]
+        exclude: Vec<String>,
     },
     /// `fetch` then re-run the smudge filter so the working tree contains
     /// real LFS file contents instead of pointer text. Requires
@@ -518,10 +548,53 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             let stdout = io::stdout().lock();
             filter_process(&store, stdin, stdout, |p| fetcher.fetch(p))?;
         }
-        Command::Fetch { refs } => {
-            let report = fetch::fetch(&cwd, &refs)?;
-            if !report.failed.is_empty() {
-                return Err("one or more objects failed to download".into());
+        Command::Fetch {
+            args,
+            dry_run,
+            json,
+            all,
+            refetch,
+            stdin,
+            prune,
+            include,
+            exclude,
+        } => {
+            let stdin_lines: Vec<String> = if stdin {
+                io::stdin()
+                    .lock()
+                    .lines()
+                    .filter_map(|l| l.ok())
+                    .map(|l| l.trim().to_owned())
+                    .filter(|l| !l.is_empty())
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let opts = fetch::FetchOptions {
+                args: &args,
+                stdin_lines: &stdin_lines,
+                dry_run,
+                json,
+                all,
+                refetch,
+                stdin,
+                prune,
+                include: &include,
+                exclude: &exclude,
+            };
+            match fetch::fetch(&cwd, &opts) {
+                Ok(outcome) => {
+                    if !outcome.report.failed.is_empty() {
+                        return Err("one or more objects failed to download".into());
+                    }
+                }
+                Err(fetch::FetchCommandError::Usage(msg))
+                    if msg == "Not in a Git repository." =>
+                {
+                    eprintln!("{msg}");
+                    return Ok(128);
+                }
+                Err(e) => return Err(e.into()),
             }
         }
         Command::Pull { refs } => {

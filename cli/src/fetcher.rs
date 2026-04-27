@@ -131,6 +131,23 @@ impl LfsFetcher {
         Ok(report)
     }
 
+    /// Borrow the inner API client (e.g. for callers that want to
+    /// run a one-off batch without going through `download_many`).
+    /// Errors lazily — same `lfs.url` resolution as the transfer
+    /// path.
+    pub fn api_client(&self) -> Result<&ApiClient, FetchError> {
+        self.api
+            .as_ref()
+            .map_err(|m| -> FetchError { m.clone().into() })
+    }
+
+    /// Drive an arbitrary future on the fetcher's tokio runtime. Used
+    /// by callers (like fetch's --json --dry-run path) that need to
+    /// hit the API directly while keeping the fetcher's runtime ownership.
+    pub fn runtime_block_on<F: std::future::Future>(&self, fut: F) -> F::Output {
+        self.runtime.block_on(fut)
+    }
+
     /// Run the pre-flight `/locks/verify` check before push, returning
     /// an [`Outcome`](crate::locks_verify::Outcome) the caller acts on.
     /// Threads the fetcher's runtime + api client through to

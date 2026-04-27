@@ -277,6 +277,32 @@ missing** and **why it was OK to skip for v0**.
   guard ("file has uncommitted edits → skip with warning") once users
   start trusting this in serious workflows.
 
+### `cli fetch`
+- **`--json` action capture for non-dry-run.** `--json` works for
+  `--dry-run` (we run the batch, capture URLs, emit them as the
+  `actions` field). For non-dry-run we currently emit transfers
+  without action URLs — needs the transfer queue to surface the
+  batch response back to the caller.
+- **Alternates / `--shared` clone.** `t-fetch.sh::init for fetch
+  tests` and `fetch (shared repository)` fail because a `--shared`
+  clone has its own empty `.git/lfs/objects` while git's
+  `objects/info/alternates` points at the source repo's `.git/objects`.
+  Our store doesn't yet inspect alternates for LFS objects, so smudge
+  fails on checkout. Fix: walk `.git/objects/info/alternates` lines,
+  treat each as a fallback `<root>/lfs/objects` for store reads.
+- **`--prune` integration.** Wired as a best-effort prune after the
+  fetch. Upstream may have a more nuanced "fetch + prune in one
+  walk" — confirm before declaring parity.
+- **`Invalid remote name` for first-arg-not-a-remote.** Upstream
+  treats `git lfs fetch not-a-remote` as "first arg is a remote
+  name → error if not a remote" rather than "try as ref →
+  Invalid ref argument". `t-fetch.sh::fetch with invalid remote`
+  explicitly greps for the remote-flavor message.
+- **Empty SSL key tolerance.** `t-fetch.sh::fetch does not crash on
+  empty key files` sets `http.sslKey=/dev/null` and expects an
+  `Error decoding PEM block` message. We don't currently surface
+  that — needs a graceful path through the rustls TLS setup.
+
 ### `cli install`
 - **`--system` scope.** Trivial — just another `ConfigScope` variant.
 - **`--worktree` scope.** Requires git ≥ 2.20 and worktree-feature config.
