@@ -131,6 +131,31 @@ impl LfsFetcher {
         Ok(report)
     }
 
+    /// Run the pre-flight `/locks/verify` check before push, returning
+    /// an [`Outcome`](crate::locks_verify::Outcome) the caller acts on.
+    /// Threads the fetcher's runtime + api client through to
+    /// `locks_verify`.
+    pub fn preflight_verify_locks(
+        &self,
+        cwd: &Path,
+        remote_label: &str,
+        endpoint: &str,
+    ) -> Result<crate::locks_verify::Outcome, crate::push::PushCommandError> {
+        let api = self
+            .api
+            .as_ref()
+            .map_err(|m| -> FetchError { m.clone().into() })
+            .map_err(|e| crate::push::PushCommandError::Fetch(e))?;
+        crate::locks_verify::run(
+            &self.runtime,
+            api,
+            cwd,
+            remote_label,
+            endpoint,
+            self.refspec.as_ref(),
+        )
+    }
+
     /// Ask the server which of the given OIDs it already holds. Used by
     /// `push` / `pre-push` to distinguish "missing locally but server
     /// has it" (silent skip — see `lfs.allowincompletepush`) from

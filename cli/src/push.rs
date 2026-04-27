@@ -137,6 +137,75 @@ pub(crate) fn upload_in_range(
         fetcher = fetcher.with_refspec(refspec);
     }
 
+    // Pre-flight `/locks/verify`. Comes before any byte transfer (and
+    // before the missing-object batch) so a "verification required"
+    // failure aborts the push without touching the upload endpoint.
+    let endpoint = git_lfs_git::endpoint_for_remote(cwd, Some(remote))
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    let pushed_paths: Vec<&PathBuf> = paths.values().collect();
+    let theirs_blockers: Vec<git_lfs_api::Lock> =
+        match fetcher.preflight_verify_locks(cwd, remote, &endpoint)? {
+            crate::locks_verify::Outcome::Aborted => {
+                return Ok(PushOutcome {
+                    report: Report::default(),
+                    aborted: true,
+                });
+            }
+            crate::locks_verify::Outcome::Skipped => Vec::new(),
+            crate::locks_verify::Outcome::Verified { ours, theirs } => {
+                if !ours.is_empty() {
+                    let ours_paths: Vec<&str> =
+                        ours.iter().map(|l| l.path.as_str()).collect();
+                    let any_ours_pushed = pushed_paths
+                        .iter()
+                        .any(|p| {
+                            let p = p.to_string_lossy();
+                            ours_paths.iter().any(|op| p == *op)
+                        });
+                    if any_ours_pushed {
+                        eprintln!(
+                            "Consider unlocking your own locked files: \
+                             (`git lfs unlock <path>`)"
+                        );
+                        for op in &ours_paths {
+                            if pushed_paths
+                                .iter()
+                                .any(|p| p.to_string_lossy() == *op)
+                            {
+                                eprintln!("* {op}");
+                            }
+                        }
+                    }
+                }
+                // Path-intersect theirs with what we're pushing —
+                // those are the entries that actually block this push.
+                theirs
+                    .into_iter()
+                    .filter(|l| {
+                        pushed_paths
+                            .iter()
+                            .any(|p| p.to_string_lossy() == l.path)
+                    })
+                    .collect()
+            }
+        };
+    if !theirs_blockers.is_empty() {
+        eprintln!("Unable to push locked files:");
+        for l in &theirs_blockers {
+            let owner = l
+                .owner
+                .as_ref()
+                .map(|o| o.name.as_str())
+                .unwrap_or("unknown user");
+            eprintln!("* {} - {}", l.path, owner);
+        }
+        eprintln!("Cannot update locked files.");
+        return Ok(PushOutcome {
+            report: Report::default(),
+            aborted: true,
+        });
+    }
+
     let truly_missing: Vec<(ObjectSpec, Option<PathBuf>)> = if missing.is_empty() {
         Vec::new()
     } else {

@@ -16,6 +16,7 @@ mod hooks;
 mod install;
 mod lock;
 mod lockable;
+mod locks_verify;
 mod ls_files;
 mod migrate;
 mod pointer_cmd;

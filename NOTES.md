@@ -232,16 +232,16 @@ missing** and **why it was OK to skip for v0**.
   needs an SSH or HTTP git remote, so the setup is heavier.
 - **Push-to-remote mapping** (`url.<base>.pushInsteadOf`). Upstream's
   `git.MapRemoteURL` honors this; we use the remote name verbatim.
-- **Pre-flight `verify_locks`.** Upstream calls `/locks/verify` before
-  push when `lfs.locksverify` is enabled (or unset, depending on
-  endpoint). On 200 with `theirs` matching any path being pushed:
-  abort with "Unable to push locked files" + "Cannot update locked
-  files." On 5xx/501/403: warn (`"<remote>" does not support the Git
-  LFS locking API`) and either fail (verify=true) or proceed
-  (verify=unset). `t-pre-push.sh::pre-push with our lock`,
-  `pre-push with their lock on lfs file`, `pre-push with their lock
-  on non-lfs lockable file`, `pre-push locks verify {5xx, 501, 200,
-  403} with verification {enabled, unset}` all exercise this.
+- **Pre-flight `verify_locks` end-to-end.** Pre-flight verify is
+  shipped — but `t-pre-push.sh::pre-push with their lock on lfs
+  file` (and the non-lfs lockable variant) still fail because the
+  test does a fresh `clone_repo` *without* running `git lfs install
+  --local` or `git lfs track`, so the assert clone has no pre-push
+  hook installed and `git push` runs without ever invoking us. This
+  needs `git lfs install` (global) to write into git's
+  `init.templateDir` so new clones inherit the hooks (upstream's
+  approach), or a hooks-on-smudge bootstrap path. Tracked with the
+  `install --skip-repo` global behavior.
 
 ### `cli push`
 - **`--all`.** Push every ref in the repo. `t-push.sh::push --all *`
