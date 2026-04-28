@@ -60,34 +60,56 @@ Useful entry points in the upstream tree:
 
 ## Test status snapshot (point in time)
 
-282/794 shell tests passing across 101 files (35.5%). 16 files
-fully passing, 47 fully failing, 38 partially. Headline number
-undersells things — about 200 of the 512 failures are concentrated
-in commands we haven't started (`env`, `config`, `ext`, `dedup`,
-`custom-transfers`, `ssh`, retries); of *shipped* commands the
-per-feature pass rate is roughly 60-70%.
+After the `lfstest-testutils` port + `GIT_LFS_SET_LOCKABLE_READONLY`
+fix the totals shifted: t-post-checkout 0/2 → 2/2, t-post-merge 0/1
+→ 1/1, t-pre-push 32/40 → 34/40, t-fetch 17/28 → 18/28, several
+others +1 each. About a dozen formerly-blocked tests now run, and
+a comparable number now reach further into the test body before
+hitting the next gap.
 
-## Highest-leverage gap (single biggest payoff)
+Headline ratio still 35-40%; the remaining failures cluster in
+commands we haven't started (`env`, `config`, `ext`, `dedup`,
+`custom-transfers`, `ssh`, retries) or specific feature gaps
+(fetch-recent windows, prune output text, `git lfs clone`
+deprecated wrapper, locking-API edge cases).
 
-**`git lfs install` doesn't write to git's `init.templateDir`**, so
-fresh `git clone` doesn't inherit our hooks. Likely owns most of
-t-clone (0/13), much of t-pull (2/20), t-pre-push 19/20,
-t-uninstall-worktree, and a slice of t-credentials / t-batch-* tests
-that do a fresh clone before exercising LFS. Upstream's `install`
-(without `--skip-repo`) creates `~/.config/git-lfs/hooks/` (or
-similar), populates it with our four hook scripts, and points
-`init.templateDir` at it via `git config --global`. New repos
-created with `git clone` then copy those hooks into their
-`.git/hooks/` automatically. Mechanical change, but cross-cutting —
-worth tackling before more bottom-up flag work.
+## Hook installation (corrected)
+
+Earlier notes claimed `init.templateDir` was the key gap for fresh
+clones; that turned out to be wrong. Upstream's `git lfs install`
+does **not** write to `init.templateDir`, and the test framework
+`testenv.sh` exports `GIT_TEMPLATE_DIR=tests/fixtures/templates`
+which is hooks-empty. Hooks land in `.git/hooks/` *as a side
+effect* of `installHooks(false)` calls scattered through the
+upstream commands: `clean`, `smudge`, `filter-process`, `fsck`,
+`track`, `untrack`, `migrate import`. Any LFS operation against a
+fresh clone — even just running the smudge filter when checking
+out pointer files — drops the four hook scripts.
+
+Our Rust port now mirrors this: those six dispatch arms each call
+`install::try_install_hooks(&cwd)` (best-effort, ignores errors).
+Real `git lfs clone` (the deprecated wrapper) is still missing,
+so t-clone's exact assertions don't pass yet, but plain
+`git clone` followed by any LFS operation now leaves the working
+tree in the same hook-installed state upstream produces.
+
+## Highest-leverage gaps (descending leverage)
+
+1. **`git lfs clone` deprecated wrapper**. Owns t-clone (0/13).
+   Mechanical: `git clone` then `cd` then `installHooks(false)` then
+   `git lfs pull`. ~50 lines.
+2. **Fetch-recent semantics** (`lfs.fetchrecentrefsdays`,
+   `lfs.fetchrecentcommitsdays`, `lfs.fetchrecentremoterefs`).
+   Owns t-fetch-recent (1/7) and parts of t-fetch / t-prune.
+3. **`git lfs env` output format**. Owns t-env (0/17).
+4. **`git lfs config` subcommand**. Owns t-config (0/10), entirely
+   unimplemented.
+5. **Prune output text + `--verify-remote`**. Owns most of t-prune
+   (4/18), t-prune-worktree (0/2). Output strings ("N local
+   objects, M retained, done.") don't match upstream wording.
 
 ## Other large clusters (descending leverage)
 
-- **`git lfs env` output format** — t-env (0/17), and any test that
-  parses env's output. The command exists but its output shape
-  doesn't match upstream's expected lines.
-- **`git lfs config` subcommand** — t-config (0/10), entirely
-  unimplemented.
 - **Custom transfer adapters + tus** — `t-custom-transfers`,
   `t-batch-storage-upload-tus`, `t-standalone-file`. Real protocol
   surface, third-party-facing.
@@ -103,8 +125,8 @@ worth tackling before more bottom-up flag work.
   `t-credentials-protect`, `t-askpass` (1/6), netrc, NTLM. The
   basic 401-fill-retry loop ships; the rest of the credential
   ecosystem doesn't.
-- **`status`, `ls-files`, `prune` long tails** — basic forms work,
-  exotic flags / formatting don't (1/17, 10/31, 3/18).
+- **`status`, `ls-files` long tails** — basic forms work, exotic
+  flags / formatting don't (1/17, 10/31).
 - **Unshipped commands**: `ext`, `logs`, `update`, `dedup`,
   `standalone-file`, `completion`.
 - **SSH transfer protocol (`git-lfs-authenticate`)** — `t-ssh`,
@@ -284,16 +306,14 @@ missing** and **why it was OK to skip for v0**.
   needs an SSH or HTTP git remote, so the setup is heavier.
 - **Push-to-remote mapping** (`url.<base>.pushInsteadOf`). Upstream's
   `git.MapRemoteURL` honors this; we use the remote name verbatim.
-- **Pre-flight `verify_locks` end-to-end.** Pre-flight verify is
-  shipped — but `t-pre-push.sh::pre-push with their lock on lfs
-  file` (and the non-lfs lockable variant) still fail because the
-  test does a fresh `clone_repo` *without* running `git lfs install
-  --local` or `git lfs track`, so the assert clone has no pre-push
-  hook installed and `git push` runs without ever invoking us. This
-  needs `git lfs install` (global) to write into git's
-  `init.templateDir` so new clones inherit the hooks (upstream's
-  approach), or a hooks-on-smudge bootstrap path. Tracked with the
-  `install --skip-repo` global behavior.
+- **Pre-flight `verify_locks` end-to-end.** Shipped, but a couple
+  of t-pre-push tests still fail because they `clone_repo` then
+  `git push` without first running any LFS-side command — the
+  hooks-on-smudge bootstrap (now wired through clean / smudge /
+  filter-process / fsck / track / untrack / migrate-import)
+  doesn't fire if no LFS path is touched between clone and push.
+  A dedicated `git lfs clone` wrapper (deprecated upstream but
+  still tested) would close the remaining holes.
 
 ### `cli push`
 - **Batch error message format.** `t-push.sh::push with bad ref`
@@ -392,14 +412,14 @@ missing** and **why it was OK to skip for v0**.
   tests so `cargo test` runs them, no `make` step, no Go toolchain.
   Big undertaking (~100 test files, ~200 assertions) — handle one
   test file at a time as we touch each command.
-- **Three upstream helpers excluded** because they import internal
+- **Two upstream helpers excluded** because they import internal
   upstream Go packages (`lfsapi`, `tools`, `config`):
-  `lfstest-customadapter`, `lfstest-standalonecustomadapter`,
-  `lfstest-testutils`. The first two are referenced only by
-  `t-custom-transfers.sh`; `lfstest-testutils` is build-tag-gated
-  (`//go:build testtools`) so upstream's default build skips it too,
-  but if a test does need it we'd have to vendor the upstream
-  packages or rewrite the helper.
+  `lfstest-customadapter` and `lfstest-standalonecustomadapter`.
+  Referenced only by `t-custom-transfers.sh` and
+  `t-standalone-file.sh`; the rest of the suite doesn't need them.
+  `lfstest-testutils` (the `addcommits` helper used by ~11 t-*.sh
+  files for fixture-building) is reimplemented in Rust at
+  `cli/src/bin/lfstest-testutils.rs`.
 
 ### `filter-process`
 - **`delay` capability.** v0 handshake doesn't advertise it. Once `transfer/`
@@ -542,11 +562,6 @@ import and export share it.
   before/after tree (post-checkout/post-merge) or the index (post-
   commit) and only re-stating changed paths. Worth doing once we hit a
   large-repo perf complaint; correctness is the same either way.
-- **`t-post-checkout.sh` and `t-post-merge.sh`** depend on the excluded
-  `lfstest-testutils` helper (`addcommits` with
-  `GIT_LFS_SET_LOCKABLE_READONLY=0`), so they can't run end-to-end
-  here even with full lockable support — same skip rationale as the
-  other three excluded helpers.
 
 ### `cli checkout`
 - **`--to <path> [--ours|--theirs|--base]` conflict-resolution form.**
