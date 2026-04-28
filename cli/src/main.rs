@@ -8,6 +8,7 @@ use git_lfs_git::ConfigScope;
 use git_lfs_store::Store;
 
 mod checkout;
+mod clone;
 mod env;
 mod fetch;
 mod fetcher;
@@ -277,6 +278,16 @@ enum Command {
         #[arg(long)]
         object_id: bool,
     },
+    /// Deprecated. Wraps `git clone` so the working tree is populated
+    /// with pointer text first, then runs `git lfs pull` to download
+    /// LFS content in batch. Modern `git clone` parallelizes the
+    /// smudge filter and is no slower; prefer it.
+    Clone {
+        /// `git clone` and LFS pass-through args. The repository URL
+        /// is required; an optional target directory follows.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Git post-checkout hook entry point. Receives `<prev-sha>
     /// <post-sha> <flag>` (flag is "1" if HEAD moved). Currently a
     /// no-op stub — exists so installed hook scripts don't fail. Real
@@ -542,6 +553,9 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             } else {
                 println!("Global Git LFS configuration has been removed.");
             }
+        }
+        Command::Clone { args } => {
+            clone::run(&cwd, &args)?;
         }
         Command::FilterProcess => {
             let _ = install::try_install_hooks(&cwd);

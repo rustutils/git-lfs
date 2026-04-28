@@ -13,8 +13,9 @@
 //! the index counts as unchanged. We'd never re-trigger the smudge
 //! filter that way.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use git_lfs_pointer::Pointer;
 use git_lfs_store::Store;
@@ -36,6 +37,15 @@ pub enum PullCommandError {
 }
 
 pub fn pull(cwd: &Path, refs: &[String]) -> Result<(), PullCommandError> {
+    pull_with_filter(cwd, refs, &[], &[])
+}
+
+pub fn pull_with_filter(
+    cwd: &Path,
+    refs: &[String],
+    include: &[String],
+    exclude: &[String],
+) -> Result<(), PullCommandError> {
     let opts = fetch::FetchOptions {
         args: refs,
         stdin_lines: &[],
@@ -45,18 +55,42 @@ pub fn pull(cwd: &Path, refs: &[String]) -> Result<(), PullCommandError> {
         refetch: false,
         stdin: false,
         prune: false,
-        include: &[],
-        exclude: &[],
+        include,
+        exclude,
     };
     let outcome = fetch::fetch(cwd, &opts)?;
     if !outcome.report.failed.is_empty() {
         return Err(PullCommandError::FetchFailures(outcome.report.failed.len()));
     }
 
+    // Match upstream `newSingleCheckout`: if the smudge filter isn't
+    // installed (no `filter.lfs.clean` config), skip the working-
+    // tree materialize step and tell the user how to fix it. The
+    // fetch above still ran, so objects land in `.git/lfs/objects/`
+    // and `git lfs install` later will smudge them in.
+    if !smudge_filter_installed(cwd) {
+        println!(
+            "Skipping object checkout, Git LFS is not installed for this repository.\n\
+             Consider installing it with 'git lfs install'."
+        );
+        return Ok(());
+    }
+
+    // Build the same include/exclude filter `fetch` used so the
+    // working-tree rewrite respects -I / -X (or `lfs.fetchinclude` /
+    // `lfs.fetchexclude`). Without this an LFS object that fetch
+    // skipped would still be rewritten in-place if it happened to be
+    // present locally already.
+    let include_set = fetch::build_pattern_set(cwd, include, "lfs.fetchinclude")?;
+    let exclude_set = fetch::build_pattern_set(cwd, exclude, "lfs.fetchexclude")?;
+
     let store = Store::new(git_lfs_git::lfs_dir(cwd)?);
     let tracked = list_tracked_files(cwd)?;
-    let mut rewritten = 0usize;
+    let mut rewritten_paths: Vec<String> = Vec::new();
     for path in tracked {
+        if !fetch::path_passes_filter(Some(&path), &include_set, &exclude_set) {
+            continue;
+        }
         let full = cwd.join(&path);
         let Ok(meta) = std::fs::metadata(&full) else { continue };
         // Skip anything that can't possibly be a pointer (too big to
@@ -75,12 +109,52 @@ pub fn pull(cwd: &Path, refs: &[String]) -> Result<(), PullCommandError> {
         let mut src = store.open(pointer.oid)?;
         let mut dst = std::fs::File::create(&full)?;
         std::io::copy(&mut src, &mut dst)?;
-        rewritten += 1;
+        rewritten_paths.push(path.to_string_lossy().into_owned());
     }
-    if rewritten > 0 {
-        println!("Materialized {rewritten} working-tree file(s)");
+    if !rewritten_paths.is_empty() {
+        // After overwriting working-tree files, the stat info in the
+        // index is stale; `git diff-index HEAD` would report each as
+        // modified even though `clean(content)` hashes back to the
+        // original blob. `git update-index -q --refresh --stdin`
+        // re-stats each path and runs the clean filter to confirm
+        // the content blob matches; matching paths get fresh stat
+        // info and drop out of subsequent diff-index walks.
+        refresh_index(cwd, &rewritten_paths)?;
+        println!("Materialized {} working-tree file(s)", rewritten_paths.len());
     }
     Ok(())
+}
+
+fn refresh_index(cwd: &Path, paths: &[String]) -> Result<(), PullCommandError> {
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["update-index", "-q", "--refresh", "--stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    if let Some(stdin) = child.stdin.as_mut() {
+        for p in paths {
+            stdin.write_all(p.as_bytes())?;
+            stdin.write_all(b"\n")?;
+        }
+    }
+    // Don't surface failures: `update-index --refresh` exits non-zero
+    // when *some* path is still considered dirty (e.g. genuine local
+    // edits we didn't rewrite), and treating that as a hard error
+    // would break the legitimate "clean partial pull" case.
+    let _ = child.wait()?;
+    Ok(())
+}
+
+fn smudge_filter_installed(cwd: &Path) -> bool {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["config", "--get", "filter.lfs.clean"])
+        .output();
+    matches!(out, Ok(o) if o.status.success() && !o.stdout.trim_ascii().is_empty())
 }
 
 /// `git ls-files -z` enumerates every tracked file in the working tree

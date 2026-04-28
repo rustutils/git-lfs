@@ -359,7 +359,7 @@ pub(crate) fn fetch_filter_set(
 /// pattern strings (e.g. `--include ""`) clear the set entirely. Empty
 /// list of patterns falls back to the config value (which is itself
 /// comma-separated).
-fn build_pattern_set(
+pub(crate) fn build_pattern_set(
     cwd: &Path,
     cli: &[String],
     config_key: &str,
