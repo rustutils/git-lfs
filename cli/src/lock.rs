@@ -272,7 +272,7 @@ pub fn unlock(
     let runtime = build_runtime()?;
     let root = repo_root(cwd).map_err(LockCommandError::Build)?;
     let refspec = resolve_refspec(&root, opts.refspec.as_deref());
-    let lockable_readonly = lockable_readonly_enabled(&root);
+    let lockable_readonly = crate::lockable::lockable_readonly_enabled(&root);
     let mut success = true;
     let mut report: Vec<UnlockJsonEntry> = Vec::new();
 
@@ -521,23 +521,6 @@ fn has_uncommitted_changes(root: &Path, path: &str) -> bool {
     match out {
         Ok(o) if o.status.success() => !o.stdout.is_empty(),
         _ => false,
-    }
-}
-
-/// `lfs.setlockablereadonly` defaults to true. Only `false` (or `0` /
-/// `no`) disables the post-unlock chmod-to-read-only step.
-fn lockable_readonly_enabled(root: &Path) -> bool {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["config", "--get", "lfs.setlockablereadonly"])
-        .output();
-    match out {
-        Ok(o) if o.status.success() => {
-            let v = String::from_utf8_lossy(&o.stdout).trim().to_lowercase();
-            !matches!(v.as_str(), "false" | "0" | "no" | "off")
-        }
-        _ => true,
     }
 }
 

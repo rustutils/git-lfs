@@ -504,6 +504,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
 
     match cmd {
         Command::Clean { path: _ } => {
+            let _ = install::try_install_hooks(&cwd);
             let store = Store::new(git_lfs_git::lfs_dir(&cwd)?);
             let stdin = io::stdin().lock();
             let mut input: Box<dyn Read> = Box::new(stdin);
@@ -512,6 +513,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             output.flush()?;
         }
         Command::Smudge { path: _ } => {
+            let _ = install::try_install_hooks(&cwd);
             let store = Store::new(git_lfs_git::lfs_dir(&cwd)?);
             let fetcher = LfsFetcher::from_repo(&cwd, &store)?;
             let stdin = io::stdin().lock();
@@ -542,6 +544,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             }
         }
         Command::FilterProcess => {
+            let _ = install::try_install_hooks(&cwd);
             let store = Store::new(git_lfs_git::lfs_dir(&cwd)?);
             let fetcher = LfsFetcher::from_repo(&cwd, &store)?;
             let stdin = io::stdin().lock();
@@ -740,6 +743,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                     message,
                     paths,
                 };
+                let _ = install::try_install_hooks(&cwd);
                 migrate::import(&cwd, &opts)?;
             }
             MigrateCmd::Info {
@@ -779,6 +783,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             prune::run(&cwd, &opts)?;
         }
         Command::Fsck { refspec, objects, pointers, dry_run } => {
+            let _ = install::try_install_hooks(&cwd);
             let mode = match (objects, pointers) {
                 (true, false) => fsck::Mode::Objects,
                 (false, true) => fsck::Mode::Pointers,
@@ -859,6 +864,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             if patterns.is_empty() {
                 return Err("git lfs untrack <pattern> [pattern...]".into());
             }
+            let _ = install::try_install_hooks(&cwd);
             let outcome = track::untrack(&cwd, &patterns)?;
             for p in &outcome.removed {
                 println!("Untracking \"{p}\"");

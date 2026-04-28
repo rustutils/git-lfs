@@ -124,6 +124,9 @@ pub fn enforce_readonly_if_lockable(
 /// (caching, reject) and we don't want a `.gitattributes`-only commit
 /// to churn auth state on a server the user hasn't logged into yet.
 pub fn enforce_workdir(cwd: &Path) -> io::Result<()> {
+    if !lockable_readonly_enabled(cwd) {
+        return Ok(());
+    }
     let attrs = AttrSet::from_workdir(cwd)?;
     let files = ls_files(cwd)?;
     if !files.iter().any(|f| attrs.is_lockable(f)) {
@@ -131,6 +134,32 @@ pub fn enforce_workdir(cwd: &Path) -> io::Result<()> {
     }
     let held = HeldLocks::from_server(cwd);
     apply_modes(cwd, files, &attrs, &held)
+}
+
+/// Returns whether the lockable read-only invariant should be
+/// enforced. Defaults to `true`; either the env override
+/// `GIT_LFS_SET_LOCKABLE_READONLY=0/false` or the git config
+/// `lfs.setlockablereadonly=false` flips it off (matching upstream's
+/// `Configuration.SetLockableFilesReadOnly()`).
+pub fn lockable_readonly_enabled(cwd: &Path) -> bool {
+    if let Some(v) = std::env::var_os("GIT_LFS_SET_LOCKABLE_READONLY") {
+        let s = v.to_string_lossy().trim().to_lowercase();
+        if matches!(s.as_str(), "false" | "0" | "no" | "off") {
+            return false;
+        }
+    }
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["config", "--get", "lfs.setlockablereadonly"])
+        .output();
+    match out {
+        Ok(o) if o.status.success() => {
+            let v = String::from_utf8_lossy(&o.stdout).trim().to_lowercase();
+            !matches!(v.as_str(), "false" | "0" | "no" | "off")
+        }
+        _ => true,
+    }
 }
 
 /// `git ls-files -z` listing of cached (in-index) paths. Submodules
