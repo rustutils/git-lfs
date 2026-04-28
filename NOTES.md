@@ -58,6 +58,58 @@ Useful entry points in the upstream tree:
 3. **Locking, custom transfers, SSH protocol, migrate** — each independent.
 4. **Windows + credential helpers** — defer; flag scope before committing.
 
+## Test status snapshot (point in time)
+
+282/794 shell tests passing across 101 files (35.5%). 16 files
+fully passing, 47 fully failing, 38 partially. Headline number
+undersells things — about 200 of the 512 failures are concentrated
+in commands we haven't started (`env`, `config`, `ext`, `dedup`,
+`custom-transfers`, `ssh`, retries); of *shipped* commands the
+per-feature pass rate is roughly 60-70%.
+
+## Highest-leverage gap (single biggest payoff)
+
+**`git lfs install` doesn't write to git's `init.templateDir`**, so
+fresh `git clone` doesn't inherit our hooks. Likely owns most of
+t-clone (0/13), much of t-pull (2/20), t-pre-push 19/20,
+t-uninstall-worktree, and a slice of t-credentials / t-batch-* tests
+that do a fresh clone before exercising LFS. Upstream's `install`
+(without `--skip-repo`) creates `~/.config/git-lfs/hooks/` (or
+similar), populates it with our four hook scripts, and points
+`init.templateDir` at it via `git config --global`. New repos
+created with `git clone` then copy those hooks into their
+`.git/hooks/` automatically. Mechanical change, but cross-cutting —
+worth tackling before more bottom-up flag work.
+
+## Other large clusters (descending leverage)
+
+- **`git lfs env` output format** — t-env (0/17), and any test that
+  parses env's output. The command exists but its output shape
+  doesn't match upstream's expected lines.
+- **`git lfs config` subcommand** — t-config (0/10), entirely
+  unimplemented.
+- **Custom transfer adapters + tus** — `t-custom-transfers`,
+  `t-batch-storage-upload-tus`, `t-standalone-file`. Real protocol
+  surface, third-party-facing.
+- **Migrate `--fixup` and round-trip** — `t-migrate-fixup` (0/12),
+  `t-migrate-import-no-rewrite` (0/8), and the tail in
+  `t-migrate-import` (6/51) and `t-migrate-info` (7/50). Engine
+  works; lots of edge cases.
+- **Retry / Retry-After / rate-limit handling** —
+  `t-batch-retries-ratelimit`, `t-batch-storage-retries-*` (3
+  files, 0/15). Server returns 429 with Retry-After header; we
+  don't honor the schedule.
+- **Credential helper edge cases** — `t-credentials` (3/20),
+  `t-credentials-protect`, `t-askpass` (1/6), netrc, NTLM. The
+  basic 401-fill-retry loop ships; the rest of the credential
+  ecosystem doesn't.
+- **`status`, `ls-files`, `prune` long tails** — basic forms work,
+  exotic flags / formatting don't (1/17, 10/31, 3/18).
+- **Unshipped commands**: `ext`, `logs`, `update`, `dedup`,
+  `standalone-file`, `completion`.
+- **SSH transfer protocol (`git-lfs-authenticate`)** — `t-ssh`,
+  parts of `t-multiple-remotes`, large parts of `t-clone`.
+
 ## Open questions / things to flag before deep diving
 
 - Credential helper integration (keychain/wincred/git-credential) — what does
