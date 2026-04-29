@@ -35,11 +35,18 @@ pub enum FilterProcessError {
 /// is not supported in the caller's context, pass a closure that always
 /// errors — the protocol will then surface those smudges as `status=error`
 /// to git, same as if [`smudge`](crate::smudge) hit `ObjectMissing`.
+///
+/// `skip_smudge` reflects the upstream `GIT_LFS_SKIP_SMUDGE` env var.
+/// When true, smudge requests pass the pointer text through unchanged
+/// — the working-tree file ends up holding pointer text and `git lfs
+/// pull` (or another smudge run) is the recovery path. Clean requests
+/// are unaffected.
 pub fn filter_process<R, W, F>(
     store: &Store,
     input: R,
     output: W,
     mut fetch: F,
+    skip_smudge: bool,
 ) -> Result<(), FilterProcessError>
 where
     R: Read,
@@ -71,6 +78,7 @@ where
 
         match command.as_str() {
             "clean" => process_clean(store, &mut writer, &payload)?,
+            "smudge" if skip_smudge => process_smudge_passthrough(&mut writer, &payload)?,
             "smudge" => process_smudge(store, &mut writer, &payload, &mut fetch)?,
             other => return Err(FilterProcessError::UnknownCommand(other.into())),
         }
@@ -180,6 +188,17 @@ fn process_clean<W: Write>(
             .map(|_| ())
             .map_err(|e| io::Error::other(e.to_string()))
     });
+    write_final_status(writer, result.is_ok())?;
+    Ok(())
+}
+
+/// `GIT_LFS_SKIP_SMUDGE=1` mode: emit the pointer payload unchanged.
+fn process_smudge_passthrough<W: Write>(
+    writer: &mut pktline::Writer<W>,
+    payload: &[u8],
+) -> Result<(), FilterProcessError> {
+    write_initial_status(writer)?;
+    let result = run_through_sink(writer, |sink| sink.write_all(payload));
     write_final_status(writer, result.is_ok())?;
     Ok(())
 }
@@ -323,7 +342,7 @@ mod tests {
 
     fn run(store: &Store, input: Vec<u8>) -> Vec<u8> {
         let mut output = Vec::new();
-        filter_process(store, Cursor::new(input), &mut output, no_fetch).unwrap();
+        filter_process(store, Cursor::new(input), &mut output, no_fetch, false).unwrap();
         output
     }
 
@@ -445,12 +464,18 @@ mod tests {
 
         let mut output = Vec::new();
         let store_ref = &store;
-        filter_process(&store, Cursor::new(input), &mut output, |p: &Pointer| {
-            // Stand in for a real download — re-insert the bytes.
-            store_ref.insert(&mut { &content[..] }).unwrap();
-            assert_eq!(p.oid, parsed.oid);
-            Ok(())
-        })
+        filter_process(
+            &store,
+            Cursor::new(input),
+            &mut output,
+            |p: &Pointer| {
+                // Stand in for a real download — re-insert the bytes.
+                store_ref.insert(&mut { &content[..] }).unwrap();
+                assert_eq!(p.oid, parsed.oid);
+                Ok(())
+            },
+            false,
+        )
         .unwrap();
 
         let toks = decode(&output);

@@ -248,6 +248,14 @@ enum Command {
     Pull {
         /// Refs to scan for LFS pointers. Defaults to `HEAD`.
         refs: Vec<String>,
+        /// Comma-separated globs; only matching paths are pulled.
+        /// Falls back to `lfs.fetchinclude` when omitted.
+        #[arg(short = 'I', long)]
+        include: Vec<String>,
+        /// Comma-separated globs; matching paths are skipped. Falls
+        /// back to `lfs.fetchexclude` when omitted.
+        #[arg(short = 'X', long)]
+        exclude: Vec<String>,
     },
     /// Upload every LFS object reachable from the given refs that the
     /// remote doesn't already have. The "doesn't have" set is approximated
@@ -505,6 +513,20 @@ fn main() -> ExitCode {
     }
 }
 
+/// `GIT_LFS_SKIP_SMUDGE=1` (any value other than empty/0/false) tells
+/// the smudge filter to leave pointer text in place rather than fetch.
+/// Used by clones that intentionally don't materialize content (e.g.
+/// CI partial clones, t-pull's "skip" tests).
+fn skip_smudge_env() -> bool {
+    match std::env::var_os("GIT_LFS_SKIP_SMUDGE") {
+        None => false,
+        Some(v) => {
+            let s = v.to_string_lossy();
+            !matches!(s.as_ref(), "" | "0" | "false" | "False" | "FALSE")
+        }
+    }
+}
+
 fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
     let cwd = std::env::current_dir()?;
 
@@ -521,11 +543,15 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
         Command::Smudge { path: _ } => {
             let _ = install::try_install_hooks(&cwd);
             let store = Store::new(git_lfs_git::lfs_dir(&cwd)?);
-            let fetcher = LfsFetcher::from_repo(&cwd, &store)?;
             let stdin = io::stdin().lock();
             let mut input: Box<dyn Read> = Box::new(stdin);
             let mut output: Box<dyn Write> = Box::new(BufWriter::new(io::stdout().lock()));
-            smudge_with_fetch(&store, &mut input, &mut output, |p| fetcher.fetch(p))?;
+            if skip_smudge_env() {
+                io::copy(&mut input, &mut output)?;
+            } else {
+                let fetcher = LfsFetcher::from_repo(&cwd, &store)?;
+                smudge_with_fetch(&store, &mut input, &mut output, |p| fetcher.fetch(p))?;
+            }
             output.flush()?;
         }
         Command::Install {
@@ -570,7 +596,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             let fetcher = LfsFetcher::from_repo(&cwd, &store)?;
             let stdin = io::stdin().lock();
             let stdout = io::stdout().lock();
-            filter_process(&store, stdin, stdout, |p| fetcher.fetch(p))?;
+            filter_process(&store, stdin, stdout, |p| fetcher.fetch(p), skip_smudge_env())?;
         }
         Command::Fetch {
             args,
@@ -623,8 +649,8 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 Err(e) => return Err(e.into()),
             }
         }
-        Command::Pull { refs } => {
-            pull::pull(&cwd, &refs)?;
+        Command::Pull { refs, include, exclude } => {
+            pull::pull_with_filter(&cwd, &refs, &include, &exclude)?;
         }
         Command::Push {
             remote,
