@@ -83,19 +83,21 @@ pub fn run(cwd: &Path, format: Format) -> Result<(), StatusError> {
         return Ok(());
     };
 
+    let repo_root = repo_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
     let staged = diff_index(cwd, refname, true)?;
     let combined = diff_index(cwd, refname, false)?;
     let unstaged = subtract(&combined, &staged);
 
     match format {
-        Format::Default => emit_default(cwd, refname, &staged, &unstaged),
+        Format::Default => emit_default(cwd, &repo_root, refname, &staged, &unstaged),
         Format::Porcelain => emit_porcelain(&staged, &unstaged),
-        Format::Json => emit_json(cwd, &staged, &unstaged),
+        Format::Json => emit_json(&repo_root, &staged, &unstaged),
     }
 }
 
 fn emit_default(
     cwd: &Path,
+    repo_root: &Path,
     refname: &str,
     staged: &[DiffEntry],
     unstaged: &[DiffEntry],
@@ -109,28 +111,32 @@ fn emit_default(
 
     let mut batch = CatFileBatch::spawn(cwd)?;
 
+    // Sections always have a blank line between header and entries
+    // (upstream layout). Empty sections still get the blank.
     println!();
     println!("Objects to be committed:");
+    println!();
     for e in staged {
-        println!("\t{}", format_entry_line(cwd, &mut batch, e)?);
+        println!("\t{}", format_entry_line(cwd, repo_root, &mut batch, e)?);
     }
 
     println!();
     println!("Objects not staged for commit:");
-    for e in unstaged {
-        println!("\t{}", format_entry_line(cwd, &mut batch, e)?);
-    }
     println!();
+    for e in unstaged {
+        println!("\t{}", format_entry_line(cwd, repo_root, &mut batch, e)?);
+    }
     Ok(())
 }
 
 fn format_entry_line(
     cwd: &Path,
+    repo_root: &Path,
     batch: &mut CatFileBatch,
     e: &DiffEntry,
 ) -> Result<String, StatusError> {
-    let from = blob_info_from(cwd, batch, e)?;
-    let to = blob_info_to(cwd, batch, e)?;
+    let from = blob_info_from(repo_root, batch, e)?;
+    let to = blob_info_to(repo_root, batch, e)?;
 
     let render_from = render_blob(&from);
     let render_to = render_blob(&to);
@@ -144,13 +150,17 @@ fn format_entry_line(
         format!("({render_from} -> {render_to})")
     };
 
+    // diff-index always emits repo-relative paths; for display we want
+    // them relative to the user's cwd so a `git lfs status` from a
+    // subdirectory matches what `git status` would show.
+    let display_src = display_path(cwd, repo_root, &e.src_name);
     let path_part = match e.status {
         'R' | 'C' => format!(
             "{} -> {}",
-            e.src_name,
-            e.dst_name.as_deref().unwrap_or(&e.src_name)
+            display_src,
+            display_path(cwd, repo_root, e.dst_name.as_deref().unwrap_or(&e.src_name))
         ),
-        _ => e.src_name.clone(),
+        _ => display_src,
     };
     Ok(format!("{path_part} {info}"))
 }
@@ -165,8 +175,12 @@ fn render_blob(b: &BlobInfo) -> String {
 }
 
 fn emit_porcelain(staged: &[DiffEntry], unstaged: &[DiffEntry]) -> Result<(), StatusError> {
+    // Order: unstaged first, then staged, deduping by name. Matches
+    // upstream: a file present in both surfaces under its unstaged
+    // entry, so a `git mv` followed by an edit reads as the unstaged
+    // form. Test 2 is the canonical example.
     let mut seen: HashSet<String> = HashSet::new();
-    for e in staged.iter().chain(unstaged.iter()) {
+    for e in unstaged.iter().chain(staged.iter()) {
         let name = e.dst_name.as_deref().unwrap_or(&e.src_name).to_owned();
         if !seen.insert(name) {
             continue;
@@ -202,15 +216,15 @@ struct JsonEntry {
 }
 
 fn emit_json(
-    cwd: &Path,
+    repo_root: &Path,
     staged: &[DiffEntry],
     unstaged: &[DiffEntry],
 ) -> Result<(), StatusError> {
-    let mut batch = CatFileBatch::spawn(cwd)?;
+    let mut batch = CatFileBatch::spawn(repo_root)?;
     let mut files = std::collections::BTreeMap::new();
-    for e in staged.iter().chain(unstaged.iter()) {
+    for e in unstaged.iter().chain(staged.iter()) {
         // Upstream JSON output only reports LFS-related entries.
-        let from = blob_info_from(cwd, &mut batch, e)?;
+        let from = blob_info_from(repo_root, &mut batch, e)?;
         if from.kind != BlobKind::Lfs {
             continue;
         }
@@ -225,7 +239,7 @@ fn emit_json(
                 from: None,
             },
         };
-        files.insert(key, entry);
+        files.entry(key).or_insert(entry);
     }
     println!("{}", serde_json::to_string(&JsonOutput { files })?);
     Ok(())
@@ -244,6 +258,48 @@ fn subtract(a: &[DiffEntry], b: &[DiffEntry]) -> Vec<DiffEntry> {
     };
     let exclude: HashSet<String> = b.iter().map(key).collect();
     a.iter().filter(|e| !exclude.contains(&key(e))).cloned().collect()
+}
+
+fn repo_root(cwd: &Path) -> Option<std::path::PathBuf> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    if s.is_empty() {
+        None
+    } else {
+        Some(std::path::PathBuf::from(s))
+    }
+}
+
+/// Convert a repo-relative path to one relative to `cwd` for display.
+/// Falls back to the repo-relative form on canonicalization errors —
+/// the path will still be readable, just less convenient.
+fn display_path(cwd: &Path, repo_root: &Path, repo_rel: &str) -> String {
+    let (Ok(cwd_abs), Ok(root_abs)) = (cwd.canonicalize(), repo_root.canonicalize()) else {
+        return repo_rel.to_owned();
+    };
+    let Ok(rel_in_repo) = cwd_abs.strip_prefix(&root_abs) else {
+        return repo_rel.to_owned();
+    };
+    // How many components of cwd live under the repo root? That's the
+    // number of `..` steps we need to climb back to the root before
+    // descending to the file.
+    let depth = rel_in_repo.components().count();
+    if depth == 0 {
+        return repo_rel.to_owned();
+    }
+    let mut prefix = String::new();
+    for _ in 0..depth {
+        prefix.push_str("../");
+    }
+    format!("{prefix}{repo_rel}")
 }
 
 fn current_head(cwd: &Path) -> Option<String> {
@@ -278,7 +334,7 @@ fn current_branch(cwd: &Path) -> Option<String> {
 /// fall back to the dst sha; this matches upstream so additions report
 /// their content classification on the single line they emit.
 fn blob_info_from(
-    cwd: &Path,
+    repo_root: &Path,
     batch: &mut CatFileBatch,
     e: &DiffEntry,
 ) -> Result<BlobInfo, StatusError> {
@@ -287,23 +343,23 @@ fn blob_info_from(
     } else {
         &e.src_sha
     };
-    blob_info(cwd, batch, blob_sha, &e.src_name)
+    blob_info(repo_root, batch, blob_sha, &e.src_name)
 }
 
 /// Classify the "to" side. Falls back to the working-tree file when
 /// dst_sha is zero (e.g. unstaged modifications, where the new content
 /// isn't yet in any git object).
 fn blob_info_to(
-    cwd: &Path,
+    repo_root: &Path,
     batch: &mut CatFileBatch,
     e: &DiffEntry,
 ) -> Result<BlobInfo, StatusError> {
     let name = e.dst_name.as_deref().unwrap_or(&e.src_name);
-    blob_info(cwd, batch, &e.dst_sha, name)
+    blob_info(repo_root, batch, &e.dst_sha, name)
 }
 
 fn blob_info(
-    cwd: &Path,
+    repo_root: &Path,
     batch: &mut CatFileBatch,
     sha: &str,
     name: &str,
@@ -331,8 +387,10 @@ fn blob_info(
         return Ok(BlobInfo { kind: BlobKind::Git, sha7: Some(short(&sha)) });
     }
 
-    // Zero src/dst sha: read the working-tree file directly.
-    let path = cwd.join(name);
+    // Zero src/dst sha: read the working-tree file directly. `name`
+    // is repo-relative, so resolve from the repo root regardless of
+    // where the user invoked status.
+    let path = repo_root.join(name);
     match std::fs::read(&path) {
         Ok(bytes) => {
             let mut hasher = Sha256::new();

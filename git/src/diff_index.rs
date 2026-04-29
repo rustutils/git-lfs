@@ -43,9 +43,13 @@ impl DiffEntry {
 ///
 /// `cached = true` reports staged changes (HEAD vs index); `cached = false`
 /// reports working-tree changes (HEAD vs working tree, including unstaged).
+///
+/// `-M` (rename detection) matches upstream's `git lfs status` behavior;
+/// without it, a `git mv` shows up as a delete + add pair instead of an `R`
+/// entry, which the JSON-shape tests rely on.
 pub fn diff_index(cwd: &Path, refname: &str, cached: bool) -> Result<Vec<DiffEntry>, Error> {
     let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(cwd).args(["diff-index", "-z"]);
+    cmd.arg("-C").arg(cwd).args(["diff-index", "-M", "-z"]);
     if cached {
         cmd.arg("--cached");
     }
