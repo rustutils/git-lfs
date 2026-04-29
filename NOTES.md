@@ -136,19 +136,56 @@ tree in the same hook-installed state upstream produces.
    credential settings are unsafe and surface a warning). Without
    it, `.lfsconfig`'s `concurrenttransfers = 5` overrides the git-
    config default and the env output diverges.
+   - **Scope**: `git/src/config.rs::get_effective`. Today it merges
+     `.lfsconfig` and git-config without distinguishing them. Add a
+     "safe-keys" predicate (URL-shaped keys: `lfs.url`,
+     `lfs.<url>.access`, `remote.<r>.lfsurl`,
+     `lfs.<url>.locksverify`, … — vendor the upstream list rather
+     than re-deriving it) and have lookups for non-safe keys skip
+     `.lfsconfig`. On first read of `.lfsconfig` per process, log
+     unsafe keys via the same `warning: ...` channel t-config 9
+     greps for. Bonus: t-config 9 wants the warning to fire only
+     when the key was actually used somewhere, but a one-shot dump
+     at first read should be enough to pass.
 2. **URL `insteadOf` alias resolution for LFS endpoints**. Owns
    t-config tests 5–8 and t-env test 17. `git config
    url.<base>.insteadOf <alias>` should rewrite LFS URLs through
    the same pipeline `git fetch` uses. Detect duplicates → emit
    `warning: Multiple 'url.*.insteadof' [...]`.
+   - **Scope**: `git/src/endpoint.rs`. After resolving the LFS URL
+     (env / lfs.url / remote.lfsurl / derived), apply
+     `url.<base>.insteadOf` rewrite — longest-match wins, mirroring
+     git itself. Enumerate matching keys via `git config
+     --get-regexp '^url\..*\.insteadof$'`. Duplicate detection: if
+     two different `url.<base>.insteadOf` entries share the same
+     value, emit the warning to stderr (test 6 / 17 grep). t-env
+     17 also wants a "duplicate alias" warning when
+     `url.X.insteadOf` is set twice with the same alias.
 3. **`.lfsconfig` from HEAD's tree**. t-config test 2 walks a
    detached HEAD that points at a branch with a `.lfsconfig`
    committed but not checked out. Need `git show HEAD:.lfsconfig`
    fallback when the working-tree file isn't present.
+   - **Scope**: `git/src/config.rs`. The `.lfsconfig` reader
+     currently reads the working-tree file. When it's missing, try
+     `git show HEAD:.lfsconfig` (or `git cat-file -p HEAD:.lfsconfig`)
+     and parse that. Failure → silent fallback, not an error.
+     Caching: read once per `cwd` invocation, since callers do
+     multiple `get_effective` lookups and we don't want N
+     subprocess spawns.
 4. **SSH endpoint reporting**. t-env test 11 expects two-line
    endpoints: `Endpoint=…` followed by an indented
    `  SSH=user@host:path` derived from `git@host:path` style
    remote URLs.
+   - **Scope**: `cli/src/env.rs::emit_endpoints`. After
+     `endpoint_for_remote` resolves a URL, also keep the original
+     remote URL string. If it's an SSH-shaped URL (matches
+     `git@host:path`, `ssh://`, `git+ssh://`, `ssh+git://`), print
+     `  SSH=<original>` on the next line, indented two spaces.
+     `derive_lfs_url` already understands all the SSH forms; just
+     need to expose the pre-rewrite URL alongside the post-rewrite
+     one. Bonus: test 11 expects a `GIT_SSH=lfs-ssh-echo` line
+     (already covered by our env-var dump when the test harness
+     sets it).
 5. **t-pull's remaining 4 failures** all need substantive features:
    test 11 wants `lfs.transfer.enablehrefrewrite` + git `insteadOf`
    rewrites and exit-2 on download failure; test 18 wants `git
