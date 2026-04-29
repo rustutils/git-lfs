@@ -9,7 +9,7 @@ members = [
     "transfer",
     "creds",
     "filter",
-    "tests/cmd/lfstest-testutils",
+    "tests/cmd",
 ]
 
 [workspace.package]

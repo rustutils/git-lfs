@@ -21,7 +21,7 @@ endif
 # (lfstest-customadapter, lfstest-standalonecustomadapter) depend on
 # upstream-internal Go packages and are not built here; the tests
 # that exercise them are skipped — see NOTES.md. `lfstest-testutils`
-# is reimplemented in Rust under `tests/cmd/lfstest-testutils/`.
+# is reimplemented in Rust under `tests/cmd/src/bin/`.
 TEST_CMDS =
 TEST_CMDS += ../bin/git-credential-lfsnoop$X
 TEST_CMDS += ../bin/git-credential-lfstest$X
@@ -83,6 +83,6 @@ $(GIT_LFS_BIN) :
 	ln -sf ../target/release/git-lfs$X $@
 
 $(LFSTEST_TESTUTILS_BIN) :
-	cd .. && $(CARGO) build --release -p lfstest-testutils
+	cd .. && $(CARGO) build --release --bin lfstest-testutils
 	@mkdir -p ../bin
 	ln -sf ../target/release/lfstest-testutils$X $@
