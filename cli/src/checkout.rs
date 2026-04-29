@@ -344,14 +344,17 @@ fn resolve_user_pattern(cwd: &Path, repo_root: &Path, pat: &str) -> Option<Vec<S
         (false, true) => format!("{prefix}/**"),
         (false, false) => format!("{prefix}/{remaining}"),
     };
-    // For directory patterns (`foo/`) and the `cwd` shortcut (`.`),
-    // we always want a recursive subtree match. For bare names that
-    // could be either a file or a directory (`foo`, `file*.dat`),
-    // emit both the literal pattern and the `<pat>/**` form so we
-    // catch directories too — gitignore-style semantics.
-    if dir_only || combined == "**" || combined.ends_with("/**") {
+    // Already a recursive pattern (from `.` / `..` / a trailing
+    // `/**`)? Return as-is.
+    if combined == "**" || combined.ends_with("/**") {
         return Some(vec![combined]);
     }
+    // Trailing-slash pattern (`foo/`) → recursive subtree only.
+    if dir_only {
+        return Some(vec![format!("{combined}/**")]);
+    }
+    // Bare names (`foo`, `file*.dat`) match both a file and the
+    // directory's contents — gitignore-style semantics.
     let subtree = format!("{combined}/**");
     Some(vec![combined, subtree])
 }

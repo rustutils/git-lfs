@@ -948,6 +948,7 @@ async fn pull_materializes_pointer_files_into_real_content() {
         .await;
 
     let repo = fresh_repo_with_identity();
+    install_lfs(repo.path());
     git_in(repo.path(), &["config", "--local", "lfs.url", &server.uri()]);
 
     // Commit the pointer text directly. This simulates the post-clone
