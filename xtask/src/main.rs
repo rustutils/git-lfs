@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser, Subcommand};
-use git_lfs::cli_def::Cli;
+use git_lfs::args::Cli;
 use git_lfs::man::{ManContent, extras_for};
 
 #[derive(Parser)]
@@ -97,9 +97,7 @@ fn render_man(
     // inherit it from the parent and our top-level `Cli` doesn't
     // declare one (we suppress `--version` and handle it manually
     // in main.rs), so we set the crate version uniformly here.
-    let cmd = cmd
-        .name(page_name.to_owned())
-        .version(git_lfs::VERSION);
+    let cmd = cmd.name(page_name.to_owned()).version(git_lfs::VERSION);
     let man = clap_mangen::Man::new(cmd);
 
     man.render_title(out)?;

@@ -30,8 +30,7 @@ mod track_cmd;
 
 use fetcher::LfsFetcher;
 
-
-use git_lfs::cli_def::{Cli, Command, MigrateCmd};
+use git_lfs::args::{Cli, Command, MigrateCmd};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -197,7 +196,11 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 Err(e) => return Err(e.into()),
             }
         }
-        Command::Pull { refs, include, exclude } => {
+        Command::Pull {
+            refs,
+            include,
+            exclude,
+        } => {
             match pull::pull_with_filter(&cwd, &refs, &include, &exclude) {
                 Ok(()) => {}
                 Err(pull::PullCommandError::Fetch(fetch::FetchCommandError::Usage(msg)))

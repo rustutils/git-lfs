@@ -10,7 +10,7 @@
 //!
 //! [`xtask`]: ../xtask/index.html
 
-pub mod cli_def;
+pub mod args;
 pub mod man;
 
 /// The published version of the `git-lfs` binary. Re-exported so xtask
