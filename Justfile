@@ -23,6 +23,10 @@ test-one TEST:
 build:
     cargo build --release
 
+gen:
+    cargo xtask gen-man
+    cargo xtask gen-md
+
 # Generate man pages under target/man/. One page per subcommand
 # (git-lfs-fetch.1, git-lfs-checkout.1, …) plus a top-level
 # git-lfs.1, derived from the clap definition + cli/man/ extras.
@@ -41,3 +45,11 @@ docs:
 clean:
     cargo clean
     cd tests && make clean
+
+branding:
+  typst compile docs/branding/logo.typ docs/branding/logo.svg
+  typst compile docs/branding/logo.typ docs/branding/logo.png --ppi 300
+  typst compile docs/branding/banner.typ docs/branding/banner-dark.svg  --input theme=dark
+  typst compile docs/branding/banner.typ docs/branding/banner-dark.png  --input theme=dark  --ppi 300
+  typst compile docs/branding/banner.typ docs/branding/banner-light.svg --input theme=light
+  typst compile docs/branding/banner.typ docs/branding/banner-light.png --input theme=light --ppi 300
