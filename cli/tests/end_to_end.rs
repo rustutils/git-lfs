@@ -1673,7 +1673,7 @@ fn env_in_repo_emits_version_paths_and_filter_config() {
 }
 
 #[test]
-fn env_outside_repo_skips_repo_specific_lines_and_succeeds() {
+fn env_outside_repo_emits_empty_repo_paths_and_succeeds() {
     let tmp = TempDir::new().unwrap();
     // Note: NOT a git repo. env should still run.
     let out = run_in(tmp.path(), &["env"], b"");
@@ -1684,10 +1684,16 @@ fn env_outside_repo_skips_repo_specific_lines_and_succeeds() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("git-lfs/"), "version still expected: {stdout}");
-    // No repo-specific paths; the filter config block still prints
-    // (with empty values) because it's read from global scope.
-    assert!(!stdout.contains("LocalGitDir="), "should not emit LocalGitDir: {stdout}");
-    assert!(stdout.contains("git config filter.lfs.process ="), "{stdout}");
+    // Outside a repo, upstream still emits the path lines with empty
+    // values for the repo-specific ones (and relative forms for
+    // LocalMediaDir / TempDir / LfsStorageDir). Filter config falls
+    // back to the canonical install-time defaults.
+    assert!(stdout.contains("LocalGitDir="), "{stdout}");
+    assert!(stdout.contains("LocalWorkingDir="), "{stdout}");
+    assert!(
+        stdout.contains("git config filter.lfs.process = \"git-lfs filter-process\""),
+        "{stdout}"
+    );
 }
 
 #[test]
