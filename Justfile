@@ -31,7 +31,7 @@ gen:
 # (git-lfs-fetch.1, git-lfs-checkout.1, …) plus a top-level
 # git-lfs.1, derived from the clap definition + cli/man/ extras.
 man:
-    cargo run --release -p xtask -- gen-man
+    cargo xtask -- gen-man
 
 # Generate markdown reference docs under docs/cmds/. Same shape as
 # `man` but emits mdbook-friendly markdown. The output is committed
@@ -39,7 +39,7 @@ man:
 # whenever you change a clap arg or man-page extra. The rest of
 # docs/ (protocol specs, hand-authored prose) is left alone.
 docs:
-    cargo run --release -p xtask -- gen-md
+    cargo xtask -- gen-md
 
 # Remove cargo build artifacts and shell-test scratch state.
 clean:

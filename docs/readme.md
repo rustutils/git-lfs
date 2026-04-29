@@ -1,3 +1,6 @@
+<img class="banner-light" alt="banner" src="branding/banner-light.svg">
+<img class="banner-dark" alt="banner" src="branding/banner-dark.svg">
+
 # Introduction
 
 `git-lfs`, implemented in Rust. A from-scratch port of
@@ -14,3 +17,5 @@ into `.git/hooks/`.
 
 The implementation is still in progress; see the project README for an
 up-to-date snapshot of what works.
+
+Git is a trademark of the [Software Freedom Conservancy](http://sfconservancy.org/).

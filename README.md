@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/branding/banner-dark.svg">
+  <img alt="git-lfs" src="docs/branding/banner-light.svg">
+</picture>
+
 # Git Large File Storage
 
 A from-scratch Rust port of [Git LFS](https://github.com/git-lfs/git-lfs).
