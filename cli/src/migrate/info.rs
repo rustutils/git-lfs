@@ -100,7 +100,9 @@ pub fn info(cwd: &Path, opts: &InfoOptions) -> Result<(), MigrateError> {
     if !pointer_candidates.is_empty() {
         let mut batch = CatFileBatch::spawn(cwd)?;
         for (oid, name, blob_size) in pointer_candidates {
-            let Some(blob) = batch.read(&oid)? else { continue };
+            let Some(blob) = batch.read(&oid)? else {
+                continue;
+            };
             let pointer = Pointer::parse(&blob.content);
             match (pointer, opts.pointers) {
                 (Ok(p), PointerMode::Follow) => {
@@ -179,11 +181,7 @@ fn print_table(by_ext: &HashMap<String, Entry>, lfs: &Entry, opts: &InfoOptions)
     }
 }
 
-fn format_row(
-    qual: &str,
-    entry: &Entry,
-    separate: bool,
-) -> (String, String, String, String, bool) {
+fn format_row(qual: &str, entry: &Entry, separate: bool) -> (String, String, String, String, bool) {
     let pct = if entry.total > 0 {
         100.0 * (entry.total_above as f64) / (entry.total as f64)
     } else {

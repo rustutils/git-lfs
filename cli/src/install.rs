@@ -146,7 +146,11 @@ pub fn try_install_hooks(cwd: &Path) -> Result<(), InstallError> {
     Ok(())
 }
 
-fn install_one_hook(hooks_dir: &Path, hook: &str, opts: &InstallOptions) -> Result<(), InstallError> {
+fn install_one_hook(
+    hooks_dir: &Path,
+    hook: &str,
+    opts: &InstallOptions,
+) -> Result<(), InstallError> {
     let path = hooks_dir.join(hook);
     let wanted = HOOK_TEMPLATE.replace("{{Command}}", hook);
 

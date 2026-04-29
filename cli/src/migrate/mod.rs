@@ -123,7 +123,12 @@ pub(super) fn all_local_refs(cwd: &Path) -> Result<Vec<String>, MigrateError> {
     let out = Command::new("git")
         .arg("-C")
         .arg(cwd)
-        .args(["for-each-ref", "--format=%(refname)", "refs/heads/", "refs/tags/"])
+        .args([
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/heads/",
+            "refs/tags/",
+        ])
         .output()?;
     if !out.status.success() {
         return Err(MigrateError::Other(format!(
@@ -269,7 +274,10 @@ mod tests {
         assert_eq!(parse_size("1k").unwrap(), 1024);
         assert_eq!(parse_size("1kb").unwrap(), 1024);
         assert_eq!(parse_size("2MB").unwrap(), 2 * 1024 * 1024);
-        assert_eq!(parse_size("1.5g").unwrap(), (1.5 * 1024.0 * 1024.0 * 1024.0) as u64);
+        assert_eq!(
+            parse_size("1.5g").unwrap(),
+            (1.5 * 1024.0 * 1024.0 * 1024.0) as u64
+        );
     }
 
     #[test]

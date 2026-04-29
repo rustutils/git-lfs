@@ -164,7 +164,11 @@ mod tests {
             CleanOutcome::Passthrough(p) => assert!(p.canonical),
             o => panic!("expected Passthrough, got {o:?}"),
         }
-        assert_eq!(out, pointer_text.as_bytes(), "output must be input verbatim");
+        assert_eq!(
+            out,
+            pointer_text.as_bytes(),
+            "output must be input verbatim"
+        );
         assert!(!store.root().join("objects").exists());
     }
 

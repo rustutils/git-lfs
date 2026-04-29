@@ -97,11 +97,8 @@ pub fn run(cwd: &Path, refspec: Option<&str>, opts: &Options) -> Result<i32, Fsc
         let exclude_set = fetch_filter_set(cwd, "lfs.fetchexclude")?;
         let pointers = scan_pointers(cwd, &[r], &[])?;
         for entry in &pointers {
-            if !crate::fetch::path_passes_filter(
-                entry.path.as_deref(),
-                &include_set,
-                &exclude_set,
-            ) {
+            if !crate::fetch::path_passes_filter(entry.path.as_deref(), &include_set, &exclude_set)
+            {
                 continue;
             }
             match verify_object(&store, entry.oid, entry.size)? {
@@ -276,7 +273,10 @@ mod tests {
         let oid: Oid = "1111111111111111111111111111111111111111111111111111111111111111"
             .parse()
             .unwrap();
-        assert_eq!(verify_object(&store, oid, 1).unwrap(), ObjectVerify::Missing);
+        assert_eq!(
+            verify_object(&store, oid, 1).unwrap(),
+            ObjectVerify::Missing
+        );
     }
 
     #[test]
@@ -308,6 +308,9 @@ mod tests {
     fn verify_object_handles_empty_oid() {
         let (_tmp, store) = fixture();
         // Empty OID is a sentinel; never has a backing file.
-        assert_eq!(verify_object(&store, Oid::EMPTY, 0).unwrap(), ObjectVerify::Ok);
+        assert_eq!(
+            verify_object(&store, Oid::EMPTY, 0).unwrap(),
+            ObjectVerify::Ok
+        );
     }
 }

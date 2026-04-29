@@ -26,9 +26,8 @@ impl<R: Read> Reader<R> {
     pub fn read_packet(&mut self) -> io::Result<Option<Vec<u8>>> {
         let mut hdr = [0u8; 4];
         self.inner.read_exact(&mut hdr)?;
-        let len_str = std::str::from_utf8(&hdr).map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidData, "non-ASCII pktline length")
-        })?;
+        let len_str = std::str::from_utf8(&hdr)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "non-ASCII pktline length"))?;
         let len = u32::from_str_radix(len_str, 16)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid pktline length"))?;
         if len == 0 {

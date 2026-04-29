@@ -156,7 +156,10 @@ struct UpstreamRef {
 }
 
 fn upstream_tracking_ref(cwd: &Path) -> Option<UpstreamRef> {
-    let abbrev = run_git(cwd, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])?;
+    let abbrev = run_git(
+        cwd,
+        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+    )?;
     if abbrev.is_empty() || abbrev == "@{u}" {
         return None;
     }
@@ -212,7 +215,10 @@ fn emit_default(
         println!("Objects to be pushed to {remote_branch}:");
         println!();
         for p in pointers {
-            let path = p.path.as_deref().map(|p| p.to_string_lossy().into_owned())
+            let path = p
+                .path
+                .as_deref()
+                .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_default();
             println!("\t{path} ({})", p.oid);
         }
@@ -362,7 +368,10 @@ fn subtract(a: &[DiffEntry], b: &[DiffEntry]) -> Vec<DiffEntry> {
         )
     };
     let exclude: HashSet<String> = b.iter().map(key).collect();
-    a.iter().filter(|e| !exclude.contains(&key(e))).cloned().collect()
+    a.iter()
+        .filter(|e| !exclude.contains(&key(e)))
+        .cloned()
+        .collect()
 }
 
 fn is_in_git_repo(cwd: &Path) -> bool {
@@ -504,7 +513,10 @@ fn blob_info(
         let mut hasher = Sha256::new();
         hasher.update(&blob.content);
         let sha = hex32(hasher.finalize().into());
-        return Ok(BlobInfo { kind: BlobKind::Git, sha7: Some(short(&sha)) });
+        return Ok(BlobInfo {
+            kind: BlobKind::Git,
+            sha7: Some(short(&sha)),
+        });
     }
 
     // Zero src/dst sha: read the working-tree file directly. `name`

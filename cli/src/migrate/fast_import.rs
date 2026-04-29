@@ -98,7 +98,11 @@ impl<W: Write> Writer<W> {
 
     fn write_file_change(&mut self, c: &FileChange) -> io::Result<()> {
         match c {
-            FileChange::Modify { mode, dataref, path } => {
+            FileChange::Modify {
+                mode,
+                dataref,
+                path,
+            } => {
                 let dr = match dataref {
                     DataRef::Mark(id) => format!(":{id}"),
                     DataRef::Sha(s) => s.clone(),
@@ -280,7 +284,9 @@ mod tests {
             file_changes: vec![FileChange::Delete { path: "old".into() }],
         };
         let mut buf: Vec<u8> = Vec::new();
-        Writer::new(&mut buf).write(&Command::Commit(commit)).unwrap();
+        Writer::new(&mut buf)
+            .write(&Command::Commit(commit))
+            .unwrap();
         let s = String::from_utf8(buf).unwrap();
         for needle in &[
             "commit refs/heads/x\n",

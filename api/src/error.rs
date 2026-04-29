@@ -60,7 +60,10 @@ impl ApiError {
         matches!(
             self,
             ApiError::Transport(_)
-                | ApiError::Status { status: 408 | 429 | 500..=599, .. }
+                | ApiError::Status {
+                    status: 408 | 429 | 500..=599,
+                    ..
+                }
         )
     }
 }

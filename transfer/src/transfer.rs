@@ -135,7 +135,8 @@ impl Transfer {
 
         let mut report = Report::default();
         while let Some(joined) = join.join_next().await {
-            let (oid, result) = joined.map_err(|e| TransferError::Io(std::io::Error::other(e.to_string())))?;
+            let (oid, result) =
+                joined.map_err(|e| TransferError::Io(std::io::Error::other(e.to_string())))?;
             match result {
                 Ok(()) => {
                     if let Some(s) = &events {
@@ -187,7 +188,9 @@ async fn process_object(
                 .as_ref()
                 .ok_or(TransferError::NoDownloadAction)?;
             with_retry(config, || async {
-                basic::download(http, store.clone(), &obj.oid, action, events).await.map(|_| ())
+                basic::download(http, store.clone(), &obj.oid, action, events)
+                    .await
+                    .map(|_| ())
             })
             .await
         }

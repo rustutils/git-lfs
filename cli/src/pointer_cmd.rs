@@ -290,9 +290,8 @@ mod tests {
     #[test]
     fn check_strict_returns_two_for_noncanonical() {
         let oid = "4d7a214614ab2935c943f9e0ff69d22eadbb8f32b1258daaa5e2ca24d17e2393";
-        let noncanon = format!(
-            "version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize 12345"
-        );
+        let noncanon =
+            format!("version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize 12345");
 
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("p.txt");

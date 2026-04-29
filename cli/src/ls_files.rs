@@ -116,7 +116,11 @@ fn emit(
 }
 
 fn emit_default_line(p: &PointerEntry, store: &Store, cwd: &Path, opts: &Options) {
-    let name = p.path.as_deref().map(|p| p.display().to_string()).unwrap_or_default();
+    let name = p
+        .path
+        .as_deref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
     if opts.name_only {
         if opts.show_size {
             println!("{} ({})", name, humanize(p.size));
@@ -139,7 +143,11 @@ fn emit_default_line(p: &PointerEntry, store: &Store, cwd: &Path, opts: &Options
 }
 
 fn emit_debug_block(p: &PointerEntry, store: &Store, cwd: &Path) {
-    let name = p.path.as_deref().map(|p| p.display().to_string()).unwrap_or_default();
+    let name = p
+        .path
+        .as_deref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
     println!("filepath: {name}");
     println!("    size: {}", p.size);
     println!("checkout: {}", file_present(cwd, p));
@@ -152,7 +160,11 @@ fn emit_json(pointers: &[PointerEntry], store: &Store, cwd: &Path) -> Result<(),
     let files: Vec<JsonFile> = pointers
         .iter()
         .map(|p| JsonFile {
-            name: p.path.as_deref().map(|p| p.display().to_string()).unwrap_or_default(),
+            name: p
+                .path
+                .as_deref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
             size: p.size,
             checkout: file_present(cwd, p),
             downloaded: store.contains_with_size(p.oid, p.size),

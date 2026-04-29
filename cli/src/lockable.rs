@@ -76,12 +76,7 @@ impl HeldLocks {
 /// For each path in `paths` that matches a `lockable` pattern in
 /// `attrs`: chmod writable if `held.contains(path)`, read-only
 /// otherwise. Non-lockable paths are left alone.
-pub fn apply_modes<I>(
-    cwd: &Path,
-    paths: I,
-    attrs: &AttrSet,
-    held: &HeldLocks,
-) -> io::Result<()>
+pub fn apply_modes<I>(cwd: &Path, paths: I, attrs: &AttrSet, held: &HeldLocks) -> io::Result<()>
 where
     I: IntoIterator<Item = String>,
 {
@@ -104,11 +99,7 @@ pub fn force_writable(cwd: &Path, path: &str) -> io::Result<()> {
 
 /// If `path` matches a lockable pattern in `attrs`, force it
 /// read-only. Used by `git lfs unlock` after a successful release.
-pub fn enforce_readonly_if_lockable(
-    cwd: &Path,
-    attrs: &AttrSet,
-    path: &str,
-) -> io::Result<()> {
+pub fn enforce_readonly_if_lockable(cwd: &Path, attrs: &AttrSet, path: &str) -> io::Result<()> {
     if !attrs.is_lockable(path) {
         return Ok(());
     }
@@ -262,11 +253,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let tmp = TempDir::new().unwrap();
         std::fs::write(tmp.path().join("foo.dat"), "x").unwrap();
-        std::fs::write(
-            tmp.path().join(".gitattributes"),
-            "*.dat lockable\n",
-        )
-        .unwrap();
+        std::fs::write(tmp.path().join(".gitattributes"), "*.dat lockable\n").unwrap();
         let attrs = AttrSet::from_workdir(tmp.path()).unwrap();
         apply_modes(
             tmp.path(),
@@ -289,11 +276,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let tmp = TempDir::new().unwrap();
         std::fs::write(tmp.path().join("foo.dat"), "x").unwrap();
-        std::fs::write(
-            tmp.path().join(".gitattributes"),
-            "*.dat lockable\n",
-        )
-        .unwrap();
+        std::fs::write(tmp.path().join(".gitattributes"), "*.dat lockable\n").unwrap();
         let attrs = AttrSet::from_workdir(tmp.path()).unwrap();
         let mut held_set = HashSet::new();
         held_set.insert("foo.dat".to_string());

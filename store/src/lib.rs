@@ -124,8 +124,12 @@ impl Store {
                 for entry in std::fs::read_dir(bb.path())? {
                     let entry = entry?;
                     let name = entry.file_name();
-                    let Some(name_str) = name.to_str() else { continue };
-                    let Ok(oid) = name_str.parse::<Oid>() else { continue };
+                    let Some(name_str) = name.to_str() else {
+                        continue;
+                    };
+                    let Ok(oid) = name_str.parse::<Oid>() else {
+                        continue;
+                    };
                     let meta = entry.metadata()?;
                     if !meta.is_file() {
                         continue;
@@ -160,11 +164,7 @@ impl Store {
     ///
     /// This is the download path: we know the OID upfront and must verify
     /// what the server sent.
-    pub fn insert_verified(
-        &self,
-        expected: Oid,
-        src: &mut impl Read,
-    ) -> Result<u64, StoreError> {
+    pub fn insert_verified(&self, expected: Oid, src: &mut impl Read) -> Result<u64, StoreError> {
         let (actual, size, tmp) = self.stream_to_tmp(src)?;
         if actual != expected {
             // Drop the tmp file; it goes away on Drop.
@@ -174,10 +174,7 @@ impl Store {
         Ok(size)
     }
 
-    fn stream_to_tmp(
-        &self,
-        src: &mut impl Read,
-    ) -> io::Result<(Oid, u64, NamedTempFile)> {
+    fn stream_to_tmp(&self, src: &mut impl Read) -> io::Result<(Oid, u64, NamedTempFile)> {
         std::fs::create_dir_all(self.tmp_dir())?;
         let mut tmp = NamedTempFile::new_in(self.tmp_dir())?;
         let mut hasher = Sha256::new();
@@ -235,8 +232,7 @@ mod tests {
     }
 
     /// Sample non-empty OID used across tests (SHA-256 of "abc").
-    const ABC_OID_HEX: &str =
-        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    const ABC_OID_HEX: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 
     fn abc_oid() -> Oid {
         ABC_OID_HEX.parse().unwrap()
@@ -250,7 +246,10 @@ mod tests {
             .unwrap();
         let path = store.object_path(oid);
         let suffix: PathBuf = ["objects", "4d", "7a", &oid.to_string()].iter().collect();
-        assert!(path.ends_with(&suffix), "{path:?} does not end with {suffix:?}");
+        assert!(
+            path.ends_with(&suffix),
+            "{path:?} does not end with {suffix:?}"
+        );
     }
 
     #[test]
@@ -262,7 +261,11 @@ mod tests {
         assert!(!store.contains_with_size(Oid::EMPTY, 1));
         // Opening the empty OID yields zero bytes.
         let mut buf = Vec::new();
-        store.open(Oid::EMPTY).unwrap().read_to_end(&mut buf).unwrap();
+        store
+            .open(Oid::EMPTY)
+            .unwrap()
+            .read_to_end(&mut buf)
+            .unwrap();
         assert!(buf.is_empty());
     }
 

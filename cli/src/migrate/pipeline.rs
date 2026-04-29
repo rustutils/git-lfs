@@ -89,17 +89,16 @@ fn spawn_fast_export(
 
 fn spawn_fast_import(cwd: &Path) -> Result<Child, MigrateError> {
     let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(cwd).args(["fast-import", "--force", "--quiet"]);
+    cmd.arg("-C")
+        .arg(cwd)
+        .args(["fast-import", "--force", "--quiet"]);
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     cmd.spawn().map_err(MigrateError::Io)
 }
 
-fn drain_stderr<R: Read + Send + 'static>(
-    label: &'static str,
-    r: R,
-) -> thread::JoinHandle<String> {
+fn drain_stderr<R: Read + Send + 'static>(label: &'static str, r: R) -> thread::JoinHandle<String> {
     thread::spawn(move || {
         let mut buf = Vec::new();
         let _ = BufReader::new(r).read_to_end(&mut buf);

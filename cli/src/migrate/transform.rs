@@ -114,11 +114,7 @@ impl<'a> Transform<'a> {
 
     /// Drive the full pipeline: read every command from `r`, transform,
     /// write to `w`. Consumes `self`.
-    pub fn run<R: Read, W: Write>(
-        mut self,
-        r: R,
-        w: W,
-    ) -> io::Result<Stats> {
+    pub fn run<R: Read, W: Write>(mut self, r: R, w: W) -> io::Result<Stats> {
         let mut reader = Reader::new(r);
         let mut writer = Writer::new(w);
         while let Some(cmd) = reader.next()? {
@@ -129,11 +125,7 @@ impl<'a> Transform<'a> {
         Ok(self.stats)
     }
 
-    fn process<W: Write>(
-        &mut self,
-        cmd: Command,
-        writer: &mut Writer<W>,
-    ) -> io::Result<()> {
+    fn process<W: Write>(&mut self, cmd: Command, writer: &mut Writer<W>) -> io::Result<()> {
         match cmd {
             Command::Blob(b) => {
                 if let Some(mark) = b.mark {
@@ -204,11 +196,7 @@ impl<'a> Transform<'a> {
 
     /// Decide whether to convert a blob given its path, and run the
     /// conversion if so. Returns `(content_to_emit, was_converted)`.
-    fn transform_blob(
-        &mut self,
-        path: &str,
-        content: Vec<u8>,
-    ) -> io::Result<(Vec<u8>, bool)> {
+    fn transform_blob(&mut self, path: &str, content: Vec<u8>) -> io::Result<(Vec<u8>, bool)> {
         if !path_matches(path, &self.opts.include, &self.opts.exclude) {
             return Ok((content, false));
         }
@@ -292,17 +280,15 @@ impl<'a> Transform<'a> {
         let ext = &leaf[idx..];
         match self.mode {
             Mode::Import => {
-                self.attrs_add.insert(format!(
-                    "*{ext} filter=lfs diff=lfs merge=lfs -text"
-                ));
+                self.attrs_add
+                    .insert(format!("*{ext} filter=lfs diff=lfs merge=lfs -text"));
             }
             Mode::Export => {
                 // Stop tracking this extension as LFS, and emit an
                 // explicit !filter line so a more permissive parent
                 // pattern doesn't re-apply LFS filtering.
-                self.attrs_remove.insert(format!(
-                    "*{ext} filter=lfs diff=lfs merge=lfs -text"
-                ));
+                self.attrs_remove
+                    .insert(format!("*{ext} filter=lfs diff=lfs merge=lfs -text"));
                 self.attrs_add
                     .insert(format!("*{ext} !text !filter !merge !diff"));
             }
@@ -316,11 +302,7 @@ impl<'a> Transform<'a> {
     }
 }
 
-fn path_matches(
-    path: &str,
-    include: &Option<GlobSet>,
-    exclude: &Option<GlobSet>,
-) -> bool {
+fn path_matches(path: &str, include: &Option<GlobSet>, exclude: &Option<GlobSet>) -> bool {
     if let Some(ex) = exclude
         && ex.is_match(path)
     {
@@ -339,11 +321,7 @@ fn path_matches(
 /// - Lines in `add` are appended after the surviving existing content,
 ///   preserving alphabetical order from the input `BTreeSet`. Lines
 ///   already present in the existing content are not duplicated.
-fn build_attrs(
-    existing: &str,
-    add: &BTreeSet<String>,
-    remove: &BTreeSet<String>,
-) -> String {
+fn build_attrs(existing: &str, add: &BTreeSet<String>, remove: &BTreeSet<String>) -> String {
     let mut have: HashSet<String> = HashSet::new();
     let mut out = String::with_capacity(existing.len() + add.len() * 64);
     for line in existing.lines() {
@@ -472,9 +450,11 @@ mod tests {
         let (out, stats) = run_transform(input, opts);
         assert_eq!(stats.blobs_converted, 1);
         assert_eq!(stats.bytes_converted, 12);
-        assert!(stats
-            .patterns
-            .contains("*.bin filter=lfs diff=lfs merge=lfs -text"));
+        assert!(
+            stats
+                .patterns
+                .contains("*.bin filter=lfs diff=lfs merge=lfs -text")
+        );
 
         // The output should re-parse cleanly. The blob with mark :1
         // now contains pointer text; a fresh blob (high mark) carries
@@ -516,9 +496,8 @@ mod tests {
     #[test]
     fn does_not_double_convert_existing_pointer_blob() {
         let oid = "30031a9831674dd684c3817399acebc88a116ce5a7a3fbc0cf34d92521a534e6";
-        let pointer = format!(
-            "version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize 11\n"
-        );
+        let pointer =
+            format!("version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize 11\n");
         let blob_line = format!("data {}\n{pointer}", pointer.len());
         let input = format!(
             "blob\nmark :1\n{blob_line}\
@@ -591,8 +570,14 @@ mod tests {
         let mut remove = BTreeSet::new();
         remove.insert("*.bin filter=lfs diff=lfs merge=lfs -text".to_string());
         let out = build_attrs(existing, &add, &remove);
-        assert!(!out.contains("*.bin filter=lfs"), "removed line still present: {out}");
-        assert!(out.contains("*.txt diff=text"), "preserved line missing: {out}");
+        assert!(
+            !out.contains("*.bin filter=lfs"),
+            "removed line still present: {out}"
+        );
+        assert!(
+            out.contains("*.txt diff=text"),
+            "preserved line missing: {out}"
+        );
     }
 
     #[test]
@@ -626,8 +611,14 @@ mod tests {
         let s = String::from_utf8_lossy(&out);
         // Output should contain the raw "hello world\n" bytes for
         // blob :1 (no longer pointer text).
-        assert!(s.contains("\nhello world\n"), "expected raw content in stream: {s}");
-        assert!(!s.contains("oid sha256:"), "pointer text should be gone: {s}");
+        assert!(
+            s.contains("\nhello world\n"),
+            "expected raw content in stream: {s}"
+        );
+        assert!(
+            !s.contains("oid sha256:"),
+            "pointer text should be gone: {s}"
+        );
         // Tracked-as-not-LFS line in the rewritten .gitattributes.
         assert!(
             s.contains("*.bin !text !filter !merge !diff"),

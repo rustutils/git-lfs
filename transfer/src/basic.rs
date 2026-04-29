@@ -67,11 +67,9 @@ pub(crate) async fn download(
     let async_reader = StreamReader::new(body_stream);
     let mut bridge = SyncIoBridge::new(async_reader);
 
-    let size = tokio::task::spawn_blocking(move || {
-        store.insert_verified(expected, &mut bridge)
-    })
-    .await
-    .map_err(|join_err| std::io::Error::other(join_err.to_string()))??;
+    let size = tokio::task::spawn_blocking(move || store.insert_verified(expected, &mut bridge))
+        .await
+        .map_err(|join_err| std::io::Error::other(join_err.to_string()))??;
 
     Ok(size)
 }
@@ -144,7 +142,10 @@ async fn verify(
     let mut req = http
         .request(Method::POST, &action.href)
         .header(reqwest::header::ACCEPT, "application/vnd.git-lfs+json")
-        .header(reqwest::header::CONTENT_TYPE, "application/vnd.git-lfs+json");
+        .header(
+            reqwest::header::CONTENT_TYPE,
+            "application/vnd.git-lfs+json",
+        );
     for (k, v) in &action.header {
         req = req.header(k, v);
     }
@@ -157,6 +158,8 @@ fn check_status(resp: &Response) -> Result<(), TransferError> {
     if resp.status().is_success() {
         Ok(())
     } else {
-        Err(TransferError::ActionStatus { status: resp.status().as_u16() })
+        Err(TransferError::ActionStatus {
+            status: resp.status().as_u16(),
+        })
     }
 }

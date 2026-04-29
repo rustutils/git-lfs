@@ -36,9 +36,7 @@ pub fn get(cwd: &Path, scope: ConfigScope, key: &str) -> Result<Option<String>, 
         .args(["config", scope.flag(), "--get", key])
         .output()?;
     match out.status.code() {
-        Some(0) => Ok(Some(
-            String::from_utf8_lossy(&out.stdout).trim().to_owned(),
-        )),
+        Some(0) => Ok(Some(String::from_utf8_lossy(&out.stdout).trim().to_owned())),
         // `git config --get` exits 1 when the key isn't set.
         Some(1) => Ok(None),
         _ => Err(Error::Failed(
@@ -62,9 +60,7 @@ pub fn get_from_file(cwd: &Path, file: &Path, key: &str) -> Result<Option<String
         .args(["config", &file_arg, "--get", key])
         .output()?;
     match out.status.code() {
-        Some(0) => Ok(Some(
-            String::from_utf8_lossy(&out.stdout).trim().to_owned(),
-        )),
+        Some(0) => Ok(Some(String::from_utf8_lossy(&out.stdout).trim().to_owned())),
         Some(1) => Ok(None),
         _ => Err(Error::Failed(
             String::from_utf8_lossy(&out.stderr).trim().to_owned(),
@@ -152,7 +148,13 @@ mod tests {
     #[test]
     fn set_then_get_round_trips() {
         let tmp = init_repo();
-        set(tmp.path(), ConfigScope::Local, "filter.lfs.clean", "git-lfs clean -- %f").unwrap();
+        set(
+            tmp.path(),
+            ConfigScope::Local,
+            "filter.lfs.clean",
+            "git-lfs clean -- %f",
+        )
+        .unwrap();
         let v = get(tmp.path(), ConfigScope::Local, "filter.lfs.clean").unwrap();
         assert_eq!(v.as_deref(), Some("git-lfs clean -- %f"));
     }
@@ -160,7 +162,13 @@ mod tests {
     #[test]
     fn unset_removes_key() {
         let tmp = init_repo();
-        set(tmp.path(), ConfigScope::Local, "filter.lfs.required", "true").unwrap();
+        set(
+            tmp.path(),
+            ConfigScope::Local,
+            "filter.lfs.required",
+            "true",
+        )
+        .unwrap();
         unset(tmp.path(), ConfigScope::Local, "filter.lfs.required").unwrap();
         let v = get(tmp.path(), ConfigScope::Local, "filter.lfs.required").unwrap();
         assert_eq!(v, None);

@@ -58,7 +58,10 @@ async fn batch_download_happy_path() {
     let client = client(&server, Auth::None);
     let req = BatchRequest::new(
         Operation::Download,
-        vec![ObjectSpec { oid: "abc".into(), size: 10 }],
+        vec![ObjectSpec {
+            oid: "abc".into(),
+            size: 10,
+        }],
     );
     let resp = client.batch(&req).await.unwrap();
 
@@ -96,7 +99,10 @@ async fn batch_sends_optional_fields_when_set() {
     let client = client(&server, Auth::None);
     let req = BatchRequest::new(
         Operation::Upload,
-        vec![ObjectSpec { oid: "abc".into(), size: 10 }],
+        vec![ObjectSpec {
+            oid: "abc".into(),
+            size: 10,
+        }],
     )
     .with_transfers(["basic".to_string()])
     .with_ref(Ref::new("refs/heads/main"));
@@ -121,7 +127,10 @@ async fn batch_per_object_error_is_decoded_not_an_apierror() {
     let resp = client
         .batch(&BatchRequest::new(
             Operation::Download,
-            vec![ObjectSpec { oid: "abc".into(), size: 10 }],
+            vec![ObjectSpec {
+                oid: "abc".into(),
+                size: 10,
+            }],
         ))
         .await
         .unwrap();
@@ -151,7 +160,11 @@ async fn batch_unauthorized_carries_lfs_authenticate_header() {
 
     assert!(err.is_unauthorized());
     match err {
-        git_lfs_api::ApiError::Status { lfs_authenticate, body, .. } => {
+        git_lfs_api::ApiError::Status {
+            lfs_authenticate,
+            body,
+            ..
+        } => {
             assert_eq!(lfs_authenticate.as_deref(), Some("Basic realm=\"Git LFS\""));
             assert_eq!(body.unwrap().message, "Credentials needed");
         }
@@ -206,7 +219,10 @@ async fn auth_basic_is_sent_on_the_wire() {
 
     let client = client(
         &server,
-        Auth::Basic { username: "alice".into(), password: "secret".into() },
+        Auth::Basic {
+            username: "alice".into(),
+            password: "secret".into(),
+        },
     );
     client
         .batch(&BatchRequest::new(Operation::Download, vec![]))
@@ -324,7 +340,10 @@ async fn create_lock_403_falls_through_to_apierror() {
         .await;
 
     let client = client(&server, Auth::None);
-    let err = client.create_lock(&CreateLockRequest::new("a")).await.unwrap_err();
+    let err = client
+        .create_lock(&CreateLockRequest::new("a"))
+        .await
+        .unwrap_err();
     match err {
         CreateLockError::Api(api) => assert!(api.is_forbidden()),
         other => panic!("expected Api, got {other:?}"),
@@ -378,7 +397,10 @@ async fn verify_locks_partitions_ours_and_theirs() {
         .await;
 
     let client = client(&server, Auth::None);
-    let resp = client.verify_locks(&VerifyLocksRequest::default()).await.unwrap();
+    let resp = client
+        .verify_locks(&VerifyLocksRequest::default())
+        .await
+        .unwrap();
     assert_eq!(resp.ours.len(), 1);
     assert_eq!(resp.theirs.len(), 1);
     assert_eq!(resp.ours[0].owner.as_ref().unwrap().name, "me");
@@ -394,7 +416,10 @@ async fn verify_locks_404_signals_locking_unsupported() {
         .await;
 
     let client = client(&server, Auth::None);
-    let err = client.verify_locks(&VerifyLocksRequest::default()).await.unwrap_err();
+    let err = client
+        .verify_locks(&VerifyLocksRequest::default())
+        .await
+        .unwrap_err();
     assert!(err.is_not_found());
 }
 
@@ -411,7 +436,10 @@ async fn delete_lock_path_includes_id() {
         .await;
 
     let client = client(&server, Auth::None);
-    let req = DeleteLockRequest { force: true, ..Default::default() };
+    let req = DeleteLockRequest {
+        force: true,
+        ..Default::default()
+    };
     let lock = client.delete_lock("some-uuid", &req).await.unwrap();
     assert_eq!(lock.id, "some-uuid");
 }
@@ -491,7 +519,10 @@ struct AuthGate {
 
 impl Respond for AuthGate {
     fn respond(&self, request: &Request) -> ResponseTemplate {
-        let auth = request.headers.get("Authorization").map(|v| v.to_str().unwrap_or(""));
+        let auth = request
+            .headers
+            .get("Authorization")
+            .map(|v| v.to_str().unwrap_or(""));
         if auth == Some(self.expected_basic.as_str()) {
             ResponseTemplate::new(200).set_body_json(&self.body_when_authed)
         } else {
@@ -531,7 +562,10 @@ async fn batch_unauthorized_triggers_helper_fill_and_retry() {
 
     let req = BatchRequest::new(
         Operation::Download,
-        vec![ObjectSpec { oid: "abc".into(), size: 10 }],
+        vec![ObjectSpec {
+            oid: "abc".into(),
+            size: 10,
+        }],
     );
     let resp = client.batch(&req).await.expect("retry should succeed");
     assert_eq!(resp.objects.len(), 1);
@@ -545,9 +579,7 @@ async fn batch_unauthorized_with_no_creds_returns_original_error() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/objects/batch"))
-        .respond_with(
-            ResponseTemplate::new(401).set_body_json(json!({"message": "no auth"})),
-        )
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({"message": "no auth"})))
         .mount(&server)
         .await;
 
@@ -557,7 +589,10 @@ async fn batch_unauthorized_with_no_creds_returns_original_error() {
 
     let req = BatchRequest::new(
         Operation::Download,
-        vec![ObjectSpec { oid: "abc".into(), size: 10 }],
+        vec![ObjectSpec {
+            oid: "abc".into(),
+            size: 10,
+        }],
     );
     let err = client.batch(&req).await.unwrap_err();
     assert!(err.is_unauthorized());
@@ -590,7 +625,10 @@ async fn batch_persistent_unauthorized_rejects_filled_creds() {
 
     let req = BatchRequest::new(
         Operation::Download,
-        vec![ObjectSpec { oid: "abc".into(), size: 10 }],
+        vec![ObjectSpec {
+            oid: "abc".into(),
+            size: 10,
+        }],
     );
     let err = client.batch(&req).await.unwrap_err();
     assert!(err.is_unauthorized());
@@ -624,7 +662,10 @@ async fn second_request_reuses_filled_credentials_no_extra_fill() {
 
     let req = BatchRequest::new(
         Operation::Download,
-        vec![ObjectSpec { oid: "abc".into(), size: 10 }],
+        vec![ObjectSpec {
+            oid: "abc".into(),
+            size: 10,
+        }],
     );
     client.batch(&req).await.unwrap();
     client.batch(&req).await.unwrap();

@@ -159,11 +159,7 @@ pub fn run(args: Args<'_>) -> Result<u8, Box<dyn std::error::Error>> {
 }
 
 /// Render the listing mode (no patterns).
-fn list(
-    cwd: &Path,
-    json: bool,
-    no_excluded: bool,
-) -> Result<u8, Box<dyn std::error::Error>> {
+fn list(cwd: &Path, json: bool, no_excluded: bool) -> Result<u8, Box<dyn std::error::Error>> {
     let listing = git_lfs_git::attr::list_lfs_patterns(cwd)?;
     if json {
         // Upstream uses single-space indentation, and the test diffs

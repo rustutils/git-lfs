@@ -165,9 +165,7 @@ fn insert_kv(map: &mut HashMap<String, String>, line: &str) {
     }
 }
 
-fn read_payload<R: Read>(
-    reader: &mut pktline::Reader<R>,
-) -> Result<Vec<u8>, FilterProcessError> {
+fn read_payload<R: Read>(reader: &mut pktline::Reader<R>) -> Result<Vec<u8>, FilterProcessError> {
     let mut payload = Vec::new();
     while let Some(packet) = reader.read_packet()? {
         payload.extend_from_slice(&packet);

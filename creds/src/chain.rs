@@ -107,7 +107,10 @@ mod tests {
     #[test]
     fn fill_returns_first_match() {
         let chain = HelperChain::new(vec![
-            Box::new(StaticHelper { answer: None, ..Default::default() }),
+            Box::new(StaticHelper {
+                answer: None,
+                ..Default::default()
+            }),
             Box::new(StaticHelper {
                 answer: Some(Credentials::new("u", "p")),
                 ..Default::default()

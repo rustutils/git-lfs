@@ -55,13 +55,8 @@ impl AttrSet {
     /// Build from a single `.gitattributes`-format buffer.
     pub fn from_buffer(bytes: &[u8]) -> Self {
         let mut me = Self::empty();
-        me.search.add_patterns_buffer(
-            bytes,
-            "<memory>".into(),
-            None,
-            &mut me.collection,
-            true,
-        );
+        me.search
+            .add_patterns_buffer(bytes, "<memory>".into(), None, &mut me.collection, true);
         me
     }
 
@@ -74,14 +69,8 @@ impl AttrSet {
 
         let info = repo_root.join(".git").join("info").join("attributes");
         if info.exists() {
-            me.search.add_patterns_file(
-                info,
-                true,
-                None,
-                &mut buf,
-                &mut me.collection,
-                true,
-            )?;
+            me.search
+                .add_patterns_file(info, true, None, &mut buf, &mut me.collection, true)?;
         }
 
         let mut found = Vec::new();
@@ -114,12 +103,8 @@ impl AttrSet {
     pub fn value(&self, path: &str, attr: &str) -> Option<String> {
         let mut out = Outcome::default();
         out.initialize_with_selection(&self.collection, [attr]);
-        self.search.pattern_matching_relative_path(
-            path.into(),
-            Case::Sensitive,
-            None,
-            &mut out,
-        );
+        self.search
+            .pattern_matching_relative_path(path.into(), Case::Sensitive, None, &mut out);
         for m in out.iter_selected() {
             if m.assignment.name.as_str() != attr {
                 continue;
@@ -238,10 +223,7 @@ fn scan_attr_lines(bytes: &[u8], source: &str, listing: &mut PatternListing) {
         for tok in tokens {
             if tok == "filter=lfs" {
                 filter = Some(true);
-            } else if tok == "-filter"
-                || tok == "!filter"
-                || tok.starts_with("-filter=")
-            {
+            } else if tok == "-filter" || tok == "!filter" || tok.starts_with("-filter=") {
                 filter = Some(false);
             } else if tok == "lockable" {
                 lockable = true;
@@ -358,16 +340,8 @@ mod tests {
     fn deeper_gitattributes_overrides_root() {
         let tmp = TempDir::new().unwrap();
         std::fs::create_dir_all(tmp.path().join("sub/.git_placeholder")).unwrap();
-        std::fs::write(
-            tmp.path().join(".gitattributes"),
-            "*.bin filter=lfs\n",
-        )
-        .unwrap();
-        std::fs::write(
-            tmp.path().join("sub/.gitattributes"),
-            "*.bin -filter\n",
-        )
-        .unwrap();
+        std::fs::write(tmp.path().join(".gitattributes"), "*.bin filter=lfs\n").unwrap();
+        std::fs::write(tmp.path().join("sub/.gitattributes"), "*.bin -filter\n").unwrap();
 
         let s = AttrSet::from_workdir(tmp.path()).unwrap();
         assert!(s.is_lfs_tracked("a.bin"));
@@ -505,11 +479,7 @@ mod tests {
         // .git/info/attributes is, and it's loaded explicitly above.
         let tmp = TempDir::new().unwrap();
         std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
-        std::fs::write(
-            tmp.path().join(".git/.gitattributes"),
-            "*.bin filter=lfs\n",
-        )
-        .unwrap();
+        std::fs::write(tmp.path().join(".git/.gitattributes"), "*.bin filter=lfs\n").unwrap();
 
         let s = AttrSet::from_workdir(tmp.path()).unwrap();
         assert!(!s.is_lfs_tracked("a.bin"));

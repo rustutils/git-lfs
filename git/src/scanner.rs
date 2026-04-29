@@ -84,8 +84,12 @@ pub fn scan_pointers(
     let mut seen: HashSet<Oid> = HashSet::new();
     let mut out = Vec::new();
     for (oid, name) in candidates {
-        let Some(blob) = batch.read(&oid)? else { continue };
-        let Ok(pointer) = Pointer::parse(&blob.content) else { continue };
+        let Some(blob) = batch.read(&oid)? else {
+            continue;
+        };
+        let Ok(pointer) = Pointer::parse(&blob.content) else {
+            continue;
+        };
         if seen.insert(pointer.oid) {
             out.push(PointerEntry {
                 oid: pointer.oid,
@@ -129,9 +133,8 @@ pub fn scan_tree_blobs(cwd: &Path, reference: &str) -> Result<Vec<TreeBlob>, Err
     let mut bcheck = CatFileBatchCheck::spawn(cwd)?;
     let mut blobs = Vec::new();
     for record in out.stdout.split(|&b| b == 0).filter(|s| !s.is_empty()) {
-        let s = std::str::from_utf8(record).map_err(|e| {
-            Error::Failed(format!("ls-tree: non-utf8 record: {e}"))
-        })?;
+        let s = std::str::from_utf8(record)
+            .map_err(|e| Error::Failed(format!("ls-tree: non-utf8 record: {e}")))?;
         let (header, path) = s
             .split_once('\t')
             .ok_or_else(|| Error::Failed(format!("ls-tree: malformed record {s:?}")))?;
@@ -186,9 +189,8 @@ pub fn scan_tree(cwd: &Path, reference: &str) -> Result<Vec<PointerEntry>, Error
     let mut bcheck = CatFileBatchCheck::spawn(cwd)?;
     let mut candidates: Vec<(String, String)> = Vec::new();
     for record in out.stdout.split(|&b| b == 0).filter(|s| !s.is_empty()) {
-        let s = std::str::from_utf8(record).map_err(|e| {
-            Error::Failed(format!("ls-tree: non-utf8 record: {e}"))
-        })?;
+        let s = std::str::from_utf8(record)
+            .map_err(|e| Error::Failed(format!("ls-tree: non-utf8 record: {e}")))?;
         let (header, path) = s
             .split_once('\t')
             .ok_or_else(|| Error::Failed(format!("ls-tree: malformed record {s:?}")))?;
@@ -216,7 +218,9 @@ pub fn scan_tree(cwd: &Path, reference: &str) -> Result<Vec<PointerEntry>, Error
     let mut batch = CatFileBatch::spawn(cwd)?;
     let mut entries = Vec::new();
     for (oid, path) in candidates {
-        let Some(blob) = batch.read(&oid)? else { continue };
+        let Some(blob) = batch.read(&oid)? else {
+            continue;
+        };
         let Ok(pointer) = Pointer::parse(&blob.content) else {
             continue;
         };

@@ -278,8 +278,7 @@ mod tests {
     fn fetch_failure_surfaces_as_fetch_failed() {
         let (_t, store) = fixture();
         let unknown = "0000000000000000000000000000000000000000000000000000000000000001";
-        let pointer_text =
-            format!("version {VERSION_LATEST}\noid sha256:{unknown}\nsize 5\n");
+        let pointer_text = format!("version {VERSION_LATEST}\noid sha256:{unknown}\nsize 5\n");
         let mut out = Vec::new();
         let outcome = smudge_with_fetch(
             &store,
@@ -301,8 +300,7 @@ mod tests {
         // Closure lies — claims success but didn't populate the store.
         let (_t, store) = fixture();
         let unknown = "0000000000000000000000000000000000000000000000000000000000000001";
-        let pointer_text =
-            format!("version {VERSION_LATEST}\noid sha256:{unknown}\nsize 5\n");
+        let pointer_text = format!("version {VERSION_LATEST}\noid sha256:{unknown}\nsize 5\n");
         let mut out = Vec::new();
         let outcome = smudge_with_fetch(
             &store,
@@ -333,7 +331,10 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(calls, 0, "fetch must not be called when store has the object");
+        assert_eq!(
+            calls, 0,
+            "fetch must not be called when store has the object"
+        );
         assert_eq!(out, content);
     }
 

@@ -116,10 +116,7 @@ fn fill_writes_protocol_host_to_stdin() {
 fn approve_passes_credentials_to_git() {
     let tmp = TempDir::new().unwrap();
     let input_log = tmp.path().join("input").to_string_lossy().into_owned();
-    let git = install_fake_git(
-        tmp.path(),
-        &format!("#!/bin/sh\ncat > {input_log}\n"),
-    );
+    let git = install_fake_git(tmp.path(), &format!("#!/bin/sh\ncat > {input_log}\n"));
     let h = GitCredentialHelper::with_program(git);
     with_etxtbsy_retry(|| h.approve(&q(), &Credentials::new("alice", "hunter2"))).unwrap();
 
@@ -131,10 +128,7 @@ fn approve_passes_credentials_to_git() {
 #[test]
 fn nonzero_exit_other_than_128_is_an_error() {
     let tmp = TempDir::new().unwrap();
-    let git = install_fake_git(
-        tmp.path(),
-        "#!/bin/sh\ncat > /dev/null\nexit 1\n",
-    );
+    let git = install_fake_git(tmp.path(), "#!/bin/sh\ncat > /dev/null\nexit 1\n");
     let h = GitCredentialHelper::with_program(git);
     assert!(with_etxtbsy_retry(|| h.fill(&q())).is_err());
 }

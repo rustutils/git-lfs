@@ -266,7 +266,12 @@ fn install_errors_on_conflicting_config_without_force() {
     let status = Command::new("git")
         .arg("-C")
         .arg(repo.path())
-        .args(["config", "--local", "filter.lfs.clean", "/usr/local/bin/old-lfs clean"])
+        .args([
+            "config",
+            "--local",
+            "filter.lfs.clean",
+            "/usr/local/bin/old-lfs clean",
+        ])
         .status()
         .unwrap();
     assert!(status.success());
@@ -320,11 +325,20 @@ fn uninstall_local_clears_config_and_removes_hooks() {
         String::from_utf8_lossy(&out.stderr),
     );
     assert!(
-        String::from_utf8_lossy(&out.stdout).contains("Local Git LFS configuration has been removed"),
+        String::from_utf8_lossy(&out.stdout)
+            .contains("Local Git LFS configuration has been removed"),
     );
 
-    for key in ["filter.lfs.clean", "filter.lfs.smudge", "filter.lfs.process", "filter.lfs.required"] {
-        assert!(read_local_config(repo.path(), key).is_none(), "{key} still set");
+    for key in [
+        "filter.lfs.clean",
+        "filter.lfs.smudge",
+        "filter.lfs.process",
+        "filter.lfs.required",
+    ] {
+        assert!(
+            read_local_config(repo.path(), key).is_none(),
+            "{key} still set"
+        );
     }
     for hook in ["pre-push", "post-checkout", "post-commit", "post-merge"] {
         assert!(
@@ -384,7 +398,10 @@ fn track_creates_gitattributes_and_emits_message() {
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     // Matches the grep in upstream's t-track.sh: "Tracking \"\*.jpg\"".
-    assert!(stdout.contains(r#"Tracking "*.jpg""#), "unexpected stdout: {stdout}");
+    assert!(
+        stdout.contains(r#"Tracking "*.jpg""#),
+        "unexpected stdout: {stdout}"
+    );
 
     let content = std::fs::read_to_string(repo.path().join(".gitattributes")).unwrap();
     assert_eq!(content, "*.jpg filter=lfs diff=lfs merge=lfs -text\n");
@@ -439,7 +456,10 @@ fn track_then_clean_filter_path() {
     run_in(repo.path(), &["track", "*.bin"], b"");
     let out = run_in(repo.path(), &["clean", "data.bin"], b"binary blob");
     assert!(out.status.success());
-    assert!(out.stdout.starts_with(b"version https://git-lfs.github.com/spec/v1\n"));
+    assert!(
+        out.stdout
+            .starts_with(b"version https://git-lfs.github.com/spec/v1\n")
+    );
 }
 
 // ---------- untrack ----------
@@ -456,7 +476,10 @@ fn untrack_removes_pattern_and_emits_message() {
         String::from_utf8_lossy(&out.stderr),
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains(r#"Untracking "*.jpg""#), "unexpected stdout: {stdout}");
+    assert!(
+        stdout.contains(r#"Untracking "*.jpg""#),
+        "unexpected stdout: {stdout}"
+    );
 
     let content = std::fs::read_to_string(repo.path().join(".gitattributes")).unwrap();
     assert!(!content.contains("*.jpg"));
@@ -470,7 +493,10 @@ fn untrack_unknown_pattern_reports_not_tracked() {
     let out = run_in(repo.path(), &["untrack", "*.png"], b"");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains(r#""*.png" was not tracked"#), "unexpected stdout: {stdout}");
+    assert!(
+        stdout.contains(r#""*.png" was not tracked"#),
+        "unexpected stdout: {stdout}"
+    );
     // *.jpg still tracked, file unchanged.
     let content = std::fs::read_to_string(repo.path().join(".gitattributes")).unwrap();
     assert_eq!(content, "*.jpg filter=lfs diff=lfs merge=lfs -text\n");
@@ -724,7 +750,12 @@ async fn smudge_401_with_no_credentials_fails_cleanly() {
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
-        child.stdin.as_mut().unwrap().write_all(&pointer_bytes).unwrap();
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(&pointer_bytes)
+            .unwrap();
         drop(child.stdin.take());
         child.wait_with_output().unwrap()
     })
@@ -784,10 +815,8 @@ fn commit_gitattributes(repo: &Path, content: &str) {
 }
 
 fn pointer_text(oid: &str, size: usize) -> Vec<u8> {
-    format!(
-        "version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {size}\n"
-    )
-    .into_bytes()
+    format!("version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {size}\n")
+        .into_bytes()
 }
 
 /// Extract the OID hex from a pointer file's `oid sha256:` line.
@@ -853,7 +882,10 @@ async fn fetch_downloads_objects_referenced_by_head() {
         .await;
 
     let repo = fresh_repo_with_identity();
-    git_in(repo.path(), &["config", "--local", "lfs.url", &server.uri()]);
+    git_in(
+        repo.path(),
+        &["config", "--local", "lfs.url", &server.uri()],
+    );
     commit_pointer_at(repo.path(), "a.bin", &pointer_text(OID_A, A.len()));
     commit_pointer_at(repo.path(), "b.bin", &pointer_text(OID_B, B.len()));
 
@@ -891,7 +923,10 @@ async fn fetch_is_noop_when_objects_already_in_store() {
     // fetch command short-circuits before hitting the network.
     let server = MockServer::start().await;
     let repo = fresh_repo_with_identity();
-    git_in(repo.path(), &["config", "--local", "lfs.url", &server.uri()]);
+    git_in(
+        repo.path(),
+        &["config", "--local", "lfs.url", &server.uri()],
+    );
 
     // Stage an object in the local store via the clean filter so its
     // OID + content are consistent — same path the smudge tests use.
@@ -904,7 +939,11 @@ async fn fetch_is_noop_when_objects_already_in_store() {
     let out = tokio::task::spawn_blocking(move || run_in(&path, &["fetch"], b""))
         .await
         .unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(stdout, "", "unexpected stdout: {stdout}");
@@ -949,7 +988,10 @@ async fn pull_materializes_pointer_files_into_real_content() {
 
     let repo = fresh_repo_with_identity();
     install_lfs(repo.path());
-    git_in(repo.path(), &["config", "--local", "lfs.url", &server.uri()]);
+    git_in(
+        repo.path(),
+        &["config", "--local", "lfs.url", &server.uri()],
+    );
 
     // Commit the pointer text directly. This simulates the post-clone
     // state where the working tree holds pointer text (because clone's
@@ -999,7 +1041,10 @@ async fn fetch_returns_failure_exit_when_some_objects_fail() {
         .await;
 
     let repo = fresh_repo_with_identity();
-    git_in(repo.path(), &["config", "--local", "lfs.url", &server.uri()]);
+    git_in(
+        repo.path(),
+        &["config", "--local", "lfs.url", &server.uri()],
+    );
     commit_pointer_at(repo.path(), "a.bin", &pointer_text(OID, SIZE));
 
     let path = repo.path().to_owned();
@@ -1030,7 +1075,10 @@ async fn push_uploads_only_objects_not_in_remote_tracking() {
 
     let server = MockServer::start().await;
     let repo = fresh_repo_with_identity();
-    git_in(repo.path(), &["config", "--local", "lfs.url", &server.uri()]);
+    git_in(
+        repo.path(),
+        &["config", "--local", "lfs.url", &server.uri()],
+    );
 
     // Use clean to populate the local store + emit canonical pointer text.
     let cleaned_old = run_in(repo.path(), &["clean"], OLD);
@@ -1079,11 +1127,9 @@ async fn push_uploads_only_objects_not_in_remote_tracking() {
     // it, wiremock returns 404 by default and the test will fail.
 
     let path = repo.path().to_owned();
-    let out = tokio::task::spawn_blocking(move || {
-        run_in(&path, &["push", "origin", "HEAD"], b"")
-    })
-    .await
-    .unwrap();
+    let out = tokio::task::spawn_blocking(move || run_in(&path, &["push", "origin", "HEAD"], b""))
+        .await
+        .unwrap();
     assert!(
         out.status.success(),
         "push failed: {}",
@@ -1103,21 +1149,29 @@ async fn push_is_noop_when_remote_tracking_matches_head() {
 
     let server = MockServer::start().await;
     let repo = fresh_repo_with_identity();
-    git_in(repo.path(), &["config", "--local", "lfs.url", &server.uri()]);
+    git_in(
+        repo.path(),
+        &["config", "--local", "lfs.url", &server.uri()],
+    );
 
     let cleaned = run_in(repo.path(), &["clean"], b"only commit\n");
     commit_pointer_at(repo.path(), "a.bin", &cleaned.stdout);
     let head = head_oid_str(repo.path());
     // Fake remote already at HEAD → nothing new to push.
-    git_in(repo.path(), &["update-ref", "refs/remotes/origin/main", &head]);
+    git_in(
+        repo.path(),
+        &["update-ref", "refs/remotes/origin/main", &head],
+    );
 
     let path = repo.path().to_owned();
-    let out = tokio::task::spawn_blocking(move || {
-        run_in(&path, &["push", "origin", "HEAD"], b"")
-    })
-    .await
-    .unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = tokio::task::spawn_blocking(move || run_in(&path, &["push", "origin", "HEAD"], b""))
+        .await
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(stdout, "", "unexpected stdout: {stdout}");
@@ -1140,7 +1194,10 @@ async fn pre_push_uploads_new_commit_objects_via_stdin_protocol() {
 
     let server = MockServer::start().await;
     let repo = fresh_repo_with_identity();
-    git_in(repo.path(), &["config", "--local", "lfs.url", &server.uri()]);
+    git_in(
+        repo.path(),
+        &["config", "--local", "lfs.url", &server.uri()],
+    );
 
     let cleaned_old = run_in(repo.path(), &["clean"], OLD);
     commit_pointer_at(repo.path(), "old.bin", &cleaned_old.stdout);
@@ -1177,7 +1234,11 @@ async fn pre_push_uploads_new_commit_objects_via_stdin_protocol() {
     let stdin = format!("refs/heads/main {head} refs/heads/main {first_commit}\n");
     let path = repo.path().to_owned();
     let out = tokio::task::spawn_blocking(move || {
-        run_in(&path, &["pre-push", "origin", "https://example/dummy"], stdin.as_bytes())
+        run_in(
+            &path,
+            &["pre-push", "origin", "https://example/dummy"],
+            stdin.as_bytes(),
+        )
     })
     .await
     .unwrap();
@@ -1196,7 +1257,10 @@ async fn pre_push_skips_branch_deletes() {
 
     let server = MockServer::start().await;
     let repo = fresh_repo_with_identity();
-    git_in(repo.path(), &["config", "--local", "lfs.url", &server.uri()]);
+    git_in(
+        repo.path(),
+        &["config", "--local", "lfs.url", &server.uri()],
+    );
     // Need at least one commit for git rev-parse to work later — but
     // for the pre-push call itself the stdin alone drives behavior.
     let cleaned = run_in(repo.path(), &["clean"], b"x\n");
@@ -1204,12 +1268,14 @@ async fn pre_push_skips_branch_deletes() {
 
     let zero = "0000000000000000000000000000000000000000";
     let some_remote = head_oid_str(repo.path());
-    let stdin = format!(
-        "(delete) {zero} refs/heads/dead {some_remote}\n"
-    );
+    let stdin = format!("(delete) {zero} refs/heads/dead {some_remote}\n");
     let path = repo.path().to_owned();
     let out = tokio::task::spawn_blocking(move || {
-        run_in(&path, &["pre-push", "origin", "https://example/dummy"], stdin.as_bytes())
+        run_in(
+            &path,
+            &["pre-push", "origin", "https://example/dummy"],
+            stdin.as_bytes(),
+        )
     })
     .await
     .unwrap();
@@ -1234,7 +1300,10 @@ async fn pre_push_new_branch_uses_remote_tracking_as_exclude() {
 
     let server = MockServer::start().await;
     let repo = fresh_repo_with_identity();
-    git_in(repo.path(), &["config", "--local", "lfs.url", &server.uri()]);
+    git_in(
+        repo.path(),
+        &["config", "--local", "lfs.url", &server.uri()],
+    );
 
     let cleaned_old = run_in(repo.path(), &["clean"], OLD);
     commit_pointer_at(repo.path(), "old.bin", &cleaned_old.stdout);
@@ -1276,7 +1345,11 @@ async fn pre_push_new_branch_uses_remote_tracking_as_exclude() {
     let stdin = format!("refs/heads/feature {head} refs/heads/feature {zero}\n");
     let path = repo.path().to_owned();
     let out = tokio::task::spawn_blocking(move || {
-        run_in(&path, &["pre-push", "origin", "https://example/dummy"], stdin.as_bytes())
+        run_in(
+            &path,
+            &["pre-push", "origin", "https://example/dummy"],
+            stdin.as_bytes(),
+        )
     })
     .await
     .unwrap();
@@ -1295,7 +1368,10 @@ async fn pre_push_respects_git_lfs_skip_push_env() {
     // make pre-push exit cleanly without scanning or uploading.
     let server = MockServer::start().await;
     let repo = fresh_repo_with_identity();
-    git_in(repo.path(), &["config", "--local", "lfs.url", &server.uri()]);
+    git_in(
+        repo.path(),
+        &["config", "--local", "lfs.url", &server.uri()],
+    );
     let cleaned = run_in(repo.path(), &["clean"], b"payload\n");
     commit_pointer_at(repo.path(), "x.bin", &cleaned.stdout);
     let head = head_oid_str(repo.path());
@@ -1329,7 +1405,11 @@ async fn pre_push_respects_git_lfs_skip_push_env() {
     })
     .await
     .unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[tokio::test]
@@ -1343,7 +1423,10 @@ async fn push_handles_server_already_has_object() {
     // attempting the PUT.
     let server = MockServer::start().await;
     let repo = fresh_repo_with_identity();
-    git_in(repo.path(), &["config", "--local", "lfs.url", &server.uri()]);
+    git_in(
+        repo.path(),
+        &["config", "--local", "lfs.url", &server.uri()],
+    );
 
     let cleaned = run_in(repo.path(), &["clean"], b"already on server\n");
     commit_pointer_at(repo.path(), "x.bin", &cleaned.stdout);
@@ -1362,11 +1445,9 @@ async fn push_handles_server_already_has_object() {
     // wiremock 404s and the test fails.
 
     let path = repo.path().to_owned();
-    let out = tokio::task::spawn_blocking(move || {
-        run_in(&path, &["push", "origin", "HEAD"], b"")
-    })
-    .await
-    .unwrap();
+    let out = tokio::task::spawn_blocking(move || run_in(&path, &["push", "origin", "HEAD"], b""))
+        .await
+        .unwrap();
     assert!(
         out.status.success(),
         "push failed: {}",
@@ -1394,12 +1475,20 @@ fn ls_files_lists_committed_pointer_with_short_oid_and_marker() {
     commit_pointer_at(repo.path(), "big.bin", &p);
 
     let out = run_in(repo.path(), &["ls-files"], b"");
-    assert!(out.status.success(), "ls-files failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "ls-files failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     // Format: "<oid10> <marker> <name>". File is on disk at `big.bin` —
     // but it's a *pointer*, not the real 12-byte content, so the marker
     // is `-` (size mismatch).
-    assert_eq!(stdout.trim(), format!("{} - big.bin", &HELLO_OID[..10]), "got: {stdout:?}");
+    assert_eq!(
+        stdout.trim(),
+        format!("{} - big.bin", &HELLO_OID[..10]),
+        "got: {stdout:?}"
+    );
 }
 
 #[test]
@@ -1409,14 +1498,21 @@ fn ls_files_long_emits_full_oid() {
 
     let out = run_in(repo.path(), &["ls-files", "--long"], b"");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains(HELLO_OID), "long form should contain full OID: {stdout}");
+    assert!(
+        stdout.contains(HELLO_OID),
+        "long form should contain full OID: {stdout}"
+    );
 }
 
 #[test]
 fn ls_files_name_only_emits_just_path() {
     let repo = fresh_repo_with_identity();
     std::fs::create_dir_all(repo.path().join("data")).unwrap();
-    commit_pointer_at(repo.path(), "data/blob.bin", &pointer_text(HELLO_OID, HELLO_LEN));
+    commit_pointer_at(
+        repo.path(),
+        "data/blob.bin",
+        &pointer_text(HELLO_OID, HELLO_LEN),
+    );
 
     let out = run_in(repo.path(), &["ls-files", "--name-only"], b"");
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -1431,7 +1527,10 @@ fn ls_files_size_appends_humanized_bytes() {
     let out = run_in(repo.path(), &["ls-files", "--size"], b"");
     let stdout = String::from_utf8_lossy(&out.stdout);
     // 1.5 MiB → "1.50 MB" with our humanizer.
-    assert!(stdout.contains("(1.50 MB)"), "expected size suffix, got: {stdout}");
+    assert!(
+        stdout.contains("(1.50 MB)"),
+        "expected size suffix, got: {stdout}"
+    );
 }
 
 #[test]
@@ -1443,7 +1542,11 @@ fn ls_files_skips_plain_blobs() {
 
     let out = run_in(repo.path(), &["ls-files"], b"");
     assert!(out.status.success());
-    assert!(out.stdout.is_empty(), "expected empty output, got: {:?}", String::from_utf8_lossy(&out.stdout));
+    assert!(
+        out.stdout.is_empty(),
+        "expected empty output, got: {:?}",
+        String::from_utf8_lossy(&out.stdout)
+    );
 }
 
 #[test]
@@ -1451,14 +1554,22 @@ fn ls_files_empty_repo_prints_nothing() {
     // No commits yet — must not panic, must succeed silently.
     let repo = fresh_repo_with_identity();
     let out = run_in(repo.path(), &["ls-files"], b"");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert!(out.stdout.is_empty());
 }
 
 #[test]
 fn ls_files_explicit_ref_walks_that_tree() {
     let repo = fresh_repo_with_identity();
-    commit_pointer_at(repo.path(), "first.bin", &pointer_text(HELLO_OID, HELLO_LEN));
+    commit_pointer_at(
+        repo.path(),
+        "first.bin",
+        &pointer_text(HELLO_OID, HELLO_LEN),
+    );
     let first = head_oid_str(repo.path());
     // Second commit replaces the pointer with plain content.
     std::fs::write(repo.path().join("first.bin"), b"plain text now").unwrap();
@@ -1467,18 +1578,29 @@ fn ls_files_explicit_ref_walks_that_tree() {
 
     // At HEAD, no pointers visible.
     let head_out = run_in(repo.path(), &["ls-files"], b"");
-    assert!(head_out.stdout.is_empty(), "{:?}", String::from_utf8_lossy(&head_out.stdout));
+    assert!(
+        head_out.stdout.is_empty(),
+        "{:?}",
+        String::from_utf8_lossy(&head_out.stdout)
+    );
 
     // At the older commit, the pointer is visible.
     let old_out = run_in(repo.path(), &["ls-files", &first], b"");
     let stdout = String::from_utf8_lossy(&old_out.stdout);
-    assert!(stdout.contains("first.bin"), "expected first.bin in output, got: {stdout}");
+    assert!(
+        stdout.contains("first.bin"),
+        "expected first.bin in output, got: {stdout}"
+    );
 }
 
 #[test]
 fn ls_files_all_walks_history_across_refs() {
     let repo = fresh_repo_with_identity();
-    commit_pointer_at(repo.path(), "first.bin", &pointer_text(HELLO_OID, HELLO_LEN));
+    commit_pointer_at(
+        repo.path(),
+        "first.bin",
+        &pointer_text(HELLO_OID, HELLO_LEN),
+    );
     // Replace with plain content. Without --all, ls-files (HEAD tree)
     // would no longer see the pointer.
     std::fs::write(repo.path().join("first.bin"), b"plain text").unwrap();
@@ -1486,9 +1608,16 @@ fn ls_files_all_walks_history_across_refs() {
     git_in(repo.path(), &["commit", "-q", "-m", "overwrite"]);
 
     let out = run_in(repo.path(), &["ls-files", "--all"], b"");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains(&HELLO_OID[..10]), "--all should resurrect historical pointer: {stdout}");
+    assert!(
+        stdout.contains(&HELLO_OID[..10]),
+        "--all should resurrect historical pointer: {stdout}"
+    );
 }
 
 #[test]
@@ -1521,7 +1650,10 @@ fn ls_files_debug_emits_per_file_block() {
     assert!(stdout.contains("filepath: x.bin"), "{stdout}");
     assert!(stdout.contains(&format!("size: {HELLO_LEN}")), "{stdout}");
     assert!(stdout.contains("oid: sha256 "), "{stdout}");
-    assert!(stdout.contains("version: https://git-lfs.github.com/spec/v1"), "{stdout}");
+    assert!(
+        stdout.contains("version: https://git-lfs.github.com/spec/v1"),
+        "{stdout}"
+    );
 }
 
 // ---------- status -------------------------------------------------------
@@ -1541,13 +1673,23 @@ fn status_default_lists_staged_and_unstaged_lfs_changes() {
     std::fs::write(repo.path().join("x.bin"), pointer_text(other_oid, 12345)).unwrap();
 
     let out = run_in(repo.path(), &["status"], b"");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("On branch "), "{stdout}");
     assert!(stdout.contains("Objects to be committed:"), "{stdout}");
-    assert!(stdout.contains("Objects not staged for commit:"), "{stdout}");
+    assert!(
+        stdout.contains("Objects not staged for commit:"),
+        "{stdout}"
+    );
     assert!(stdout.contains("x.bin"), "{stdout}");
-    assert!(stdout.contains("LFS:"), "expected LFS classification: {stdout}");
+    assert!(
+        stdout.contains("LFS:"),
+        "expected LFS classification: {stdout}"
+    );
 }
 
 #[test]
@@ -1565,8 +1707,14 @@ fn status_classifies_non_lfs_blob_as_git() {
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("plain.txt"), "{stdout}");
-    assert!(stdout.contains("Git:"), "expected Git classification, got: {stdout}");
-    assert!(!stdout.contains("LFS:"), "non-pointer should not be LFS: {stdout}");
+    assert!(
+        stdout.contains("Git:"),
+        "expected Git classification, got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("LFS:"),
+        "non-pointer should not be LFS: {stdout}"
+    );
 }
 
 #[test]
@@ -1578,7 +1726,11 @@ fn status_porcelain_one_line_per_change() {
     git_in(repo.path(), &["add", "x.bin"]);
 
     let out = run_in(repo.path(), &["status", "--porcelain"], b"");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     // 'M' modification → " M x.bin" (leading space, single-letter status).
     // trim_end keeps the leading space, which is significant.
@@ -1601,12 +1753,19 @@ fn status_json_only_emits_lfs_entries() {
     git_in(repo.path(), &["add", "p.bin", "plain.txt"]);
 
     let out = run_in(repo.path(), &["status", "--json"], b"");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("valid JSON");
     let files = v["files"].as_object().expect("files object");
     // Only the LFS file should appear.
     assert!(files.contains_key("p.bin"), "missing p.bin: {v}");
-    assert!(!files.contains_key("plain.txt"), "plain.txt leaked into JSON: {v}");
+    assert!(
+        !files.contains_key("plain.txt"),
+        "plain.txt leaked into JSON: {v}"
+    );
     assert_eq!(files["p.bin"]["status"], "M");
 }
 
@@ -1618,10 +1777,17 @@ fn status_empty_repo_emits_section_layout() {
     // "before initial commit" expectations.
     let repo = fresh_repo_with_identity();
     let out = run_in(repo.path(), &["status"], b"");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("Objects to be committed:"), "{stdout}");
-    assert!(stdout.contains("Objects not staged for commit:"), "{stdout}");
+    assert!(
+        stdout.contains("Objects not staged for commit:"),
+        "{stdout}"
+    );
     assert!(!stdout.contains("On branch"), "{stdout}");
 }
 
@@ -1636,11 +1802,19 @@ fn status_handles_addition_with_zero_src_sha() {
     git_in(repo.path(), &["add", "seed"]);
     git_in(repo.path(), &["commit", "-q", "-m", "seed"]);
 
-    std::fs::write(repo.path().join("new.bin"), pointer_text(HELLO_OID, HELLO_LEN)).unwrap();
+    std::fs::write(
+        repo.path().join("new.bin"),
+        pointer_text(HELLO_OID, HELLO_LEN),
+    )
+    .unwrap();
     git_in(repo.path(), &["add", "new.bin"]);
 
     let out = run_in(repo.path(), &["status"], b"");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("new.bin"), "{stdout}");
     assert!(stdout.contains("LFS:"), "{stdout}");
@@ -1651,20 +1825,50 @@ fn status_handles_addition_with_zero_src_sha() {
 #[test]
 fn env_in_repo_emits_version_paths_and_filter_config() {
     let repo = fresh_repo_with_identity();
-    git_in(repo.path(), &["config", "--local", "lfs.url", "https://example.test/lfs"]);
+    git_in(
+        repo.path(),
+        &["config", "--local", "lfs.url", "https://example.test/lfs"],
+    );
     // Pretend `git lfs install --local` ran by setting one filter
     // explicitly — env should reflect it back.
-    git_in(repo.path(), &["config", "--local", "filter.lfs.clean", "git-lfs clean -- %f"]);
+    git_in(
+        repo.path(),
+        &[
+            "config",
+            "--local",
+            "filter.lfs.clean",
+            "git-lfs clean -- %f",
+        ],
+    );
 
     let out = run_in(repo.path(), &["env"], b"");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
 
-    assert!(stdout.starts_with("git-lfs/"), "missing version banner: {stdout}");
-    assert!(stdout.contains("git version "), "missing git version: {stdout}");
-    assert!(stdout.contains("Endpoint=https://example.test/lfs"), "missing endpoint: {stdout}");
-    assert!(stdout.contains("LocalGitDir="), "missing LocalGitDir: {stdout}");
-    assert!(stdout.contains("LocalMediaDir="), "missing LocalMediaDir: {stdout}");
+    assert!(
+        stdout.starts_with("git-lfs/"),
+        "missing version banner: {stdout}"
+    );
+    assert!(
+        stdout.contains("git version "),
+        "missing git version: {stdout}"
+    );
+    assert!(
+        stdout.contains("Endpoint=https://example.test/lfs"),
+        "missing endpoint: {stdout}"
+    );
+    assert!(
+        stdout.contains("LocalGitDir="),
+        "missing LocalGitDir: {stdout}"
+    );
+    assert!(
+        stdout.contains("LocalMediaDir="),
+        "missing LocalMediaDir: {stdout}"
+    );
     assert!(stdout.contains("TempDir="), "missing TempDir: {stdout}");
     assert!(
         stdout.contains(r#"git config filter.lfs.clean = "git-lfs clean -- %f""#),
@@ -1683,7 +1887,10 @@ fn env_outside_repo_emits_empty_repo_paths_and_succeeds() {
         String::from_utf8_lossy(&out.stderr),
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("git-lfs/"), "version still expected: {stdout}");
+    assert!(
+        stdout.contains("git-lfs/"),
+        "version still expected: {stdout}"
+    );
     // Outside a repo, upstream still emits the path lines with empty
     // values for the repo-specific ones (and relative forms for
     // LocalMediaDir / TempDir / LfsStorageDir). Filter config falls
@@ -1707,7 +1914,10 @@ fn ls_files_marker_star_when_real_content_present_at_right_size() {
 
     let out = run_in(repo.path(), &["ls-files"], b"");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains(" * x.bin"), "expected `*` marker, got: {stdout}");
+    assert!(
+        stdout.contains(" * x.bin"),
+        "expected `*` marker, got: {stdout}"
+    );
 }
 
 // ---------- migrate export -----------------------------------------------
@@ -1729,7 +1939,11 @@ fn migrate_export_inverts_import_via_round_trip() {
         &["migrate", "import", "--include", "*.bin"],
         b"",
     );
-    assert!(imp.status.success(), "import stderr: {}", String::from_utf8_lossy(&imp.stderr));
+    assert!(
+        imp.status.success(),
+        "import stderr: {}",
+        String::from_utf8_lossy(&imp.stderr)
+    );
     let after_import = std::fs::read(repo.path().join("data.bin")).unwrap();
     assert!(
         String::from_utf8_lossy(&after_import).starts_with("version https://"),
@@ -1742,9 +1956,16 @@ fn migrate_export_inverts_import_via_round_trip() {
         &["migrate", "export", "--include", "*.bin"],
         b"",
     );
-    assert!(exp.status.success(), "export stderr: {}", String::from_utf8_lossy(&exp.stderr));
+    assert!(
+        exp.status.success(),
+        "export stderr: {}",
+        String::from_utf8_lossy(&exp.stderr)
+    );
     let after_export = std::fs::read(repo.path().join("data.bin")).unwrap();
-    assert_eq!(after_export, original, "round-trip should restore original bytes");
+    assert_eq!(
+        after_export, original,
+        "round-trip should restore original bytes"
+    );
 
     // .gitattributes should now declare the path as un-tracked.
     let attrs = std::fs::read_to_string(repo.path().join(".gitattributes")).unwrap();
@@ -1810,7 +2031,10 @@ fn migrate_export_leaves_pointer_alone_when_object_missing_from_store() {
         String::from_utf8_lossy(&out.stderr),
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("Expanded 0 pointer"), "expected zero conversions: {stdout}");
+    assert!(
+        stdout.contains("Expanded 0 pointer"),
+        "expected zero conversions: {stdout}"
+    );
     // Working-tree file is still pointer text — not truncated.
     let bin = std::fs::read(repo.path().join("missing.bin")).unwrap();
     assert!(
@@ -1834,7 +2058,11 @@ fn migrate_export_only_unconverts_paths_matching_include() {
         &["migrate", "import", "--include", "*.bin"],
         b"",
     );
-    assert!(imp.status.success(), "{}", String::from_utf8_lossy(&imp.stderr));
+    assert!(
+        imp.status.success(),
+        "{}",
+        String::from_utf8_lossy(&imp.stderr)
+    );
 
     // Export only convert.bin back. keep.bin should stay as a pointer.
     let exp = run_in(
@@ -1842,7 +2070,11 @@ fn migrate_export_only_unconverts_paths_matching_include() {
         &["migrate", "export", "--include", "convert.bin"],
         b"",
     );
-    assert!(exp.status.success(), "{}", String::from_utf8_lossy(&exp.stderr));
+    assert!(
+        exp.status.success(),
+        "{}",
+        String::from_utf8_lossy(&exp.stderr)
+    );
 
     let convert = std::fs::read(repo.path().join("convert.bin")).unwrap();
     assert_eq!(convert, vec![b'A'; 200], "convert.bin restored");
@@ -1868,7 +2100,11 @@ fn migrate_import_rewrites_history_so_matching_blobs_become_pointers() {
         &["migrate", "import", "--include", "*.bin"],
         b"",
     );
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("Converted 1 blob"), "{stdout}");
 
@@ -1896,7 +2132,11 @@ fn migrate_import_preserves_non_matching_files() {
         &["migrate", "import", "--include", "*.bin"],
         b"",
     );
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let txt = std::fs::read(repo.path().join("keep.txt")).unwrap();
     assert_eq!(txt, b"plain content\n");
@@ -1913,7 +2153,11 @@ fn migrate_import_above_filters_by_size() {
         &["migrate", "import", "--include", "*.bin", "--above", "1k"],
         b"",
     );
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let small = std::fs::read(repo.path().join("small.bin")).unwrap();
     assert_eq!(small.len(), 50, "small.bin should remain plain");
@@ -1934,10 +2178,7 @@ fn migrate_import_refuses_with_no_filter_or_threshold() {
     let out = run_in(repo.path(), &["migrate", "import"], b"");
     assert!(!out.status.success(), "expected refusal");
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("requires --include or --above"),
-        "{stderr}",
-    );
+    assert!(stderr.contains("requires --include or --above"), "{stderr}",);
 }
 
 #[test]
@@ -1979,7 +2220,10 @@ fn migrate_import_no_rewrite_appends_one_commit() {
 
     let bin = std::fs::read(repo.path().join("x.bin")).unwrap();
     let s = String::from_utf8_lossy(&bin);
-    assert!(s.starts_with("version https://git-lfs.github.com/spec/v1\n"), "{s:?}");
+    assert!(
+        s.starts_with("version https://git-lfs.github.com/spec/v1\n"),
+        "{s:?}"
+    );
 
     let parent_out = Command::new("git")
         .arg("-C")
@@ -1987,7 +2231,9 @@ fn migrate_import_no_rewrite_appends_one_commit() {
         .args(["rev-parse", "HEAD~1"])
         .output()
         .unwrap();
-    let parent = String::from_utf8_lossy(&parent_out.stdout).trim().to_owned();
+    let parent = String::from_utf8_lossy(&parent_out.stdout)
+        .trim()
+        .to_owned();
     assert_eq!(parent, head_before);
 }
 
@@ -2002,7 +2248,11 @@ fn migrate_import_no_rewrite_skips_already_pointer_files() {
         &["migrate", "import", "--no-rewrite", "x.bin"],
         b"",
     );
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains("Nothing to convert"),
@@ -2031,7 +2281,11 @@ fn migrate_import_writes_lfs_object_to_store() {
         &["migrate", "import", "--include", "*.bin"],
         b"",
     );
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     use sha2::{Digest, Sha256};
     let oid_bytes: [u8; 32] = Sha256::digest(vec![b'Y'; 200].as_slice()).into();
@@ -2075,12 +2329,22 @@ fn migrate_info_groups_by_extension_and_sorts_by_size() {
     commit_plain_file(repo.path(), "c.jpg", &[b'c'; 5]);
 
     let out = run_in(repo.path(), &["migrate", "info"], b"");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     let png_pos = stdout.find("*.png").unwrap_or(usize::MAX);
     let jpg_pos = stdout.find("*.jpg").unwrap_or(usize::MAX);
-    assert!(png_pos < jpg_pos, "*.png should sort above *.jpg by size: {stdout}");
-    assert!(stdout.contains("2/2 files"), "expected png to count 2 files: {stdout}");
+    assert!(
+        png_pos < jpg_pos,
+        "*.png should sort above *.jpg by size: {stdout}"
+    );
+    assert!(
+        stdout.contains("2/2 files"),
+        "expected png to count 2 files: {stdout}"
+    );
 }
 
 #[test]
@@ -2090,14 +2354,24 @@ fn migrate_info_above_threshold_excludes_smaller_files() {
     commit_plain_file(repo.path(), "large.bin", &vec![0u8; 5_000]);
 
     let out = run_in(repo.path(), &["migrate", "info", "--above", "1k"], b"");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     // Two total .bin, one above threshold.
-    assert!(stdout.contains("1/2 files") || stdout.contains("1/1 files"), "{stdout}");
+    assert!(
+        stdout.contains("1/2 files") || stdout.contains("1/1 files"),
+        "{stdout}"
+    );
     // The percentage shown should reflect "1 above out of 2 total" =
     // 50%. (If our pipeline only ever sees files matching the filter,
     // it'd report 100% — assert against the wrong-path interpretation.)
-    assert!(stdout.contains("50%"), "expected 50% (1/2 above), got: {stdout}");
+    assert!(
+        stdout.contains("50%"),
+        "expected 50% (1/2 above), got: {stdout}"
+    );
 }
 
 #[test]
@@ -2108,7 +2382,11 @@ fn migrate_info_top_n_caps_extension_rows() {
     commit_plain_file(repo.path(), "c.ccc", b"x");
 
     let out = run_in(repo.path(), &["migrate", "info", "--top", "1"], b"");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     // Exactly one *.<ext> row should appear.
     let ext_lines: Vec<_> = stdout.lines().filter(|l| l.starts_with("*.")).collect();
@@ -2121,15 +2399,18 @@ fn migrate_info_include_filter_restricts_to_matching_paths() {
     commit_plain_file(repo.path(), "data.png", b"X");
     commit_plain_file(repo.path(), "other.txt", b"Y");
 
-    let out = run_in(
-        repo.path(),
-        &["migrate", "info", "--include", "*.png"],
-        b"",
+    let out = run_in(repo.path(), &["migrate", "info", "--include", "*.png"], b"");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
     );
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("*.png"), "{stdout}");
-    assert!(!stdout.contains("*.txt"), "*.txt should be excluded by include filter: {stdout}");
+    assert!(
+        !stdout.contains("*.txt"),
+        "*.txt should be excluded by include filter: {stdout}"
+    );
 }
 
 #[test]
@@ -2138,28 +2419,57 @@ fn migrate_info_pointers_follow_buckets_lfs_separately() {
     // Plain files vs. LFS pointer files — pointer should land in the
     // "LFS Objects" bucket, not under *.bin.
     commit_plain_file(repo.path(), "plain.bin", &[b'X'; 100]);
-    commit_pointer_at(repo.path(), "pointer.bin", &pointer_text(HELLO_OID, 999_999));
+    commit_pointer_at(
+        repo.path(),
+        "pointer.bin",
+        &pointer_text(HELLO_OID, 999_999),
+    );
 
     let out = run_in(repo.path(), &["migrate", "info"], b"");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("LFS Objects"), "expected LFS Objects bucket: {stdout}");
+    assert!(
+        stdout.contains("LFS Objects"),
+        "expected LFS Objects bucket: {stdout}"
+    );
     // *.bin should still appear (plain.bin), but with only 1 file (not 2).
     let bin_line = stdout.lines().find(|l| l.starts_with("*.bin"));
     assert!(bin_line.is_some(), "expected *.bin row: {stdout}");
-    assert!(bin_line.unwrap().contains("1/1"), "expected only plain.bin in *.bin: {stdout}");
+    assert!(
+        bin_line.unwrap().contains("1/1"),
+        "expected only plain.bin in *.bin: {stdout}"
+    );
 }
 
 #[test]
 fn migrate_info_pointers_ignore_drops_lfs_files_entirely() {
     let repo = fresh_repo_with_identity();
     commit_plain_file(repo.path(), "plain.bin", &[b'X'; 100]);
-    commit_pointer_at(repo.path(), "pointer.bin", &pointer_text(HELLO_OID, 999_999));
+    commit_pointer_at(
+        repo.path(),
+        "pointer.bin",
+        &pointer_text(HELLO_OID, 999_999),
+    );
 
-    let out = run_in(repo.path(), &["migrate", "info", "--pointers", "ignore"], b"");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let out = run_in(
+        repo.path(),
+        &["migrate", "info", "--pointers", "ignore"],
+        b"",
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(!stdout.contains("LFS Objects"), "ignore should drop LFS bucket: {stdout}");
+    assert!(
+        !stdout.contains("LFS Objects"),
+        "ignore should drop LFS bucket: {stdout}"
+    );
 }
 
 #[test]
@@ -2172,7 +2482,11 @@ fn migrate_info_pointers_no_follow_treats_pointers_as_regular_blobs() {
         &["migrate", "info", "--pointers", "no-follow"],
         b"",
     );
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     // No special LFS bucket; the pointer's blob is counted under *.bin
     // using the actual blob size on disk (~133 bytes), not the pointer's
@@ -2186,8 +2500,16 @@ fn migrate_info_empty_repo_prints_nothing() {
     let repo = fresh_repo_with_identity();
     let out = run_in(repo.path(), &["migrate", "info"], b"");
     // No commits; HEAD doesn't exist. Should succeed silently.
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(out.stdout.is_empty(), "stdout: {:?}", String::from_utf8_lossy(&out.stdout));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "stdout: {:?}",
+        String::from_utf8_lossy(&out.stdout)
+    );
 }
 
 #[test]
@@ -2230,7 +2552,11 @@ fn post_checkout_accepts_three_args_and_exits_zero() {
         ],
         b"",
     );
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]
@@ -2246,14 +2572,22 @@ fn post_checkout_with_wrong_arg_count_fails() {
 fn post_commit_accepts_no_args_and_exits_zero() {
     let repo = fresh_repo();
     let out = run_in(repo.path(), &["post-commit"], b"");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]
 fn post_merge_accepts_one_arg_and_exits_zero() {
     let repo = fresh_repo();
     let out = run_in(repo.path(), &["post-merge", "0"], b"");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]
@@ -2286,7 +2620,10 @@ fn install_then_real_git_checkout_does_not_fail_via_post_checkout_hook() {
         .env("GIT_CONFIG_SYSTEM", "/dev/null")
         .status()
         .unwrap();
-    assert!(status.success(), "git checkout -b failed (post-checkout hook errored?)");
+    assert!(
+        status.success(),
+        "git checkout -b failed (post-checkout hook errored?)"
+    );
 }
 
 // ---------- checkout -----------------------------------------------------
@@ -2314,7 +2651,11 @@ fn checkout_without_install_emits_friendly_message() {
     commit_pointer_at(repo.path(), "x.bin", &pointer_text(&oid, 12));
 
     let out = run_in(repo.path(), &["checkout"], b"");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("Git LFS is not installed"), "{stdout}");
 }
@@ -2331,7 +2672,11 @@ fn checkout_materializes_pointer_text_into_real_content() {
     assert!(before.starts_with(b"version https://git-lfs.github.com/spec/v1\n"));
 
     let out = run_in(repo.path(), &["checkout"], b"");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let after = std::fs::read(repo.path().join("x.bin")).unwrap();
     assert_eq!(after, b"hello world\n");
 }
@@ -2347,11 +2692,21 @@ fn checkout_with_path_filters_only_those_files() {
 
     // Only check out a.bin.
     let out = run_in(repo.path(), &["checkout", "a.bin"], b"");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert_eq!(std::fs::read(repo.path().join("a.bin")).unwrap(), b"alpha bytes\n");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        std::fs::read(repo.path().join("a.bin")).unwrap(),
+        b"alpha bytes\n"
+    );
     // b.bin still has its pointer text — we filtered it out.
     let b = std::fs::read(repo.path().join("b.bin")).unwrap();
-    assert!(b.starts_with(b"version https://git-lfs.github.com/spec/v1\n"), "b.bin should still be a pointer");
+    assert!(
+        b.starts_with(b"version https://git-lfs.github.com/spec/v1\n"),
+        "b.bin should still be a pointer"
+    );
 }
 
 #[test]
@@ -2365,7 +2720,11 @@ fn checkout_with_directory_pattern_matches_subtree() {
     commit_pointer_at(repo.path(), "data/sub.bin", &pointer_text(&oid_sub, 13));
 
     let out = run_in(repo.path(), &["checkout", "data/"], b"");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert_eq!(
         std::fs::read(repo.path().join("data/sub.bin")).unwrap(),
         b"in subtree!!\n",
@@ -2384,7 +2743,11 @@ fn checkout_no_pointers_says_nothing_to_checkout() {
     git_in(repo.path(), &["commit", "-q", "-m", "plain"]);
 
     let out = run_in(repo.path(), &["checkout"], b"");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("Nothing to checkout"), "{stdout}");
 }
@@ -2416,7 +2779,11 @@ fn checkout_skips_pointer_when_object_missing_locally() {
 fn prune_no_objects_says_so() {
     let repo = fresh_repo_with_identity();
     let out = run_in(repo.path(), &["prune"], b"");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("No local LFS objects to prune"), "{stdout}");
 }
@@ -2428,7 +2795,11 @@ fn prune_retains_objects_referenced_by_head_tree() {
     commit_pointer_at(repo.path(), "x.bin", &pointer_text(&oid, 12));
 
     let out = run_in(repo.path(), &["prune"], b"");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("Nothing to prune"), "{stdout}");
 
@@ -2461,10 +2832,17 @@ fn prune_deletes_object_not_referenced_anywhere() {
     assert!(path.is_file(), "fixture pre-condition");
 
     let out = run_in(repo.path(), &["prune"], b"");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("Pruning 1 object"), "{stdout}");
-    assert!(!path.is_file(), "orphan object should be deleted at {path:?}");
+    assert!(
+        !path.is_file(),
+        "orphan object should be deleted at {path:?}"
+    );
 }
 
 #[test]
@@ -2503,7 +2881,10 @@ fn prune_verbose_lists_each_pruned_object() {
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     // First 10 chars of the OID appear (full OID actually) on a `* ` line.
-    assert!(stdout.contains(&orphan_oid), "expected OID in verbose output: {stdout}");
+    assert!(
+        stdout.contains(&orphan_oid),
+        "expected OID in verbose output: {stdout}"
+    );
 }
 
 #[test]
@@ -2517,7 +2898,10 @@ fn prune_retains_unpushed_commits() {
     git_in(repo.path(), &["add", "plain.txt"]);
     git_in(repo.path(), &["commit", "-q", "-m", "plain"]);
     // Mark this commit as the remote tip.
-    git_in(repo.path(), &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    git_in(
+        repo.path(),
+        &["update-ref", "refs/remotes/origin/main", "HEAD"],
+    );
 
     // Now add an LFS pointer locally and commit (unpushed).
     let oid = put_object_in_store(repo.path(), b"unpushed content");
@@ -2541,7 +2925,11 @@ fn prune_retains_unpushed_commits() {
         .join(&oid);
 
     let out = run_in(repo.path(), &["prune", "--dry-run"], b"");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains("Nothing to prune"),
@@ -2557,7 +2945,11 @@ fn prune_with_no_remote_falls_back_to_head_tree_only() {
     // is then prunable, just like upstream.
     let repo = fresh_repo_with_identity();
     let oid = put_object_in_store(repo.path(), b"old content");
-    commit_pointer_at(repo.path(), "old.bin", &pointer_text(&oid, b"old content".len()));
+    commit_pointer_at(
+        repo.path(),
+        "old.bin",
+        &pointer_text(&oid, b"old content".len()),
+    );
     // Replace with plain content. Earlier commit still references the
     // pointer (history), but HEAD's tree doesn't.
     std::fs::write(repo.path().join("old.bin"), b"plain text").unwrap();
@@ -2573,7 +2965,11 @@ fn prune_with_no_remote_falls_back_to_head_tree_only() {
     assert!(path.is_file(), "fixture pre-condition");
 
     let out = run_in(repo.path(), &["prune"], b"");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     // No origin remote → unpushed scan returns the FULL HEAD history
     // (since exclude set is empty), which still references this OID,
     // so it's retained even without a remote.
@@ -2595,7 +2991,10 @@ fn put_object_in_store(repo: &Path, content: &[u8]) -> String {
         let _ = write!(s, "{b:02x}");
         s
     });
-    let dir = repo.join(".git/lfs/objects").join(&oid[0..2]).join(&oid[2..4]);
+    let dir = repo
+        .join(".git/lfs/objects")
+        .join(&oid[0..2])
+        .join(&oid[2..4]);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join(&oid), content).unwrap();
     oid
@@ -2608,7 +3007,11 @@ fn fsck_reports_ok_when_pointers_match_store() {
     commit_pointer_at(repo.path(), "x.bin", &pointer_text(&oid, 12));
 
     let out = run_in(repo.path(), &["fsck"], b"");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("Git LFS fsck OK"), "{stdout}");
 }
@@ -2629,7 +3032,10 @@ fn fsck_reports_missing_object_and_exits_one() {
     let out = run_in(repo.path(), &["fsck", "--dry-run"], b"");
     assert_eq!(out.status.code(), Some(1));
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("openError"), "expected openError, got: {stdout}");
+    assert!(
+        stdout.contains("openError"),
+        "expected openError, got: {stdout}"
+    );
     assert!(stdout.contains("missing.bin"), "{stdout}");
 }
 
@@ -2647,7 +3053,11 @@ fn fsck_skips_objects_excluded_by_lfs_fetchexclude() {
     );
 
     let out = run_in(repo.path(), &["fsck", "--dry-run"], b"");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         !stdout.contains("openError"),
@@ -2684,7 +3094,10 @@ fn fsck_reports_corrupt_object_and_quarantines_it() {
     let bad = repo.path().join(".git/lfs/bad").join(claimed_oid);
     assert!(bad.is_file(), "expected quarantined file at {bad:?}");
     // Original location is gone.
-    assert!(!dir.join(claimed_oid).exists(), "store still has corrupt file");
+    assert!(
+        !dir.join(claimed_oid).exists(),
+        "store still has corrupt file"
+    );
 }
 
 #[test]
@@ -2707,7 +3120,10 @@ fn fsck_dry_run_does_not_quarantine() {
     let out = run_in(repo.path(), &["fsck", "--dry-run"], b"");
     assert_eq!(out.status.code(), Some(1));
     // File is still in the store (not quarantined).
-    assert!(dir.join(claimed_oid).is_file(), "dry-run should not move files");
+    assert!(
+        dir.join(claimed_oid).is_file(),
+        "dry-run should not move files"
+    );
     // No bad/ directory created at all.
     assert!(!repo.path().join(".git/lfs/bad").exists());
 }
@@ -2726,7 +3142,11 @@ fn fsck_pointers_only_skips_object_check() {
     );
 
     let out = run_in(repo.path(), &["fsck", "--pointers"], b"");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("Git LFS fsck OK"), "{stdout}");
 }
@@ -2774,7 +3194,11 @@ fn fsck_pointers_skips_blobs_for_paths_not_lfs_tracked() {
     commit_pointer_at(repo.path(), "untracked.bin", &p);
 
     let out = run_in(repo.path(), &["fsck", "--pointers"], b"");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]
@@ -2790,7 +3214,10 @@ fn fsck_objects_only_skips_pointer_canonicality_check() {
     assert_eq!(out.status.code(), Some(1));
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("openError"), "expected openError: {stdout}");
-    assert!(!stdout.contains("nonCanonicalPointer"), "should skip canonical check: {stdout}");
+    assert!(
+        !stdout.contains("nonCanonicalPointer"),
+        "should skip canonical check: {stdout}"
+    );
 }
 
 // ---------- version ------------------------------------------------------
@@ -2799,7 +3226,11 @@ fn fsck_objects_only_skips_pointer_canonicality_check() {
 fn version_prints_banner_and_succeeds() {
     let repo = fresh_repo();
     let out = run_in(repo.path(), &["version"], b"");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.starts_with("git-lfs/"), "{stdout}");
 }
@@ -2808,7 +3239,11 @@ fn version_prints_banner_and_succeeds() {
 fn version_works_outside_repo_too() {
     let tmp = TempDir::new().unwrap();
     let out = run_in(tmp.path(), &["version"], b"");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 // ---------- pointer ------------------------------------------------------
@@ -2819,7 +3254,11 @@ fn pointer_check_returns_zero_for_valid_pointer() {
     let p = pointer_text(HELLO_OID, HELLO_LEN);
     std::fs::write(repo.path().join("p.txt"), &p).unwrap();
     let out = run_in(repo.path(), &["pointer", "--check", "--file", "p.txt"], b"");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]
@@ -2827,7 +3266,12 @@ fn pointer_check_exits_one_for_non_pointer() {
     let repo = fresh_repo();
     std::fs::write(repo.path().join("p.txt"), b"this is plain text\n").unwrap();
     let out = run_in(repo.path(), &["pointer", "--check", "--file", "p.txt"], b"");
-    assert_eq!(out.status.code(), Some(1), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]
@@ -2843,7 +3287,12 @@ fn pointer_check_strict_exits_two_for_noncanonical() {
         &["pointer", "--check", "--strict", "--file", "p.txt"],
         b"",
     );
-    assert_eq!(out.status.code(), Some(2), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]
@@ -2851,7 +3300,11 @@ fn pointer_file_emits_canonical_pointer_for_a_blob() {
     let repo = fresh_repo();
     std::fs::write(repo.path().join("data.bin"), b"hello world\n").unwrap();
     let out = run_in(repo.path(), &["pointer", "--file", "data.bin"], b"");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     let expected = pointer_text(HELLO_OID, HELLO_LEN);
     let expected_str = String::from_utf8_lossy(&expected);
@@ -2866,14 +3319,22 @@ fn pointer_compare_succeeds_when_canonical_match() {
     let repo = fresh_repo();
     std::fs::write(repo.path().join("data.bin"), b"hello world\n").unwrap();
     // Pre-built canonical pointer for that exact content.
-    std::fs::write(repo.path().join("ref.ptr"), pointer_text(HELLO_OID, HELLO_LEN)).unwrap();
+    std::fs::write(
+        repo.path().join("ref.ptr"),
+        pointer_text(HELLO_OID, HELLO_LEN),
+    )
+    .unwrap();
 
     let out = run_in(
         repo.path(),
         &["pointer", "--file", "data.bin", "--pointer", "ref.ptr"],
         b"",
     );
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!stderr.contains("Pointers do not match"), "{stderr}");
 }
@@ -2884,7 +3345,11 @@ fn pointer_compare_fails_on_mismatch() {
     std::fs::write(repo.path().join("data.bin"), b"hello world\n").unwrap();
     // Pointer for a *different* OID — should mismatch.
     let other_oid = "0000000000000000000000000000000000000000000000000000000000000001";
-    std::fs::write(repo.path().join("ref.ptr"), pointer_text(other_oid, HELLO_LEN)).unwrap();
+    std::fs::write(
+        repo.path().join("ref.ptr"),
+        pointer_text(other_oid, HELLO_LEN),
+    )
+    .unwrap();
 
     let out = run_in(
         repo.path(),
@@ -2901,7 +3366,11 @@ fn pointer_stdin_mode_parses_pointer_from_stdin() {
     let repo = fresh_repo();
     let p = pointer_text(HELLO_OID, HELLO_LEN);
     let out = run_in(repo.path(), &["pointer", "--stdin"], &p);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("Pointer from STDIN"), "{stderr}");
     // The echoed pointer text appears in stderr.
@@ -3027,7 +3496,10 @@ async fn lock_conflict_surfaces_existing_owner() {
     assert!(!out.status.success(), "expected conflict to fail");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("already created lock"), "{stderr}");
-    assert!(stderr.contains("alice"), "should name conflict owner: {stderr}");
+    assert!(
+        stderr.contains("alice"),
+        "should name conflict owner: {stderr}"
+    );
 }
 
 #[tokio::test]
@@ -3105,7 +3577,11 @@ async fn locks_lists_and_paginates_via_cursor() {
     let out = tokio::task::spawn_blocking(move || run_in(&path, &["locks"], b""))
         .await
         .unwrap();
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("a.bin"), "page 1 missing: {stdout}");
     assert!(stdout.contains("b.bin"), "page 2 missing: {stdout}");
@@ -3120,9 +3596,7 @@ fn query_param_absent(name: &'static str) -> impl wiremock::Match {
     struct Absent(&'static str);
     impl wiremock::Match for Absent {
         fn matches(&self, req: &wiremock::Request) -> bool {
-            !req.url
-                .query_pairs()
-                .any(|(k, _)| k == self.0)
+            !req.url.query_pairs().any(|(k, _)| k == self.0)
         }
     }
     Absent(name)
@@ -3158,10 +3632,22 @@ async fn locks_verify_prefixes_owned_with_capital_o() {
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     // Owned line starts with "O ", others with two spaces.
-    let mine_line = stdout.lines().find(|l| l.contains("mine.bin")).expect("mine line");
-    let their_line = stdout.lines().find(|l| l.contains("their.bin")).expect("their line");
-    assert!(mine_line.starts_with("O "), "expected `O ` prefix on owned: {mine_line:?}");
-    assert!(their_line.starts_with("  "), "expected `  ` prefix on others: {their_line:?}");
+    let mine_line = stdout
+        .lines()
+        .find(|l| l.contains("mine.bin"))
+        .expect("mine line");
+    let their_line = stdout
+        .lines()
+        .find(|l| l.contains("their.bin"))
+        .expect("their line");
+    assert!(
+        mine_line.starts_with("O "),
+        "expected `O ` prefix on owned: {mine_line:?}"
+    );
+    assert!(
+        their_line.starts_with("  "),
+        "expected `  ` prefix on others: {their_line:?}"
+    );
 }
 
 #[tokio::test]
@@ -3186,12 +3672,15 @@ async fn unlock_by_id_calls_delete_and_prints_message() {
 
     let repo = lock_test_repo(&server.uri()).await;
     let path = repo.path().to_owned();
-    let out = tokio::task::spawn_blocking(move || {
-        run_in(&path, &["unlock", "--id", "abc123"], b"")
-    })
-    .await
-    .unwrap();
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let out =
+        tokio::task::spawn_blocking(move || run_in(&path, &["unlock", "--id", "abc123"], b""))
+            .await
+            .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("Unlocked Lock abc123"), "{stdout}");
 }
@@ -3235,7 +3724,11 @@ async fn unlock_by_path_looks_up_id_then_deletes() {
     let out = tokio::task::spawn_blocking(move || run_in(&path, &["unlock", "data.bin"], b""))
         .await
         .unwrap();
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("Unlocked data.bin"), "{stdout}");
 }
@@ -3262,7 +3755,10 @@ async fn unlock_by_path_when_not_locked_fails() {
     let out = tokio::task::spawn_blocking(move || run_in(&path, &["unlock", "data.bin"], b""))
         .await
         .unwrap();
-    assert!(!out.status.success(), "expected failure when path not locked");
+    assert!(
+        !out.status.success(),
+        "expected failure when path not locked"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("not locked"), "{stderr}");
 }

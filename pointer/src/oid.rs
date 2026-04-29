@@ -3,8 +3,7 @@ use std::str::FromStr;
 
 /// Hex form of the SHA-256 of the empty input. Used as the OID of the empty
 /// pointer (which represents an empty file — see `docs/spec.md`).
-pub const EMPTY_HEX: &str =
-    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+pub const EMPTY_HEX: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 /// A SHA-256 object identifier.
 ///
@@ -135,10 +134,12 @@ mod tests {
     fn rejects_non_hex() {
         let mut bad = "a".repeat(63);
         bad.push('z');
-        assert_eq!(Oid::from_hex(&bad), Err(OidParseError::InvalidCharacter('z')));
+        assert_eq!(
+            Oid::from_hex(&bad),
+            Err(OidParseError::InvalidCharacter('z'))
+        );
 
-        let trailing_amp =
-            "4d7a214614ab2935c943f9e0ff69d22eadbb8f32b1258daaa5e2ca24d17e2393&"; // 65 chars
+        let trailing_amp = "4d7a214614ab2935c943f9e0ff69d22eadbb8f32b1258daaa5e2ca24d17e2393&"; // 65 chars
         assert_eq!(
             Oid::from_hex(trailing_amp),
             Err(OidParseError::InvalidLength(65))

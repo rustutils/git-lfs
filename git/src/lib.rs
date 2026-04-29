@@ -79,7 +79,10 @@ pub(crate) mod tests {
         pub fn commit_file(repo: &TempDir, path: &str, content: &[u8]) {
             std::fs::write(repo.path().join(path), content).unwrap();
             run(repo.path(), &["add", path]);
-            run(repo.path(), &["commit", "--quiet", "-m", &format!("add {path}")]);
+            run(
+                repo.path(),
+                &["commit", "--quiet", "-m", &format!("add {path}")],
+            );
         }
 
         /// Hex OID of the commit currently at HEAD.
@@ -95,7 +98,12 @@ pub(crate) mod tests {
         }
 
         fn run(cwd: &Path, args: &[&str]) {
-            let status = Command::new("git").arg("-C").arg(cwd).args(args).status().unwrap();
+            let status = Command::new("git")
+                .arg("-C")
+                .arg(cwd)
+                .args(args)
+                .status()
+                .unwrap();
             assert!(status.success(), "git {args:?} failed");
         }
     }

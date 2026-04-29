@@ -154,7 +154,10 @@ fn emit_paths_outside_repo() {
     // Relative paths — there's no repo to anchor them to. Upstream
     // emits these literal forms, and `t-env outside a repository`
     // checks for them.
-    println!("LocalMediaDir={}", PathBuf::from("lfs").join("objects").display());
+    println!(
+        "LocalMediaDir={}",
+        PathBuf::from("lfs").join("objects").display()
+    );
     println!("LocalReferenceDirs=");
     println!("TempDir={}", PathBuf::from("lfs").join("tmp").display());
 }
@@ -172,7 +175,8 @@ fn emit_static_defaults(cwd: &Path) {
     // `GIT_LFS_SKIP_DOWNLOAD_ERRORS=1` is upstream's env-var override
     // (test 12, second phase). Either it or `lfs.skipdownloaderrors`
     // flips the line to true.
-    let skip_dl = bool_config(cwd, "lfs.skipdownloaderrors") || bool_env("GIT_LFS_SKIP_DOWNLOAD_ERRORS");
+    let skip_dl =
+        bool_config(cwd, "lfs.skipdownloaderrors") || bool_env("GIT_LFS_SKIP_DOWNLOAD_ERRORS");
     println!("SkipDownloadErrors={skip_dl}");
     println!("FetchRecentAlways=false");
     println!("FetchRecentRefsDays=7");
@@ -211,7 +215,12 @@ fn custom_transfer_methods(cwd: &Path) -> Vec<String> {
     let out = std::process::Command::new("git")
         .arg("-C")
         .arg(cwd)
-        .args(["config", "--name-only", "--get-regexp", r"^lfs\.customtransfer\..*\.path$"])
+        .args([
+            "config",
+            "--name-only",
+            "--get-regexp",
+            r"^lfs\.customtransfer\..*\.path$",
+        ])
         .output();
     let Ok(out) = out else { return Vec::new() };
     if !out.status.success() {
@@ -280,9 +289,9 @@ fn git_version() -> String {
         .output()
         .ok()
         .and_then(|o| {
-            o.status.success().then(|| {
-                String::from_utf8_lossy(&o.stdout).trim().to_owned()
-            })
+            o.status
+                .success()
+                .then(|| String::from_utf8_lossy(&o.stdout).trim().to_owned())
         })
         .unwrap_or_else(|| "git version unknown".to_owned())
 }

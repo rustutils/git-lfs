@@ -16,12 +16,7 @@ const LFS_FILTER_TAIL: &str = "filter=lfs diff=lfs merge=lfs -text";
 /// Files we refuse to LFS-track because doing so would corrupt the
 /// repository (the file itself controls how git understands every other
 /// file).
-const FORBIDDEN: &[&str] = &[
-    ".gitattributes",
-    ".gitignore",
-    ".gitmodules",
-    ".lfsconfig",
-];
+const FORBIDDEN: &[&str] = &[".gitattributes", ".gitignore", ".gitmodules", ".lfsconfig"];
 
 #[derive(Debug, thiserror::Error)]
 pub enum TrackError {
@@ -223,11 +218,7 @@ pub fn detect_eol(cwd: &Path, attrs: &Attributes) -> Eol {
         Some("input") if cfg!(windows) => return Eol::Crlf,
         _ => {}
     }
-    if attrs.had_crlf() {
-        Eol::Crlf
-    } else {
-        Eol::Lf
-    }
+    if attrs.had_crlf() { Eol::Crlf } else { Eol::Lf }
 }
 
 /// Return the trimmed body of a `.gitattributes` line, or `None` if the

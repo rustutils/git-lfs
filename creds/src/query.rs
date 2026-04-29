@@ -55,7 +55,8 @@ mod tests {
 
     #[test]
     fn from_url_extracts_protocol_host_path() {
-        let q = Query::from_url(&Url::parse("https://git.example.com/foo/bar.git/info/lfs").unwrap());
+        let q =
+            Query::from_url(&Url::parse("https://git.example.com/foo/bar.git/info/lfs").unwrap());
         assert_eq!(q.protocol, "https");
         assert_eq!(q.host, "git.example.com");
         assert_eq!(q.path, "foo/bar.git/info/lfs");

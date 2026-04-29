@@ -15,10 +15,7 @@ pub fn render_title(out: &mut String, page_name: &str) {
 
 pub fn render_name(out: &mut String, page_name: &str, cmd: &clap::Command) {
     let _ = writeln!(out, "## Name\n");
-    let about = cmd
-        .get_about()
-        .map(|s| s.to_string())
-        .unwrap_or_default();
+    let about = cmd.get_about().map(|s| s.to_string()).unwrap_or_default();
     if about.is_empty() {
         let _ = writeln!(out, "`{page_name}`\n");
     } else {
@@ -47,18 +44,12 @@ pub fn render_description(out: &mut String, cmd: &clap::Command) {
 }
 
 pub fn render_options(out: &mut String, cmd: &clap::Command) {
-    let positionals: Vec<_> = cmd
-        .get_arguments()
-        .filter(|a| a.is_positional())
-        .collect();
+    let positionals: Vec<_> = cmd.get_arguments().filter(|a| a.is_positional()).collect();
     let flags: Vec<_> = cmd
         .get_arguments()
         .filter(|a| !a.is_positional() && !a.is_hide_set())
         .collect();
-    let subs: Vec<_> = cmd
-        .get_subcommands()
-        .filter(|s| !s.is_hide_set())
-        .collect();
+    let subs: Vec<_> = cmd.get_subcommands().filter(|s| !s.is_hide_set()).collect();
 
     if positionals.is_empty() && flags.is_empty() && subs.is_empty() {
         return;
@@ -82,10 +73,7 @@ pub fn render_options(out: &mut String, cmd: &clap::Command) {
         let _ = writeln!(out, "### Subcommands\n");
         for s in &subs {
             let name = s.get_name();
-            let about = s
-                .get_about()
-                .map(|s| s.to_string())
-                .unwrap_or_default();
+            let about = s.get_about().map(|s| s.to_string()).unwrap_or_default();
             if about.is_empty() {
                 let _ = writeln!(out, "- `{name}`");
             } else {
@@ -141,7 +129,9 @@ fn build_synopsis(page_name: &str, cmd: &clap::Command) -> String {
     // swap in `page_name` so subcommand pages read e.g.
     // `git-lfs-fetch [OPTIONS] [ARGS]` rather than just `fetch`.
     let mut clone = cmd.clone();
-    clone = clone.name(page_name.to_owned()).bin_name(page_name.to_owned());
+    clone = clone
+        .name(page_name.to_owned())
+        .bin_name(page_name.to_owned());
     let usage = clone.render_usage().to_string();
     // clap emits "Usage: <line>" — strip the leading "Usage: " for
     // the code block.

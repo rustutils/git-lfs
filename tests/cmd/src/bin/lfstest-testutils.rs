@@ -218,7 +218,10 @@ fn run_git(cwd: &Path, args: &[&str], check: bool) {
         .status()
         .expect("spawn git");
     if check && !status.success() {
-        eprintln!("Error running git command 'git {}': {status}", args.join(" "));
+        eprintln!(
+            "Error running git command 'git {}': {status}",
+            args.join(" ")
+        );
         std::process::exit(4);
     }
 }
@@ -244,7 +247,12 @@ fn commit_at_date(cwd: &Path, date: &str, name: &str, email: &str, msg: &str) {
     let mut cmd = Command::new("git");
     cmd.current_dir(cwd);
     if !name.is_empty() && !email.is_empty() {
-        cmd.args(["-c", &format!("user.name={name}"), "-c", &format!("user.email={email}")]);
+        cmd.args([
+            "-c",
+            &format!("user.name={name}"),
+            "-c",
+            &format!("user.email={email}"),
+        ]);
     }
     cmd.args(["commit", "--allow-empty", "-m", msg]);
     if !date.is_empty() {
@@ -257,4 +265,3 @@ fn commit_at_date(cwd: &Path, date: &str, name: &str, email: &str, msg: &str) {
         std::process::exit(4);
     }
 }
-

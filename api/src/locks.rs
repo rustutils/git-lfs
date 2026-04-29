@@ -20,7 +20,10 @@ pub struct CreateLockRequest {
 
 impl CreateLockRequest {
     pub fn new(path: impl Into<String>) -> Self {
-        Self { path: path.into(), r#ref: None }
+        Self {
+            path: path.into(),
+            r#ref: None,
+        }
     }
 
     pub fn with_ref(mut self, r: Ref) -> Self {
@@ -175,9 +178,10 @@ impl Client {
             .map_err(CreateLockError::Api)?;
 
         let status = resp.status();
-        let bytes = resp.bytes().await.map_err(|e| {
-            CreateLockError::Api(ApiError::Transport(e))
-        })?;
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| CreateLockError::Api(ApiError::Transport(e)))?;
 
         // 409 = standard conflict, with the existing lock spelled out in
         // the body. Decode flexibly: server may or may not include a
@@ -193,8 +197,7 @@ impl Client {
 
         // Other non-success statuses fall through as plain ApiError::Status.
         if !status.is_success() {
-            let body: Option<crate::error::ServerError> =
-                serde_json::from_slice(&bytes).ok();
+            let body: Option<crate::error::ServerError> = serde_json::from_slice(&bytes).ok();
             return Err(CreateLockError::Api(ApiError::Status {
                 status: status.as_u16(),
                 lfs_authenticate: None,
@@ -239,17 +242,12 @@ impl Client {
     }
 
     /// POST `/locks/{id}/unlock` to delete a lock.
-    pub async fn delete_lock(
-        &self,
-        id: &str,
-        req: &DeleteLockRequest,
-    ) -> Result<Lock, ApiError> {
+    pub async fn delete_lock(&self, id: &str, req: &DeleteLockRequest) -> Result<Lock, ApiError> {
         // Percent-encode the id to keep nested path segments safe.
         let encoded = url_path_segment(id);
         let path = format!("locks/{encoded}/unlock");
         let url = self.url(&path)?;
-        let body_bytes = serde_json::to_vec(req)
-            .map_err(|e| ApiError::Decode(e.to_string()))?;
+        let body_bytes = serde_json::to_vec(req).map_err(|e| ApiError::Decode(e.to_string()))?;
         let resp = self
             .send_with_auth_retry_response(|| {
                 self.request(reqwest::Method::POST, url.clone())
@@ -267,8 +265,7 @@ impl Client {
 fn url_path_segment(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
-        let unreserved = b.is_ascii_alphanumeric()
-            || matches!(b, b'-' | b'.' | b'_' | b'~');
+        let unreserved = b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~');
         if unreserved {
             out.push(b as char);
         } else {
@@ -287,7 +284,10 @@ mod tests {
         // serde_json round-trip keeps only the fields we actually want on
         // the wire — same omission rule reqwest applies when building the
         // query string.
-        let f = ListLocksFilter { path: Some("a.bin".into()), ..Default::default() };
+        let f = ListLocksFilter {
+            path: Some("a.bin".into()),
+            ..Default::default()
+        };
         let v = serde_json::to_value(&f).unwrap();
         assert_eq!(v["path"], "a.bin");
         assert!(v.get("id").is_none());
@@ -305,7 +305,10 @@ mod tests {
 
     #[test]
     fn delete_request_includes_force_when_true() {
-        let r = DeleteLockRequest { force: true, ..Default::default() };
+        let r = DeleteLockRequest {
+            force: true,
+            ..Default::default()
+        };
         assert_eq!(serde_json::to_value(&r).unwrap()["force"], true);
     }
 

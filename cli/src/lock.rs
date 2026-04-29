@@ -69,8 +69,7 @@ pub fn lock(cwd: &Path, paths: &[String], opts: &LockOptions) -> Result<bool, Lo
             "git lfs lock requires at least one path".into(),
         ));
     }
-    let api = build_api_client(cwd, opts.remote.as_deref())
-        .map_err(LockCommandError::Build)?;
+    let api = build_api_client(cwd, opts.remote.as_deref()).map_err(LockCommandError::Build)?;
     let runtime = build_runtime()?;
     let root = repo_root(cwd).map_err(LockCommandError::Build)?;
     let refspec = resolve_refspec(&root, opts.refspec.as_deref());
@@ -137,8 +136,7 @@ struct VerifyJsonOutput<'a> {
 }
 
 pub fn locks(cwd: &Path, opts: &LocksOptions) -> Result<(), LockCommandError> {
-    let api = build_api_client(cwd, opts.remote.as_deref())
-        .map_err(LockCommandError::Build)?;
+    let api = build_api_client(cwd, opts.remote.as_deref()).map_err(LockCommandError::Build)?;
     let runtime = build_runtime()?;
     let root = repo_root(cwd).map_err(LockCommandError::Build)?;
     let refspec = resolve_refspec(&root, opts.refspec.as_deref());
@@ -166,9 +164,7 @@ pub fn locks(cwd: &Path, opts: &LocksOptions) -> Result<(), LockCommandError> {
     // stores repo-relative paths, so a user-supplied `./data/x.bin`
     // wouldn't match anything otherwise.
     let path_filter = match opts.path.as_deref() {
-        Some(raw) => {
-            Some(resolve_lock_path(cwd, &root, raw).map_err(LockCommandError::Build)?)
-        }
+        Some(raw) => Some(resolve_lock_path(cwd, &root, raw).map_err(LockCommandError::Build)?),
         None => None,
     };
 
@@ -267,8 +263,7 @@ pub fn unlock(
         ));
     }
 
-    let api = build_api_client(cwd, opts.remote.as_deref())
-        .map_err(LockCommandError::Build)?;
+    let api = build_api_client(cwd, opts.remote.as_deref()).map_err(LockCommandError::Build)?;
     let runtime = build_runtime()?;
     let root = repo_root(cwd).map_err(LockCommandError::Build)?;
     let refspec = resolve_refspec(&root, opts.refspec.as_deref());
@@ -298,9 +293,7 @@ pub fn unlock(
                 // `unlock --id=<id>` doesn't chmod even though
                 // path-based unlock does.
                 if lockable_readonly && let Some(attrs) = attrs.as_ref() {
-                    let _ = lockable::enforce_readonly_if_lockable(
-                        &root, attrs, &lock.path,
-                    );
+                    let _ = lockable::enforce_readonly_if_lockable(&root, attrs, &lock.path);
                 }
             }
             Err(e) => {
@@ -381,7 +374,10 @@ pub fn unlock(
                     .find(|l| l.path == path)
                     .map(|l| l.id.clone()),
                 Err(e) => {
-                    eprintln!("git-lfs: lookup failed for {path}: {}", format_api_error(&e));
+                    eprintln!(
+                        "git-lfs: lookup failed for {path}: {}",
+                        format_api_error(&e)
+                    );
                     success = false;
                     if opts.json {
                         report.push(UnlockJsonEntry {
@@ -418,9 +414,7 @@ pub fn unlock(
                     // unless `lfs.setlockablereadonly=false` opts out.
                     if lockable_readonly {
                         if let Some(attrs) = attrs.as_ref() {
-                            let _ = lockable::enforce_readonly_if_lockable(
-                                &root, attrs, &path,
-                            );
+                            let _ = lockable::enforce_readonly_if_lockable(&root, attrs, &path);
                         }
                     }
                     if opts.json {
@@ -493,10 +487,7 @@ fn resolve_refspec(repo_root: &Path, override_ref: Option<&str>) -> Option<Strin
 /// ref ...'`).
 fn api_error_reason(e: &ApiError) -> String {
     match e {
-        ApiError::Status {
-            body: Some(b),
-            ..
-        } => b.message.clone(),
+        ApiError::Status { body: Some(b), .. } => b.message.clone(),
         _ => e.to_string(),
     }
 }
@@ -579,9 +570,9 @@ fn resolve_lock_path(cwd: &Path, repo_root: &Path, file: &str) -> Result<String,
         .canonicalize()
         .map_err(|e| format!("canonicalizing repo root: {e}"))?;
 
-    let rel = canonical.strip_prefix(&root_canon).map_err(|_| {
-        format!("path is outside the repository: {file}")
-    })?;
+    let rel = canonical
+        .strip_prefix(&root_canon)
+        .map_err(|_| format!("path is outside the repository: {file}"))?;
     let s = rel.to_string_lossy().replace('\\', "/");
     if s.is_empty() || s == "." {
         return Err(format!("cannot lock the repository root: {file}"));
@@ -627,8 +618,7 @@ fn print_verify_table(resp: &VerifyLocksResponse) {
     let mut combined = Vec::with_capacity(resp.ours.len() + resp.theirs.len());
     combined.extend(resp.ours.iter().cloned());
     combined.extend(resp.theirs.iter().cloned());
-    let owned: std::collections::HashSet<String> =
-        resp.ours.iter().map(|l| l.id.clone()).collect();
+    let owned: std::collections::HashSet<String> = resp.ours.iter().map(|l| l.id.clone()).collect();
     print_lock_table(&combined, Some(&owned));
 }
 
@@ -688,12 +678,8 @@ mod tests {
         let tmp_other = TempDir::new().unwrap();
         std::fs::write(tmp_other.path().join("x.bin"), b"x").unwrap();
         let outside = tmp_other.path().join("x.bin");
-        let err = resolve_lock_path(
-            tmp_repo.path(),
-            tmp_repo.path(),
-            outside.to_str().unwrap(),
-        )
-        .unwrap_err();
+        let err = resolve_lock_path(tmp_repo.path(), tmp_repo.path(), outside.to_str().unwrap())
+            .unwrap_err();
         assert!(err.contains("outside"), "{err}");
     }
 

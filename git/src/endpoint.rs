@@ -426,10 +426,18 @@ mod tests {
         let _g = lock_env();
         unsafe { std::env::remove_var("GIT_LFS_URL") };
         let repo = fresh_repo();
-        git_in(repo.path(), &["config", "--local", "lfs.url", "https://example.com/lfs"]);
         git_in(
             repo.path(),
-            &["config", "--local", "remote.origin.url", "git@github.com:x/y.git"],
+            &["config", "--local", "lfs.url", "https://example.com/lfs"],
+        );
+        git_in(
+            repo.path(),
+            &[
+                "config",
+                "--local",
+                "remote.origin.url",
+                "git@github.com:x/y.git",
+            ],
         );
         let url = endpoint_for_remote(repo.path(), None).unwrap();
         assert_eq!(url, "https://example.com/lfs");
@@ -442,11 +450,21 @@ mod tests {
         let repo = fresh_repo();
         git_in(
             repo.path(),
-            &["config", "--local", "remote.origin.lfsurl", "https://lfs.dev/repo"],
+            &[
+                "config",
+                "--local",
+                "remote.origin.lfsurl",
+                "https://lfs.dev/repo",
+            ],
         );
         git_in(
             repo.path(),
-            &["config", "--local", "remote.origin.url", "git@github.com:x/y.git"],
+            &[
+                "config",
+                "--local",
+                "remote.origin.url",
+                "git@github.com:x/y.git",
+            ],
         );
         let url = endpoint_for_remote(repo.path(), None).unwrap();
         assert_eq!(url, "https://lfs.dev/repo");
@@ -459,7 +477,12 @@ mod tests {
         let repo = fresh_repo();
         git_in(
             repo.path(),
-            &["config", "--local", "remote.origin.url", "git@github.com:x/y.git"],
+            &[
+                "config",
+                "--local",
+                "remote.origin.url",
+                "git@github.com:x/y.git",
+            ],
         );
         let url = endpoint_for_remote(repo.path(), None).unwrap();
         assert_eq!(url, "https://github.com/x/y.git/info/lfs");
@@ -472,7 +495,12 @@ mod tests {
         let repo = fresh_repo();
         git_in(
             repo.path(),
-            &["config", "--local", "remote.upstream.url", "https://other.example.com/foo"],
+            &[
+                "config",
+                "--local",
+                "remote.upstream.url",
+                "https://other.example.com/foo",
+            ],
         );
         let url = endpoint_for_remote(repo.path(), Some("upstream")).unwrap();
         assert_eq!(url, "https://other.example.com/foo.git/info/lfs");
@@ -505,7 +533,12 @@ mod tests {
         .unwrap();
         git_in(
             repo.path(),
-            &["config", "--local", "lfs.url", "https://from-localconfig.example/"],
+            &[
+                "config",
+                "--local",
+                "lfs.url",
+                "https://from-localconfig.example/",
+            ],
         );
         let url = endpoint_for_remote(repo.path(), None).unwrap();
         assert_eq!(url, "https://from-localconfig.example/");
@@ -524,7 +557,10 @@ mod tests {
     fn endpoint_env_var_wins_over_everything() {
         let _g = lock_env();
         let repo = fresh_repo();
-        git_in(repo.path(), &["config", "--local", "lfs.url", "https://lo.cal/lfs"]);
+        git_in(
+            repo.path(),
+            &["config", "--local", "lfs.url", "https://lo.cal/lfs"],
+        );
 
         let prev = std::env::var_os("GIT_LFS_URL");
         unsafe { std::env::set_var("GIT_LFS_URL", "https://from-env.example/") };

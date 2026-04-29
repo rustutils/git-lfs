@@ -79,7 +79,10 @@ async fn download_happy_path_writes_verified_bytes_to_store() {
     let (tx, mut rx) = unbounded_channel();
     let report = transfer
         .download(
-            vec![ObjectSpec { oid: ABC_OID.into(), size: 3 }],
+            vec![ObjectSpec {
+                oid: ABC_OID.into(),
+                size: 3,
+            }],
             None,
             Some(tx),
         )
@@ -94,7 +97,10 @@ async fn download_happy_path_writes_verified_bytes_to_store() {
     assert!(store.contains_with_size(oid, 3));
 
     let events = drain(&mut rx);
-    assert!(matches!(events.first(), Some(Event::Started { size: 3, .. })));
+    assert!(matches!(
+        events.first(),
+        Some(Event::Started { size: 3, .. })
+    ));
     assert!(matches!(events.last(), Some(Event::Completed { .. })));
 }
 
@@ -126,7 +132,10 @@ async fn download_hash_mismatch_is_failed_and_not_retried() {
     let (_tmp, store, transfer) = make_transfer(&server);
     let report = transfer
         .download(
-            vec![ObjectSpec { oid: ABC_OID.into(), size: 3 }],
+            vec![ObjectSpec {
+                oid: ABC_OID.into(),
+                size: 3,
+            }],
             None,
             None,
         )
@@ -169,7 +178,10 @@ async fn download_5xx_retries_then_succeeds() {
     let (_tmp, store, transfer) = make_transfer(&server);
     let report = transfer
         .download(
-            vec![ObjectSpec { oid: ABC_OID.into(), size: 3 }],
+            vec![ObjectSpec {
+                oid: ABC_OID.into(),
+                size: 3,
+            }],
             None,
             None,
         )
@@ -199,7 +211,10 @@ async fn download_per_object_error_surfaces_in_report() {
     let (_tmp, _store, transfer) = make_transfer(&server);
     let report = transfer
         .download(
-            vec![ObjectSpec { oid: ABC_OID.into(), size: 3 }],
+            vec![ObjectSpec {
+                oid: ABC_OID.into(),
+                size: 3,
+            }],
             None,
             None,
         )
@@ -239,7 +254,10 @@ async fn download_action_4xx_is_failed_without_retry() {
     let (_tmp, _store, transfer) = make_transfer(&server);
     let report = transfer
         .download(
-            vec![ObjectSpec { oid: ABC_OID.into(), size: 3 }],
+            vec![ObjectSpec {
+                oid: ABC_OID.into(),
+                size: 3,
+            }],
             None,
             None,
         )
@@ -281,7 +299,10 @@ async fn download_action_header_is_forwarded() {
     let (_tmp, _store, transfer) = make_transfer(&server);
     let report = transfer
         .download(
-            vec![ObjectSpec { oid: ABC_OID.into(), size: 3 }],
+            vec![ObjectSpec {
+                oid: ABC_OID.into(),
+                size: 3,
+            }],
             None,
             None,
         )
@@ -323,7 +344,10 @@ async fn upload_happy_path_streams_object_bytes() {
 
     let report = transfer
         .upload(
-            vec![ObjectSpec { oid: ABC_OID.into(), size: 3 }],
+            vec![ObjectSpec {
+                oid: ABC_OID.into(),
+                size: 3,
+            }],
             None,
             None,
         )
@@ -372,7 +396,10 @@ async fn upload_with_verify_callback_posts_oid_and_size() {
 
     let report = transfer
         .upload(
-            vec![ObjectSpec { oid: ABC_OID.into(), size: 3 }],
+            vec![ObjectSpec {
+                oid: ABC_OID.into(),
+                size: 3,
+            }],
             None,
             None,
         )
@@ -396,7 +423,10 @@ async fn upload_no_actions_means_server_already_has_it() {
     let (_tmp, _store, transfer) = make_transfer(&server);
     let report = transfer
         .upload(
-            vec![ObjectSpec { oid: ABC_OID.into(), size: 3 }],
+            vec![ObjectSpec {
+                oid: ABC_OID.into(),
+                size: 3,
+            }],
             None,
             None,
         )
@@ -445,7 +475,10 @@ async fn upload_verify_failure_marks_transfer_failed() {
 
     let report = transfer
         .upload(
-            vec![ObjectSpec { oid: ABC_OID.into(), size: 3 }],
+            vec![ObjectSpec {
+                oid: ABC_OID.into(),
+                size: 3,
+            }],
             None,
             None,
         )
@@ -490,8 +523,14 @@ async fn mixed_success_and_failure_in_one_batch() {
     let report = transfer
         .download(
             vec![
-                ObjectSpec { oid: ABC_OID.into(), size: 3 },
-                ObjectSpec { oid: other_oid.into(), size: 99 },
+                ObjectSpec {
+                    oid: ABC_OID.into(),
+                    size: 3,
+                },
+                ObjectSpec {
+                    oid: other_oid.into(),
+                    size: 99,
+                },
             ],
             None,
             None,
@@ -549,4 +588,3 @@ impl Respond for FlakyResponder {
         guard.pop().unwrap_or_else(|| self.fallback.clone())
     }
 }
-

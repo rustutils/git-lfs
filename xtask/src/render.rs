@@ -29,9 +29,7 @@ pub fn render_man(
     // See `xtask::lib`/the bin docs: clap_mangen needs the page name on
     // the command (titles come from `cmd.get_name()`) and a version
     // (subcommands don't inherit the parent's, so set crate version).
-    let cmd = cmd
-        .name(page_name.to_owned())
-        .version(git_lfs::VERSION);
+    let cmd = cmd.name(page_name.to_owned()).version(git_lfs::VERSION);
     let man = clap_mangen::Man::new(cmd);
 
     let mut out = Vec::<u8>::new();

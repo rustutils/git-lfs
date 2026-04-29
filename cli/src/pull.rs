@@ -286,4 +286,3 @@ fn smudge_filter_installed(cwd: &Path) -> bool {
         .output();
     matches!(out, Ok(o) if o.status.success() && !o.stdout.trim_ascii().is_empty())
 }
-

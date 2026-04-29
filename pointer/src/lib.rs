@@ -180,8 +180,7 @@ fn parse_lines(text: &str) -> Result<Pointer, DecodeError> {
 
         // Mismatch: try to parse as an extension.
         if let Some((priority, name)) = parse_extension_key(key) {
-            let ext_oid =
-                parse_oid_value(value).map_err(DecodeError::Malformed)?;
+            let ext_oid = parse_oid_value(value).map_err(DecodeError::Malformed)?;
             extensions.push(Extension {
                 name: name.to_owned(),
                 priority,
@@ -210,12 +209,13 @@ fn parse_lines(text: &str) -> Result<Pointer, DecodeError> {
         )));
     }
 
-    let oid_value = filled[1]
-        .ok_or(DecodeError::Malformed(MalformedReason::MissingField("oid")))?;
+    let oid_value =
+        filled[1].ok_or(DecodeError::Malformed(MalformedReason::MissingField("oid")))?;
     let oid = parse_oid_value(oid_value).map_err(DecodeError::Malformed)?;
 
-    let size_value = filled[2]
-        .ok_or(DecodeError::Malformed(MalformedReason::MissingField("size")))?;
+    let size_value = filled[2].ok_or(DecodeError::Malformed(MalformedReason::MissingField(
+        "size",
+    )))?;
     let size = parse_size(size_value).map_err(DecodeError::Malformed)?;
 
     extensions.sort_by_key(|e| e.priority);
@@ -264,10 +264,7 @@ fn parse_extension_key(key: &str) -> Option<(u8, &str)> {
         return None;
     }
     let name = &rest[2..];
-    if !name
-        .bytes()
-        .all(|b| b.is_ascii_alphanumeric() || b == b'_')
-    {
+    if !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
         return None;
     }
     Some((bytes[0] - b'0', name))
@@ -314,10 +311,7 @@ pub enum MalformedReason {
     #[error("unrecognized version: {0:?}")]
     InvalidVersion(String),
     #[error("expected key {expected:?}, got {got:?}")]
-    UnexpectedKey {
-        expected: &'static str,
-        got: String,
-    },
+    UnexpectedKey { expected: &'static str, got: String },
     #[error("missing required {0:?} line")]
     MissingField(&'static str),
     #[error("oid value {0:?} is not in the form <type>:<hash>")]
@@ -340,15 +334,15 @@ mod tests {
         Oid::from_hex(hex).unwrap()
     }
 
-    const SAMPLE_OID_HEX: &str =
-        "4d7a214614ab2935c943f9e0ff69d22eadbb8f32b1258daaa5e2ca24d17e2393";
+    const SAMPLE_OID_HEX: &str = "4d7a214614ab2935c943f9e0ff69d22eadbb8f32b1258daaa5e2ca24d17e2393";
 
     // ---------- encode ----------
 
     #[test]
     fn encode_simple() {
         let p = Pointer::new(sha(SAMPLE_OID_HEX), 12345);
-        let expected = format!("version {VERSION_LATEST}\noid sha256:{SAMPLE_OID_HEX}\nsize 12345\n");
+        let expected =
+            format!("version {VERSION_LATEST}\noid sha256:{SAMPLE_OID_HEX}\nsize 12345\n");
         assert_eq!(p.encode(), expected);
     }
 
@@ -462,7 +456,10 @@ mod tests {
         assert_eq!(p.size, 12345);
         // Re-encoding rewrites version to latest, so input is NOT canonical.
         assert!(!p.canonical);
-        assert!(p.encode().starts_with(&format!("version {VERSION_LATEST}\n")));
+        assert!(
+            p.encode()
+                .starts_with(&format!("version {VERSION_LATEST}\n"))
+        );
     }
 
     #[test]
@@ -569,9 +566,8 @@ mod tests {
 
     #[test]
     fn extra_line_after_size_is_not_a_pointer() {
-        let s = format!(
-            "version {VERSION_LATEST}\noid sha256:{SAMPLE_OID_HEX}\nsize 12345\nwat wat\n"
-        );
+        let s =
+            format!("version {VERSION_LATEST}\noid sha256:{SAMPLE_OID_HEX}\nsize 12345\nwat wat\n");
         let err = Pointer::parse(s.as_bytes()).unwrap_err();
         assert!(matches!(
             err,
@@ -663,9 +659,7 @@ mod tests {
 
     #[test]
     fn oid_with_trailing_garbage_is_malformed() {
-        let s = format!(
-            "version {VERSION_LATEST}\noid sha256:{SAMPLE_OID_HEX}&\nsize 177735\n"
-        );
+        let s = format!("version {VERSION_LATEST}\noid sha256:{SAMPLE_OID_HEX}&\nsize 177735\n");
         let err = Pointer::parse(s.as_bytes()).unwrap_err();
         assert!(matches!(
             err,

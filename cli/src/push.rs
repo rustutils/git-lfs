@@ -173,13 +173,9 @@ fn push_by_oid(
     for raw in oids {
         let oid = parse_oid(raw)?;
         let path = store.object_path(oid);
-        let size = std::fs::metadata(&path)
-            .map(|m| m.len())
-            .map_err(|_| {
-                PushCommandError::Usage(format!(
-                    "object {oid} not found in local LFS store"
-                ))
-            })?;
+        let size = std::fs::metadata(&path).map(|m| m.len()).map_err(|_| {
+            PushCommandError::Usage(format!("object {oid} not found in local LFS store"))
+        })?;
         to_upload.push(ObjectSpec {
             oid: oid.to_string(),
             size,
@@ -245,9 +241,8 @@ fn parse_oid(raw: &str) -> Result<Oid, PushCommandError> {
             "too short object ID: {raw:?}"
         )));
     }
-    raw.parse::<Oid>().map_err(|_| {
-        PushCommandError::Usage(format!("invalid object ID: {raw:?}"))
-    })
+    raw.parse::<Oid>()
+        .map_err(|_| PushCommandError::Usage(format!("invalid object ID: {raw:?}")))
 }
 
 /// True if `<remote>` is something we can resolve to an LFS endpoint —
@@ -265,10 +260,7 @@ fn is_remote_or_url(cwd: &Path, name: &str) -> bool {
         return true;
     }
     let key = format!("remote.{name}.url");
-    if matches!(
-        git_lfs_git::config::get_effective(cwd, &key),
-        Ok(Some(_))
-    ) {
+    if matches!(git_lfs_git::config::get_effective(cwd, &key), Ok(Some(_))) {
         return true;
     }
     // Endpoint-resolvable via `lfs.url` / `remote.<name>.lfsurl` / etc.
@@ -281,7 +273,12 @@ fn is_resolvable_ref(cwd: &Path, r: &str) -> bool {
     let out = Command::new("git")
         .arg("-C")
         .arg(cwd)
-        .args(["rev-parse", "--verify", "--quiet", &format!("{r}^{{commit}}")])
+        .args([
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{r}^{{commit}}"),
+        ])
         .output();
     matches!(out, Ok(o) if o.status.success())
 }
@@ -401,24 +398,18 @@ pub(crate) fn upload_in_range(
             crate::locks_verify::Outcome::Skipped => Vec::new(),
             crate::locks_verify::Outcome::Verified { ours, theirs } => {
                 if !ours.is_empty() {
-                    let ours_paths: Vec<&str> =
-                        ours.iter().map(|l| l.path.as_str()).collect();
-                    let any_ours_pushed = pushed_paths
-                        .iter()
-                        .any(|p| {
-                            let p = p.to_string_lossy();
-                            ours_paths.iter().any(|op| p == *op)
-                        });
+                    let ours_paths: Vec<&str> = ours.iter().map(|l| l.path.as_str()).collect();
+                    let any_ours_pushed = pushed_paths.iter().any(|p| {
+                        let p = p.to_string_lossy();
+                        ours_paths.iter().any(|op| p == *op)
+                    });
                     if any_ours_pushed {
                         eprintln!(
                             "Consider unlocking your own locked files: \
                              (`git lfs unlock <path>`)"
                         );
                         for op in &ours_paths {
-                            if pushed_paths
-                                .iter()
-                                .any(|p| p.to_string_lossy() == *op)
-                            {
+                            if pushed_paths.iter().any(|p| p.to_string_lossy() == *op) {
                                 eprintln!("* {op}");
                             }
                         }
@@ -428,11 +419,7 @@ pub(crate) fn upload_in_range(
                 // those are the entries that actually block this push.
                 theirs
                     .into_iter()
-                    .filter(|l| {
-                        pushed_paths
-                            .iter()
-                            .any(|p| p.to_string_lossy() == l.path)
-                    })
+                    .filter(|l| pushed_paths.iter().any(|p| p.to_string_lossy() == l.path))
                     .collect()
             }
         };

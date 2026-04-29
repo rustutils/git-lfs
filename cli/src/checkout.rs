@@ -100,8 +100,9 @@ pub fn run(cwd: &Path, opts: &Options) -> Result<(), CheckoutError> {
     } else {
         let mut builder = GlobSetBuilder::new();
         for pat in &opts.paths {
-            let glob_pats = resolve_user_pattern(cwd, &repo_root, pat)
-                .ok_or_else(|| CheckoutError::Other(format!("path is outside the repository: {pat}")))?;
+            let glob_pats = resolve_user_pattern(cwd, &repo_root, pat).ok_or_else(|| {
+                CheckoutError::Other(format!("path is outside the repository: {pat}"))
+            })?;
             for gp in glob_pats {
                 let glob = Glob::new(&gp)
                     .map_err(|e| CheckoutError::Other(format!("invalid pattern {pat:?}: {e}")))?;
@@ -114,7 +115,9 @@ pub fn run(cwd: &Path, opts: &Options) -> Result<(), CheckoutError> {
         pointers
             .into_iter()
             .filter(|p| {
-                let Some(path) = p.path.as_deref() else { return false };
+                let Some(path) = p.path.as_deref() else {
+                    return false;
+                };
                 let s = path.to_string_lossy();
                 let accepted = set.is_match(s.as_ref());
                 if trace {
@@ -465,4 +468,3 @@ fn resolve_user_pattern(cwd: &Path, repo_root: &Path, pat: &str) -> Option<Vec<S
     let subtree = format!("{combined}/**");
     Some(vec![combined, subtree])
 }
-

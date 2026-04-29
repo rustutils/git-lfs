@@ -19,7 +19,11 @@ use crate::Error;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CatFileHeader {
     /// Object exists. `size` is the in-repo content length in bytes.
-    Found { oid: String, kind: String, size: u64 },
+    Found {
+        oid: String,
+        kind: String,
+        size: u64,
+    },
     /// Git replied with `<requested-oid> missing`.
     Missing { oid: String },
 }
@@ -55,7 +59,11 @@ impl CatFileBatchCheck {
             .spawn()?;
         let stdin = child.stdin.take().expect("piped");
         let stdout = BufReader::new(child.stdout.take().expect("piped"));
-        Ok(Self { stdin: Some(stdin), stdout, child })
+        Ok(Self {
+            stdin: Some(stdin),
+            stdout,
+            child,
+        })
     }
 
     /// Look up one OID. Returns the parsed header.
@@ -105,7 +113,11 @@ impl CatFileBatch {
             .spawn()?;
         let stdin = child.stdin.take().expect("piped");
         let stdout = BufReader::new(child.stdout.take().expect("piped"));
-        Ok(Self { stdin: Some(stdin), stdout, child })
+        Ok(Self {
+            stdin: Some(stdin),
+            stdout,
+            child,
+        })
     }
 
     /// Read one OID. Returns `Ok(None)` if git replied "missing"; otherwise
@@ -136,7 +148,12 @@ impl CatFileBatch {
                         nl[0]
                     )));
                 }
-                Ok(Some(BlobContent { oid, kind, size, content }))
+                Ok(Some(BlobContent {
+                    oid,
+                    kind,
+                    size,
+                    content,
+                }))
             }
         }
     }

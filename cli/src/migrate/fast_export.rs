@@ -266,8 +266,8 @@ impl<R: Read> Reader<R> {
             }
         }
 
-        let committer = committer
-            .ok_or_else(|| io::Error::other("commit missing committer line"))?;
+        let committer =
+            committer.ok_or_else(|| io::Error::other("commit missing committer line"))?;
         Ok(Commit {
             ref_name: ref_name.to_owned(),
             mark,
@@ -286,18 +286,22 @@ impl<R: Read> Reader<R> {
     /// modifies we read a follow-up `data` block.
     fn complete_file_change(&mut self, start: FileChangeStart) -> io::Result<FileChange> {
         match start {
-            FileChangeStart::Modify { mode, dataref, path } => {
-                Ok(FileChange::Modify { mode, dataref, path })
-            }
+            FileChangeStart::Modify {
+                mode,
+                dataref,
+                path,
+            } => Ok(FileChange::Modify {
+                mode,
+                dataref,
+                path,
+            }),
             FileChangeStart::ModifyInline { mode, path } => {
                 let line = self
                     .read_line()?
                     .ok_or_else(|| io::Error::other("unexpected EOF after `M ... inline`"))?;
-                let count = line
-                    .strip_prefix("data ")
-                    .ok_or_else(|| io::Error::other(format!(
-                        "expected `data <N>` after inline M, got {line:?}"
-                    )))?;
+                let count = line.strip_prefix("data ").ok_or_else(|| {
+                    io::Error::other(format!("expected `data <N>` after inline M, got {line:?}"))
+                })?;
                 let data = self.read_data_block(count)?;
                 Ok(FileChange::ModifyInline { mode, path, data })
             }
@@ -527,7 +531,11 @@ fn parse_file_change_start(line: &str) -> Option<FileChangeStart> {
         } else {
             DataRef::Sha(dataref_or_inline.to_owned())
         };
-        return Some(FileChangeStart::Modify { mode, dataref, path });
+        return Some(FileChangeStart::Modify {
+            mode,
+            dataref,
+            path,
+        });
     }
     if let Some(path) = line.strip_prefix("D ") {
         return Some(FileChangeStart::Delete(path.to_owned()));
@@ -594,7 +602,12 @@ mod tests {
     fn parses_blob_with_binary_data() {
         // 4-byte blob containing a NUL and an LF — neither should
         // confuse the framing.
-        let s: Vec<u8> = b"blob\nmark :1\ndata 4\n".iter().copied().chain([0u8, b'\n', 0xff, 0u8]).chain(*b"\n").collect();
+        let s: Vec<u8> = b"blob\nmark :1\ndata 4\n"
+            .iter()
+            .copied()
+            .chain([0u8, b'\n', 0xff, 0u8])
+            .chain(*b"\n")
+            .collect();
         let cmds = read_all(&s);
         match &cmds[0] {
             Command::Blob(b) => {
@@ -620,11 +633,18 @@ mod tests {
             Command::Commit(c) => {
                 assert_eq!(c.ref_name, "refs/heads/main");
                 assert_eq!(c.mark, Some(2));
-                assert_eq!(c.author.as_deref(), Some("Alice <a@example> 1234567890 +0000"));
+                assert_eq!(
+                    c.author.as_deref(),
+                    Some("Alice <a@example> 1234567890 +0000")
+                );
                 assert_eq!(c.message, b"initial msg");
                 assert_eq!(c.file_changes.len(), 1);
                 match &c.file_changes[0] {
-                    FileChange::Modify { mode, dataref, path } => {
+                    FileChange::Modify {
+                        mode,
+                        dataref,
+                        path,
+                    } => {
                         assert_eq!(mode, "100644");
                         assert_eq!(dataref, &DataRef::Mark(1));
                         assert_eq!(path, "hello.txt");
@@ -780,7 +800,9 @@ mod tests {
         match &cmds[0] {
             Command::Commit(c) => {
                 assert_eq!(c.file_changes.len(), 3);
-                assert!(matches!(&c.file_changes[0], FileChange::Delete { path } if path == "old.txt"));
+                assert!(
+                    matches!(&c.file_changes[0], FileChange::Delete { path } if path == "old.txt")
+                );
                 assert!(matches!(
                     &c.file_changes[1],
                     FileChange::Rename { src, dst } if src == "from.txt" && dst == "to.txt"

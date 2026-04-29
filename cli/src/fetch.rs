@@ -68,10 +68,7 @@ pub struct FetchOutcome {
 
 /// Run the fetch command. Routes to the right scan / filter / download
 /// path based on `opts`.
-pub fn fetch(
-    cwd: &Path,
-    opts: &FetchOptions<'_>,
-) -> Result<FetchOutcome, FetchCommandError> {
+pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchCommandError> {
     // Outside-a-repo guard. Upstream exits 128 here; we surface the
     // condition via Usage and let the dispatcher map it. Use
     // `--git-dir` rather than `--is-inside-work-tree`: the former
@@ -79,9 +76,7 @@ pub fn fetch(
     // or `GIT_DIR` / `GIT_WORK_TREE` env-var redirection where cwd
     // sits outside the work tree, t-checkout test 14).
     if !is_in_git_repo(cwd) {
-        return Err(FetchCommandError::Usage(
-            "Not in a Git repository.".into(),
-        ));
+        return Err(FetchCommandError::Usage("Not in a Git repository.".into()));
     }
 
     // Resolve the effective positional args: --stdin overrides argv.
@@ -115,9 +110,7 @@ pub fn fetch(
             Some((first, rest)) if is_remote_or_url(cwd, first) => {
                 (Some(first.clone()), rest.to_vec())
             }
-            Some((first, rest))
-                if rest.is_empty() && !is_resolvable_ref(cwd, first) =>
-            {
+            Some((first, rest)) if rest.is_empty() && !is_resolvable_ref(cwd, first) => {
                 return Err(FetchCommandError::Usage(format!(
                     "Invalid remote name: {first:?}"
                 )));
@@ -271,14 +264,10 @@ fn run_dry_run_with_json(
         req = req.with_ref(r);
     }
     let fetcher = LfsFetcher::from_repo_with_remote(cwd, store, remote)?;
-    let api = fetcher
-        .api_client()
-        .map_err(FetchCommandError::Fetch)?;
+    let api = fetcher.api_client().map_err(FetchCommandError::Fetch)?;
     let resp = fetcher
         .runtime_block_on(api.batch(&req))
-        .map_err(|e: git_lfs_api::ApiError| {
-            FetchCommandError::Fetch(e.to_string().into())
-        })?;
+        .map_err(|e: git_lfs_api::ApiError| FetchCommandError::Fetch(e.to_string().into()))?;
     print_json_transfers(store, &to_fetch, &paths, Some(&resp))?;
     Ok(FetchOutcome::default())
 }
@@ -387,14 +376,13 @@ pub(crate) fn build_pattern_set(
     }
     let mut builder = GlobSetBuilder::new();
     for pat in &raw {
-        let glob = Glob::new(pat).map_err(|e| {
-            FetchCommandError::Usage(format!("invalid pattern {pat:?}: {e}"))
-        })?;
+        let glob = Glob::new(pat)
+            .map_err(|e| FetchCommandError::Usage(format!("invalid pattern {pat:?}: {e}")))?;
         builder.add(glob);
     }
-    let set = builder.build().map_err(|e| {
-        FetchCommandError::Usage(format!("pattern set build failed: {e}"))
-    })?;
+    let set = builder
+        .build()
+        .map_err(|e| FetchCommandError::Usage(format!("pattern set build failed: {e}")))?;
     Ok(Some(set))
 }
 
@@ -464,17 +452,19 @@ fn is_remote_or_url(cwd: &Path, name: &str) -> bool {
         return true;
     }
     let key = format!("remote.{name}.url");
-    matches!(
-        git_lfs_git::config::get_effective(cwd, &key),
-        Ok(Some(_))
-    )
+    matches!(git_lfs_git::config::get_effective(cwd, &key), Ok(Some(_)))
 }
 
 fn is_resolvable_ref(cwd: &Path, r: &str) -> bool {
     let out = Command::new("git")
         .arg("-C")
         .arg(cwd)
-        .args(["rev-parse", "--verify", "--quiet", &format!("{r}^{{commit}}")])
+        .args([
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{r}^{{commit}}"),
+        ])
         .output();
     matches!(out, Ok(o) if o.status.success())
 }

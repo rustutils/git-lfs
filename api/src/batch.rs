@@ -160,7 +160,10 @@ mod tests {
     fn request_skips_empty_optional_fields() {
         let req = BatchRequest::new(
             Operation::Download,
-            vec![ObjectSpec { oid: "abc".into(), size: 10 }],
+            vec![ObjectSpec {
+                oid: "abc".into(),
+                size: 10,
+            }],
         );
         let v = serde_json::to_value(&req).unwrap();
         assert!(v.get("transfers").is_none());

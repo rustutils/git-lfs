@@ -100,9 +100,9 @@ fn parse(bytes: &[u8]) -> Result<Vec<DiffEntry>, Error> {
             None
         };
 
-        let src = tokens.next().ok_or_else(|| {
-            Error::Failed(format!("diff-index: missing src name for {meta_s:?}"))
-        })?;
+        let src = tokens
+            .next()
+            .ok_or_else(|| Error::Failed(format!("diff-index: missing src name for {meta_s:?}")))?;
         let src_name = std::str::from_utf8(src)
             .map_err(|e| Error::Failed(format!("diff-index: non-utf8 src name: {e}")))?
             .to_owned();

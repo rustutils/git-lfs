@@ -79,7 +79,11 @@ pub fn import(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateError> {
         cwd,
         &include_refs,
         &exclude_refs,
-        super::transform::Options { include, exclude, above: opts.above },
+        super::transform::Options {
+            include,
+            exclude,
+            above: opts.above,
+        },
         Mode::Import,
         &store,
     )?;
@@ -150,10 +154,7 @@ fn import_no_rewrite(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateE
         let rel = abs
             .strip_prefix(&repo_root)
             .map_err(|_| MigrateError::Other(format!("path outside repo: {raw}")))?;
-        let leaf = rel
-            .file_name()
-            .and_then(|o| o.to_str())
-            .unwrap_or_default();
+        let leaf = rel.file_name().and_then(|o| o.to_str()).unwrap_or_default();
         if let Some(idx) = leaf.rfind('.')
             && idx > 0
             && idx < leaf.len() - 1

@@ -148,10 +148,7 @@ mod tests {
         // include=HEAD, exclude=first → only the second commit + its tree
         // + the new blob (a.txt is unchanged so not re-emitted).
         let entries = rev_list(repo.path(), &["HEAD"], &[&first]).unwrap();
-        let blobs: Vec<_> = entries
-            .iter()
-            .filter_map(|e| e.name.as_deref())
-            .collect();
+        let blobs: Vec<_> = entries.iter().filter_map(|e| e.name.as_deref()).collect();
         assert!(blobs.contains(&"b.txt"), "{entries:?}");
         assert!(!blobs.contains(&"a.txt"), "{entries:?}");
     }
@@ -162,7 +159,9 @@ mod tests {
         commit_file(&repo, "a.txt", b"x");
         let err = rev_list(repo.path(), &["does-not-exist"], &[]).unwrap_err();
         match err {
-            Error::Failed(msg) => assert!(msg.contains("does-not-exist") || msg.contains("unknown")),
+            Error::Failed(msg) => {
+                assert!(msg.contains("does-not-exist") || msg.contains("unknown"))
+            }
             _ => panic!("expected Failed, got {err:?}"),
         }
     }

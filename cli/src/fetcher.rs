@@ -17,9 +17,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 
-use git_lfs_api::{
-    Auth, BatchRequest, Client as ApiClient, ObjectSpec, Operation, Ref,
-};
+use git_lfs_api::{Auth, BatchRequest, Client as ApiClient, ObjectSpec, Operation, Ref};
 use git_lfs_creds::{CachingHelper, GitCredentialHelper, Helper, HelperChain};
 use git_lfs_filter::FetchError;
 use git_lfs_pointer::Pointer;
@@ -181,10 +179,7 @@ impl LfsFetcher {
     /// Sends one upload-direction batch and returns the OIDs that came
     /// back with neither `actions` nor `error` (the spec's no-op
     /// signal — server already has the object).
-    pub fn check_server_has(
-        &self,
-        specs: Vec<ObjectSpec>,
-    ) -> Result<HashSet<String>, FetchError> {
+    pub fn check_server_has(&self, specs: Vec<ObjectSpec>) -> Result<HashSet<String>, FetchError> {
         if specs.is_empty() {
             return Ok(HashSet::new());
         }
