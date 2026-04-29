@@ -897,7 +897,23 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             } else {
                 status::Format::Default
             };
-            status::run(&cwd, format)?;
+            match status::run(&cwd, format) {
+                Ok(()) => {}
+                Err(status::StatusError::NotInRepo) => {
+                    // Match `git lfs fetch` / `pull`: emit the message
+                    // on stdout and exit 128 so the t-status outside-
+                    // repo test (and parity with upstream) holds.
+                    println!("Not in a Git repository.");
+                    return Ok(128);
+                }
+                Err(status::StatusError::NotInWorkTree) => {
+                    // Bare repo: status has nothing to compare a work
+                    // tree against. Upstream exits non-zero here.
+                    println!("This operation must be run in a work tree.");
+                    return Ok(1);
+                }
+                Err(e) => return Err(e.into()),
+            }
         }
         Command::Lock {
             paths,

@@ -1611,12 +1611,18 @@ fn status_json_only_emits_lfs_entries() {
 }
 
 #[test]
-fn status_empty_repo_says_no_commits() {
+fn status_empty_repo_emits_section_layout() {
+    // Before the initial commit, upstream `git lfs status` emits the
+    // normal section layout against the empty tree — no "No commits
+    // yet" message and no "On branch ..." header. Matches t-status's
+    // "before initial commit" expectations.
     let repo = fresh_repo_with_identity();
     let out = run_in(repo.path(), &["status"], b"");
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("No commits yet"), "{stdout}");
+    assert!(stdout.contains("Objects to be committed:"), "{stdout}");
+    assert!(stdout.contains("Objects not staged for commit:"), "{stdout}");
+    assert!(!stdout.contains("On branch"), "{stdout}");
 }
 
 #[test]
