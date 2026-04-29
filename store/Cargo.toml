@@ -7,7 +7,7 @@ license.workspace    = true
 authors.workspace    = true
 repository.workspace = true
 homepage.workspace   = true
-readme               = "../README.md"
+readme               = "README.md"
 keywords             = ["git", "lfs", "git-lfs", "storage", "content-addressable"]
 categories           = ["filesystem", "development-tools"]
 

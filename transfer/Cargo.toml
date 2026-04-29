@@ -7,7 +7,7 @@ license.workspace    = true
 authors.workspace    = true
 repository.workspace = true
 homepage.workspace   = true
-readme               = "../README.md"
+readme               = "README.md"
 keywords             = ["git", "lfs", "git-lfs", "transfer", "upload"]
 categories           = ["web-programming::http-client", "asynchronous"]
 
