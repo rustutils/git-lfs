@@ -47,8 +47,10 @@ endpoints with no explicit `lfs.url` config.
   runs the full setting × status matrix (enabled / unset / disabled ×
   200 / 5xx / 501 / 403 / 404).
 - **Test scaffolding.** `lfstest-testutils addcommits` ported to Rust at
-  `cli/src/bin/lfstest-testutils.rs` so the ~11 fixture-building shell
-  tests can run without the upstream Go testtools.
+  `tests/cmd/src/bin/lfstest-testutils.rs` so the ~11 fixture-building
+  shell tests can run without the upstream Go testtools. Lives in its
+  own `lfstest` crate (publish=false), so `cargo install git-lfs`
+  installs only the production binary.
 
 **Milestone 3 territory** — not started or partial. Custom transfer
 adapters + tus, SSH `git-lfs-authenticate`, netrc / askpass / NTLM /
@@ -57,6 +59,12 @@ Kerberos, `merge-driver`, `dedup`, `ext`, `standalone-file`, `logs`,
 `migrate --fixup`, retry / Retry-After handling, fetch-recent
 semantics. See `NOTES.md` for the ranked gap list and per-command
 deferred polish.
+
+**Released as v0.2.0 on crates.io.** All eight workspace members are
+publish-ready (description, keywords, categories, repository, per-crate
+README). Project status remains experimental — for production use,
+upstream Go `git-lfs` is still the answer; ~39% of the vendored shell
+tests pass.
 
 ## Layout
 

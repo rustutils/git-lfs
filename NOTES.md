@@ -60,18 +60,34 @@ Useful entry points in the upstream tree:
 
 ## Test status snapshot (point in time)
 
-After the `lfstest-testutils` port + `GIT_LFS_SET_LOCKABLE_READONLY`
-fix the totals shifted: t-post-checkout 0/2 → 2/2, t-post-merge 0/1
-→ 1/1, t-pre-push 32/40 → 34/40, t-fetch 17/28 → 18/28, several
-others +1 each. About a dozen formerly-blocked tests now run, and
-a comparable number now reach further into the test body before
-hitting the next gap.
+About 308 of 794 vendored shell tests pass (~39%) across 104
+files. Notable since the last snapshot: t-clone 0/13 → 8/13
+(deprecated `git lfs clone` wrapper shipped, plus pull-side fixes
+for include/exclude, missing-filter skip, and `update-index
+--refresh` for stat freshness); t-checkout 1/18 → 3/18 with seven
+foundational fixes (glob path matching, missing-object pointer-
+text fallback, existing-file policy, `scan_tree --full-tree`,
+`filepathfilter:` trace lines under `GIT_TRACE`, progress meter,
+stat-cache refresh).
 
-Headline ratio still 35-40%; the remaining failures cluster in
-commands we haven't started (`env`, `config`, `ext`, `dedup`,
-`custom-transfers`, `ssh`, retries) or specific feature gaps
-(fetch-recent windows, prune output text, `git lfs clone`
-deprecated wrapper, locking-API edge cases).
+The remaining failures cluster in commands we haven't started
+(`env`, `config`, `ext`, `dedup`, `custom-transfers`, `ssh`,
+retries) or specific feature gaps (fetch-recent windows, prune
+output text, conflict-detection error messages in checkout,
+locking-API edge cases).
+
+## Release status
+
+**v0.2.0 published to crates.io** (April 2026). All eight
+workspace members have publish-ready metadata, per-crate READMEs,
+and a workspace-root README that flags the experimental status.
+The cli's README (which is what the crates.io listing for
+`git-lfs` shows) leads with the experimental warning.
+
+`lfstest-testutils` lives in its own non-published workspace
+member at `tests/cmd/` (one `lfstest` crate; future Rust ports
+of upstream test helpers drop into `tests/cmd/src/bin/<name>.rs`).
+`cargo install git-lfs` installs only the production binary.
 
 ## Hook installation (corrected)
 
@@ -95,18 +111,26 @@ tree in the same hook-installed state upstream produces.
 
 ## Highest-leverage gaps (descending leverage)
 
-1. **`git lfs clone` deprecated wrapper**. Owns t-clone (0/13).
-   Mechanical: `git clone` then `cd` then `installHooks(false)` then
-   `git lfs pull`. ~50 lines.
+1. **Diagnose t-status (1/17) and t-pull (2/20)**. Both ship and
+   work end-to-end against authenticated endpoints, but the formal
+   tests barely pass. Likely one or two systemic issues per file
+   rather than 17 distinct bugs (the same shape as t-checkout
+   before its rewrite). Same `--full-tree` / `--full-name` / stat-
+   refresh patterns may apply.
 2. **Fetch-recent semantics** (`lfs.fetchrecentrefsdays`,
    `lfs.fetchrecentcommitsdays`, `lfs.fetchrecentremoterefs`).
    Owns t-fetch-recent (1/7) and parts of t-fetch / t-prune.
-3. **`git lfs env` output format**. Owns t-env (0/17).
+3. **`git lfs env` output format**. Owns t-env (0/17). Command
+   exists; output shape doesn't match what tests grep for.
 4. **`git lfs config` subcommand**. Owns t-config (0/10), entirely
    unimplemented.
 5. **Prune output text + `--verify-remote`**. Owns most of t-prune
    (4/18), t-prune-worktree (0/2). Output strings ("N local
    objects, M retained, done.") don't match upstream wording.
+6. **Checkout conflict-detection messages**. The remaining 15
+   t-checkout failures are mostly file-vs-directory and symlink
+   conflict-error wording, hardlink-breaking, and empty-file mtime
+   preservation.
 
 ## Other large clusters (descending leverage)
 
