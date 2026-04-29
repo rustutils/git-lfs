@@ -1320,7 +1320,10 @@ async fn pre_push_respects_git_lfs_skip_push_env() {
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
-        child.stdin.as_mut().unwrap().write_all(stdin.as_bytes()).unwrap();
+        // GIT_LFS_SKIP_PUSH=1 lets pre-push exit before reading stdin, so
+        // the write races with child exit. EPIPE here is fine — we're
+        // asserting the child exits cleanly, not that it consumed input.
+        let _ = child.stdin.as_mut().unwrap().write_all(stdin.as_bytes());
         drop(child.stdin.take());
         child.wait_with_output().unwrap()
     })
