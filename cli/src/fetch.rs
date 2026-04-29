@@ -73,10 +73,12 @@ pub fn fetch(
     opts: &FetchOptions<'_>,
 ) -> Result<FetchOutcome, FetchCommandError> {
     // Outside-a-repo guard. Upstream exits 128 here; we surface the
-    // condition via Usage and let the dispatcher map it. Bare repos
-    // are valid (they're still git repos, just without a working
-    // tree), so accept either work-tree or bare.
-    if !is_inside_work_tree(cwd) && !is_bare_repo(cwd) {
+    // condition via Usage and let the dispatcher map it. Use
+    // `--git-dir` rather than `--is-inside-work-tree`: the former
+    // succeeds for any valid repo configuration (work-tree, bare,
+    // or `GIT_DIR` / `GIT_WORK_TREE` env-var redirection where cwd
+    // sits outside the work tree, t-checkout test 14).
+    if !is_in_git_repo(cwd) {
         return Err(FetchCommandError::Usage(
             "Not in a Git repository.".into(),
         ));
@@ -444,22 +446,13 @@ fn human_bytes(n: u64) -> String {
     format!("{value:.1} {}", UNITS[idx])
 }
 
-fn is_inside_work_tree(cwd: &Path) -> bool {
+fn is_in_git_repo(cwd: &Path) -> bool {
     let out = Command::new("git")
         .arg("-C")
         .arg(cwd)
-        .args(["rev-parse", "--is-inside-work-tree"])
+        .args(["rev-parse", "--git-dir"])
         .output();
-    matches!(out, Ok(o) if o.status.success() && o.stdout.starts_with(b"true"))
-}
-
-fn is_bare_repo(cwd: &Path) -> bool {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(cwd)
-        .args(["rev-parse", "--is-bare-repository"])
-        .output();
-    matches!(out, Ok(o) if o.status.success() && o.stdout.starts_with(b"true"))
+    matches!(out, Ok(o) if o.status.success())
 }
 
 fn is_remote_or_url(cwd: &Path, name: &str) -> bool {

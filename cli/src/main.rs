@@ -867,7 +867,16 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
         },
         Command::Checkout { paths } => {
             let opts = checkout::Options { paths };
-            checkout::run(&cwd, &opts)?;
+            match checkout::run(&cwd, &opts) {
+                Ok(()) => {}
+                Err(checkout::CheckoutError::NotInWorkTree) => {
+                    // Bare repo: matches t-status / t-checkout
+                    // bare-repo expectation. Exit 0 with the
+                    // upstream-compatible message.
+                    println!("This operation must be run in a work tree.");
+                }
+                Err(e) => return Err(e.into()),
+            }
         }
         Command::Prune { dry_run, verbose } => {
             let opts = prune::Options { dry_run, verbose };

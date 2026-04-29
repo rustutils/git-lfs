@@ -32,6 +32,10 @@ pub enum CheckoutError {
     Io(#[from] std::io::Error),
     #[error("{0}")]
     Other(String),
+    /// Command was run inside a bare repo. Checkout has no working
+    /// tree to write to — surface upstream's exact wording.
+    #[error("This operation must be run in a work tree.")]
+    NotInWorkTree,
 }
 
 #[derive(Debug, Clone)]
@@ -41,6 +45,13 @@ pub struct Options {
 }
 
 pub fn run(cwd: &Path, opts: &Options) -> Result<(), CheckoutError> {
+    // Bare repos have no working tree to materialize into. Surface
+    // the upstream-compatible message and let the dispatcher emit
+    // it on stdout (test 15).
+    if is_bare_repo(cwd) {
+        return Err(CheckoutError::NotInWorkTree);
+    }
+
     // Safety net: if the smudge filter isn't installed, skip with a
     // friendly message. Otherwise we'd materialize content that the
     // next `git checkout` would clobber back to pointer text — surprising.
@@ -344,6 +355,15 @@ fn trace_enabled() -> bool {
             !matches!(s.as_str(), "" | "0" | "false" | "no" | "off")
         }
     }
+}
+
+fn is_bare_repo(cwd: &Path) -> bool {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["rev-parse", "--is-bare-repository"])
+        .output();
+    matches!(out, Ok(o) if o.status.success() && o.stdout.starts_with(b"true"))
 }
 
 fn smudge_installed(cwd: &Path) -> bool {
