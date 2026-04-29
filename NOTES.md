@@ -60,8 +60,14 @@ Useful entry points in the upstream tree:
 
 ## Test status snapshot (point in time)
 
-About 351 of 794 vendored shell tests pass (~44%) across 104
+About 360 of 794 vendored shell tests pass (~45%) across 104
 files. Notable since the last snapshot:
+- **t-checkout 4/18 → 13/18** — ported pull's conflict-tolerant
+  materialize (path/symlink/IsADirectory warnings, read-only
+  unlink-and-restore, empty-pointer skip), plus bare-repo "must
+  be run in a work tree" exit and `--git-dir` (instead of
+  `--is-inside-work-tree`) for the outside-a-repo guard so
+  `GIT_WORK_TREE`/`GIT_DIR` redirection works.
 - **t-env 0/17 → 13/17** — full upstream line set: endpoints with
   `(auth=N)` annotations, all `Local*`/`Temp*`/`LfsStorageDir`
   paths (relative outside a repo), config-driven `Concurrent*` /
@@ -192,6 +198,16 @@ tree in the same hook-installed state upstream produces.
    ls-files attr:filter=lfs` based discovery in bare repos (so an
    empty index → no fetch); test 19 needs partial-clone + sparse-
    checkout integration; test 20 needs pointer extensions.
+6. **t-checkout's remaining 5 failures** are all real features:
+   test 13 wants `--to <path> [--ours|--theirs|--base]` for merge
+   conflict resolution (read the conflict pointer, write content
+   to the target path); test 14 is a `GIT_DIR`/`GIT_WORK_TREE`
+   relative-path edge case (the env vars carry over to subprocesses
+   we run with `-C repo_root`, but their relative paths now resolve
+   relative to repo_root rather than the original cwd; canonicalize
+   on entry); test 16 is sparse checkout + partial clone (same
+   `git ls-files attr:filter=lfs` discovery as t-pull 18); tests
+   17 / 18 are pointer extensions.
 2. **Fetch-recent semantics** (`lfs.fetchrecentrefsdays`,
    `lfs.fetchrecentcommitsdays`, `lfs.fetchrecentremoterefs`).
    Owns t-fetch-recent (1/7) and parts of t-fetch / t-prune.
