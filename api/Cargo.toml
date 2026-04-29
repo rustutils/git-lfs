@@ -1,8 +1,15 @@
 [package]
-name = "git-lfs-api"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
+name                 = "git-lfs-api"
+description          = "HTTP client for the Git LFS batch and locking APIs"
+version.workspace    = true
+edition.workspace    = true
+license.workspace    = true
+authors.workspace    = true
+repository.workspace = true
+homepage.workspace   = true
+readme               = "../README.md"
+keywords             = ["git", "lfs", "git-lfs", "batch", "locking"]
+categories           = ["web-programming::http-client", "api-bindings"]
 
 [dependencies]
 git-lfs-creds    = { workspace = true }

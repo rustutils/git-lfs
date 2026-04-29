@@ -1,8 +1,15 @@
 [package]
-name = "git-lfs-filter"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
+name                 = "git-lfs-filter"
+description          = "Clean/smudge filters and the filter-process protocol for Git LFS"
+version.workspace    = true
+edition.workspace    = true
+license.workspace    = true
+authors.workspace    = true
+repository.workspace = true
+homepage.workspace   = true
+readme               = "../README.md"
+keywords             = ["git", "lfs", "git-lfs", "smudge", "clean"]
+categories           = ["development-tools", "filesystem"]
 
 [dependencies]
 git-lfs-pointer  = { workspace = true }

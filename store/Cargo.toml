@@ -1,8 +1,15 @@
 [package]
-name = "git-lfs-store"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
+name                 = "git-lfs-store"
+description          = "Content-addressable on-disk store for Git LFS objects"
+version.workspace    = true
+edition.workspace    = true
+license.workspace    = true
+authors.workspace    = true
+repository.workspace = true
+homepage.workspace   = true
+readme               = "../README.md"
+keywords             = ["git", "lfs", "git-lfs", "storage", "content-addressable"]
+categories           = ["filesystem", "development-tools"]
 
 [dependencies]
 git-lfs-pointer = { workspace = true }

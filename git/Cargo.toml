@@ -1,8 +1,15 @@
 [package]
-name = "git-lfs-git"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
+name                 = "git-lfs-git"
+description          = "Git interop helpers for Git LFS: config, refs, scanners, and `.gitattributes` matching"
+version.workspace    = true
+edition.workspace    = true
+license.workspace    = true
+authors.workspace    = true
+repository.workspace = true
+homepage.workspace   = true
+readme               = "../README.md"
+keywords             = ["git", "lfs", "git-lfs", "gitattributes", "scanner"]
+categories           = ["development-tools", "parser-implementations"]
 
 [dependencies]
 git-lfs-pointer = { workspace = true }

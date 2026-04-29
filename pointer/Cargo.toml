@@ -1,8 +1,15 @@
 [package]
-name = "git-lfs-pointer"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
+name                 = "git-lfs-pointer"
+description          = "Parse and encode Git LFS pointer files"
+version.workspace    = true
+edition.workspace    = true
+license.workspace    = true
+authors.workspace    = true
+repository.workspace = true
+homepage.workspace   = true
+readme               = "../README.md"
+keywords             = ["git", "lfs", "git-lfs", "pointer", "parser"]
+categories           = ["parser-implementations", "development-tools"]
 
 [dependencies]
 thiserror = { workspace = true }
