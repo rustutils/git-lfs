@@ -6,7 +6,7 @@
 //! 1. Walk `<lfs>/objects/` to enumerate every object the store has.
 //! 2. Build a "retained" OID set from the union of:
 //!    - pointers in HEAD's tree (everything currently checked-in)
-//!    - pointers in unpushed history (HEAD ^refs/remotes/<remote>/*)
+//!    - pointers in unpushed history (`HEAD ^refs/remotes/<remote>/*`)
 //! 3. Delete every store object whose OID isn't retained.
 //!
 //! Configurable via `lfs.pruneremotename` (default `origin`); falls back

@@ -3,7 +3,7 @@
 //! Three subcommands sharing ref-resolution + glob-path-filter
 //! scaffolding:
 //!
-//! - **`info`** (Phase 1, [`info`]): read-only walk + extension report.
+//! - **`info`** (Phase 1, [`info()`]): read-only walk + extension report.
 //! - **`import`** (Phase 2, planned): rewrite history so matching files
 //!   become LFS pointers. Implementation will pipe `git fast-export` →
 //!   blob-transform → `git fast-import`.

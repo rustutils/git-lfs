@@ -166,7 +166,7 @@ pub fn run(opts: &Options) -> Result<i32, PointerError> {
     Ok(0)
 }
 
-/// Emit the "Pointer from <name>\n\n[…]" block to stderr. On a parse
+/// Emit the `Pointer from <name>\n\n[…]` block to stderr. On a parse
 /// failure we print the error *without* echoing the input — matching
 /// upstream's order (parse first, then echo iff successful).
 fn emit_compared_section(

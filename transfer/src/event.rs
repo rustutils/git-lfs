@@ -1,4 +1,5 @@
-/// Per-object lifecycle events emitted by [`Transfer::download`] and
+/// Per-object lifecycle events emitted by
+/// [`Transfer::download`](crate::Transfer::download) and
 /// [`Transfer::upload`](crate::Transfer::upload).
 ///
 /// Sent on the optional [`tokio::sync::mpsc::UnboundedSender`] passed in

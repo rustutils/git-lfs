@@ -16,7 +16,7 @@ use std::process::{Command, Stdio};
 
 use crate::Error;
 
-/// One entry yielded by [`RevList::run`].
+/// One entry yielded by [`rev_list`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RevListEntry {
     pub oid: String,

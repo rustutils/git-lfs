@@ -4,7 +4,7 @@
 //! enumerate the LFS pointers reachable from a set of refs. The pipeline
 //! mirrors upstream:
 //!
-//! 1. [`rev_list`](crate::rev_list) emits every reachable object (commits,
+//! 1. [`rev_list()`] emits every reachable object (commits,
 //!    trees, blobs).
 //! 2. [`CatFileBatchCheck`] filters those to blobs whose size could fit in
 //!    a pointer file (≤ [`MAX_POINTER_SIZE`]). Blobs are read from index;
