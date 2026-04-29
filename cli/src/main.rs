@@ -41,6 +41,7 @@ use fetcher::LfsFetcher;
     // which doesn't match the user-agent style upstream uses.
     // Suppress clap's flag and handle --version ourselves.
     disable_version_flag = true,
+    max_term_width = 100,
 )]
 struct Cli {
     /// Print the version banner and exit.
@@ -292,19 +293,13 @@ enum Command {
     /// <post-sha> <flag>` (flag is "1" if HEAD moved). Currently a
     /// no-op stub — exists so installed hook scripts don't fail. Real
     /// behavior arrives with `track --lockable`.
-    PostCheckout {
-        args: Vec<String>,
-    },
+    PostCheckout { args: Vec<String> },
     /// Git post-commit hook entry point. No arguments. Currently a
     /// no-op stub.
-    PostCommit {
-        args: Vec<String>,
-    },
+    PostCommit { args: Vec<String> },
     /// Git post-merge hook entry point. Receives `<squash-flag>`.
     /// Currently a no-op stub.
-    PostMerge {
-        args: Vec<String>,
-    },
+    PostMerge { args: Vec<String> },
     /// Git pre-push hook entry point — not typically invoked by hand.
     /// Reads `<local-ref> <local-sha> <remote-ref> <remote-sha>` lines
     /// from stdin and uploads the LFS objects newly reachable from each
@@ -533,9 +528,17 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             smudge_with_fetch(&store, &mut input, &mut output, |p| fetcher.fetch(p))?;
             output.flush()?;
         }
-        Command::Install { local, force, skip_repo } => {
+        Command::Install {
+            local,
+            force,
+            skip_repo,
+        } => {
             let opts = install::InstallOptions {
-                scope: if local { ConfigScope::Local } else { ConfigScope::Global },
+                scope: if local {
+                    ConfigScope::Local
+                } else {
+                    ConfigScope::Global
+                },
                 force,
                 skip_repo,
             };
@@ -544,7 +547,11 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
         }
         Command::Uninstall { local, skip_repo } => {
             let opts = install::UninstallOptions {
-                scope: if local { ConfigScope::Local } else { ConfigScope::Global },
+                scope: if local {
+                    ConfigScope::Local
+                } else {
+                    ConfigScope::Global
+                },
                 skip_repo,
             };
             install::uninstall(&cwd, &opts)?;
@@ -605,9 +612,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                         return Err("one or more objects failed to download".into());
                     }
                 }
-                Err(fetch::FetchCommandError::Usage(msg))
-                    if msg == "Not in a Git repository." =>
-                {
+                Err(fetch::FetchCommandError::Usage(msg)) if msg == "Not in a Git repository." => {
                     // Test `t-fetch.sh::fetch: outside git repository`
                     // greps for this on stdout (`2>&1 > fetch.log`
                     // captures stdout only). Match upstream and emit
@@ -665,7 +670,11 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
         Command::PostMerge { args } => {
             hooks::post_merge(&cwd, &args)?;
         }
-        Command::PrePush { remote, url: _, dry_run } => {
+        Command::PrePush {
+            remote,
+            url: _,
+            dry_run,
+        } => {
             let stdin = io::stdin().lock();
             let outcome = pre_push::pre_push(&cwd, &remote, stdin, dry_run)?;
             if outcome.aborted {
@@ -698,7 +707,14 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
         Command::Version => {
             println!("git-lfs/{} (rust)", env!("CARGO_PKG_VERSION"));
         }
-        Command::Pointer { file, pointer, stdin, check, strict, no_strict } => {
+        Command::Pointer {
+            file,
+            pointer,
+            stdin,
+            check,
+            strict,
+            no_strict,
+        } => {
             let opts = pointer_cmd::Options {
                 file,
                 pointer,
@@ -796,7 +812,12 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             let opts = prune::Options { dry_run, verbose };
             prune::run(&cwd, &opts)?;
         }
-        Command::Fsck { refspec, objects, pointers, dry_run } => {
+        Command::Fsck {
+            refspec,
+            objects,
+            pointers,
+            dry_run,
+        } => {
             let _ = install::try_install_hooks(&cwd);
             let mode = match (objects, pointers) {
                 (true, false) => fsck::Mode::Objects,
@@ -817,14 +838,31 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             };
             status::run(&cwd, format)?;
         }
-        Command::Lock { paths, remote, refspec, json } => {
-            let opts = lock::LockOptions { remote, refspec, json };
+        Command::Lock {
+            paths,
+            remote,
+            refspec,
+            json,
+        } => {
+            let opts = lock::LockOptions {
+                remote,
+                refspec,
+                json,
+            };
             let ok = lock::lock(&cwd, &paths, &opts)?;
             if !ok {
                 return Err("one or more locks failed".into());
             }
         }
-        Command::Locks { remote, path, id, limit, refspec, verify, json } => {
+        Command::Locks {
+            remote,
+            path,
+            id,
+            limit,
+            refspec,
+            verify,
+            json,
+        } => {
             let opts = lock::LocksOptions {
                 remote,
                 refspec,
@@ -836,7 +874,14 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             };
             lock::locks(&cwd, &opts)?;
         }
-        Command::Unlock { paths, id, force, remote, refspec, json } => {
+        Command::Unlock {
+            paths,
+            id,
+            force,
+            remote,
+            refspec,
+            json,
+        } => {
             let opts = lock::UnlockOptions {
                 remote,
                 refspec,
