@@ -48,7 +48,7 @@ test-commands : $(TEST_CMDS) $(GIT_LFS_BIN) $(LFSTEST_TESTUTILS_BIN)
 
 test : test-commands
 	$(RM) -r remote test_count{,.lock}
-	@. ./testenv.sh && setup && \
+	@. ./testenv.sh && setup && cd tests && \
 		RM_GIT_LFS_TEST_DIR=no $(PROVE) $(PROVE_EXTRA_ARGS) t-*.sh && \
 		shutdown
 

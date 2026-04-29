@@ -1,13 +1,17 @@
-# `t`
+# Tests
 
-This directory contains one of the two types of tests that the Git LFS project
-uses to protect against regression. The first, scattered in `*_test.go` files
-throughout the repository are _unit tests_, and written in Go, designed to
+This directory contains one of the two types of tests that the Git LFS 
+project uses to protect against regression. The first, scattered in the 
+source files throughout the repository are _unit tests_, designed to
 uncover failures at the unit level.
 
-The second kind--and the one contained in this directory--are _integration
+The second kind (and the one contained in this directory) are _integration
 tests_, which are designed to exercise Git LFS in an end-to-end fashion,
 running the `git`, and `git-lfs` binaries, along with a mock Git server.
+
+These integration tests are copied from the `t` folder of the original 
+`git-lfs` project, with some modifications. Re-using their test suite
+ensures that this implementation is compatible in functionality.
 
 You can run all tests in this directory with any of the following:
 
@@ -36,20 +40,20 @@ $ ./t-*.sh
 
 ## Test File(s)
 
-There are a few important kinds of files to know about in the `t` directory:
+There are a few important kinds of files to know about in the `tests` directory:
 
 - `cmd/`: contains the source code of binaries that are useful during test
   time, like the mocked Git server, or the test counting binary. For more about
   the contents of this directory, see [test lifecycle](#test-lifecycle) below.
 
-  The file `t/cmd/testutils.go` is automatically linked and included during the
+  The file `tests/cmd/testutils.go` is automatically linked and included during the
   build process of each file in `cmd`.
 
 - `fixtures/`: contains shell scripts that load fixture repositories useful for
   testing against.
 
 - `t-*.sh`: file(s) containing zero or more tests, typically related to
-  a similar topic (c.f,. `t/t-push.sh`, `t/t-pull.sh`, etc.)
+  a similar topic (c.f,. `tests/t-push.sh`, `tests/t-pull.sh`, etc.)
 
 - `testenv.sh`: loads environment variables useful during tests. This file is
   sourced by `testlib.sh`.
@@ -74,12 +78,12 @@ When a test is run, the following occurs, in order:
    tests goes from `0` to `1`, and stops the server when it goes from `n` to
    `0`.
 
-3. After sourcing `t/testlib.sh` (& loading `t/testenv.sh`), each test is run
+3. After sourcing `tests/testlib.sh` (& loading `tests/testenv.sh`), each test is run
    in sequence per file. (In other words, multiple test files can be run in
    parallel, but the tests in a single file are run in sequence.)
 
 4. An individual test will finish, and (if running under `prove`) another will
-   be started in its place. Once all tests are done, `t/test_count` will go to
+   be started in its place. Once all tests are done, `tests/test_count` will go to
    `0`, and the test server will be torn down.
 
 ## Test Environment
@@ -87,19 +91,19 @@ When a test is run, the following occurs, in order:
 There are a few environment variables that you can set to change the test suite
 behavior:
 
-* `GIT_LFS_TEST_DIR=path` - This sets the directory that is used as the current
-working directory of the tests. By default, this will be in your temp dir. It's
-recommended that this is set to a directory outside of any Git repository.
+- `GIT_LFS_TEST_DIR=path` - This sets the directory that is used as the current
+  working directory of the tests. By default, this will be in your temp dir. It's
+  recommended that this is set to a directory outside of any Git repository.
 
-* `KEEPTRASH=1` - This will leave the local repository data in a `tmp` directory
-and the remote repository data in `test/remote`.
+- `KEEPTRASH=1` - This will leave the local repository data in a `tmp` directory
+  and the remote repository data in `test/remote`.
 
 Also ensure that your `noproxy` environment variable contains `127.0.0.1` host,
 to allow git commands to reach the local Git server `lfstest-gitserver`.
 
 ## Writing new tests
 
-A new test file should be named `t/t-*.sh`, where `*` is the topic of Git LFS
+A new test file should be named `tests/t-*.sh`, where `*` is the topic of Git LFS
 being tested. It should look as follows:
 
 ```bash
