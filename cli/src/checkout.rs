@@ -133,30 +133,61 @@ pub fn run(cwd: &Path, opts: &Options) -> Result<(), CheckoutError> {
         let Some(rel) = &p.path else {
             continue;
         };
+        // Empty pointers (size 0) come from genuinely empty files.
+        // git stores those under the empty-blob hash, parses as
+        // Pointer::empty(), and there's nothing to materialize —
+        // touching the working-tree file just bumps mtime.
+        if p.size == 0 {
+            continue;
+        }
+        let rel_str = rel.to_string_lossy();
         let dst = repo_root.join(rel);
 
-        // Existing-file policy mirrors upstream's
-        // `singleCheckout.Run`: if the file is already on disk with
-        // raw (non-pointer) content, leave it alone. Likewise if it's
-        // a pointer for a different OID. Only smudge into files that
-        // are missing or already point at our expected OID.
-        match std::fs::read(&dst) {
-            Ok(bytes) => match Pointer::parse(&bytes) {
-                Ok(existing) if existing.oid == p.oid => {
-                    // Pointer at the same OID — proceed to materialize.
-                }
-                Ok(_) => continue,  // Different-OID pointer: user-modified.
-                Err(_) => continue, // Raw content: assume user has it intact.
-            },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                // Missing — proceed.
+        // Walk the parent path components. A regular file or
+        // symlink on the way to `dst` means we can't safely write
+        // through it — emit the upstream-formatted warning and
+        // skip. Same shape as pull's conflict handling.
+        if let Some(rel_parent) = rel.parent()
+            && !rel_parent.as_os_str().is_empty()
+            && let Err(msg) = check_safe_parent(&repo_root, rel_parent)
+        {
+            println!("{rel_str:?}: {msg}");
+            continue;
+        }
+
+        // Destination policy. Symlink at the destination is a "not a
+        // regular file" warning; non-file (directory etc.) likewise.
+        // For regular files, mirror upstream's `singleCheckout.Run`:
+        // leave alone raw content or different-OID pointers, smudge
+        // over our own pointer. Capture permissions so a read-only
+        // pointer text → read-only smudged content.
+        let mut preserved_perms: Option<std::fs::Permissions> = None;
+        match std::fs::symlink_metadata(&dst) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                println!("{rel_str:?}: not a regular file");
+                continue;
             }
+            Ok(meta) if meta.is_file() => {
+                preserved_perms = Some(meta.permissions());
+                match std::fs::read(&dst) {
+                    Ok(bytes) => match Pointer::parse(&bytes) {
+                        Ok(existing) if existing.oid == p.oid => {}
+                        Ok(_) => continue,
+                        Err(_) => continue,
+                    },
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            Ok(_) => {
+                // Directory or some other non-regular file at dst
+                // (e.g. test 6: `rm a.dat && mkdir a.dat`). Skip.
+                println!("{rel_str:?}: not a regular file");
+                continue;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e.into()),
         }
 
-        if let Some(parent) = dst.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
         if !store.contains_with_size(p.oid, p.size) {
             // Object isn't in the local store. Upstream handles this
             // by re-emitting the pointer text — the file exists, but
@@ -168,9 +199,41 @@ pub fn run(cwd: &Path, opts: &Options) -> Result<(), CheckoutError> {
             eprintln!("git-lfs: {} (content not local)", rel.display());
             continue;
         }
+
+        if let Some(parent) = dst.parent()
+            && let Err(_e) = std::fs::create_dir_all(parent)
+        {
+            println!("{rel_str:?}: not a directory");
+            continue;
+        }
+        // Unlink before recreating to handle a read-only existing
+        // file (we only need write permission on the parent dir).
+        match std::fs::remove_file(&dst) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
         let mut src = store.open(p.oid)?;
-        let mut out = std::fs::File::create(&dst)?;
+        let mut out = match std::fs::File::create(&dst) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                // Read-only parent directory (test 10): warn and
+                // keep going, matching pull's behavior. Object is
+                // already in the store; user can chmod and rerun.
+                println!("could not check out {rel_str:?}");
+                println!("could not create working directory file");
+                println!("permission denied");
+                continue;
+            }
+            Err(e) => return Err(e.into()),
+        };
         std::io::copy(&mut src, &mut out)?;
+        drop(out);
+        if let Some(perms) = preserved_perms {
+            // Restore the original mode so a read-only pointer
+            // remains read-only after smudging (test 11).
+            let _ = std::fs::set_permissions(&dst, perms);
+        }
         materialized += 1;
         materialized_bytes += p.size;
         refreshed_paths.push(rel.to_string_lossy().into_owned());
@@ -198,6 +261,30 @@ pub fn run(cwd: &Path, opts: &Options) -> Result<(), CheckoutError> {
         "Checking out LFS objects: {percent}% ({materialized}/{total}), {}",
         crate::push::human_bytes(materialized_bytes)
     );
+    Ok(())
+}
+
+/// Walk the parent components of a repo-relative path. If any
+/// component is a regular file, symlink, or some other non-directory,
+/// return the upstream-formatted "not a directory" string so the
+/// caller can emit `"path": not a directory` and skip. Stops at the
+/// first non-existent component (we'd `create_dir_all` from there).
+/// Same shape as pull's check.
+fn check_safe_parent(repo_root: &Path, rel_parent: &Path) -> Result<(), &'static str> {
+    let mut current = repo_root.to_path_buf();
+    for comp in rel_parent.components() {
+        current.push(comp);
+        match std::fs::symlink_metadata(&current) {
+            Ok(meta) => {
+                let ft = meta.file_type();
+                if ft.is_symlink() || !ft.is_dir() {
+                    return Err("not a directory");
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(_) => return Err("not a directory"),
+        }
+    }
     Ok(())
 }
 
