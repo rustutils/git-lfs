@@ -18,6 +18,16 @@ const FILTER_KEYS: &[(&str, &str)] = &[
     ("filter.lfs.required", "true"),
 ];
 
+/// `--skip-smudge` variant: tell git to invoke smudge/process with `--skip`
+/// so pointer text passes through untouched. Use with a follow-up
+/// `git lfs pull` to download content on demand.
+const FILTER_KEYS_SKIP_SMUDGE: &[(&str, &str)] = &[
+    ("filter.lfs.clean", "git-lfs clean -- %f"),
+    ("filter.lfs.smudge", "git-lfs smudge --skip -- %f"),
+    ("filter.lfs.process", "git-lfs filter-process --skip"),
+    ("filter.lfs.required", "true"),
+];
+
 const HOOKS: &[&str] = &["pre-push", "post-checkout", "post-commit", "post-merge"];
 
 /// Hook script template. `{{Command}}` is replaced with the hook type at
@@ -38,6 +48,9 @@ pub struct InstallOptions {
     pub force: bool,
     /// Skip writing hooks; only set the config.
     pub skip_repo: bool,
+    /// Configure smudge/process with `--skip` so pointer text passes
+    /// through. `git lfs pull` is the recovery path.
+    pub skip_smudge: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -76,7 +89,12 @@ pub fn install(cwd: &Path, opts: &InstallOptions) -> Result<(), InstallError> {
 }
 
 fn set_filter_config(cwd: &Path, opts: &InstallOptions) -> Result<(), InstallError> {
-    for (key, wanted) in FILTER_KEYS {
+    let keys = if opts.skip_smudge {
+        FILTER_KEYS_SKIP_SMUDGE
+    } else {
+        FILTER_KEYS
+    };
+    for (key, wanted) in keys {
         match config::get(cwd, opts.scope, key)? {
             Some(v) if v == *wanted => continue,
             Some(v) if !opts.force => {

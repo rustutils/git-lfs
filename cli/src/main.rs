@@ -142,6 +142,10 @@ enum Command {
     Smudge {
         /// Working-tree path of the file being smudged (currently unused).
         path: Option<PathBuf>,
+        /// Pass the pointer text through unchanged; equivalent to
+        /// `GIT_LFS_SKIP_SMUDGE=1`. Wired up by `install --skip-smudge`.
+        #[arg(long)]
+        skip: bool,
     },
     /// Configure git to invoke git-lfs as the clean/smudge/process filter,
     /// and install the LFS git hooks.
@@ -155,6 +159,11 @@ enum Command {
         /// Only set the filter config; don't install hooks.
         #[arg(long)]
         skip_repo: bool,
+        /// Configure the smudge filter to pass pointer text through
+        /// unchanged. Use with a follow-up `git lfs pull` to download
+        /// content on demand.
+        #[arg(long)]
+        skip_smudge: bool,
     },
     /// Reverse of `install`: clear the `filter.lfs.*` config and remove
     /// the LFS git hooks. Hooks that don't match what we'd write are left
@@ -205,7 +214,13 @@ enum Command {
     /// Run the long-running filter-process protocol with git over stdin/stdout.
     /// This is what git invokes via filter.lfs.process and is the batched
     /// alternative to per-invocation `clean`/`smudge`.
-    FilterProcess,
+    FilterProcess {
+        /// Pass smudge requests' pointer text through unchanged;
+        /// equivalent to `GIT_LFS_SKIP_SMUDGE=1`. Wired up by
+        /// `install --skip-smudge`.
+        #[arg(long)]
+        skip: bool,
+    },
     /// Download every LFS object reachable from the given refs (default: HEAD)
     /// that isn't already in the local store. Walks history, dedupes by OID.
     Fetch {
@@ -540,13 +555,13 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             clean(&store, &mut input, &mut output)?;
             output.flush()?;
         }
-        Command::Smudge { path: _ } => {
+        Command::Smudge { path: _, skip } => {
             let _ = install::try_install_hooks(&cwd);
             let store = Store::new(git_lfs_git::lfs_dir(&cwd)?);
             let stdin = io::stdin().lock();
             let mut input: Box<dyn Read> = Box::new(stdin);
             let mut output: Box<dyn Write> = Box::new(BufWriter::new(io::stdout().lock()));
-            if skip_smudge_env() {
+            if skip || skip_smudge_env() {
                 io::copy(&mut input, &mut output)?;
             } else {
                 let fetcher = LfsFetcher::from_repo(&cwd, &store)?;
@@ -558,6 +573,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             local,
             force,
             skip_repo,
+            skip_smudge,
         } => {
             let opts = install::InstallOptions {
                 scope: if local {
@@ -567,6 +583,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 },
                 force,
                 skip_repo,
+                skip_smudge,
             };
             install::install(&cwd, &opts)?;
             println!("Git LFS initialized.");
@@ -590,13 +607,19 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
         Command::Clone { args } => {
             clone::run(&cwd, &args)?;
         }
-        Command::FilterProcess => {
+        Command::FilterProcess { skip } => {
             let _ = install::try_install_hooks(&cwd);
             let store = Store::new(git_lfs_git::lfs_dir(&cwd)?);
             let fetcher = LfsFetcher::from_repo(&cwd, &store)?;
             let stdin = io::stdin().lock();
             let stdout = io::stdout().lock();
-            filter_process(&store, stdin, stdout, |p| fetcher.fetch(p), skip_smudge_env())?;
+            filter_process(
+                &store,
+                stdin,
+                stdout,
+                |p| fetcher.fetch(p),
+                skip || skip_smudge_env(),
+            )?;
         }
         Command::Fetch {
             args,
@@ -650,7 +673,19 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             }
         }
         Command::Pull { refs, include, exclude } => {
-            pull::pull_with_filter(&cwd, &refs, &include, &exclude)?;
+            match pull::pull_with_filter(&cwd, &refs, &include, &exclude) {
+                Ok(()) => {}
+                Err(pull::PullCommandError::Fetch(fetch::FetchCommandError::Usage(msg)))
+                    if msg == "Not in a Git repository." =>
+                {
+                    // Mirrors fetch's outside-repo handling for parity
+                    // with `git lfs fetch` (and t-pull's `outside git
+                    // repository` test, which expects exit 128).
+                    println!("{msg}");
+                    return Ok(128);
+                }
+                Err(e) => return Err(e.into()),
+            }
         }
         Command::Push {
             remote,

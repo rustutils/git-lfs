@@ -73,6 +73,12 @@ pub fn pull_with_filter(
         return Ok(());
     }
 
+    // Bare repos have no working tree, so the materialize phase is a
+    // no-op. Fetch already ran above; we're done.
+    if is_bare_repo(cwd) {
+        return Ok(());
+    }
+
     // Build the same include/exclude filter `fetch` used so the
     // working-tree rewrite respects -I / -X (or `lfs.fetchinclude` /
     // `lfs.fetchexclude`). Without this an LFS object that fetch
@@ -87,6 +93,14 @@ pub fn pull_with_filter(
     let mut rewritten_paths: Vec<String> = Vec::new();
     for p in &pointers {
         let Some(rel) = &p.path else { continue };
+        // Empty pointers (size 0) come from genuinely empty files in
+        // the index — git stores those under the empty-blob hash, and
+        // `Pointer::parse` of empty bytes is Ok(empty()). There's
+        // nothing to materialize; touching the working-tree file
+        // would needlessly bump mtime (test 17).
+        if p.size == 0 {
+            continue;
+        }
         if !fetch::path_passes_filter(Some(rel), &include_set, &exclude_set) {
             continue;
         }
@@ -158,7 +172,19 @@ pub fn pull_with_filter(
             Err(e) => return Err(e.into()),
         }
         let mut src = store.open(p.oid)?;
-        let mut out = std::fs::File::create(&dst)?;
+        let mut out = match std::fs::File::create(&dst) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                // Read-only parent directory (test 15): warn in the
+                // upstream-compatible format and keep going. Object
+                // is in the local store; user can chmod and rerun.
+                println!("could not check out {rel_str:?}");
+                println!("could not create working directory file");
+                println!("permission denied");
+                continue;
+            }
+            Err(e) => return Err(e.into()),
+        };
         std::io::copy(&mut src, &mut out)?;
         drop(out);
         if let Some(perms) = preserved_perms {
@@ -241,6 +267,15 @@ fn refresh_index(cwd: &Path, paths: &[String]) -> Result<(), PullCommandError> {
     // would break the legitimate "clean partial pull" case.
     let _ = child.wait()?;
     Ok(())
+}
+
+fn is_bare_repo(cwd: &Path) -> bool {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["rev-parse", "--is-bare-repository"])
+        .output();
+    matches!(out, Ok(o) if o.status.success() && o.stdout.trim_ascii() == b"true")
 }
 
 fn smudge_filter_installed(cwd: &Path) -> bool {

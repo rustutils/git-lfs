@@ -73,8 +73,10 @@ pub fn fetch(
     opts: &FetchOptions<'_>,
 ) -> Result<FetchOutcome, FetchCommandError> {
     // Outside-a-repo guard. Upstream exits 128 here; we surface the
-    // condition via Usage and let the dispatcher map it.
-    if !is_inside_work_tree(cwd) {
+    // condition via Usage and let the dispatcher map it. Bare repos
+    // are valid (they're still git repos, just without a working
+    // tree), so accept either work-tree or bare.
+    if !is_inside_work_tree(cwd) && !is_bare_repo(cwd) {
         return Err(FetchCommandError::Usage(
             "Not in a Git repository.".into(),
         ));
@@ -447,6 +449,15 @@ fn is_inside_work_tree(cwd: &Path) -> bool {
         .arg("-C")
         .arg(cwd)
         .args(["rev-parse", "--is-inside-work-tree"])
+        .output();
+    matches!(out, Ok(o) if o.status.success() && o.stdout.starts_with(b"true"))
+}
+
+fn is_bare_repo(cwd: &Path) -> bool {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["rev-parse", "--is-bare-repository"])
         .output();
     matches!(out, Ok(o) if o.status.success() && o.stdout.starts_with(b"true"))
 }
