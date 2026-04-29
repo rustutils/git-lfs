@@ -23,6 +23,12 @@ test-one TEST:
 build:
     cargo build --release
 
+# Generate man pages under target/man/. One page per subcommand
+# (git-lfs-fetch.1, git-lfs-checkout.1, …) plus a top-level
+# git-lfs.1, derived from the clap definition + cli/man/ extras.
+man:
+    cargo run --release -p xtask -- gen-man
+
 # Remove cargo build artifacts and shell-test scratch state.
 clean:
     cargo clean
