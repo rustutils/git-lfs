@@ -60,16 +60,21 @@ Useful entry points in the upstream tree:
 
 ## Test status snapshot (point in time)
 
-About 322 of 794 vendored shell tests pass (~41%) across 104
-files. Notable since the last snapshot: **t-pull 1/20 → 16/20**
-(materialize from HEAD's tree instead of `git ls-files` to handle
-deleted-file restore; conflict-tolerant warnings for dir/file
-conflicts, symlinks, and read-only directories;
-`GIT_LFS_SKIP_SMUDGE=1` + `git lfs install --skip-smudge` env
-and config; bare-repo support; outside-repo exit 128;
-read-only-file unlink-and-recreate-with-restored-perms; empty-
-pointer skip to preserve mtime). t-clone 0/13 → 8/13 and t-
-checkout 1/18 → 3/18 from earlier sessions.
+About 338 of 794 vendored shell tests pass (~43%) across 104
+files. Notable since the last snapshot:
+- **t-status 1/17 → 17/17 (full pass)** — blank-line section
+  layout, cwd-relative path display, `repo_root.join` for working-
+  tree reads, unstaged-then-staged ordering with first-seen-wins
+  dedup, `git diff-index -M` for rename detection, "Objects to be
+  pushed" section via `@{u}` resolution, missing-blob `?:
+  <missing>` rendering, IsADirectory→deleted, bare-repo "must be
+  run in a work tree" exit 1, empty-tree fallback before initial
+  commit.
+- **t-pull 1/20 → 16/20** — materialize from HEAD's tree, conflict
+  warnings, `GIT_LFS_SKIP_SMUDGE`, bare-repo support, read-only
+  unlink/recreate, empty-pointer skip.
+- t-clone 0/13 → 8/13 and t-checkout 1/18 → 3/18 from earlier
+  sessions.
 
 The remaining failures cluster in commands we haven't started
 (`env`, `config`, `ext`, `dedup`, `custom-transfers`, `ssh`,
@@ -112,17 +117,12 @@ tree in the same hook-installed state upstream produces.
 
 ## Highest-leverage gaps (descending leverage)
 
-1. **Diagnose t-status (1/17)**. Same shape as t-pull / t-checkout
-   before their rewrites: ships and works end-to-end but the formal
-   tests barely pass. Apply the `--full-tree` / `--full-name` /
-   stat-refresh patterns first.
-   - `t-pull`'s remaining 4 failures all need substantive features:
-     test 11 wants `lfs.transfer.enablehrefrewrite` + git
-     `insteadOf` rewrites and exit-2 on download failure; test 18
-     wants `git ls-files attr:filter=lfs` based discovery in bare
-     repos (so an empty index → no fetch); test 19 needs partial-
-     clone + sparse-checkout integration; test 20 needs pointer
-     extensions.
+1. **t-pull's remaining 4 failures** all need substantive features:
+   test 11 wants `lfs.transfer.enablehrefrewrite` + git `insteadOf`
+   rewrites and exit-2 on download failure; test 18 wants `git
+   ls-files attr:filter=lfs` based discovery in bare repos (so an
+   empty index → no fetch); test 19 needs partial-clone + sparse-
+   checkout integration; test 20 needs pointer extensions.
 2. **Fetch-recent semantics** (`lfs.fetchrecentrefsdays`,
    `lfs.fetchrecentcommitsdays`, `lfs.fetchrecentremoterefs`).
    Owns t-fetch-recent (1/7) and parts of t-fetch / t-prune.
