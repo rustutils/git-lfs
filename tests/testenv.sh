@@ -23,6 +23,13 @@ then
 elif [[ $UNAME == *Darwin* ]]
 then
   IS_MAC=1
+else
+  # Linux: `shasum` is a Perl wrapper from Digest::SHA and isn't always
+  # installed (e.g. minimal Fedora). `sha256sum` ships with GNU
+  # coreutils, so prefer it when shasum is missing.
+  if ! command -v shasum >/dev/null 2>&1; then
+    SHASUM="sha256sum"
+  fi
 fi
 
 # Convert potentially MinGW bash paths to native Windows paths
