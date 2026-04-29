@@ -29,6 +29,14 @@ build:
 man:
     cargo run --release -p xtask -- gen-man
 
+# Generate markdown reference docs under docs/cmds/. Same shape as
+# `man` but emits mdbook-friendly markdown. The output is committed
+# to the repo and verified by an xtask snapshot test — re-run this
+# whenever you change a clap arg or man-page extra. The rest of
+# docs/ (protocol specs, hand-authored prose) is left alone.
+docs:
+    cargo run --release -p xtask -- gen-md
+
 # Remove cargo build artifacts and shell-test scratch state.
 clean:
     cargo clean
