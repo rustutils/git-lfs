@@ -118,7 +118,7 @@ pub fn scan_tree_blobs(cwd: &Path, reference: &str) -> Result<Vec<TreeBlob>, Err
     let out = Command::new("git")
         .arg("-C")
         .arg(cwd)
-        .args(["ls-tree", "-r", "-z", reference])
+        .args(["ls-tree", "--full-tree", "-r", "-z", reference])
         .output()?;
     if !out.status.success() {
         return Err(Error::Failed(format!(
@@ -172,7 +172,7 @@ pub fn scan_tree(cwd: &Path, reference: &str) -> Result<Vec<PointerEntry>, Error
     let out = Command::new("git")
         .arg("-C")
         .arg(cwd)
-        .args(["ls-tree", "-r", "-z", reference])
+        .args(["ls-tree", "--full-tree", "-r", "-z", reference])
         .output()?;
     if !out.status.success() {
         return Err(Error::Failed(format!(

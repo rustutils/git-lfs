@@ -14,13 +14,15 @@
 //! common case), and the `--to <path> [--ours|--theirs|--base]` form
 //! for resolving conflicted LFS files during a merge.
 
+use std::collections::HashSet;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
-use git_lfs_api::ObjectSpec;
 use git_lfs_git::scan_tree;
+use git_lfs_pointer::Pointer;
 use git_lfs_store::Store;
-
-use crate::fetcher::LfsFetcher;
+use globset::{Glob, GlobSetBuilder};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CheckoutError {
@@ -28,8 +30,6 @@ pub enum CheckoutError {
     Git(#[from] git_lfs_git::Error),
     #[error(transparent)]
     Io(#[from] std::io::Error),
-    #[error(transparent)]
-    Fetch(git_lfs_filter::FetchError),
     #[error("{0}")]
     Other(String),
 }
@@ -50,28 +50,67 @@ pub fn run(cwd: &Path, opts: &Options) -> Result<(), CheckoutError> {
     }
 
     let store = Store::new(git_lfs_git::lfs_dir(cwd)?);
+    let repo_root = repo_root(cwd)?;
 
-    let pointers = scan_tree(cwd, "HEAD")?;
+    // Walk HEAD's tree for the set of LFS pointers, then drop any
+    // whose path was removed from the index since (e.g. `git rm`).
+    // Both walks run from the repo root so they return repo-relative
+    // paths regardless of where the user invoked checkout. Upstream
+    // consults `git diff-index HEAD <path>` per file and skips
+    // entries reported as deleted; intersecting with the
+    // `git ls-files` set is the equivalent in one shell-out.
+    let pointers = scan_tree(&repo_root, "HEAD")?;
+    let indexed = indexed_paths(&repo_root)?;
+    let pointers: Vec<_> = pointers
+        .into_iter()
+        .filter(|p| match p.path.as_deref() {
+            Some(path) => indexed.contains(path.to_string_lossy().as_ref()),
+            None => true,
+        })
+        .collect();
 
     // Filter by path patterns if any were given. Each user pattern is
-    // resolved to a repo-relative form once, up front.
+    // resolved to a repo-relative glob, then fed to a single globset
+    // matcher. Supports `*` wildcards, trailing-slash directory
+    // patterns, `.` (cwd subtree), `..` (cwd's parent subtree), and
+    // exact relative paths. Emit `filepathfilter: accepting`/
+    // `rejecting` trace lines under GIT_TRACE so the upstream test
+    // suite's grep assertions still line up.
+    let trace = trace_enabled();
     let pointers = if opts.paths.is_empty() {
+        if trace {
+            for p in &pointers {
+                if let Some(path) = p.path.as_deref() {
+                    eprintln!("filepathfilter: accepting {:?}", path.to_string_lossy());
+                }
+            }
+        }
         pointers
     } else {
-        let repo_root = repo_root(cwd)?;
-        let patterns = opts
-            .paths
-            .iter()
-            .map(|p| to_repo_relative(cwd, &repo_root, p))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(CheckoutError::Other)?;
+        let mut builder = GlobSetBuilder::new();
+        for pat in &opts.paths {
+            let glob_pats = resolve_user_pattern(cwd, &repo_root, pat)
+                .ok_or_else(|| CheckoutError::Other(format!("path is outside the repository: {pat}")))?;
+            for gp in glob_pats {
+                let glob = Glob::new(&gp)
+                    .map_err(|e| CheckoutError::Other(format!("invalid pattern {pat:?}: {e}")))?;
+                builder.add(glob);
+            }
+        }
+        let set = builder
+            .build()
+            .map_err(|e| CheckoutError::Other(format!("pattern set build failed: {e}")))?;
         pointers
             .into_iter()
             .filter(|p| {
-                p.path
-                    .as_deref()
-                    .map(|path| matches_any(&path.to_string_lossy(), &patterns))
-                    .unwrap_or(false)
+                let Some(path) = p.path.as_deref() else { return false };
+                let s = path.to_string_lossy();
+                let accepted = set.is_match(s.as_ref());
+                if trace {
+                    let verb = if accepted { "accepting" } else { "rejecting" };
+                    eprintln!("filepathfilter: {verb} {s:?}");
+                }
+                accepted
             })
             .collect()
     };
@@ -81,54 +120,143 @@ pub fn run(cwd: &Path, opts: &Options) -> Result<(), CheckoutError> {
         return Ok(());
     }
 
-    // Fetch any objects we don't already have locally. Same code path
-    // smudge uses on demand.
-    let missing: Vec<ObjectSpec> = pointers
-        .iter()
-        .filter(|p| !store.contains_with_size(p.oid, p.size))
-        .map(|p| ObjectSpec { oid: p.oid.to_string(), size: p.size })
-        .collect();
-    if !missing.is_empty() {
-        println!("Fetching {} missing object(s)...", missing.len());
-        let fetcher = LfsFetcher::from_repo(cwd, &store)?;
-        let report = fetcher
-            .download_many(missing)
-            .map_err(CheckoutError::Fetch)?;
-        for (oid, err) in &report.failed {
-            eprintln!("git-lfs: download failed for {oid}: {err}");
-        }
-    }
-
-    // Now materialize. Skip pointers whose objects still aren't local
+    // Materialize, but don't fetch. Upstream's checkout never
+    // downloads — that's `git lfs fetch`'s job. If an object is
+    // missing locally, we fall back to writing the pointer text
+    // (handled below per-file). Skip pointers whose objects still aren't local
     // (download failed); they stay as pointer text.
+    let total = pointers.len();
     let mut materialized = 0usize;
-    let mut skipped = 0usize;
+    let mut materialized_bytes: u64 = 0;
+    let mut refreshed_paths: Vec<String> = Vec::new();
     for p in &pointers {
         let Some(rel) = &p.path else {
-            skipped += 1;
             continue;
         };
-        if !store.contains_with_size(p.oid, p.size) {
-            eprintln!("git-lfs: skipping {} (object not available)", rel.display());
-            skipped += 1;
-            continue;
+        let dst = repo_root.join(rel);
+
+        // Existing-file policy mirrors upstream's
+        // `singleCheckout.Run`: if the file is already on disk with
+        // raw (non-pointer) content, leave it alone. Likewise if it's
+        // a pointer for a different OID. Only smudge into files that
+        // are missing or already point at our expected OID.
+        match std::fs::read(&dst) {
+            Ok(bytes) => match Pointer::parse(&bytes) {
+                Ok(existing) if existing.oid == p.oid => {
+                    // Pointer at the same OID — proceed to materialize.
+                }
+                Ok(_) => continue,  // Different-OID pointer: user-modified.
+                Err(_) => continue, // Raw content: assume user has it intact.
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // Missing — proceed.
+            }
+            Err(e) => return Err(e.into()),
         }
-        let dst = repo_relative_to_abs(cwd, rel)?;
+
         if let Some(parent) = dst.parent() {
             std::fs::create_dir_all(parent)?;
+        }
+        if !store.contains_with_size(p.oid, p.size) {
+            // Object isn't in the local store. Upstream handles this
+            // by re-emitting the pointer text — the file exists, but
+            // its content is the pointer rather than the smudged
+            // bytes. Matches `t-checkout.sh::checkout` "test checkout
+            // with missing data doesn't fail".
+            let pointer = Pointer::new(p.oid, p.size).encode();
+            std::fs::write(&dst, pointer)?;
+            eprintln!("git-lfs: {} (content not local)", rel.display());
+            continue;
         }
         let mut src = store.open(p.oid)?;
         let mut out = std::fs::File::create(&dst)?;
         std::io::copy(&mut src, &mut out)?;
         materialized += 1;
+        materialized_bytes += p.size;
+        refreshed_paths.push(rel.to_string_lossy().into_owned());
     }
 
-    if skipped > 0 {
-        println!("Checked out {materialized} file(s); {skipped} skipped.");
-    } else {
-        println!("Checked out {materialized} file(s).");
+    // Refresh the index so `git diff-index HEAD` doesn't flag every
+    // freshly-overwritten file as modified. Same fix as `pull` —
+    // without this, `assert_clean_status` would fail in tests that
+    // re-create deleted working-tree files via checkout. Run from
+    // repo root so the repo-relative paths we hand it resolve
+    // correctly, even when checkout was invoked from a subdir.
+    if !refreshed_paths.is_empty() {
+        refresh_index(&repo_root, &refreshed_paths)?;
     }
+
+    // Final progress line — format mirrors upstream's `tq.Meter` output
+    // for the checkout queue. Goes to stderr so it doesn't mix with
+    // stdout that callers may pipe.
+    let percent = if total == 0 {
+        100
+    } else {
+        materialized * 100 / total
+    };
+    eprintln!(
+        "Checking out LFS objects: {percent}% ({materialized}/{total}), {}",
+        crate::push::human_bytes(materialized_bytes)
+    );
     Ok(())
+}
+
+/// `git ls-files -z` listing of paths currently in the index. Used
+/// to drop pointers that have been removed (e.g. `git rm`) from the
+/// re-materialize set. `--full-name` is required so the listing is
+/// repo-relative even when invoked from a subdirectory; otherwise
+/// the intersection with scan_tree's `--full-tree` output misses.
+fn indexed_paths(cwd: &Path) -> std::io::Result<HashSet<String>> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["ls-files", "-z", "--full-name"])
+        .output()?;
+    if !out.status.success() {
+        return Ok(HashSet::new());
+    }
+    Ok(out
+        .stdout
+        .split(|&b| b == 0)
+        .filter(|s| !s.is_empty())
+        .map(|b| String::from_utf8_lossy(b).into_owned())
+        .collect())
+}
+
+fn refresh_index(cwd: &Path, paths: &[String]) -> std::io::Result<()> {
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["update-index", "-q", "--refresh", "--stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    if let Some(stdin) = child.stdin.as_mut() {
+        for p in paths {
+            stdin.write_all(p.as_bytes())?;
+            stdin.write_all(b"\n")?;
+        }
+    }
+    // Ignore exit status: refresh exits non-zero if any path is still
+    // considered dirty (e.g. user edits we didn't touch), and that's
+    // not a checkout failure.
+    let _ = child.wait()?;
+    Ok(())
+}
+
+/// Mirrors git's own `GIT_TRACE` semantics: any value other than
+/// "", "0", "false", "no", "off" enables tracing. Used to gate
+/// `filepathfilter:`-style trace lines that the upstream shell
+/// tests grep for.
+fn trace_enabled() -> bool {
+    match std::env::var_os("GIT_TRACE") {
+        None => false,
+        Some(v) => {
+            let s = v.to_string_lossy().trim().to_lowercase();
+            !matches!(s.as_str(), "" | "0" | "false" | "no" | "off")
+        }
+    }
 }
 
 fn smudge_installed(cwd: &Path) -> bool {
@@ -157,80 +285,74 @@ fn repo_root(cwd: &Path) -> Result<PathBuf, CheckoutError> {
     Ok(PathBuf::from(s))
 }
 
-/// Convert a user-supplied path to repo-relative form. Tolerates
-/// non-existent paths (a wildcard the shell didn't expand against the
-/// cwd should still go through, even if it doesn't match anything).
-fn to_repo_relative(cwd: &Path, repo_root: &Path, file: &str) -> Result<String, String> {
-    let path = Path::new(file);
-    let abs = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        cwd.join(path)
-    };
-    let abs = abs.canonicalize().unwrap_or(abs);
-    let root = repo_root
-        .canonicalize()
-        .map_err(|e| format!("canonicalizing repo root: {e}"))?;
-    let rel = abs
-        .strip_prefix(&root)
-        .map_err(|_| format!("path is outside the repository: {file}"))?;
-    let mut s = rel.to_string_lossy().replace('\\', "/");
-    // Re-attach a trailing slash if the user supplied one — that's how
-    // we tell directory patterns from file patterns.
-    if file.ends_with('/') && !s.ends_with('/') {
-        s.push('/');
-    }
-    Ok(s)
-}
+/// Resolve a user-supplied path argument to a repo-relative glob
+/// pattern. Handles cwd-relative resolution (so `nested.dat` from a
+/// subdir matches `subdir/nested.dat` in the repo), `./` and `../`
+/// path-navigation prefixes, the bare `.` and `..` shortcuts, and
+/// trailing-slash directory patterns. Returns `None` if the resolved
+/// path falls outside the repo.
+fn resolve_user_pattern(cwd: &Path, repo_root: &Path, pat: &str) -> Option<Vec<String>> {
+    let cwd_canon = cwd.canonicalize().ok()?;
+    let root_canon = repo_root.canonicalize().ok()?;
+    let cwd_rel = cwd_canon
+        .strip_prefix(&root_canon)
+        .ok()?
+        .to_string_lossy()
+        .replace('\\', "/");
 
-fn repo_relative_to_abs(cwd: &Path, rel: &Path) -> Result<PathBuf, CheckoutError> {
-    let root = repo_root(cwd)?;
-    Ok(root.join(rel))
-}
-
-fn matches_any(repo_rel: &str, patterns: &[String]) -> bool {
-    for p in patterns {
-        if let Some(prefix) = p.strip_suffix('/') {
-            // Directory pattern: match `<prefix>` itself or anything beneath.
-            if repo_rel.starts_with(prefix)
-                && (repo_rel.len() == prefix.len()
-                    || repo_rel.as_bytes().get(prefix.len()) == Some(&b'/'))
-            {
-                return true;
-            }
-        } else if repo_rel == p {
-            return true;
+    // Strip leading "./" and count "../" pops, so "../foo/**" from
+    // a `subdir` cwd resolves to "foo/**" repo-relative.
+    let mut remaining = pat;
+    let mut pops = 0usize;
+    loop {
+        if let Some(rest) = remaining.strip_prefix("../") {
+            pops += 1;
+            remaining = rest;
+        } else if let Some(rest) = remaining.strip_prefix("./") {
+            remaining = rest;
+        } else if remaining == ".." {
+            pops += 1;
+            remaining = "";
+            break;
+        } else if remaining == "." {
+            remaining = "";
+            break;
+        } else {
+            break;
         }
     }
-    false
+
+    let mut prefix_parts: Vec<&str> = if cwd_rel.is_empty() {
+        Vec::new()
+    } else {
+        cwd_rel.split('/').collect()
+    };
+    if pops > prefix_parts.len() {
+        return None;
+    }
+    for _ in 0..pops {
+        prefix_parts.pop();
+    }
+    let prefix = prefix_parts.join("/");
+
+    let dir_only = remaining.ends_with('/');
+    let remaining = remaining.trim_end_matches('/');
+
+    let combined = match (prefix.is_empty(), remaining.is_empty()) {
+        (true, true) => "**".to_string(),
+        (true, false) => remaining.to_string(),
+        (false, true) => format!("{prefix}/**"),
+        (false, false) => format!("{prefix}/{remaining}"),
+    };
+    // For directory patterns (`foo/`) and the `cwd` shortcut (`.`),
+    // we always want a recursive subtree match. For bare names that
+    // could be either a file or a directory (`foo`, `file*.dat`),
+    // emit both the literal pattern and the `<pat>/**` form so we
+    // catch directories too — gitignore-style semantics.
+    if dir_only || combined == "**" || combined.ends_with("/**") {
+        return Some(vec![combined]);
+    }
+    let subtree = format!("{combined}/**");
+    Some(vec![combined, subtree])
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn matches_any_exact_match() {
-        assert!(matches_any("foo.bin", &["foo.bin".into()]));
-        assert!(!matches_any("foo.bin", &["bar.bin".into()]));
-    }
-
-    #[test]
-    fn matches_any_directory_prefix() {
-        let p = vec!["data/".into()];
-        assert!(matches_any("data", &p));
-        assert!(matches_any("data/x.bin", &p));
-        assert!(matches_any("data/sub/y.bin", &p));
-        assert!(!matches_any("databases/x", &p));
-        assert!(!matches_any("other.bin", &p));
-    }
-
-    #[test]
-    fn matches_any_multiple_patterns() {
-        let p = vec!["a.bin".into(), "b.bin".into(), "data/".into()];
-        assert!(matches_any("a.bin", &p));
-        assert!(matches_any("b.bin", &p));
-        assert!(matches_any("data/c.bin", &p));
-        assert!(!matches_any("c.bin", &p));
-    }
-}

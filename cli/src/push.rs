@@ -554,7 +554,7 @@ fn allow_incomplete_push(cwd: &Path) -> bool {
 /// Decimal (SI) byte humanizer matching `dustin/go-humanize`'s `Bytes()`,
 /// which upstream uses in its progress meter. 1000-base, single decimal
 /// digit, units `B / kB / MB / GB / TB / PB / EB`.
-fn human_bytes(n: u64) -> String {
+pub(crate) fn human_bytes(n: u64) -> String {
     const UNITS: &[&str] = &["B", "kB", "MB", "GB", "TB", "PB", "EB"];
     if n < 1000 {
         return format!("{n} B");
