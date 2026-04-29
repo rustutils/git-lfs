@@ -60,8 +60,21 @@ Useful entry points in the upstream tree:
 
 ## Test status snapshot (point in time)
 
-About 338 of 794 vendored shell tests pass (~43%) across 104
+About 351 of 794 vendored shell tests pass (~44%) across 104
 files. Notable since the last snapshot:
+- **t-env 0/17 → 13/17** — full upstream line set: endpoints with
+  `(auth=N)` annotations, all `Local*`/`Temp*`/`LfsStorageDir`
+  paths (relative outside a repo), config-driven `Concurrent*` /
+  `Tus*` / `BasicTransfersOnly` / `SkipDownload*` (with the
+  `GIT_LFS_SKIP_DOWNLOAD_ERRORS` env override), custom transfer
+  enumeration, sorted `GIT_*` env-var dump, canonical filter
+  config defaults outside a repo. Remaining 4 fail on substantive
+  features: `.lfsconfig` "unsafe key" filtering (test 8), SSH
+  endpoint reporting (test 11), URL `insteadOf` alias warnings
+  (test 17), and a subtle `GIT_DIR=`/`GIT_WORK_TREE=` test (9).
+- **t-config 0/10 → 1/10** — only the simplest case picked up; the
+  rest need `.lfsconfig`-from-HEAD-tree, URL alias resolution, and
+  `.lfsconfig` unsafe-key warnings.
 - **t-status 1/17 → 17/17 (full pass)** — blank-line section
   layout, cwd-relative path display, `repo_root.join` for working-
   tree reads, unstaged-then-staged ordering with first-seen-wins
@@ -117,7 +130,26 @@ tree in the same hook-installed state upstream produces.
 
 ## Highest-leverage gaps (descending leverage)
 
-1. **t-pull's remaining 4 failures** all need substantive features:
+1. **`.lfsconfig` "unsafe key" filtering**. Owns t-config tests
+   8, 9, parts of t-env test 8. Upstream restricts which keys can
+   come from `.lfsconfig` (URL-related ones are safe; transfer /
+   credential settings are unsafe and surface a warning). Without
+   it, `.lfsconfig`'s `concurrenttransfers = 5` overrides the git-
+   config default and the env output diverges.
+2. **URL `insteadOf` alias resolution for LFS endpoints**. Owns
+   t-config tests 5–8 and t-env test 17. `git config
+   url.<base>.insteadOf <alias>` should rewrite LFS URLs through
+   the same pipeline `git fetch` uses. Detect duplicates → emit
+   `warning: Multiple 'url.*.insteadof' [...]`.
+3. **`.lfsconfig` from HEAD's tree**. t-config test 2 walks a
+   detached HEAD that points at a branch with a `.lfsconfig`
+   committed but not checked out. Need `git show HEAD:.lfsconfig`
+   fallback when the working-tree file isn't present.
+4. **SSH endpoint reporting**. t-env test 11 expects two-line
+   endpoints: `Endpoint=…` followed by an indented
+   `  SSH=user@host:path` derived from `git@host:path` style
+   remote URLs.
+5. **t-pull's remaining 4 failures** all need substantive features:
    test 11 wants `lfs.transfer.enablehrefrewrite` + git `insteadOf`
    rewrites and exit-2 on download failure; test 18 wants `git
    ls-files attr:filter=lfs` based discovery in bare repos (so an
