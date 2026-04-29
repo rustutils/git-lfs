@@ -8,8 +8,7 @@ cleaner library split and friendlier help output along the way.
 These docs are split into three parts. **Protocol & format** mirrors the
 vendored upstream specs (pointer files, batch API, locking, custom
 transfer adapters, extensions). **Commands** and **Plumbing** are the
-per-command reference, auto-generated from the clap definitions in the
-source — they always match the binary you're running. **Hooks**
+per-command reference. **Hooks**
 documents the `post-*` / `pre-push` shims that `git lfs install` drops
 into `.git/hooks/`.
 

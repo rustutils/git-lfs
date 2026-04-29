@@ -1,0 +1,19 @@
+[book]
+title = "git-lfs"
+authors = ["Patrick Elsen"]
+language = "en"
+src = "docs"
+
+[build]
+build-dir = "target/book"
+# disabled so that when you add things to the summary and
+# you have a typo in the filename, the build fails instead of creating
+# an orphaned page
+create-missing = false
+
+[output.html]
+# some visual tweaks: makes tables full-width, makes outlines fold
+additional-css = ["docs/theme/custom.css"]
+# this isn't a book with logical sequential chapters, so section numbering
+# does not make sense.
+no-section-label = true

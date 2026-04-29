@@ -1,0 +1,15 @@
+stages:
+    - deploy
+
+pages:
+    image: alpine
+    stage: deploy
+    script:
+        - apk add mdbook
+        - mdbook build
+        - mv target/book public
+    artifacts:
+        paths:
+            - public
+    only:
+        - master
