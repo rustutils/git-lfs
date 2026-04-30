@@ -12,13 +12,15 @@ in the binaries.
 
 ## Status
 
-Work in progress. About 290 of the 790 vendored upstream shell tests
-currently pass across 104 test files (~37%). The remaining gaps cluster
-in commands that aren't started yet (`env`, `config`, `ext`, `dedup`,
-custom transfer adapters, SSH) and in long-tail flag behavior on
-otherwise-shipped commands. Day-to-day flows (clean / smudge,
-`fetch` / `pull` / `push`, `track`, locking, `migrate`) work end to end
-against authenticated LFS endpoints.
+Work in progress. **About 392 of the 794 vendored upstream shell tests
+currently pass across 104 test files (~49%)**, with 24 suites at a
+full pass — see [`tests/SCOREBOARD.md`](tests/SCOREBOARD.md) for the
+per-suite breakdown. The remaining gaps cluster in commands that
+aren't started yet (`dedup`, custom transfer adapters, SSH,
+`merge-driver`) and in long-tail flag behavior on otherwise-shipped
+commands. Day-to-day flows (clean / smudge, `fetch` / `pull` / `push`,
+`track`, locking, `migrate`) work end to end against authenticated
+LFS endpoints.
 
 ## Why
 
