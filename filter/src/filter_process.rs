@@ -13,7 +13,7 @@ use git_lfs_git::pktline;
 use git_lfs_pointer::Pointer;
 use git_lfs_store::Store;
 
-use crate::{FetchError, clean, smudge_with_fetch};
+use crate::{CleanExtension, FetchError, clean, smudge_with_fetch};
 
 #[derive(Debug, thiserror::Error)]
 pub enum FilterProcessError {
@@ -47,6 +47,7 @@ pub fn filter_process<R, W, F>(
     output: W,
     mut fetch: F,
     skip_smudge: bool,
+    extensions: &[CleanExtension],
 ) -> Result<(), FilterProcessError>
 where
     R: Read,
@@ -75,9 +76,10 @@ where
             .get("command")
             .ok_or(FilterProcessError::MissingHeader("command"))?
             .clone();
+        let pathname = headers.get("pathname").map(String::as_str).unwrap_or("");
 
         match command.as_str() {
-            "clean" => process_clean(store, &mut writer, &payload)?,
+            "clean" => process_clean(store, &mut writer, &payload, pathname, extensions)?,
             "smudge" if skip_smudge => process_smudge_passthrough(&mut writer, &payload)?,
             "smudge" => process_smudge(store, &mut writer, &payload, &mut fetch)?,
             other => return Err(FilterProcessError::UnknownCommand(other.into())),
@@ -179,10 +181,12 @@ fn process_clean<W: Write>(
     store: &Store,
     writer: &mut pktline::Writer<W>,
     payload: &[u8],
+    pathname: &str,
+    extensions: &[CleanExtension],
 ) -> Result<(), FilterProcessError> {
     write_initial_status(writer)?;
     let result = run_through_sink(writer, |sink| {
-        clean(store, &mut { payload }, sink)
+        clean(store, &mut { payload }, sink, pathname, extensions)
             .map(|_| ())
             .map_err(|e| io::Error::other(e.to_string()))
     });
@@ -340,7 +344,7 @@ mod tests {
 
     fn run(store: &Store, input: Vec<u8>) -> Vec<u8> {
         let mut output = Vec::new();
-        filter_process(store, Cursor::new(input), &mut output, no_fetch, false).unwrap();
+        filter_process(store, Cursor::new(input), &mut output, no_fetch, false, &[]).unwrap();
         output
     }
 
@@ -398,7 +402,7 @@ mod tests {
         let (_t, store) = fixture();
         // Pre-populate the store via clean(), then ask filter-process to smudge.
         let mut pointer = Vec::new();
-        clean(&store, &mut { &b"smudge a\n"[..] }, &mut pointer).unwrap();
+        clean(&store, &mut { &b"smudge a\n"[..] }, &mut pointer, "", &[]).unwrap();
 
         let input = handshake_input()
             .text("command=smudge")
@@ -448,7 +452,7 @@ mod tests {
         // Build the pointer text by cleaning, then wipe the object so the
         // smudge will miss and exercise the fetch path.
         let mut pointer = Vec::new();
-        clean(&store, &mut { &content[..] }, &mut pointer).unwrap();
+        clean(&store, &mut { &content[..] }, &mut pointer, "", &[]).unwrap();
         let parsed = git_lfs_pointer::Pointer::parse(&pointer).unwrap();
         std::fs::remove_file(store.object_path(parsed.oid)).unwrap();
 
@@ -473,6 +477,7 @@ mod tests {
                 Ok(())
             },
             false,
+            &[],
         )
         .unwrap();
 

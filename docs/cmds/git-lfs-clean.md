@@ -19,5 +19,5 @@ Run the clean filter: read content on stdin, write a pointer on stdout
 ### Arguments
 
 - `<PATH>`
-    Working-tree path of the file being cleaned (currently unused)
+    Working-tree path of the file being cleaned. Substituted for `%f` in any configured `lfs.extension.<name>.clean` command
 

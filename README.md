@@ -12,8 +12,8 @@ in the binaries.
 
 ## Status
 
-Work in progress. **About 522 of the 794 vendored upstream shell tests
-currently pass across 104 test files (~66%)**, with 30 suites at a
+Work in progress. **About 523 of the 794 vendored upstream shell tests
+currently pass across 104 test files (~66%)**, with 31 suites at a
 full pass — see [`tests/SCOREBOARD.md`](tests/SCOREBOARD.md) for the
 per-suite breakdown. The remaining gaps cluster in commands that
 aren't started yet (`dedup`, custom transfer adapters, SSH,

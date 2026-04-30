@@ -203,7 +203,8 @@ pub enum MigrateCmd {
 pub enum Command {
     /// Run the clean filter: read content on stdin, write a pointer on stdout.
     Clean {
-        /// Working-tree path of the file being cleaned (currently unused).
+        /// Working-tree path of the file being cleaned. Substituted for
+        /// `%f` in any configured `lfs.extension.<name>.clean` command.
         path: Option<PathBuf>,
     },
     /// Run the smudge filter: read a pointer on stdin, write content on stdout.

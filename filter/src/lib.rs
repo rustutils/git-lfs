@@ -10,7 +10,7 @@ mod clean;
 mod filter_process;
 mod smudge;
 
-pub use clean::{CleanOutcome, clean};
+pub use clean::{CleanError, CleanExtension, CleanOutcome, clean};
 pub use filter_process::{FilterProcessError, filter_process};
 pub use smudge::{SmudgeError, SmudgeOutcome, smudge, smudge_with_fetch};
 

@@ -2,7 +2,7 @@ use std::io::{self, BufRead, BufWriter, Read, Write};
 use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser};
-use git_lfs_filter::{clean, filter_process, smudge_with_fetch};
+use git_lfs_filter::{CleanExtension, clean, filter_process, smudge_with_fetch};
 use git_lfs_git::ConfigScope;
 use git_lfs_store::Store;
 
@@ -161,6 +161,27 @@ fn split_csv(values: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// Read configured pointer extensions and convert to the filter crate's
+/// runtime form. Skips entries whose `clean` is empty or whose priority
+/// is outside the spec's 0-9 range — those wouldn't produce a valid
+/// `ext-N-<name>` line anyway.
+fn collect_clean_extensions(cwd: &std::path::Path) -> Vec<CleanExtension> {
+    git_lfs_git::list_extensions(cwd)
+        .into_iter()
+        .filter_map(|ext| {
+            if ext.clean.trim().is_empty() {
+                return None;
+            }
+            let priority = u8::try_from(ext.priority).ok().filter(|&p| p <= 9)?;
+            Some(CleanExtension {
+                name: ext.name,
+                priority,
+                command: ext.clean,
+            })
+        })
+        .collect()
+}
+
 fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
     let cwd = std::env::current_dir()?;
     // `GIT_DIR` / `GIT_WORK_TREE` (and the auxiliary `GIT_OBJECT_*`
@@ -172,7 +193,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
     canonicalize_path_envs(&cwd);
 
     match cmd {
-        Command::Clean { path: _ } => {
+        Command::Clean { path } => {
             let _ = install::try_install_hooks(&cwd);
             let store = Store::new(git_lfs_git::lfs_dir(&cwd)?);
             // No `with_references` here: clean writes new content
@@ -182,7 +203,18 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             let stdin = io::stdin().lock();
             let mut input: Box<dyn Read> = Box::new(stdin);
             let mut output: Box<dyn Write> = Box::new(BufWriter::new(io::stdout().lock()));
-            clean(&store, &mut input, &mut output)?;
+            let extensions = collect_clean_extensions(&cwd);
+            let path_str = path
+                .as_deref()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            clean(
+                &store,
+                &mut input,
+                &mut output,
+                &path_str,
+                &extensions,
+            )?;
             output.flush()?;
         }
         Command::Smudge { path: _, skip } => {
@@ -245,12 +277,14 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             let fetcher = LfsFetcher::from_repo(&cwd, &store)?;
             let stdin = io::stdin().lock();
             let stdout = io::stdout().lock();
+            let extensions = collect_clean_extensions(&cwd);
             filter_process(
                 &store,
                 stdin,
                 stdout,
                 |p| fetcher.fetch(p),
                 skip || skip_smudge_env(),
+                &extensions,
             )?;
         }
         Command::Fetch {

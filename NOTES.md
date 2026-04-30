@@ -217,16 +217,20 @@ missing** and **why it was OK to skip for v0**.
   tree path layer.
 
 ### `filter`
-- **Pointer extensions** (clean + smudge). `SmudgeError::ExtensionsUnsupported`
-  is the current explicit refusal. Implementation = pipe content through an
-  external program per extension (`docs/extensions.md`). Needed by
-  `t-clean.sh` "clean with pointer extension" and `t-smudge.sh` equivalent.
+- **Smudge-side pointer extensions.** Clean shipped (chains the configured
+  `lfs.extension.<name>.clean` programs and emits `ext-N-<name>` lines per
+  `docs/extensions.md`); smudge still bails with
+  `SmudgeError::ExtensionsUnsupported`. Smudge needs to invoke the
+  extensions in *reverse* priority order, validate each output OID against
+  the recorded ext-N hash, and surface the descriptive error on mismatch.
+  Needed by `t-smudge.sh` and the smudge half of `t-filter-process.sh`.
 - **Size-mismatch cleanup.** When smudge sees an object on disk with the
   right OID but wrong size, it treats it as missing and re-fetches; we
   should also remove the corrupt local file before fetching.
-- **Working-tree path argument.** Both clean and smudge accept a path arg
-  (e.g. `git-lfs clean -- foo.bin`); upstream uses it for progress/log
-  messages and to stat the file for size. We currently ignore it.
+- **Smudge `--` path argument.** Clean already wires the path through to
+  `%f` substitution; smudge accepts it (`git-lfs smudge -- foo.bin`) but
+  doesn't use it. Upstream uses it for progress/log messages and to stat
+  the file for size.
 
 ### `cli` smudge / filter-process fetcher
 - **`lfs.url` discovery.** `LfsFetcher` only reads `lfs.url` from the local
@@ -678,10 +682,9 @@ import and export share it.
   see false-positive "missing" reports.
 
 ### `cli pointer`
-- **`--no-extensions`.** Skipped because we don't honor pointer
-  extensions on the clean path either; once `lfs.extension.<n>.*`
-  config support lands, build a non-extension-aware pointer when this
-  flag is set.
+- **`--no-extensions`.** Build a non-extension-aware pointer when this
+  flag is set, even with `lfs.extension.<n>.*` configured. Clean now
+  honors extensions by default, so this flag is a real toggle.
 - **Compare via `git hash-object`.** Upstream computes git blob OIDs
   for both pointer texts and compares those. We compare raw byte
   equality of our canonical encoding against the supplied bytes —

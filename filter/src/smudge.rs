@@ -138,7 +138,7 @@ mod tests {
     /// Insert content via the clean filter and return the resulting pointer text.
     fn clean_into(store: &Store, content: &[u8]) -> Vec<u8> {
         let mut out = Vec::new();
-        clean(store, &mut { content }, &mut out).unwrap();
+        clean(store, &mut { content }, &mut out, "", &[]).unwrap();
         out
     }
 
