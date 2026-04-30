@@ -512,17 +512,58 @@ enum FileChangeStart {
     Raw(String),
 }
 
+/// Decode git's C-style path quoting in a fast-export `M` directive.
+/// fast-export emits paths quoted (`"a file.txt"`) when they contain
+/// space, double-quote, control chars, or non-ASCII bytes; everything
+/// else comes through verbatim. Mirrors `unquote_c_style` in git
+/// itself. Unknown escapes are preserved as a best-effort fallback so
+/// we don't lose data on malformed input.
+fn unquote_path(raw: &str) -> String {
+    if !raw.starts_with('"') || !raw.ends_with('"') || raw.len() < 2 {
+        return raw.to_owned();
+    }
+    let inner = &raw[1..raw.len() - 1];
+    let mut out = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('"') => out.push('"'),
+            Some('\\') => out.push('\\'),
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('r') => out.push('\r'),
+            Some('a') => out.push('\x07'),
+            Some('b') => out.push('\x08'),
+            Some('f') => out.push('\x0c'),
+            Some('v') => out.push('\x0b'),
+            Some('0') => out.push('\0'),
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
 fn parse_file_change_start(line: &str) -> Option<FileChangeStart> {
     if line == "deleteall" {
         return Some(FileChangeStart::DeleteAll);
     }
     if let Some(rest) = line.strip_prefix("M ") {
         // Format: `<mode> <dataref> <path>` where dataref is `:N`,
-        // a sha, or the literal `inline`.
+        // a sha, or the literal `inline`. Paths with special chars
+        // (e.g. spaces) come C-quoted; unquote before storing so
+        // include/exclude globs match unwrapped paths.
         let mut parts = rest.splitn(3, ' ');
         let mode = parts.next()?.to_owned();
         let dataref_or_inline = parts.next()?;
-        let path = parts.next()?.to_owned();
+        let path = unquote_path(parts.next()?);
         if dataref_or_inline == "inline" {
             return Some(FileChangeStart::ModifyInline { mode, path });
         }

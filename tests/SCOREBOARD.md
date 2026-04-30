@@ -3,7 +3,7 @@
 Per-suite snapshot of the vendored upstream shell tests. Last
 refreshed: **2026-04-30**.
 
-**446 / 794 tests passing (~56%) across 104 suites.**
+**522 / 794 tests passing (~66%) across 104 suites.**
 
 Refresh:
 
@@ -38,7 +38,7 @@ t-mergetool.sh                        t-version.sh
 t-migrate-export.sh                   t-migrate-import-no-rewrite.sh
 ```
 
-## Partial — 71 suites, 246 / 602 tests
+## Partial — 71 suites, 322 / 602 tests
 
 | Suite | Pass / Total |
 | --- | --- |
@@ -80,8 +80,8 @@ t-migrate-export.sh                   t-migrate-import-no-rewrite.sh
 | `t-malformed-pointers.sh` | 1 / 2 |
 | `t-merge-driver.sh` | 0 / 6 |
 | `t-migrate-fixup.sh` | 11 / 12 |
-| `t-migrate-import.sh` | 6 / 51 |
-| `t-migrate-info.sh` | 7 / 50 |
+| `t-migrate-import.sh` | 44 / 51 |
+| `t-migrate-info.sh` | 45 / 50 |
 | `t-multiple-remotes.sh` | 0 / 12 |
 | `t-no-remote.sh` | 1 / 2 |
 | `t-pointer.sh` | 20 / 26 |

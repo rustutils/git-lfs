@@ -9,6 +9,39 @@ use std::io::{self, Write};
 
 use super::fast_export::{Command, Commit, DataRef, FileChange, Reset, Tag};
 
+/// C-quote a path for the fast-import wire format. fast-import treats
+/// space as the field separator inside `M`/`R`/`C`/`D` directives, so
+/// any path with a space, double-quote, control char, or non-ASCII
+/// byte must be wrapped in `"..."` with the standard `\\`/`\"`
+/// escapes. Mirrors git's `quote_c_style`.
+fn quote_path(p: &str) -> String {
+    let needs_quoting = p
+        .chars()
+        .any(|c| c == ' ' || c == '"' || c == '\\' || (c as u32) < 0x20 || !c.is_ascii());
+    if !needs_quoting {
+        return p.to_owned();
+    }
+    let mut out = String::with_capacity(p.len() + 2);
+    out.push('"');
+    for c in p.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            '\x07' => out.push_str("\\a"),
+            '\x08' => out.push_str("\\b"),
+            '\x0c' => out.push_str("\\f"),
+            '\x0b' => out.push_str("\\v"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\{:03o}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
 pub struct Writer<W: Write> {
     inner: W,
 }
@@ -74,14 +107,18 @@ impl<W: Write> Writer<W> {
     }
 
     fn write_tag(&mut self, t: &Tag) -> io::Result<()> {
+        // fast-import wants the order: tag, mark, from, original-oid,
+        // tagger, data. We previously emitted original-oid before
+        // from, which fast-import rejected with "expected 'from'
+        // command, got 'original-oid ...'".
         writeln!(self.inner, "tag {}", t.name)?;
         if let Some(m) = t.mark {
             writeln!(self.inner, "mark :{m}")?;
         }
+        writeln!(self.inner, "from {}", t.from)?;
         if let Some(oid) = &t.original_oid {
             writeln!(self.inner, "original-oid {oid}")?;
         }
-        writeln!(self.inner, "from {}", t.from)?;
         if let Some(tagger) = &t.tagger {
             writeln!(self.inner, "tagger {tagger}")?;
         }
@@ -107,15 +144,19 @@ impl<W: Write> Writer<W> {
                     DataRef::Mark(id) => format!(":{id}"),
                     DataRef::Sha(s) => s.clone(),
                 };
-                writeln!(self.inner, "M {mode} {dr} {path}")
+                writeln!(self.inner, "M {mode} {dr} {}", quote_path(path))
             }
             FileChange::ModifyInline { mode, path, data } => {
-                writeln!(self.inner, "M {mode} inline {path}")?;
+                writeln!(self.inner, "M {mode} inline {}", quote_path(path))?;
                 self.write_data_block(data)
             }
-            FileChange::Delete { path } => writeln!(self.inner, "D {path}"),
-            FileChange::Rename { src, dst } => writeln!(self.inner, "R {src} {dst}"),
-            FileChange::Copy { src, dst } => writeln!(self.inner, "C {src} {dst}"),
+            FileChange::Delete { path } => writeln!(self.inner, "D {}", quote_path(path)),
+            FileChange::Rename { src, dst } => {
+                writeln!(self.inner, "R {} {}", quote_path(src), quote_path(dst))
+            }
+            FileChange::Copy { src, dst } => {
+                writeln!(self.inner, "C {} {}", quote_path(src), quote_path(dst))
+            }
             FileChange::DeleteAll => writeln!(self.inner, "deleteall"),
             FileChange::Raw(s) => writeln!(self.inner, "{s}"),
         }

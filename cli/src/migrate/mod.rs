@@ -45,6 +45,11 @@ pub enum MigrateError {
     BadSize(String),
     #[error("{0}")]
     Other(String),
+    /// Argument-shape error printed verbatim without the `git-lfs:`
+    /// prefix. Upstream's tests `[$(...) = "Cannot use ..."]` match
+    /// the message exactly, no leading qualifier.
+    #[error("{0}")]
+    Usage(String),
 }
 
 /// Common ref selection for any subcommand: explicit branches, or the
@@ -62,8 +67,8 @@ pub(super) fn resolve_refs(
 ) -> Result<(Vec<String>, Vec<String>), MigrateError> {
     if sel.everything {
         if !sel.branches.is_empty() {
-            return Err(MigrateError::Other(
-                "cannot use --everything with explicit refs".into(),
+            return Err(MigrateError::Usage(
+                "Cannot use --everything with explicit reference arguments".into(),
             ));
         }
         return Ok((all_local_refs(cwd)?, Vec::new()));
@@ -142,15 +147,14 @@ pub(super) fn current_branch(cwd: &Path) -> Option<String> {
 }
 
 pub(super) fn all_local_refs(cwd: &Path) -> Result<Vec<String>, MigrateError> {
+    // `--everything` walks every local ref namespace, including
+    // non-standard ones (`refs/pull/*`, `refs/notes/*`, etc.). Skip
+    // remote-tracking refs so commits already pushed don't get
+    // rewritten by accident.
     let out = Command::new("git")
         .arg("-C")
         .arg(cwd)
-        .args([
-            "for-each-ref",
-            "--format=%(refname)",
-            "refs/heads/",
-            "refs/tags/",
-        ])
+        .args(["for-each-ref", "--format=%(refname)"])
         .output()?;
     if !out.status.success() {
         return Err(MigrateError::Other(format!(
@@ -160,7 +164,7 @@ pub(super) fn all_local_refs(cwd: &Path) -> Result<Vec<String>, MigrateError> {
     }
     Ok(String::from_utf8_lossy(&out.stdout)
         .lines()
-        .filter(|l| !l.is_empty())
+        .filter(|l| !l.is_empty() && !l.starts_with("refs/remotes/"))
         .map(String::from)
         .collect())
 }
@@ -203,12 +207,13 @@ pub(super) fn path_matches(
 }
 
 /// Group a path by its file extension for size-bucketing display.
-/// `assets/foo.png` becomes `*.png`; extensionless files use their
-/// basename; dotfiles like `.gitignore` are treated as basenames.
+/// `assets/foo.png` becomes `*.png`; dotfiles like `.gitattributes`
+/// keep their lead dot in the group as `*.gitattributes`. Files
+/// whose basename has no dot — `Makefile`, `no_extension` — keep
+/// their basename verbatim.
 pub(super) fn ext_group(path: &str) -> String {
     let leaf = path.rsplit('/').next().unwrap_or(path);
     if let Some(idx) = leaf.rfind('.')
-        && idx > 0
         && idx < leaf.len() - 1
     {
         return format!("*{}", &leaf[idx..]);
@@ -280,9 +285,11 @@ mod tests {
     }
 
     #[test]
-    fn ext_group_dotfiles_have_no_extension() {
-        assert_eq!(ext_group(".gitignore"), ".gitignore");
-        assert_eq!(ext_group("path/.env"), ".env");
+    fn ext_group_dotfiles_use_leading_dot_as_extension() {
+        // Matches upstream's display: `.gitattributes` shows up as
+        // `*.gitattributes` so users can spot it among other groups.
+        assert_eq!(ext_group(".gitignore"), "*.gitignore");
+        assert_eq!(ext_group("path/.env"), "*.env");
     }
 
     #[test]

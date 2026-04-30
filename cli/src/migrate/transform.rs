@@ -80,6 +80,13 @@ pub struct Options {
     /// Print one `  commit <sha>: <path>` line per converted blob to
     /// stderr. Wired in from `--verbose` on import / export.
     pub verbose: bool,
+    /// When true, skip the per-path attribute derivation in import
+    /// mode (`*.<ext> filter=lfs ...`) and rely solely on
+    /// `attrs_add_initial`. Set when the caller already pre-built
+    /// the include lines from explicit `--include` CLI patterns —
+    /// otherwise we'd duplicate or drift from the user's wording
+    /// (e.g. `--include "a file.txt"` becoming `*.txt`).
+    pub skip_path_derived_attrs: bool,
 }
 
 #[derive(Debug, Default)]
@@ -107,10 +114,17 @@ pub struct Transform<'a> {
     emitted: HashSet<u32>,
     /// Next free mark for our own injected blobs.
     next_fresh: u32,
-    /// `.gitattributes` lines to ensure are present, in stable order.
-    /// Import: `*.<ext> filter=lfs diff=lfs merge=lfs -text`.
-    /// Export: `*.<ext> !text !filter !merge !diff`.
+    /// `.gitattributes` lines derived from per-path conversion (e.g.
+    /// `*.<ext> filter=lfs diff=lfs merge=lfs -text` for each blob
+    /// the import pass converts). Sorted alphabetically by `BTreeSet`
+    /// for stable output.
     attrs_add: BTreeSet<String>,
+    /// `.gitattributes` lines from the caller's CLI options
+    /// (`Options::attrs_add_initial`). Emitted *after* the derived
+    /// lines in `build_attrs` so include-style markers appear before
+    /// the user's CLI excludes — matches upstream's
+    /// per-commit `.gitattributes` ordering for `--exclude`.
+    attrs_add_initial: Vec<String>,
     /// `.gitattributes` lines to drop. Only populated in
     /// [`Mode::Export`] — those patterns are no longer LFS-tracked.
     attrs_remove: BTreeSet<String>,
@@ -119,10 +133,7 @@ pub struct Transform<'a> {
 
 impl<'a> Transform<'a> {
     pub fn new(store: &'a Store, opts: Options, mode: Mode) -> Self {
-        let mut attrs_add: BTreeSet<String> = BTreeSet::new();
-        for line in &opts.attrs_add_initial {
-            attrs_add.insert(line.clone());
-        }
+        let attrs_add_initial = opts.attrs_add_initial.clone();
         let mut attrs_remove: BTreeSet<String> = BTreeSet::new();
         for line in &opts.attrs_remove_initial {
             attrs_remove.insert(line.clone());
@@ -134,7 +145,8 @@ impl<'a> Transform<'a> {
             blob_buffer: HashMap::new(),
             emitted: HashSet::new(),
             next_fresh: FRESH_MARK_BASE,
-            attrs_add,
+            attrs_add: BTreeSet::new(),
+            attrs_add_initial,
             attrs_remove,
             stats: Stats::default(),
         }
@@ -150,6 +162,9 @@ impl<'a> Transform<'a> {
         }
         writer.flush()?;
         self.stats.patterns = self.attrs_add.clone();
+        for p in &self.attrs_add_initial {
+            self.stats.patterns.insert(p.clone());
+        }
         Ok(self.stats)
     }
 
@@ -287,14 +302,18 @@ impl<'a> Transform<'a> {
         }
 
         // Pass 1: emit any buffered blobs this commit references at
-        // non-`.gitattributes` paths, deciding conversion based on path.
+        // non-`.gitattributes` paths, deciding conversion based on
+        // path. Symlinks (mode 120000) are never LFS pointers — git
+        // stores the link target as the blob content and we must not
+        // touch it.
         for change in &c.file_changes {
             if let FileChange::Modify {
                 dataref: DataRef::Mark(m),
                 path,
-                ..
+                mode,
             } = change
                 && path != ATTRS_PATH
+                && mode != "120000"
                 && !self.emitted.contains(m)
                 && let Some(content) = self.blob_buffer.remove(m)
             {
@@ -315,12 +334,38 @@ impl<'a> Transform<'a> {
                 }
             }
         }
+        // Pass 1b: pass-through any symlink blobs unchanged (we
+        // skipped them in pass 1 to avoid running them through the
+        // pointer/conversion logic).
+        for change in &c.file_changes {
+            if let FileChange::Modify {
+                dataref: DataRef::Mark(m),
+                path: _,
+                mode,
+            } = change
+                && mode == "120000"
+                && !self.emitted.contains(m)
+                && let Some(content) = self.blob_buffer.remove(m)
+            {
+                writer.write(&Command::Blob(Blob {
+                    mark: Some(*m),
+                    original_oid: None,
+                    data: content,
+                }))?;
+                self.emitted.insert(*m);
+            }
+        }
 
         // Pass 2: rewrite `.gitattributes` for this commit. The new
         // content is the existing content with the `attrs_remove`
         // lines stripped, then any `attrs_add` lines appended.
         let existing_attrs = self.read_existing_attrs(&c);
-        let new_attrs = build_attrs(&existing_attrs, &self.attrs_add, &self.attrs_remove);
+        let new_attrs = build_attrs(
+            &existing_attrs,
+            &self.attrs_add,
+            &self.attrs_add_initial,
+            &self.attrs_remove,
+        );
         let needs_attrs = !new_attrs.is_empty();
         if needs_attrs {
             let attrs_mark = self.alloc_fresh();
@@ -423,6 +468,22 @@ impl<'a> Transform<'a> {
         if !matches!(self.mode, Mode::Import) {
             return;
         }
+        if self.opts.skip_path_derived_attrs {
+            return;
+        }
+        // `--above` selects on size, not extension — track the exact
+        // path so unrelated files of the same extension don't pick up
+        // the LFS filter just because one big sibling tripped the
+        // threshold. t-migrate-import's `above` tests assert lines
+        // like `/a.md filter=lfs ...`. Special characters (spaces,
+        // glob metas) need escaping so the attribute matcher reads
+        // the path literally.
+        if self.opts.above > 0 {
+            let escaped = super::import::escape_attr_path(path);
+            self.attrs_add
+                .insert(format!("/{escaped} filter=lfs diff=lfs merge=lfs -text"));
+            return;
+        }
         let leaf = path.rsplit('/').next().unwrap_or(path);
         let Some(idx) = leaf.rfind('.') else { return };
         if idx == 0 || idx >= leaf.len() - 1 {
@@ -478,7 +539,12 @@ fn path_matches(path: &str, include: &Option<GlobSet>, exclude: &Option<GlobSet>
 /// - Lines in `add` are appended after the surviving existing content,
 ///   preserving alphabetical order from the input `BTreeSet`. Lines
 ///   already present in the existing content are not duplicated.
-fn build_attrs(existing: &str, add: &BTreeSet<String>, remove: &BTreeSet<String>) -> String {
+fn build_attrs(
+    existing: &str,
+    add: &BTreeSet<String>,
+    add_initial: &[String],
+    remove: &BTreeSet<String>,
+) -> String {
     let mut have: HashSet<String> = HashSet::new();
     let mut out = String::with_capacity(existing.len() + add.len() * 64);
     for line in existing.lines() {
@@ -491,6 +557,16 @@ fn build_attrs(existing: &str, add: &BTreeSet<String>, remove: &BTreeSet<String>
         have.insert(trimmed.to_owned());
     }
     for p in add {
+        if have.insert(p.clone()) {
+            out.push_str(p);
+            out.push('\n');
+        }
+    }
+    // CLI-supplied lines (e.g. `--exclude` markers in import) come
+    // last so the per-extension include lines stay grouped at the
+    // top — matches upstream's per-commit `.gitattributes` ordering
+    // and keeps test 21's diff stable.
+    for p in add_initial {
         if have.insert(p.clone()) {
             out.push_str(p);
             out.push('\n');
@@ -721,7 +797,7 @@ mod tests {
         add.insert("*.bin filter=lfs diff=lfs merge=lfs -text".to_string());
         add.insert("*.png filter=lfs diff=lfs merge=lfs -text".to_string());
         let remove = BTreeSet::new();
-        let out = build_attrs(existing, &add, &remove);
+        let out = build_attrs(existing, &add, &[], &remove);
         let bin_count = out
             .lines()
             .filter(|l| *l == "*.bin filter=lfs diff=lfs merge=lfs -text")
@@ -736,7 +812,7 @@ mod tests {
         let add = BTreeSet::new();
         let mut remove = BTreeSet::new();
         remove.insert("*.bin filter=lfs diff=lfs merge=lfs -text".to_string());
-        let out = build_attrs(existing, &add, &remove);
+        let out = build_attrs(existing, &add, &[], &remove);
         assert!(
             !out.contains("*.bin filter=lfs"),
             "removed line still present: {out}"

@@ -128,6 +128,24 @@ fn skip_smudge_env() -> bool {
     }
 }
 
+/// Print a migrate error and choose an exit code. Usage-shaped errors
+/// (`MigrateError::Usage`) print verbatim and exit with code 2 —
+/// upstream's `if PIPESTATUS == 1 fatal` checks distinguish usage
+/// errors from general failures, and exact-match tests like
+/// `[$(cmd) = "Cannot use ..."]` don't care about the code anyway.
+fn handle_migrate_error(e: migrate::MigrateError) -> u8 {
+    match e {
+        migrate::MigrateError::Usage(msg) => {
+            eprintln!("{msg}");
+            2
+        }
+        other => {
+            eprintln!("git-lfs: {other}");
+            1
+        }
+    }
+}
+
 /// Split each entry in `values` on commas and trim whitespace, dropping
 /// empties. Mirrors upstream's `--include="*.md, *.txt"` parsing — clap
 /// gives us one Vec entry per `--include` flag, and a comma-separated
@@ -449,22 +467,28 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                     verbose,
                     remote,
                 };
-                migrate::export(&cwd, &opts)?;
+                if let Err(e) = migrate::export(&cwd, &opts) {
+                    return Ok(handle_migrate_error(e));
+                }
             }
             MigrateCmd::Import {
                 args,
                 everything,
                 include,
                 exclude,
+                include_ref,
+                exclude_ref,
                 above,
                 no_rewrite,
                 message,
-                yes: _,
+                yes,
                 fixup,
+                skip_fetch,
+                object_map,
+                verbose,
+                remote,
             } => {
                 let above_bytes = migrate::parse_size(&above)?;
-                // Split: in --no-rewrite mode the positional args are
-                // working-tree paths; otherwise they're branches.
                 let (branches, paths) = if no_rewrite {
                     (Vec::new(), args)
                 } else {
@@ -475,41 +499,75 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                     everything,
                     include: split_csv(&include),
                     exclude: split_csv(&exclude),
+                    include_ref,
+                    exclude_ref,
                     above: above_bytes,
                     no_rewrite,
                     message,
                     paths,
                     fixup,
+                    skip_fetch,
+                    object_map,
+                    verbose,
+                    remote,
+                    yes,
                 };
                 let _ = install::try_install_hooks(&cwd);
-                migrate::import(&cwd, &opts)?;
+                if let Err(e) = migrate::import(&cwd, &opts) {
+                    return Ok(handle_migrate_error(e));
+                }
             }
             MigrateCmd::Info {
                 branches,
                 everything,
                 include,
                 exclude,
+                include_ref,
+                exclude_ref,
                 above,
                 top,
                 pointers,
+                unit,
+                skip_fetch: _,
+                remote: _,
+                fixup,
             } => {
-                let pointer_mode = match pointers.as_str() {
-                    "follow" => migrate::PointerMode::Follow,
-                    "no-follow" => migrate::PointerMode::NoFollow,
-                    "ignore" => migrate::PointerMode::Ignore,
-                    other => return Err(format!("--pointers: unknown value {other:?}").into()),
+                let pointer_mode = match pointers.as_deref() {
+                    Some("follow") => migrate::PointerMode::Follow,
+                    Some("no-follow") => migrate::PointerMode::NoFollow,
+                    Some("ignore") => migrate::PointerMode::Ignore,
+                    Some(other) => {
+                        return Ok(handle_migrate_error(migrate::MigrateError::Usage(format!(
+                            "Unsupported --pointers option value: {other:?}"
+                        ))));
+                    }
+                    // No `--pointers` flag: `--fixup` implies `ignore`
+                    // (we want to see what *should* be LFS but isn't);
+                    // otherwise default to `follow`.
+                    None if fixup => migrate::PointerMode::Ignore,
+                    None => migrate::PointerMode::Follow,
                 };
                 let above_bytes = migrate::parse_size(&above)?;
+                let unit_bytes = match unit.as_deref() {
+                    None | Some("") => None,
+                    Some(s) => Some(migrate::parse_size(s)?),
+                };
                 let opts = migrate::InfoOptions {
                     branches,
                     everything,
-                    include,
-                    exclude,
+                    include: split_csv(&include),
+                    exclude: split_csv(&exclude),
+                    include_ref,
+                    exclude_ref,
                     above: above_bytes,
                     top,
                     pointers: pointer_mode,
+                    unit: unit_bytes,
+                    fixup,
                 };
-                migrate::info(&cwd, &opts)?;
+                if let Err(e) = migrate::info(&cwd, &opts) {
+                    return Ok(handle_migrate_error(e));
+                }
             }
         },
         Command::Checkout {

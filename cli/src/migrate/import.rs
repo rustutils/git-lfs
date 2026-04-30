@@ -31,11 +31,21 @@ pub struct ImportOptions {
     pub everything: bool,
     pub include: Vec<String>,
     pub exclude: Vec<String>,
+    pub include_ref: Vec<String>,
+    pub exclude_ref: Vec<String>,
     pub above: u64,
     pub no_rewrite: bool,
     pub message: Option<String>,
     pub paths: Vec<String>,
     pub fixup: bool,
+    pub skip_fetch: bool,
+    pub object_map: Option<std::path::PathBuf>,
+    pub verbose: bool,
+    pub remote: Option<String>,
+    /// `--yes`: bypass the dirty-working-tree refusal. Upstream uses
+    /// it to skip an interactive "rewrite anyway?" prompt; we don't
+    /// prompt, so the flag just disables the guard.
+    pub yes: bool,
 }
 
 pub fn import(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateError> {
@@ -47,6 +57,23 @@ pub fn import(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateError> {
     if opts.fixup && (!opts.include.is_empty() || !opts.exclude.is_empty()) {
         return Err(MigrateError::Other(
             "Cannot use --fixup with --include, --exclude".into(),
+        ));
+    }
+    // --above is a size-only filter; mixing it with the path-based
+    // include/exclude patterns or the per-commit fixup walk doesn't
+    // cleanly compose, so upstream rejects the combo outright.
+    if opts.above > 0
+        && (!opts.include.is_empty() || !opts.exclude.is_empty() || opts.fixup)
+    {
+        return Err(MigrateError::Other(
+            "Cannot use --above with --include, --exclude, --fixup".into(),
+        ));
+    }
+    // --everything walks every local ref; combining it with explicit
+    // ref selectors is contradictory.
+    if opts.everything && (!opts.include_ref.is_empty() || !opts.exclude_ref.is_empty()) {
+        return Err(MigrateError::Usage(
+            "Cannot use --everything with --include-ref or --exclude-ref".into(),
         ));
     }
 
@@ -65,16 +92,23 @@ pub fn import(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateError> {
         return import_fixup(cwd, opts);
     }
 
-    if working_tree_dirty(cwd)? {
+    if !opts.yes && working_tree_dirty(cwd)? {
         return Err(MigrateError::Other(
             "working tree has uncommitted changes; commit or stash first".into(),
         ));
     }
 
-    if opts.include.is_empty() && opts.above == 0 {
+    if let Some(remote) = opts.remote.as_deref() {
+        if !super::export::remote_exists(cwd, remote) {
+            return Err(MigrateError::Other(format!(
+                "Invalid remote {remote} provided"
+            )));
+        }
+    }
+
+    if super::export::any_attrs_symlink(cwd, &["HEAD".to_owned()]) {
         return Err(MigrateError::Other(
-            "rewrite mode requires --include or --above to constrain the set of files to convert"
-                .into(),
+            "expected '.gitattributes' to be a file, got a symbolic link".into(),
         ));
     }
 
@@ -82,22 +116,77 @@ pub fn import(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateError> {
         branches: opts.branches.clone(),
         everything: opts.everything,
     };
-    let (include_refs, exclude_refs) = resolve_refs(cwd, &sel)?;
+    let (mut include_refs, mut exclude_refs) = resolve_refs(cwd, &sel)?;
+    for r in &opts.include_ref {
+        if !include_refs.iter().any(|x| x == r) {
+            include_refs.push(r.clone());
+        }
+    }
+    for r in &opts.exclude_ref {
+        if !exclude_refs.iter().any(|x| x == r) {
+            exclude_refs.push(r.clone());
+        }
+    }
+    super::validate_refs(cwd, &include_refs, &exclude_refs)?;
+    // Default behavior matches upstream: unless the user asked for
+    // `--everything` or named refs explicitly via `--include-ref` /
+    // `--exclude-ref`, exclude remote-tracking refs from the walk so
+    // commits already pushed to `origin` aren't rewritten locally.
+    // Applies even when a positional branch is given — t-migrate-
+    // import's "given branch, exclude remote refs" tests this.
+    if !opts.everything && opts.include_ref.is_empty() && opts.exclude_ref.is_empty() {
+        for r in super::export::list_remote_tracking_refs(cwd) {
+            if !exclude_refs.iter().any(|x| x == &r) {
+                exclude_refs.push(r);
+            }
+        }
+    }
     if include_refs.is_empty() {
         return Err(MigrateError::Other(
             "no resolvable refs to migrate (empty repo?)".into(),
         ));
     }
 
-    // Tell the user the pre-migrate ref values so they can roll back
-    // by hand if it goes wrong. We don't auto-backup — see NOTES.md.
     print_pre_migrate_refs(cwd, &include_refs);
 
     let store = Store::new(git_lfs_git::lfs_dir(cwd)?);
     let include = build_globset(&opts.include)?;
     let exclude = build_globset(&opts.exclude)?;
 
-    let stats = run_pipeline(
+    let marks_tmp = tempfile::NamedTempFile::new().map_err(MigrateError::Io)?;
+
+    // When the user supplied `--include`, use those patterns
+    // verbatim (with space escaping) as the `.gitattributes` lines —
+    // otherwise we'd lose information (e.g. `--include "a file.txt"`
+    // collapses to `*.txt` when derived from extension, breaking
+    // t-migrate-import's --include-with-space test).
+    //
+    // Each `--exclude` pattern earns a non-LFS marker line so a more
+    // permissive include can't drag the excluded path back into LFS
+    // later. Upstream uses the `-filter -merge -diff` form.
+    let mut attrs_add_initial: Vec<String> = opts
+        .include
+        .iter()
+        .map(|p| {
+            format!(
+                "{} filter=lfs diff=lfs merge=lfs -text",
+                escape_attr_pattern(p)
+            )
+        })
+        .collect();
+    attrs_add_initial.extend(
+        opts.exclude
+            .iter()
+            .map(|p| format!("{} !text -filter -merge -diff", escape_attr_pattern(p))),
+    );
+
+    // If the user supplied `--include`, those patterns are already in
+    // `attrs_add_initial`; the per-path derivation would duplicate or
+    // re-derive them with extension semantics that lose the user's
+    // wording.
+    let skip_path_derived_attrs = !opts.include.is_empty();
+
+    let stats = super::pipeline::run_pipeline_with_export_marks(
         cwd,
         &include_refs,
         &exclude_refs,
@@ -105,13 +194,26 @@ pub fn import(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateError> {
             include,
             exclude,
             above: opts.above,
+            verbose: opts.verbose,
+            attrs_add_initial,
+            skip_path_derived_attrs,
             ..Default::default()
         },
         Mode::Import,
         &store,
+        Some(marks_tmp.path()),
     )?;
 
-    // Refresh the working tree so the user sees the rewritten content.
+    let oid_map = super::export::read_oid_map(marks_tmp.path(), &stats.commit_marks)
+        .unwrap_or_default();
+    if !oid_map.is_empty() {
+        super::export::update_local_refs(cwd, &oid_map)?;
+    }
+    if let Some(out_path) = &opts.object_map {
+        super::export::write_object_map_from(out_path, &oid_map, &stats.commit_marks)
+            .map_err(MigrateError::Io)?;
+    }
+
     refresh_working_tree(cwd)?;
 
     println!(
@@ -121,6 +223,35 @@ pub fn import(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateError> {
         stats.patterns.len(),
     );
     Ok(stats)
+}
+
+/// Escape spaces in a `.gitattributes` pattern. Git attribute files
+/// treat the first space as the boundary between pattern and
+/// attributes, so a literal space in the path has to be expressed as
+/// `[[:space:]]`. Glob metacharacters (`*`, `?`, `[`) are *not*
+/// escaped — user-supplied patterns like `*.md` are meant as globs
+/// and we honor that intent.
+pub(crate) fn escape_attr_pattern(p: &str) -> String {
+    p.replace(' ', "[[:space:]]")
+}
+
+/// Escape every character in `p` that's special to git's attribute
+/// matcher, so the resulting `.gitattributes` line matches exactly
+/// the path passed in. Used by the `--above` per-path derivation
+/// where the user committed a literal name like `test * special.bin`
+/// and we don't want our written attrs to glob-expand it.
+pub(crate) fn escape_attr_path(p: &str) -> String {
+    let mut out = String::with_capacity(p.len());
+    for c in p.chars() {
+        match c {
+            ' ' => out.push_str("[[:space:]]"),
+            '*' => out.push_str("[*]"),
+            '?' => out.push_str("[?]"),
+            '[' => out.push_str("[[]"),
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 // --------------------------------------------------------------------

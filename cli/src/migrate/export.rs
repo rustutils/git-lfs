@@ -131,6 +131,7 @@ pub fn export(cwd: &Path, opts: &ExportOptions) -> Result<Stats, MigrateError> {
             attrs_add_initial,
             attrs_remove_initial,
             verbose: opts.verbose,
+            skip_path_derived_attrs: false,
         },
         Mode::Export,
         &store,
@@ -201,7 +202,7 @@ fn prune_unreferenced(cwd: &Path, store: &Store) -> Result<(), MigrateError> {
 /// All `refs/remotes/*` refs, used to subtract remote-known commits
 /// from the retain set during prune. Returns an empty Vec if `git`
 /// can't be reached.
-fn list_remote_tracking_refs(cwd: &Path) -> Vec<String> {
+pub(super) fn list_remote_tracking_refs(cwd: &Path) -> Vec<String> {
     let out = std::process::Command::new("git")
         .arg("-C")
         .arg(cwd)
@@ -219,7 +220,7 @@ fn list_remote_tracking_refs(cwd: &Path) -> Vec<String> {
 }
 
 /// True iff `remote` is one of the configured git remotes.
-fn remote_exists(cwd: &Path, remote: &str) -> bool {
+pub(super) fn remote_exists(cwd: &Path, remote: &str) -> bool {
     let out = std::process::Command::new("git")
         .arg("-C")
         .arg(cwd)
@@ -278,7 +279,7 @@ fn build_export_attrs(include: &[String], exclude: &[String]) -> (Vec<String>, V
 /// Build the original_oid → new_oid map for every commit fast-import
 /// recorded a mark for. Reads fast-import's `--export-marks` file
 /// (`:mark sha`) and pairs each mark with its captured `original_oid`.
-fn read_oid_map(
+pub(super) fn read_oid_map(
     marks_path: &Path,
     commit_marks: &[(u32, String)],
 ) -> std::io::Result<HashMap<String, String>> {
@@ -308,7 +309,7 @@ fn read_oid_map(
 /// Write `old,new\n` per rewritten commit to `out_path`. Pairs are
 /// emitted in the order fast-export produced them so the output is
 /// stable.
-fn write_object_map_from(
+pub(super) fn write_object_map_from(
     out_path: &Path,
     oid_map: &HashMap<String, String>,
     commit_marks: &[(u32, String)],
@@ -326,7 +327,7 @@ fn write_object_map_from(
 /// to the corresponding rewritten commit. Tests like `migrate export
 /// (given branch)` rely on this to bring `main` along when we rewrote
 /// `my-feature` (both refs share the rewrite range).
-fn update_local_refs(
+pub(super) fn update_local_refs(
     cwd: &Path,
     oid_map: &HashMap<String, String>,
 ) -> Result<(), MigrateError> {

@@ -52,6 +52,13 @@ pub enum MigrateCmd {
         /// Exclude paths matching this glob (repeatable).
         #[arg(short = 'X', long = "exclude")]
         exclude: Vec<String>,
+        /// Restrict the rewrite to commits reachable from these refs.
+        /// Repeatable.
+        #[arg(long = "include-ref")]
+        include_ref: Vec<String>,
+        /// Exclude commits reachable from these refs. Repeatable.
+        #[arg(long = "exclude-ref")]
+        exclude_ref: Vec<String>,
         /// Only convert files at least this large (e.g. `1mb`,
         /// `500k`).
         #[arg(long, default_value = "")]
@@ -75,6 +82,23 @@ pub enum MigrateCmd {
         /// `--exclude`, `--no-rewrite`.
         #[arg(long)]
         fixup: bool,
+        /// Don't fetch missing LFS objects from the remote before the
+        /// rewrite — accepted as a no-op since we never auto-fetch
+        /// today.
+        #[arg(long)]
+        skip_fetch: bool,
+        /// Write a comma-separated `<old>,<new>` mapping of every
+        /// rewritten commit OID to the named file.
+        #[arg(long = "object-map")]
+        object_map: Option<std::path::PathBuf>,
+        /// Print a per-commit progress line as the rewrite walks
+        /// history.
+        #[arg(long)]
+        verbose: bool,
+        /// Remote to consult when fetching missing LFS objects (default
+        /// `origin`).
+        #[arg(long)]
+        remote: Option<String>,
     },
     /// Inverse of import: rewrite history so LFS pointers become the
     /// raw bytes they reference. Requires the LFS objects to already
@@ -137,6 +161,13 @@ pub enum MigrateCmd {
         /// Exclude paths matching this glob (repeatable).
         #[arg(short = 'X', long = "exclude")]
         exclude: Vec<String>,
+        /// Restrict the scan to commits reachable from these refs.
+        /// Repeatable.
+        #[arg(long = "include-ref")]
+        include_ref: Vec<String>,
+        /// Exclude commits reachable from these refs. Repeatable.
+        #[arg(long = "exclude-ref")]
+        exclude_ref: Vec<String>,
         /// Only count files at least this large (e.g. `1mb`, `500k`).
         #[arg(long, default_value = "")]
         above: String,
@@ -144,9 +175,27 @@ pub enum MigrateCmd {
         #[arg(long, default_value_t = 5)]
         top: usize,
         /// How to handle existing LFS pointer blobs:
-        /// `follow` (default), `ignore`, or `no-follow`.
-        #[arg(long, default_value = "follow")]
-        pointers: String,
+        /// `follow` (default), `ignore`, or `no-follow`. Defaults
+        /// based on `--fixup`: `ignore` with the flag, `follow`
+        /// without.
+        #[arg(long)]
+        pointers: Option<String>,
+        /// Force the size unit for byte counts (`b`, `kb`, `mb`,
+        /// `gb`, `tb`, `pb`). Auto-scaled when omitted.
+        #[arg(long)]
+        unit: Option<String>,
+        /// Don't fetch missing LFS objects from the remote — accepted
+        /// as a no-op since we don't auto-fetch today.
+        #[arg(long)]
+        skip_fetch: bool,
+        /// Remote to consult (no-op for now; reserved for the
+        /// auto-fetch path).
+        #[arg(long)]
+        remote: Option<String>,
+        /// Walk history looking for files that *should* be LFS but
+        /// aren't (per `.gitattributes`). Implies `--pointers=ignore`.
+        #[arg(long)]
+        fixup: bool,
     },
 }
 

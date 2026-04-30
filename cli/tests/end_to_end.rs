@@ -2157,7 +2157,7 @@ fn migrate_import_above_filters_by_size() {
 
     let out = run_in(
         repo.path(),
-        &["migrate", "import", "--include", "*.bin", "--above", "1k"],
+        &["migrate", "import", "--above", "1k"],
         b"",
     );
     assert!(
@@ -2178,14 +2178,26 @@ fn migrate_import_above_filters_by_size() {
 }
 
 #[test]
-fn migrate_import_refuses_with_no_filter_or_threshold() {
+fn migrate_import_default_converts_all_files() {
+    // Upstream's `migrate import` with no flags walks every blob and
+    // derives `*.<ext>` patterns from the converted paths. Used to be
+    // an error in this port; we caught up to upstream behavior in
+    // the import-polish pass.
     let repo = fresh_repo_with_identity();
-    commit_plain_file(repo.path(), "x.bin", b"x");
+    commit_plain_file(repo.path(), "x.bin", b"hello");
 
     let out = run_in(repo.path(), &["migrate", "import"], b"");
-    assert!(!out.status.success(), "expected refusal");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("requires --include or --above"), "{stderr}",);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let bin = std::fs::read(repo.path().join("x.bin")).unwrap();
+    let s = String::from_utf8_lossy(&bin);
+    assert!(
+        s.starts_with("version https://git-lfs.github.com/spec/v1\n"),
+        "expected pointer text: {s:?}"
+    );
 }
 
 #[test]
@@ -2539,7 +2551,10 @@ fn migrate_info_unknown_pointers_value_errors() {
     let out = run_in(repo.path(), &["migrate", "info", "--pointers", "yolo"], b"");
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("unknown value"), "{stderr}");
+    assert!(
+        stderr.contains("Unsupported --pointers option value"),
+        "{stderr}"
+    );
 }
 
 // ---------- post-checkout / post-commit / post-merge --------------------
