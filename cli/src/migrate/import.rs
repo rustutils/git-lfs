@@ -12,7 +12,6 @@
 //!   working-tree files into pointers and add one new commit on top of
 //!   HEAD.
 
-use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -36,17 +35,38 @@ pub struct ImportOptions {
     pub no_rewrite: bool,
     pub message: Option<String>,
     pub paths: Vec<String>,
+    pub fixup: bool,
 }
 
 pub fn import(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateError> {
+    if opts.fixup && opts.no_rewrite {
+        return Err(MigrateError::Other(
+            "--no-rewrite and --fixup cannot be combined".into(),
+        ));
+    }
+    if opts.fixup && (!opts.include.is_empty() || !opts.exclude.is_empty()) {
+        return Err(MigrateError::Other(
+            "Cannot use --fixup with --include, --exclude".into(),
+        ));
+    }
+
+    // `--no-rewrite` mutates the working tree by design (it converts
+    // tracked paths to pointer files, then commits). The dirty-tree
+    // guard is for the history-rewriting modes only.
+    if opts.no_rewrite {
+        return import_no_rewrite(cwd, opts);
+    }
+
     if working_tree_dirty(cwd)? {
         return Err(MigrateError::Other(
             "working tree has uncommitted changes; commit or stash first".into(),
         ));
     }
 
-    if opts.no_rewrite {
-        return import_no_rewrite(cwd, opts);
+    if opts.fixup {
+        return Err(MigrateError::Other(
+            "--fixup is not yet implemented in this Rust port; see NOTES.md".into(),
+        ));
     }
 
     if opts.include.is_empty() && opts.above == 0 {
@@ -116,13 +136,24 @@ fn import_no_rewrite(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateE
         ));
     }
 
+    let repo_root = repo_root(cwd)?;
+    // `--no-rewrite` doesn't add new tracking lines — it requires the
+    // working tree to already declare each path as LFS in some
+    // `.gitattributes`. Mismatches surface upstream-shaped errors that
+    // the test suite greps verbatim.
+    let attrs = git_lfs_git::AttrSet::from_workdir(&repo_root)
+        .map_err(MigrateError::Io)?;
+    let listing = git_lfs_git::attr::list_lfs_patterns(&repo_root)
+        .map_err(MigrateError::Io)?;
+    if listing.tracked().next().is_none() {
+        return Err(MigrateError::Other(
+            "No Git LFS filters found in '.gitattributes'".into(),
+        ));
+    }
+
     let store = Store::new(git_lfs_git::lfs_dir(cwd)?);
     let mut stats = Stats::default();
 
-    // Convert each working-tree file in place, capturing its OID for
-    // a follow-up `git add`. Patterns get appended to .gitattributes.
-    let repo_root = repo_root(cwd)?;
-    let mut new_patterns: Vec<String> = Vec::new();
     for raw in &opts.paths {
         let abs = if Path::new(raw).is_absolute() {
             PathBuf::from(raw)
@@ -134,9 +165,24 @@ fn import_no_rewrite(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateE
                 "path is not a regular file: {raw}"
             )));
         }
+
+        // The error message + the gix-attributes lookup both want a
+        // workdir-relative, forward-slash path.
+        let rel = abs
+            .strip_prefix(&repo_root)
+            .map_err(|_| MigrateError::Other(format!("path outside repo: {raw}")))?;
+        let rel_str = rel
+            .to_string_lossy()
+            .replace(std::path::MAIN_SEPARATOR, "/");
+
+        if !attrs.is_lfs_tracked(&rel_str) {
+            return Err(MigrateError::Other(format!(
+                "{raw} did not match any Git LFS filters in '.gitattributes'"
+            )));
+        }
+
         let bytes = std::fs::read(&abs)?;
         if Pointer::parse(&bytes).is_ok() {
-            // Already a pointer; nothing to do.
             continue;
         }
         let size = bytes.len() as u64;
@@ -149,83 +195,62 @@ fn import_no_rewrite(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateE
         std::fs::write(&abs, pointer_text.as_bytes())?;
         stats.blobs_converted += 1;
         stats.bytes_converted += size;
-
-        // Add a pattern based on the file's extension.
-        let rel = abs
-            .strip_prefix(&repo_root)
-            .map_err(|_| MigrateError::Other(format!("path outside repo: {raw}")))?;
-        let leaf = rel.file_name().and_then(|o| o.to_str()).unwrap_or_default();
-        if let Some(idx) = leaf.rfind('.')
-            && idx > 0
-            && idx < leaf.len() - 1
-        {
-            new_patterns.push(format!(
-                "*{} filter=lfs diff=lfs merge=lfs -text",
-                &leaf[idx..]
-            ));
-        }
     }
 
     if stats.blobs_converted == 0 {
-        println!("Nothing to convert.");
+        // Either nothing matched or every file was already a pointer.
+        // Either way the user already has the state they wanted.
         return Ok(stats);
     }
 
-    update_gitattributes(&repo_root, &new_patterns)?;
-
+    // `-m ""` is meaningful: an empty message preserved verbatim. Only
+    // fall back to the autogenerated default when the user didn't pass
+    // `-m` at all.
     let message = opts
         .message
         .clone()
         .unwrap_or_else(|| format!("{}: convert to Git LFS", opts.paths.join(",")));
 
-    // Stage everything we touched + .gitattributes; commit.
     let mut add = Command::new("git");
     add.arg("-C").arg(cwd).arg("add");
     for p in &opts.paths {
         add.arg(p);
     }
-    add.arg(".gitattributes");
     let status = add.status().map_err(MigrateError::Io)?;
     if !status.success() {
         return Err(MigrateError::Other("git add failed".into()));
     }
 
-    let commit_status = Command::new("git")
+    // If `git add` left the index unchanged (e.g. the files were
+    // already cleaned into pointers earlier — happens when
+    // `.gitattributes` was added after the original commit and the
+    // staging-time clean filter normalized the blobs), there's
+    // nothing to commit. The desired state is already in HEAD;
+    // returning success is correct.
+    let diff_status = Command::new("git")
         .arg("-C")
         .arg(cwd)
-        .args(["commit", "-q", "-m", &message])
+        .args(["diff", "--cached", "--quiet"])
         .status()
         .map_err(MigrateError::Io)?;
-    if !commit_status.success() {
-        return Err(MigrateError::Other("git commit failed".into()));
+    if diff_status.success() {
+        return Ok(stats);
     }
 
-    println!(
-        "Converted {} file(s) ({}).",
-        stats.blobs_converted,
-        super::humanize(stats.bytes_converted),
-    );
+    let commit_out = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["commit", "-q", "--allow-empty-message", "-m", &message])
+        .output()
+        .map_err(MigrateError::Io)?;
+    if !commit_out.status.success() {
+        return Err(MigrateError::Other(format!(
+            "git commit failed: {}",
+            String::from_utf8_lossy(&commit_out.stderr).trim()
+        )));
+    }
+
     Ok(stats)
-}
-
-fn update_gitattributes(repo_root: &Path, new_patterns: &[String]) -> io::Result<()> {
-    let path = repo_root.join(".gitattributes");
-    let existing = std::fs::read_to_string(&path).unwrap_or_default();
-    let mut have: std::collections::HashSet<String> =
-        existing.lines().map(|l| l.trim().to_owned()).collect();
-    let mut buf = existing.clone();
-    if !buf.is_empty() && !buf.ends_with('\n') {
-        buf.push('\n');
-    }
-    for p in new_patterns {
-        if have.insert(p.clone()) {
-            buf.push_str(p);
-            buf.push('\n');
-        }
-    }
-    let mut f = std::fs::File::create(&path)?;
-    f.write_all(buf.as_bytes())?;
-    Ok(())
 }
 
 fn repo_root(cwd: &Path) -> Result<PathBuf, MigrateError> {

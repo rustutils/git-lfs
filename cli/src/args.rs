@@ -64,6 +64,17 @@ pub enum MigrateCmd {
         /// Commit message for the `--no-rewrite` commit.
         #[arg(short, long)]
         message: Option<String>,
+        /// Skip the prompt confirming history rewrite. Currently we
+        /// never prompt, so this is accepted as a no-op for parity
+        /// with upstream's CLI surface.
+        #[arg(long)]
+        yes: bool,
+        /// Walk every commit and convert files that *should* be LFS
+        /// pointers (per their commit's `.gitattributes`) but
+        /// currently aren't. Mutually exclusive with `--include`,
+        /// `--exclude`, `--no-rewrite`.
+        #[arg(long)]
+        fixup: bool,
     },
     /// Inverse of import: rewrite history so LFS pointers become the
     /// raw bytes they reference. Requires the LFS objects to already
@@ -82,6 +93,35 @@ pub enum MigrateCmd {
         /// Don't convert pointers at paths matching this glob.
         #[arg(short = 'X', long = "exclude")]
         exclude: Vec<String>,
+        /// Restrict the rewrite to commits reachable from these refs.
+        /// Repeatable.
+        #[arg(long = "include-ref")]
+        include_ref: Vec<String>,
+        /// Exclude commits reachable from these refs. Repeatable.
+        #[arg(long = "exclude-ref")]
+        exclude_ref: Vec<String>,
+        /// Don't fetch missing LFS objects from the remote before the
+        /// rewrite — leave their pointers in place.
+        #[arg(long)]
+        skip_fetch: bool,
+        /// Write a comma-separated `<old>,<new>` mapping of every
+        /// rewritten commit OID to the named file. Useful as input to
+        /// `git filter-repo` or other downstream tools.
+        #[arg(long = "object-map")]
+        object_map: Option<std::path::PathBuf>,
+        /// Print a per-commit progress line as the rewrite walks
+        /// history.
+        #[arg(long)]
+        verbose: bool,
+        /// Remote to consult when fetching missing LFS objects (default
+        /// `origin`).
+        #[arg(long, default_value = "origin")]
+        remote: String,
+        /// Skip the prompt confirming history rewrite. Currently we
+        /// never prompt, so this is accepted as a no-op for parity
+        /// with upstream's CLI surface.
+        #[arg(long)]
+        yes: bool,
     },
     /// Walk history and report file extensions by total size.
     /// Read-only — no objects or history change.

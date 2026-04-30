@@ -14,7 +14,7 @@
 //! the local LFS store; missing objects pass through unchanged so the
 //! user can `git lfs fetch` and re-run.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use git_lfs_store::Store;
 
@@ -30,6 +30,12 @@ pub struct ExportOptions {
     pub everything: bool,
     pub include: Vec<String>,
     pub exclude: Vec<String>,
+    pub include_ref: Vec<String>,
+    pub exclude_ref: Vec<String>,
+    pub skip_fetch: bool,
+    pub object_map: Option<PathBuf>,
+    pub verbose: bool,
+    pub remote: String,
 }
 
 pub fn export(cwd: &Path, opts: &ExportOptions) -> Result<Stats, MigrateError> {
@@ -41,7 +47,7 @@ pub fn export(cwd: &Path, opts: &ExportOptions) -> Result<Stats, MigrateError> {
 
     if opts.include.is_empty() {
         return Err(MigrateError::Other(
-            "export requires --include to constrain which paths get unconverted".into(),
+            "One or more files must be specified with --include".into(),
         ));
     }
 
@@ -49,7 +55,22 @@ pub fn export(cwd: &Path, opts: &ExportOptions) -> Result<Stats, MigrateError> {
         branches: opts.branches.clone(),
         everything: opts.everything,
     };
-    let (include_refs, exclude_refs) = resolve_refs(cwd, &sel)?;
+    let (mut include_refs, mut exclude_refs) = resolve_refs(cwd, &sel)?;
+    // --include-ref / --exclude-ref add to the rev-list selection on top of
+    // the positional/branch resolution. Used by both `info` (read-only) and
+    // export (rewriting); semantically identical to upstream's
+    // `--include-ref` flag.
+    for r in &opts.include_ref {
+        if !include_refs.iter().any(|x| x == r) {
+            include_refs.push(r.clone());
+        }
+    }
+    for r in &opts.exclude_ref {
+        if !exclude_refs.iter().any(|x| x == r) {
+            exclude_refs.push(r.clone());
+        }
+    }
+    super::validate_refs(cwd, &include_refs, &exclude_refs)?;
     if include_refs.is_empty() {
         return Err(MigrateError::Other(
             "no resolvable refs to migrate (empty repo?)".into(),

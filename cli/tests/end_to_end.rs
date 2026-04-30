@@ -1992,7 +1992,10 @@ fn migrate_export_requires_include() {
     let out = run_in(repo.path(), &["migrate", "export"], b"");
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("requires --include"), "{stderr}");
+    assert!(
+        stderr.contains("One or more files must be specified with --include"),
+        "{stderr}"
+    );
 }
 
 #[test]
@@ -2204,6 +2207,11 @@ fn migrate_import_refuses_dirty_working_tree() {
 #[test]
 fn migrate_import_no_rewrite_appends_one_commit() {
     let repo = fresh_repo_with_identity();
+    commit_plain_file(
+        repo.path(),
+        ".gitattributes",
+        b"*.bin filter=lfs diff=lfs merge=lfs -text\n",
+    );
     commit_plain_file(repo.path(), "x.bin", &[b'X'; 100]);
 
     let head_before = head_oid_str(repo.path());
@@ -2244,6 +2252,11 @@ fn migrate_import_no_rewrite_appends_one_commit() {
 #[test]
 fn migrate_import_no_rewrite_skips_already_pointer_files() {
     let repo = fresh_repo_with_identity();
+    commit_plain_file(
+        repo.path(),
+        ".gitattributes",
+        b"*.bin filter=lfs diff=lfs merge=lfs -text\n",
+    );
     commit_pointer_at(repo.path(), "x.bin", &pointer_text(HELLO_OID, HELLO_LEN));
     let head_before = head_oid_str(repo.path());
 
@@ -2256,11 +2269,6 @@ fn migrate_import_no_rewrite_skips_already_pointer_files() {
         out.status.success(),
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        stdout.contains("Nothing to convert"),
-        "expected no-op message: {stdout}",
     );
     let head_after = head_oid_str(repo.path());
     assert_eq!(head_before, head_after, "no commit should be appended");

@@ -95,6 +95,28 @@ pub(super) fn resolve_refs(
     Ok((include, exclude))
 }
 
+/// Reject refs that don't resolve. Emits a message matching upstream's
+/// `cannot find git reference: ... can't resolve ref` so error-format
+/// tests greppin' for `"can't resolve ref"` pass.
+pub(super) fn validate_refs(
+    cwd: &Path,
+    include: &[String],
+    exclude: &[String],
+) -> Result<(), MigrateError> {
+    for r in include.iter().chain(exclude.iter()) {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(cwd)
+            .args(["rev-parse", "--verify", "--quiet", &format!("{r}^{{commit}}")])
+            .output();
+        let ok = matches!(out, Ok(o) if o.status.success());
+        if !ok {
+            return Err(MigrateError::Other(format!("can't resolve ref: {r:?}")));
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn head_exists(cwd: &Path) -> bool {
     Command::new("git")
         .arg("-C")

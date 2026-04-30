@@ -128,6 +128,21 @@ fn skip_smudge_env() -> bool {
     }
 }
 
+/// Split each entry in `values` on commas and trim whitespace, dropping
+/// empties. Mirrors upstream's `--include="*.md, *.txt"` parsing — clap
+/// gives us one Vec entry per `--include` flag, and a comma-separated
+/// list within the entry needs to expand. Repeated flags (e.g.
+/// `--include foo --include bar`) are also flattened.
+fn split_csv(values: &[String]) -> Vec<String> {
+    values
+        .iter()
+        .flat_map(|s| s.split(','))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
 fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
     let cwd = std::env::current_dir()?;
     // `GIT_DIR` / `GIT_WORK_TREE` (and the auxiliary `GIT_OBJECT_*`
@@ -414,12 +429,25 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 everything,
                 include,
                 exclude,
+                include_ref,
+                exclude_ref,
+                skip_fetch,
+                object_map,
+                verbose,
+                remote,
+                yes: _,
             } => {
                 let opts = migrate::ExportOptions {
                     branches,
                     everything,
-                    include,
-                    exclude,
+                    include: split_csv(&include),
+                    exclude: split_csv(&exclude),
+                    include_ref,
+                    exclude_ref,
+                    skip_fetch,
+                    object_map,
+                    verbose,
+                    remote,
                 };
                 migrate::export(&cwd, &opts)?;
             }
@@ -431,6 +459,8 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 above,
                 no_rewrite,
                 message,
+                yes: _,
+                fixup,
             } => {
                 let above_bytes = migrate::parse_size(&above)?;
                 // Split: in --no-rewrite mode the positional args are
@@ -443,12 +473,13 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 let opts = migrate::ImportOptions {
                     branches,
                     everything,
-                    include,
-                    exclude,
+                    include: split_csv(&include),
+                    exclude: split_csv(&exclude),
                     above: above_bytes,
                     no_rewrite,
                     message,
                     paths,
+                    fixup,
                 };
                 let _ = install::try_install_hooks(&cwd);
                 migrate::import(&cwd, &opts)?;

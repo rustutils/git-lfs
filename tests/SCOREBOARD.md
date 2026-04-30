@@ -3,7 +3,7 @@
 Per-suite snapshot of the vendored upstream shell tests. Last
 refreshed: **2026-04-30**.
 
-**410 / 794 tests passing (~52%) across 104 suites.**
+**422 / 794 tests passing (~53%) across 104 suites.**
 
 Refresh:
 
@@ -18,26 +18,27 @@ you want the per-suite breakdown saved. The Full pass / Partial /
 Skipped split below is derived from the `prove` summary at the bottom
 of that log — see the log for exact failing test numbers.
 
-## Full pass — 28 suites, 167 tests
+## Full pass — 29 suites, 175 tests
 
 ```
-t-alternates.sh                    t-object-authenticated.sh
-t-cherry-pick-commits.sh           t-path.sh
-t-chunked-transfer-encoding.sh     t-post-checkout.sh
-t-clone-deprecated.sh              t-post-commit.sh
-t-commit-delete-push.sh            t-post-merge.sh
-t-config.sh                        t-progress-meter.sh
-t-duplicate-oids.sh                t-push-bad-dns.sh
-t-env.sh                           t-push-file-with-branch-name.sh
-t-fetch-include.sh                 t-status.sh
-t-fetch-paths.sh                   t-submodule-recurse.sh
-t-fetch-refspec.sh                 t-submodule.sh
-t-fetch.sh                         t-track.sh
-t-filter-branch.sh                 t-unlock.sh
-t-mergetool.sh                     t-version.sh
+t-alternates.sh                       t-object-authenticated.sh
+t-cherry-pick-commits.sh              t-path.sh
+t-chunked-transfer-encoding.sh        t-post-checkout.sh
+t-clone-deprecated.sh                 t-post-commit.sh
+t-commit-delete-push.sh               t-post-merge.sh
+t-config.sh                           t-progress-meter.sh
+t-duplicate-oids.sh                   t-push-bad-dns.sh
+t-env.sh                              t-push-file-with-branch-name.sh
+t-fetch-include.sh                    t-status.sh
+t-fetch-paths.sh                      t-submodule-recurse.sh
+t-fetch-refspec.sh                    t-submodule.sh
+t-fetch.sh                            t-track.sh
+t-filter-branch.sh                    t-unlock.sh
+t-mergetool.sh                        t-version.sh
+t-migrate-import-no-rewrite.sh
 ```
 
-## Partial — 73 suites, 242 / 627 tests
+## Partial — 72 suites, 247 / 619 tests
 
 | Suite | Pass / Total |
 | --- | --- |
@@ -78,9 +79,8 @@ t-mergetool.sh                     t-version.sh
 | `t-ls-files.sh` | 10 / 31 |
 | `t-malformed-pointers.sh` | 1 / 2 |
 | `t-merge-driver.sh` | 0 / 6 |
-| `t-migrate-export.sh` | 0 / 17 |
-| `t-migrate-fixup.sh` | 0 / 12 |
-| `t-migrate-import-no-rewrite.sh` | 0 / 8 |
+| `t-migrate-export.sh` | 1 / 17 |
+| `t-migrate-fixup.sh` | 3 / 12 |
 | `t-migrate-import.sh` | 6 / 51 |
 | `t-migrate-info.sh` | 7 / 50 |
 | `t-multiple-remotes.sh` | 0 / 12 |
