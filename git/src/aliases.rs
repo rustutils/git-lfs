@@ -87,7 +87,13 @@ fn list_insteadof_entries(cwd: &Path) -> Result<Vec<InsteadOf>, Error> {
     let out = Command::new("git")
         .arg("-C")
         .arg(cwd)
-        .args(["config", "--null", "--get-regexp", r"^url\..*\.insteadof$"])
+        .args([
+            "config",
+            "--includes",
+            "--null",
+            "--get-regexp",
+            r"^url\..*\.insteadof$",
+        ])
         .output()?;
     // Exit 1 just means "no matches" — common case.
     match out.status.code() {

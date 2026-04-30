@@ -31,22 +31,45 @@ impl ConfigScope {
 
 /// Read a single config value from the given scope. Returns `Ok(None)` if
 /// the key isn't set, *or* if the scope itself isn't readable here:
-/// `git config --local` exits 128 outside any repo, and any scope exits
-/// 128 when env-vars like `GIT_WORK_TREE` point at a missing path.
-/// Treating both as "no value" matches upstream's `cfg.Git.Get(key)`
-/// semantics — `git lfs env` distinguishes a configured value from an
-/// unconfigured one, but not between "key not set" and "scope
-/// unreachable."
+/// `git config --local` exits 128 outside any repo, exits 129 ("only
+/// one config file at a time") when `GIT_CONFIG` is also set, and any
+/// scope exits 128 when env-vars like `GIT_WORK_TREE` point at a
+/// missing path. Treating all of those as "no value" matches upstream's
+/// `cfg.Git.Get(key)` semantics — `git lfs env` distinguishes a
+/// configured value from an unconfigured one, but not between "key not
+/// set" and "scope unreachable."
 pub fn get(cwd: &Path, scope: ConfigScope, key: &str) -> Result<Option<String>, Error> {
     let out = Command::new("git")
         .arg("-C")
         .arg(cwd)
-        .args(["config", scope.flag(), "--get", key])
+        .args(["config", "--includes", scope.flag(), "--get", key])
         .output()?;
     match out.status.code() {
         Some(0) => Ok(Some(String::from_utf8_lossy(&out.stdout).trim().to_owned())),
-        // `git config --get` exits 1 when the key isn't set, 128 when
-        // the scope can't be read (no repo, bad work tree, etc.).
+        // exit 1 = key not set; 128 = scope unreachable (no repo / bad
+        // work tree); 129 = "only one config file at a time" when both
+        // `GIT_CONFIG` and a scope flag are in effect. All three are
+        // "no value here" from our perspective.
+        Some(1) | Some(128) | Some(129) => Ok(None),
+        _ => Err(Error::Failed(
+            String::from_utf8_lossy(&out.stderr).trim().to_owned(),
+        )),
+    }
+}
+
+/// Read a single config value from the merged (local → global → system,
+/// plus `GIT_CONFIG` and `include.path` directives) view. Mirrors
+/// upstream's `cfg.Git.Get` — they always read scope-less so git's own
+/// priority + include resolution applies in one shot. Returns `Ok(None)`
+/// for missing keys *or* unreadable config (no repo, bad work tree).
+fn get_any_scope(cwd: &Path, key: &str) -> Result<Option<String>, Error> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["config", "--includes", "--get", key])
+        .output()?;
+    match out.status.code() {
+        Some(0) => Ok(Some(String::from_utf8_lossy(&out.stdout).trim().to_owned())),
         Some(1) | Some(128) => Ok(None),
         _ => Err(Error::Failed(
             String::from_utf8_lossy(&out.stderr).trim().to_owned(),
@@ -66,7 +89,7 @@ pub fn get_from_file(cwd: &Path, file: &Path, key: &str) -> Result<Option<String
     let out = Command::new("git")
         .arg("-C")
         .arg(cwd)
-        .args(["config", &file_arg, "--get", key])
+        .args(["config", "--includes", &file_arg, "--get", key])
         .output()?;
     match out.status.code() {
         Some(0) => Ok(Some(String::from_utf8_lossy(&out.stdout).trim().to_owned())),
@@ -87,13 +110,7 @@ pub fn get_from_file(cwd: &Path, file: &Path, key: &str) -> Result<Option<String
 /// the safe-key allowlist (see [`is_safe_key`]) — settings that aren't
 /// URL/access related are ignored, with a one-shot warning to stderr.
 pub fn get_effective(cwd: &Path, key: &str) -> Result<Option<String>, Error> {
-    if let Some(v) = get(cwd, ConfigScope::Local, key)? {
-        return Ok(Some(v));
-    }
-    if let Some(v) = get(cwd, ConfigScope::Global, key)? {
-        return Ok(Some(v));
-    }
-    if let Some(v) = get(cwd, ConfigScope::System, key)? {
+    if let Some(v) = get_any_scope(cwd, key)? {
         return Ok(Some(v));
     }
     get_from_lfsconfig(cwd, key)
@@ -280,7 +297,7 @@ fn read_lfsconfig_file(root: &Path) -> Result<LfsConfigEntries, Error> {
     let out = Command::new("git")
         .arg("-C")
         .arg(root)
-        .args(["config", "--file=.lfsconfig", "--list"])
+        .args(["config", "--includes", "--file=.lfsconfig", "--list"])
         .output()?;
     if !out.status.success() {
         return Err(Error::Failed(format!(
@@ -300,7 +317,7 @@ fn read_lfsconfig_blob(cwd: &Path, revision: &str) -> Result<Option<LfsConfigEnt
     let out = Command::new("git")
         .arg("-C")
         .arg(cwd)
-        .args(["config", &blob_arg, "--list"])
+        .args(["config", "--includes", &blob_arg, "--list"])
         .output()?;
     match out.status.code() {
         Some(0) => Ok(Some(parse_list_output(&out.stdout))),

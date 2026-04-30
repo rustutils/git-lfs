@@ -25,7 +25,7 @@ use std::path::Path;
 
 use crate::Error;
 use crate::aliases;
-use crate::config::{self, ConfigScope};
+use crate::config;
 
 const DEFAULT_REMOTE: &str = "origin";
 
@@ -182,20 +182,14 @@ fn looks_like_url(s: &str) -> bool {
         || s.contains('@')
 }
 
-/// Read `remote.<name>.url` from the standard git config scopes.
+/// Read `remote.<name>.url` from the merged git config view (any
+/// scope, plus `include.path` and `GIT_CONFIG` resolution).
 ///
 /// We don't currently honor `remote.<name>.pushurl` separately — that's a
 /// minor accuracy issue for `git push`-driven LFS uploads, captured in
 /// NOTES.md.
 fn remote_url(cwd: &Path, remote: &str) -> Result<Option<String>, Error> {
-    let key = format!("remote.{remote}.url");
-    if let Some(v) = config::get(cwd, ConfigScope::Local, &key)? {
-        return Ok(Some(v));
-    }
-    if let Some(v) = config::get(cwd, ConfigScope::Global, &key)? {
-        return Ok(Some(v));
-    }
-    config::get(cwd, ConfigScope::System, &key)
+    config::get_effective(cwd, &format!("remote.{remote}.url"))
 }
 
 /// Convert a clone URL into the matching LFS endpoint URL.
