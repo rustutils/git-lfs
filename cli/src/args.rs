@@ -182,6 +182,12 @@ pub enum Command {
         /// section.
         #[arg(long)]
         no_excluded: bool,
+        /// Treat each pattern as a literal filename — escape glob
+        /// metacharacters (`*`, `?`, `[`, `]`, backslash, space) so
+        /// the entry in `.gitattributes` matches that exact name even
+        /// when it contains shell-glob characters.
+        #[arg(long)]
+        filename: bool,
     },
     /// Stop tracking a file pattern with git-lfs by removing it from
     /// .gitattributes. The matching pointer files in history (and the

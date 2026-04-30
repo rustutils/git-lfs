@@ -79,6 +79,10 @@ pub struct TrackOutcome {
 pub struct TrackOptions {
     pub lockable: LockableMode,
     pub dry_run: bool,
+    /// Treat each pattern as a literal filename rather than a glob
+    /// expression. Escapes glob metachars (`*`, `?`, `[`, `]`) before
+    /// writing them to `.gitattributes`.
+    pub literal_filename: bool,
 }
 
 impl Default for TrackOptions {
@@ -86,6 +90,7 @@ impl Default for TrackOptions {
         Self {
             lockable: LockableMode::Default,
             dry_run: false,
+            literal_filename: false,
         }
     }
 }
@@ -268,6 +273,58 @@ pub fn normalize_pattern(pattern: &str) -> String {
     escape_attr_pattern(trimmed)
 }
 
+/// Reverse the spaces / `#` / backslash escaping
+/// [`escape_attr_pattern`] applied. Glob backslash-escapes (`\*`, `\[`,
+/// etc.) are left in place — those are part of the literal pattern,
+/// not part of `.gitattributes` syntax. Used to render a tracked
+/// pattern for the user (`Tracking "<pattern>"`).
+pub fn unescape_attr_pattern(escaped: &str) -> String {
+    // Order matters: revert `[[:space:]]` and `\#` first, then the
+    // backslash-doubling. Doing `\\` → `\` first would consume an
+    // escape we still need (e.g. `\\#` → `\#` then `\#` → `#`).
+    let mut s = escaped.replace("[[:space:]]", " ");
+    s = s.replace("\\#", "#");
+    s = s.replace("\\\\", "\\");
+    s
+}
+
+/// Escape a literal filename for use as a `.gitattributes` pattern —
+/// every glob metacharacter (`*`, `?`, `[`, `]`) gets backslash-quoted
+/// so it matches itself rather than acting as a glob, plus the space /
+/// `#` / backslash handling [`escape_attr_pattern`] does. Used for
+/// `git lfs track --filename`.
+///
+/// Backslash handling: a literal `\` in the input is doubled to `\\`
+/// so `gix-glob` (which matches the way git itself does) interprets
+/// it as a single-backslash literal. On Windows, upstream maps `\` to
+/// `/` instead — we don't yet, but the test suite (`t-track 27/28`)
+/// runs on Unix only.
+pub fn escape_glob_characters(pattern: &str) -> String {
+    // Two-stage escape: first the backslash, otherwise we'd re-escape
+    // the backslashes we just inserted in front of `*` etc.
+    let mut step1 = String::with_capacity(pattern.len());
+    for c in pattern.chars() {
+        if c == '\\' {
+            step1.push_str("\\\\");
+        } else {
+            step1.push(c);
+        }
+    }
+    let mut out = String::with_capacity(step1.len());
+    for (i, c) in step1.chars().enumerate() {
+        match c {
+            '*' | '?' | '[' | ']' => {
+                out.push('\\');
+                out.push(c);
+            }
+            ' ' => out.push_str("[[:space:]]"),
+            '#' if i == 0 => out.push_str("\\#"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 /// If `pattern` would (textually or via globbing) match one of the
 /// forbidden filenames, return that filename. Otherwise `None`.
 pub fn forbidden_match(pattern: &str) -> Option<&'static str> {
@@ -304,10 +361,22 @@ pub fn track(
     let eol = detect_eol(cwd, &attrs);
     let mut out = Vec::with_capacity(patterns.len());
     for pattern in patterns {
-        let normalized = normalize_pattern(pattern);
+        let trimmed = pattern.strip_prefix("./").unwrap_or(pattern);
+        let normalized = if opts.literal_filename {
+            escape_glob_characters(trimmed)
+        } else {
+            escape_attr_pattern(trimmed)
+        };
         let result = attrs.track(&normalized, opts.lockable);
         out.push(TrackedPattern {
-            pattern: pattern.clone(),
+            // Keep the post-escape form here: the dispatcher uses it
+            // both for the user-facing `Tracking "..."` echo (matches
+            // upstream's `unescapeAttrPattern` output for normal-mode
+            // patterns; for `--filename` mode the glob-escapes show
+            // through, which is what upstream prints too) and as a
+            // pathspec for `git ls-files`, which understands the
+            // backslash-escapes the same way.
+            pattern: normalized.clone(),
             result,
         });
     }
@@ -408,6 +477,7 @@ mod tests {
             TrackOptions {
                 lockable: LockableMode::Default,
                 dry_run: true,
+                literal_filename: false,
             },
         )
         .unwrap();
@@ -425,6 +495,7 @@ mod tests {
             TrackOptions {
                 lockable: LockableMode::Yes,
                 dry_run: false,
+                literal_filename: false,
             },
         )
         .unwrap();
@@ -443,6 +514,7 @@ mod tests {
             TrackOptions {
                 lockable: LockableMode::Yes,
                 dry_run: false,
+                literal_filename: false,
             },
         )
         .unwrap();
@@ -452,6 +524,7 @@ mod tests {
             TrackOptions {
                 lockable: LockableMode::No,
                 dry_run: false,
+                literal_filename: false,
             },
         )
         .unwrap();
@@ -469,6 +542,7 @@ mod tests {
             TrackOptions {
                 lockable: LockableMode::Yes,
                 dry_run: false,
+                literal_filename: false,
             },
         )
         .unwrap();
@@ -510,6 +584,34 @@ mod tests {
     #[test]
     fn normalize_strips_leading_dot_slash() {
         assert_eq!(normalize_pattern("./a.dat"), "a.dat");
+    }
+
+    #[test]
+    fn escape_glob_characters_quotes_literal_metachars() {
+        assert_eq!(escape_glob_characters("[foo]bar.txt"), "\\[foo\\]bar.txt");
+        assert_eq!(escape_glob_characters("a*b?c.bin"), "a\\*b\\?c.bin");
+    }
+
+    #[test]
+    fn escape_glob_characters_handles_backslash_then_metachars() {
+        // Backslash gets doubled first; then the literal `[` etc. are
+        // backslash-quoted. So `*[foo] \n bar?.txt` expands to:
+        //   `\*\[foo\][[:space:]]\\n[[:space:]]bar\?.txt`
+        assert_eq!(
+            escape_glob_characters("*[foo] \\n bar?.txt"),
+            "\\*\\[foo\\][[:space:]]\\\\n[[:space:]]bar\\?.txt"
+        );
+    }
+
+    #[test]
+    fn unescape_attr_pattern_reverses_space_hash_and_double_backslash() {
+        assert_eq!(unescape_attr_pattern("foo[[:space:]]bar"), "foo bar");
+        assert_eq!(unescape_attr_pattern("\\#foo"), "#foo");
+        assert_eq!(unescape_attr_pattern("a\\\\b"), "a\\b");
+        // Glob backslash-escapes (`\[`, `\*`, …) survive — those
+        // belong to the literal pattern, not to .gitattributes
+        // syntax.
+        assert_eq!(unescape_attr_pattern("\\[foo\\]"), "\\[foo\\]");
     }
 
     #[test]

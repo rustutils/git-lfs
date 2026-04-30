@@ -9,7 +9,7 @@ use serde::Serialize;
 
 use crate::install;
 use crate::lockable::{self, HeldLocks};
-use crate::track::{self, LockableMode, TrackOptions, TrackResult};
+use crate::track::{self, LockableMode, TrackOptions, TrackResult, unescape_attr_pattern};
 
 pub struct Args<'a> {
     pub cwd: &'a Path,
@@ -20,6 +20,9 @@ pub struct Args<'a> {
     pub verbose: bool,
     pub json: bool,
     pub no_excluded: bool,
+    /// `--filename`: each pattern is a literal name; escape glob
+    /// metacharacters before writing to `.gitattributes`.
+    pub filename: bool,
 }
 
 pub fn run(args: Args<'_>) -> Result<u8, Box<dyn std::error::Error>> {
@@ -67,16 +70,18 @@ pub fn run(args: Args<'_>) -> Result<u8, Box<dyn std::error::Error>> {
     let opts = TrackOptions {
         lockable,
         dry_run: args.dry_run,
+        literal_filename: args.filename,
     };
     let outcome = track::track(args.cwd, args.patterns, opts)?;
 
     for p in &outcome.patterns {
+        let display = unescape_attr_pattern(&p.pattern);
         match p.result {
             TrackResult::Added | TrackResult::Replaced => {
-                println!("Tracking \"{}\"", p.pattern);
+                println!("Tracking \"{display}\"");
             }
             TrackResult::AlreadyTracked => {
-                println!("\"{}\" already supported", p.pattern);
+                println!("\"{display}\" already supported");
             }
         }
     }

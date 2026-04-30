@@ -41,3 +41,6 @@ Track a file pattern with git-lfs by adding it to .gitattributes. With no patter
 - `--no-excluded`
     Listing mode only: suppress the "Listing excluded patterns" section
 
+- `--filename`
+    Treat each pattern as a literal filename — escape glob metacharacters (`*`, `?`, `[`, `]`, backslash, space) so the entry in `.gitattributes` matches that exact name even when it contains shell-glob characters
+

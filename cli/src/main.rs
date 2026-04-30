@@ -349,6 +349,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             verbose,
             json,
             no_excluded,
+            filename,
         } => {
             return track_cmd::run(track_cmd::Args {
                 cwd: &cwd,
@@ -359,6 +360,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 verbose,
                 json,
                 no_excluded,
+                filename,
             });
         }
         Command::Version => {
