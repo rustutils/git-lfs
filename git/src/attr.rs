@@ -174,14 +174,26 @@ impl PatternListing {
     }
 }
 
-/// Walk `.gitattributes` across the workdir plus `.git/info/attributes`,
-/// extracting LFS-related pattern lines for `git lfs track`'s listing mode.
+/// Walk `.gitattributes` across the workdir plus `.git/info/attributes`
+/// and the user's `core.attributesfile` (if configured), extracting
+/// LFS-related pattern lines for `git lfs track`'s listing mode.
 ///
 /// Pattern matching is *not* needed here — we're just enumerating the raw
 /// pattern text per source file — so this uses a simple line tokenizer
 /// rather than [`AttrSet`]'s full wildmatch machinery.
 pub fn list_lfs_patterns(repo_root: &Path) -> io::Result<PatternListing> {
     let mut listing = PatternListing::default();
+
+    // The user-level attributes file (`core.attributesfile`, default
+    // `~/.config/git/attributes`). Looked up before `.git/info/attributes`
+    // and the per-tree files so it shows up first in the listing —
+    // upstream lists global → repo-local → per-dir.
+    if let Ok(Some(path)) = crate::config::get_effective(repo_root, "core.attributesfile") {
+        let expanded = expand_tilde(&path);
+        if let Ok(bytes) = fs::read(&expanded) {
+            scan_attr_lines(&bytes, &path, &mut listing);
+        }
+    }
 
     let info = repo_root.join(".git").join("info").join("attributes");
     if info.exists() {
@@ -202,6 +214,22 @@ pub fn list_lfs_patterns(repo_root: &Path) -> io::Result<PatternListing> {
         scan_attr_lines(&bytes, &rel, &mut listing);
     }
     Ok(listing)
+}
+
+/// Resolve a leading `~` / `~/` to the user's home directory. Git's
+/// `core.attributesfile` accepts both forms, but Rust's `Path` doesn't
+/// expand them itself.
+fn expand_tilde(path: &str) -> PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home).join(rest);
+        }
+    } else if path == "~" {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home);
+        }
+    }
+    PathBuf::from(path)
 }
 
 fn scan_attr_lines(bytes: &[u8], source: &str, listing: &mut PatternListing) {
