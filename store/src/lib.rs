@@ -201,22 +201,15 @@ impl Store {
             return Ok(());
         }
         let dest = self.object_path(oid);
-        // Idempotent: if the target already exists with the same OID, the
-        // content must match (content-addressed). Drop the temp and succeed.
-        if dest.is_file() {
-            return Ok(());
-        }
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        match tmp.persist_noclobber(&dest) {
-            Ok(_) => Ok(()),
-            Err(e) if e.error.kind() == io::ErrorKind::AlreadyExists => {
-                // A concurrent writer beat us. Same content; treat as success.
-                Ok(())
-            }
-            Err(e) => Err(e.error),
-        }
+        // Atomic rename, *clobbering* any existing file at the target
+        // path. The store is content-addressed: anything already there
+        // is either the same content (no-op overwrite) or corrupt
+        // (truncated, half-written) — and the latter is exactly what
+        // `git lfs fetch --refetch` exists to recover from.
+        tmp.persist(&dest).map(|_| ()).map_err(|e| e.error)
     }
 }
 
@@ -405,6 +398,26 @@ mod tests {
         let got = store.each_object().unwrap();
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].0, oid);
+    }
+
+    #[test]
+    fn insert_verified_overwrites_corrupt_existing_file() {
+        // Mirrors the scenario t-fetch's `--refetch` test exercises:
+        // a previous fetch landed an object, then the file got
+        // truncated (cp /dev/null over it). A subsequent verified
+        // insert must replace the corrupt file rather than silently
+        // skipping the write.
+        let (_tmp, store) = fixture();
+        let dest = store.object_path(abc_oid());
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        std::fs::write(&dest, b"").unwrap();
+        assert_eq!(std::fs::metadata(&dest).unwrap().len(), 0);
+
+        store
+            .insert_verified(abc_oid(), &mut b"abc".as_slice())
+            .unwrap();
+        let bytes = std::fs::read(&dest).unwrap();
+        assert_eq!(bytes, b"abc");
     }
 
     #[test]
