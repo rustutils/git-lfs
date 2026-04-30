@@ -475,7 +475,11 @@ pub(crate) fn build_pattern_set(
     }
     let mut builder = GlobSetBuilder::new();
     for pat in &raw {
-        let glob = Glob::new(pat)
+        // A trailing `/` means "directory contents", e.g. `dir/` should
+        // match `dir/a.dat`. Drop the slash so the ancestor-dir branch
+        // of `matches_with_prefix` handles it. Don't strip a lone `/`.
+        let normalized = pat.strip_suffix('/').filter(|s| !s.is_empty()).unwrap_or(pat);
+        let glob = Glob::new(normalized)
             .map_err(|e| FetchCommandError::Usage(format!("invalid pattern {pat:?}: {e}")))?;
         builder.add(glob);
     }

@@ -3,7 +3,7 @@
 Per-suite snapshot of the vendored upstream shell tests. Last
 refreshed: **2026-04-30**.
 
-**405 / 794 tests passing (~51%) across 104 suites.**
+**409 / 794 tests passing (~52%) across 104 suites.**
 
 Refresh:
 
@@ -18,26 +18,26 @@ you want the per-suite breakdown saved. The Full pass / Partial /
 Skipped split below is derived from the `prove` summary at the bottom
 of that log — see the log for exact failing test numbers.
 
-## Full pass — 27 suites, 162 tests
+## Full pass — 28 suites, 167 tests
 
 ```
-t-alternates.sh                    t-path.sh
-t-cherry-pick-commits.sh           t-post-checkout.sh
-t-chunked-transfer-encoding.sh     t-post-commit.sh
-t-clone-deprecated.sh              t-post-merge.sh
-t-commit-delete-push.sh            t-progress-meter.sh
-t-config.sh                        t-push-bad-dns.sh
-t-duplicate-oids.sh                t-push-file-with-branch-name.sh
-t-env.sh                           t-status.sh
-t-fetch-include.sh                 t-submodule-recurse.sh
+t-alternates.sh                    t-object-authenticated.sh
+t-cherry-pick-commits.sh           t-path.sh
+t-chunked-transfer-encoding.sh     t-post-checkout.sh
+t-clone-deprecated.sh              t-post-commit.sh
+t-commit-delete-push.sh            t-post-merge.sh
+t-config.sh                        t-progress-meter.sh
+t-duplicate-oids.sh                t-push-bad-dns.sh
+t-env.sh                           t-push-file-with-branch-name.sh
+t-fetch-include.sh                 t-status.sh
+t-fetch-paths.sh                   t-submodule-recurse.sh
 t-fetch-refspec.sh                 t-submodule.sh
 t-fetch.sh                         t-track.sh
 t-filter-branch.sh                 t-unlock.sh
 t-mergetool.sh                     t-version.sh
-t-object-authenticated.sh
 ```
 
-## Partial — 74 suites, 243 / 632 tests
+## Partial — 73 suites, 242 / 627 tests
 
 | Suite | Pass / Total |
 | --- | --- |
@@ -65,7 +65,6 @@ t-object-authenticated.sh
 | `t-expired.sh` | 0 / 6 |
 | `t-ext.sh` | 0 / 1 |
 | `t-extra-header.sh` | 0 / 4 |
-| `t-fetch-paths.sh` | 1 / 5 |
 | `t-fetch-recent.sh` | 1 / 7 |
 | `t-filter-process.sh` | 6 / 8 |
 | `t-fsck.sh` | 12 / 16 |
