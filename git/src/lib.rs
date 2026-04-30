@@ -7,6 +7,7 @@ use std::io;
 use std::path::Path;
 use std::process::Command;
 
+pub mod aliases;
 pub mod attr;
 pub mod cat_file;
 pub mod config;

@@ -136,21 +136,7 @@ tree in the same hook-installed state upstream produces.
 
 ## Highest-leverage gaps (descending leverage)
 
-1. **URL `insteadOf` alias resolution for LFS endpoints**. Owns
-   t-config tests 5–8 and t-env test 17. `git config
-   url.<base>.insteadOf <alias>` should rewrite LFS URLs through
-   the same pipeline `git fetch` uses. Detect duplicates → emit
-   `warning: Multiple 'url.*.insteadof' [...]`.
-   - **Scope**: `git/src/endpoint.rs`. After resolving the LFS URL
-     (env / lfs.url / remote.lfsurl / derived), apply
-     `url.<base>.insteadOf` rewrite — longest-match wins, mirroring
-     git itself. Enumerate matching keys via `git config
-     --get-regexp '^url\..*\.insteadof$'`. Duplicate detection: if
-     two different `url.<base>.insteadOf` entries share the same
-     value, emit the warning to stderr (test 6 / 17 grep). t-env
-     17 also wants a "duplicate alias" warning when
-     `url.X.insteadOf` is set twice with the same alias.
-2. **`.lfsconfig` from HEAD's tree**. t-config test 2 walks a
+1. **`.lfsconfig` from HEAD's tree**. t-config test 2 walks a
    detached HEAD that points at a branch with a `.lfsconfig`
    committed but not checked out. Need `git show HEAD:.lfsconfig`
    fallback when the working-tree file isn't present.
@@ -161,7 +147,7 @@ tree in the same hook-installed state upstream produces.
      Caching: read once per `cwd` invocation, since callers do
      multiple `get_effective` lookups and we don't want N
      subprocess spawns.
-3. **SSH endpoint reporting**. t-env test 11 expects two-line
+2. **SSH endpoint reporting**. t-env test 11 expects two-line
    endpoints: `Endpoint=…` followed by an indented
    `  SSH=user@host:path` derived from `git@host:path` style
    remote URLs.
@@ -175,13 +161,13 @@ tree in the same hook-installed state upstream produces.
      one. Bonus: test 11 expects a `GIT_SSH=lfs-ssh-echo` line
      (already covered by our env-var dump when the test harness
      sets it).
-4. **t-pull's remaining 4 failures** all need substantive features:
+3. **t-pull's remaining 4 failures** all need substantive features:
    test 11 wants `lfs.transfer.enablehrefrewrite` + git `insteadOf`
    rewrites and exit-2 on download failure; test 18 wants `git
    ls-files attr:filter=lfs` based discovery in bare repos (so an
    empty index → no fetch); test 19 needs partial-clone + sparse-
    checkout integration; test 20 needs pointer extensions.
-5. **t-checkout's remaining 5 failures** are all real features:
+4. **t-checkout's remaining 5 failures** are all real features:
    test 13 wants `--to <path> [--ours|--theirs|--base]` for merge
    conflict resolution (read the conflict pointer, write content
    to the target path); test 14 is a `GIT_DIR`/`GIT_WORK_TREE`

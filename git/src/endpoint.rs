@@ -24,6 +24,7 @@
 use std::path::Path;
 
 use crate::Error;
+use crate::aliases;
 use crate::config::{self, ConfigScope};
 
 const DEFAULT_REMOTE: &str = "origin";
@@ -48,12 +49,12 @@ pub fn endpoint_for_remote(cwd: &Path, remote: Option<&str>) -> Result<String, E
     if let Some(v) = std::env::var_os("GIT_LFS_URL") {
         let s = v.to_string_lossy().into_owned();
         if !s.is_empty() {
-            return Ok(s);
+            return Ok(aliases::rewrite(cwd, &s)?);
         }
     }
 
     if let Some(v) = config::get_effective(cwd, "lfs.url")? {
-        return Ok(v);
+        return Ok(aliases::rewrite(cwd, &v)?);
     }
 
     // When the caller didn't pin a remote name and `origin` doesn't
@@ -70,11 +71,15 @@ pub fn endpoint_for_remote(cwd: &Path, remote: Option<&str>) -> Result<String, E
 
     let remote_lfsurl_key = format!("remote.{remote}.lfsurl");
     if let Some(v) = config::get_effective(cwd, &remote_lfsurl_key)? {
-        return Ok(v);
+        return Ok(aliases::rewrite(cwd, &v)?);
     }
 
     if let Some(remote_url) = remote_url(cwd, &remote)? {
-        return derive_lfs_url(&remote_url);
+        // Apply insteadOf rewrite *before* deriving the LFS suffix so
+        // a `gh:org/repo` style alias resolves to the real URL first
+        // and `derive_lfs_url` sees a URL it can parse.
+        let rewritten = aliases::rewrite(cwd, &remote_url)?;
+        return derive_lfs_url(&rewritten);
     }
 
     // Last fallback: the caller may have passed a URL directly in
@@ -84,7 +89,8 @@ pub fn endpoint_for_remote(cwd: &Path, remote: Option<&str>) -> Result<String, E
     // a `remote.x.url = <URL>` entry first. Bare-SSH (`git@host:path`)
     // also covers the SCP-style case the rewriter understands.
     if looks_like_url(&remote) {
-        return derive_lfs_url(&remote);
+        let rewritten = aliases::rewrite(cwd, &remote)?;
+        return derive_lfs_url(&rewritten);
     }
 
     Err(EndpointError::Unresolved(remote))
