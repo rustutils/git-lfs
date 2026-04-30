@@ -58,12 +58,23 @@ pub enum Mode {
     Export,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Options {
     pub include: Option<GlobSet>,
     pub exclude: Option<GlobSet>,
     /// Only consulted in [`Mode::Import`].
     pub above: u64,
+    /// `.gitattributes` lines to add up-front, before any per-blob
+    /// transformation runs. Used by [`Mode::Export`] to seed the
+    /// rewritten attributes from the user's `--include`/`--exclude`
+    /// CLI patterns (see `migrate/export.rs`).
+    pub attrs_add_initial: Vec<String>,
+    /// `.gitattributes` lines to drop up-front. Same use as
+    /// `attrs_add_initial`.
+    pub attrs_remove_initial: Vec<String>,
+    /// Print one `  commit <sha>: <path>` line per converted blob to
+    /// stderr. Wired in from `--verbose` on import / export.
+    pub verbose: bool,
 }
 
 #[derive(Debug, Default)]
@@ -72,6 +83,10 @@ pub struct Stats {
     pub bytes_converted: u64,
     pub commits_seen: u64,
     pub patterns: BTreeSet<String>,
+    /// `(mark, original_oid)` for each commit we forwarded. Pairs with
+    /// fast-import's `--export-marks` output to build the
+    /// `--object-map` file.
+    pub commit_marks: Vec<(u32, String)>,
 }
 
 pub struct Transform<'a> {
@@ -99,6 +114,14 @@ pub struct Transform<'a> {
 
 impl<'a> Transform<'a> {
     pub fn new(store: &'a Store, opts: Options, mode: Mode) -> Self {
+        let mut attrs_add: BTreeSet<String> = BTreeSet::new();
+        for line in &opts.attrs_add_initial {
+            attrs_add.insert(line.clone());
+        }
+        let mut attrs_remove: BTreeSet<String> = BTreeSet::new();
+        for line in &opts.attrs_remove_initial {
+            attrs_remove.insert(line.clone());
+        }
         Self {
             store,
             opts,
@@ -106,8 +129,8 @@ impl<'a> Transform<'a> {
             blob_buffer: HashMap::new(),
             emitted: HashSet::new(),
             next_fresh: FRESH_MARK_BASE,
-            attrs_add: BTreeSet::new(),
-            attrs_remove: BTreeSet::new(),
+            attrs_add,
+            attrs_remove,
             stats: Stats::default(),
         }
     }
@@ -148,6 +171,9 @@ impl<'a> Transform<'a> {
         writer: &mut Writer<W>,
     ) -> io::Result<()> {
         self.stats.commits_seen += 1;
+        if let (Some(mark), Some(oid)) = (c.mark, c.original_oid.as_ref()) {
+            self.stats.commit_marks.push((mark, oid.clone()));
+        }
 
         // Pass 1: emit any buffered blobs this commit references at
         // non-`.gitattributes` paths, deciding conversion based on path.
@@ -170,6 +196,11 @@ impl<'a> Transform<'a> {
                 self.emitted.insert(*m);
                 if was_converted {
                     self.add_pattern_for_path(path);
+                    if self.opts.verbose {
+                        if let Some(oid) = c.original_oid.as_deref() {
+                            eprintln!("  commit {oid}: {path}");
+                        }
+                    }
                 }
             }
         }
@@ -272,27 +303,20 @@ impl<'a> Transform<'a> {
     }
 
     fn add_pattern_for_path(&mut self, path: &str) {
+        // Export mode pre-seeds attrs from the user's include/exclude
+        // CLI patterns (see `migrate/export.rs::build_export_attrs`),
+        // so per-path derivation is import-only.
+        if !matches!(self.mode, Mode::Import) {
+            return;
+        }
         let leaf = path.rsplit('/').next().unwrap_or(path);
         let Some(idx) = leaf.rfind('.') else { return };
         if idx == 0 || idx >= leaf.len() - 1 {
             return;
         }
         let ext = &leaf[idx..];
-        match self.mode {
-            Mode::Import => {
-                self.attrs_add
-                    .insert(format!("*{ext} filter=lfs diff=lfs merge=lfs -text"));
-            }
-            Mode::Export => {
-                // Stop tracking this extension as LFS, and emit an
-                // explicit !filter line so a more permissive parent
-                // pattern doesn't re-apply LFS filtering.
-                self.attrs_remove
-                    .insert(format!("*{ext} filter=lfs diff=lfs merge=lfs -text"));
-                self.attrs_add
-                    .insert(format!("*{ext} !text !filter !merge !diff"));
-            }
-        }
+        self.attrs_add
+            .insert(format!("*{ext} filter=lfs diff=lfs merge=lfs -text"));
     }
 
     fn alloc_fresh(&mut self) -> u32 {
@@ -345,12 +369,19 @@ fn build_attrs(existing: &str, add: &BTreeSet<String>, remove: &BTreeSet<String>
 fn replace_or_insert_attrs(changes: &mut Vec<FileChange>, attrs_mark: u32) {
     for ch in changes.iter_mut() {
         match ch {
-            FileChange::Modify { path, dataref, .. } if path == ATTRS_PATH => {
+            FileChange::Modify { path, dataref, mode, .. } if path == ATTRS_PATH => {
                 *dataref = DataRef::Mark(attrs_mark);
+                // Normalize: `.gitattributes` is a config file, not an
+                // executable. Strip the +x bit if the source happened
+                // to commit it as 0755 (t-migrate-export's permissions
+                // test asserts the rewritten attrs is non-executable).
+                // Symlinks (120000) drop here too — we always emit a
+                // regular file because the upfront symlink check at the
+                // CLI rejected the input long before this.
+                *mode = "100644".into();
                 return;
             }
             FileChange::ModifyInline { path, .. } if path == ATTRS_PATH => {
-                // Replace inline form with a mark reference.
                 *ch = FileChange::Modify {
                     mode: "100644".into(),
                     dataref: DataRef::Mark(attrs_mark),
@@ -361,8 +392,6 @@ fn replace_or_insert_attrs(changes: &mut Vec<FileChange>, attrs_mark: u32) {
             _ => {}
         }
     }
-    // No existing entry — insert at the end. (Some commits emit
-    // `deleteall` first; we want our M to come after.)
     changes.push(FileChange::Modify {
         mode: "100644".into(),
         dataref: DataRef::Mark(attrs_mark),
@@ -422,6 +451,7 @@ mod tests {
             include: Some(glob("*.bin")),
             exclude: None,
             above: 0,
+            ..Default::default()
         };
         let (_, stats) = run_transform(input, opts);
         assert_eq!(stats.blobs_converted, 0);
@@ -446,6 +476,7 @@ mod tests {
             include: Some(glob("*.bin")),
             exclude: None,
             above: 0,
+            ..Default::default()
         };
         let (out, stats) = run_transform(input, opts);
         assert_eq!(stats.blobs_converted, 1);
@@ -488,6 +519,7 @@ mod tests {
             include: Some(glob("*.bin")),
             exclude: None,
             above: 100,
+            ..Default::default()
         };
         let (_, stats) = run_transform(input, opts);
         assert_eq!(stats.blobs_converted, 0);
@@ -510,6 +542,7 @@ mod tests {
             include: Some(glob("*.bin")),
             exclude: None,
             above: 0,
+            ..Default::default()
         };
         let (_, stats) = run_transform(input.as_bytes(), opts);
         // Already a pointer → not re-converted.
@@ -536,6 +569,7 @@ mod tests {
             include: Some(glob("*.bin")),
             exclude: None,
             above: 0,
+            ..Default::default()
         };
         let (out, _) = run_transform(input, opts);
         let s = String::from_utf8(out).unwrap();
@@ -605,6 +639,11 @@ mod tests {
             include: Some(glob("*.bin")),
             exclude: None,
             above: 0,
+            // CLI seeds these from `--include`/`--exclude` patterns —
+            // see `migrate/export.rs::build_export_attrs`. The transform
+            // itself doesn't derive them in export mode.
+            attrs_add_initial: vec!["*.bin !text !filter !merge !diff".into()],
+            ..Default::default()
         };
         let (out, stats) = run_export(input.as_bytes(), opts, &store);
         assert_eq!(stats.blobs_converted, 1);
@@ -619,7 +658,8 @@ mod tests {
             !s.contains("oid sha256:"),
             "pointer text should be gone: {s}"
         );
-        // Tracked-as-not-LFS line in the rewritten .gitattributes.
+        // Tracked-as-not-LFS line in the rewritten .gitattributes,
+        // seeded from `attrs_add_initial`.
         assert!(
             s.contains("*.bin !text !filter !merge !diff"),
             "expected un-track line: {s}",
@@ -638,6 +678,7 @@ mod tests {
             include: Some(glob("*.bin")),
             exclude: None,
             above: 0,
+            ..Default::default()
         };
         let (_, stats) = run_export(input, opts, &store);
         assert_eq!(stats.blobs_converted, 0);
@@ -664,6 +705,7 @@ mod tests {
             include: Some(glob("*.bin")),
             exclude: None,
             above: 0,
+            ..Default::default()
         };
         let (_, stats) = run_export(input.as_bytes(), opts, &store);
         // No conversion when object isn't locally available.

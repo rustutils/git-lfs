@@ -115,8 +115,8 @@ pub enum MigrateCmd {
         verbose: bool,
         /// Remote to consult when fetching missing LFS objects (default
         /// `origin`).
-        #[arg(long, default_value = "origin")]
-        remote: String,
+        #[arg(long)]
+        remote: Option<String>,
         /// Skip the prompt confirming history rewrite. Currently we
         /// never prompt, so this is accepted as a no-op for parity
         /// with upstream's CLI surface.

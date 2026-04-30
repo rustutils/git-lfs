@@ -6,7 +6,7 @@
 //! per-child errors on failure.
 
 use std::io::{BufReader, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
 
@@ -23,8 +23,31 @@ pub fn run_pipeline(
     mode: Mode,
     store: &Store,
 ) -> Result<Stats, MigrateError> {
+    run_pipeline_with_export_marks(
+        cwd,
+        include_refs,
+        exclude_refs,
+        transform_opts,
+        mode,
+        store,
+        None,
+    )
+}
+
+/// Like [`run_pipeline`], but additionally writes fast-import's
+/// `--export-marks` to `marks_path`. Used by `migrate export` /
+/// `import` when the caller wants an old→new commit OID map.
+pub fn run_pipeline_with_export_marks(
+    cwd: &Path,
+    include_refs: &[String],
+    exclude_refs: &[String],
+    transform_opts: TransformOptions,
+    mode: Mode,
+    store: &Store,
+    marks_path: Option<&Path>,
+) -> Result<Stats, MigrateError> {
     let mut export = spawn_fast_export(cwd, include_refs, exclude_refs)?;
-    let mut import = spawn_fast_import(cwd)?;
+    let mut import = spawn_fast_import(cwd, marks_path.map(PathBuf::from).as_deref())?;
 
     let export_stdout = export.stdout.take().expect("piped");
     let import_stdin = import.stdin.take().expect("piped");
@@ -74,6 +97,10 @@ fn spawn_fast_export(
         "--full-tree",
         "--reencode=yes",
         "--reference-excluded-parents",
+        // `original-oid <sha>` lines are required so the transform
+        // can pair fast-import marks back to pre-rewrite commit OIDs
+        // for `migrate export --object-map`.
+        "--show-original-ids",
     ]);
     for r in include {
         cmd.arg(r);
@@ -87,11 +114,14 @@ fn spawn_fast_export(
     cmd.spawn().map_err(MigrateError::Io)
 }
 
-fn spawn_fast_import(cwd: &Path) -> Result<Child, MigrateError> {
+fn spawn_fast_import(cwd: &Path, marks_path: Option<&Path>) -> Result<Child, MigrateError> {
     let mut cmd = Command::new("git");
     cmd.arg("-C")
         .arg(cwd)
         .args(["fast-import", "--force", "--quiet"]);
+    if let Some(p) = marks_path {
+        cmd.arg(format!("--export-marks={}", p.display()));
+    }
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -132,6 +162,16 @@ pub fn refresh_working_tree(cwd: &Path) -> Result<(), MigrateError> {
     if !super::head_exists(cwd) {
         return Ok(());
     }
+    // Bare repos have no working tree to refresh.
+    let bare = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["rev-parse", "--is-bare-repository"])
+        .output()
+        .map_err(MigrateError::Io)?;
+    if bare.status.success() && String::from_utf8_lossy(&bare.stdout).trim() == "true" {
+        return Ok(());
+    }
     let out = Command::new("git")
         .arg("-C")
         .arg(cwd)
@@ -148,10 +188,25 @@ pub fn refresh_working_tree(cwd: &Path) -> Result<(), MigrateError> {
 }
 
 pub fn working_tree_dirty(cwd: &Path) -> Result<bool, MigrateError> {
+    // Bare repositories don't have a working tree to be dirty.
+    let bare_out = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["rev-parse", "--is-bare-repository"])
+        .output()
+        .map_err(MigrateError::Io)?;
+    if bare_out.status.success()
+        && String::from_utf8_lossy(&bare_out.stdout).trim() == "true"
+    {
+        return Ok(false);
+    }
     let out = Command::new("git")
         .arg("-C")
         .arg(cwd)
-        .args(["status", "--porcelain"])
+        // Untracked files don't count: tests routinely tee output into
+        // `migrate.log` before invoking migrate, and that's not a
+        // "tree dirty" state from upstream's perspective.
+        .args(["status", "--porcelain", "--untracked-files=no"])
         .output()
         .map_err(MigrateError::Io)?;
     if !out.status.success() {

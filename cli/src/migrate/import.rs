@@ -103,6 +103,7 @@ pub fn import(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateError> {
             include,
             exclude,
             above: opts.above,
+            ..Default::default()
         },
         Mode::Import,
         &store,
