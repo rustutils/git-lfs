@@ -21,6 +21,7 @@
 - [git lfs checkout](cmds/git-lfs-checkout.md)
 - [git lfs clone](cmds/git-lfs-clone.md)
 - [git lfs env](cmds/git-lfs-env.md)
+- [git lfs ext](cmds/git-lfs-ext.md)
 - [git lfs fetch](cmds/git-lfs-fetch.md)
 - [git lfs fsck](cmds/git-lfs-fsck.md)
 - [git lfs install](cmds/git-lfs-install.md)

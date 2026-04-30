@@ -9,6 +9,7 @@ use git_lfs_store::Store;
 mod checkout;
 mod clone;
 mod env;
+mod ext;
 mod fetch;
 mod fetcher;
 mod fsck;
@@ -319,6 +320,9 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
         }
         Command::Env => {
             env::run(&cwd)?;
+        }
+        Command::Ext => {
+            ext::run(&cwd)?;
         }
         Command::Migrate { cmd } => match cmd {
             MigrateCmd::Export {

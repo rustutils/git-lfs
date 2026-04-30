@@ -344,6 +344,10 @@ pub enum Command {
     /// Show the LFS environment: version, endpoints, on-disk paths, and
     /// the three `filter.lfs.*` config values.
     Env,
+    /// List the configured LFS pointer extensions (`lfs.extension.<name>.*`).
+    /// Extensions chain external clean/smudge programs around each LFS
+    /// object; this prints their resolved configuration in priority order.
+    Ext,
     /// Analyze or rewrite history for LFS conversion. Phase 1 ships
     /// `info` only; `import` and `export` will land in subsequent phases.
     Migrate {
