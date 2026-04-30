@@ -202,11 +202,29 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
     let total = to_fetch.len();
     let total_bytes: u64 = to_fetch.iter().map(|s| s.size).sum();
 
-    // For --json, we also need the batch response (so we can emit the
-    // `actions` field). Drive download_many then capture the
-    // transfers list. For now, --json without dry-run will still
-    // download but emit a minimal transfer list; full action capture
-    // is deferred (see NOTES.md).
+    // For `--json` we also want the batch response — the test diffs
+    // against a literal JSON shape that includes `actions.download.href`.
+    // The transfer queue runs its own batch internally, but doesn't
+    // surface that response back. Easiest: do a one-off batch up front
+    // when JSON is requested. The redundant second batch from the
+    // transfer is harmless (server-side dedup, idempotent), and only
+    // happens on the `--json` path which isn't a hot loop.
+    let batch_resp = if opts.json {
+        use git_lfs_api::{BatchRequest, Operation};
+        let mut req = BatchRequest::new(Operation::Download, to_fetch.clone());
+        if let Some(r) = git_lfs_git::refs::current_refspec(cwd).map(git_lfs_api::Ref::new) {
+            req = req.with_ref(r);
+        }
+        let api = fetcher.api_client().map_err(FetchCommandError::Fetch)?;
+        Some(
+            fetcher
+                .runtime_block_on(api.batch(&req))
+                .map_err(|e: git_lfs_api::ApiError| FetchCommandError::Fetch(e.to_string().into()))?,
+        )
+    } else {
+        None
+    };
+
     let report = fetcher
         .download_many(to_fetch.clone())
         .map_err(FetchCommandError::Fetch)?;
@@ -224,8 +242,7 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
     };
 
     if opts.json {
-        // Emit a minimal transfer list for completed objects.
-        print_json_transfers(&store, &to_fetch, &paths, None)?;
+        print_json_transfers(&store, &to_fetch, &paths, batch_resp.as_ref())?;
     } else {
         eprintln!(
             "Downloading LFS objects: {percent}% ({succeeded}/{total}), {}",
