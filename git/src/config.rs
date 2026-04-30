@@ -229,23 +229,24 @@ fn load_lfsconfig(cwd: &Path) -> Result<LfsConfigEntries, Error> {
         return Ok(cached.clone());
     }
 
-    let path = root.join(".lfsconfig");
-    let entries = if path.is_file() {
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(&root)
-            .args(["config", "--file=.lfsconfig", "--list"])
-            .output()?;
-        if !out.status.success() {
-            return Err(Error::Failed(format!(
-                "git config --file=.lfsconfig --list failed: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            )));
-        }
-        parse_list_output(&out.stdout)
-    } else {
-        LfsConfigEntries::new()
-    };
+    // Upstream's lookup chain (`git/config.go::Sources`):
+    //   - non-bare: working tree → `:.lfsconfig` (index) → `HEAD:.lfsconfig`
+    //   - bare:     `HEAD:.lfsconfig` only
+    // First hit wins; failures fall through silently. The index step is
+    // what t-config 2 exercises after `git read-tree` populates the
+    // staged copy without ever touching the working tree.
+    let bare = is_bare(cwd);
+    let mut entries = None;
+    if !bare && root.join(".lfsconfig").is_file() {
+        entries = Some(read_lfsconfig_file(&root)?);
+    }
+    if entries.is_none() && !bare {
+        entries = read_lfsconfig_blob(cwd, ":.lfsconfig")?;
+    }
+    if entries.is_none() {
+        entries = read_lfsconfig_blob(cwd, "HEAD:.lfsconfig")?;
+    }
+    let entries = entries.unwrap_or_default();
 
     let (safe, ignored) = filter_safe(entries);
 
@@ -265,6 +266,56 @@ fn load_lfsconfig(cwd: &Path) -> Result<LfsConfigEntries, Error> {
         .unwrap()
         .insert(canon, safe.clone());
     Ok(safe)
+}
+
+/// Read an existing working-tree `.lfsconfig` via `git config --file`.
+fn read_lfsconfig_file(root: &Path) -> Result<LfsConfigEntries, Error> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["config", "--file=.lfsconfig", "--list"])
+        .output()?;
+    if !out.status.success() {
+        return Err(Error::Failed(format!(
+            "git config --file=.lfsconfig --list failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(parse_list_output(&out.stdout))
+}
+
+/// Read `.lfsconfig` from a git revision (`:.lfsconfig` for index,
+/// `HEAD:.lfsconfig` for HEAD's tree). Returns `None` when the blob
+/// doesn't exist — git emits exit 128 with an "ambiguous argument" or
+/// "does not exist" error in that case.
+fn read_lfsconfig_blob(cwd: &Path, revision: &str) -> Result<Option<LfsConfigEntries>, Error> {
+    let blob_arg = format!("--blob={revision}");
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["config", &blob_arg, "--list"])
+        .output()?;
+    match out.status.code() {
+        Some(0) => Ok(Some(parse_list_output(&out.stdout))),
+        // Missing blob ⇒ silent fallback. Both "exit 1" (key not found
+        // when the blob is empty) and "exit 128" (ambiguous arg / no
+        // such ref) land here.
+        _ => Ok(None),
+    }
+}
+
+/// Whether `cwd` is inside a bare repository. Returns `false` for non-
+/// repos too — anything we can't classify is treated as non-bare so
+/// the working-tree lookup still runs.
+fn is_bare(cwd: &Path) -> bool {
+    Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["rev-parse", "--is-bare-repository"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .is_some_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "true")
 }
 
 /// Locate the work-tree root (where `.lfsconfig` lives). Returns `None`
@@ -440,6 +491,56 @@ mod tests {
         assert_eq!(
             parsed["url.http://b/.insteadof"],
             vec!["alias".to_owned()]
+        );
+    }
+
+    #[test]
+    fn lfsconfig_falls_back_to_head_blob_when_no_working_tree_file() {
+        // Mirrors t-config 2's "config reads from repository" scenario:
+        // no working-tree `.lfsconfig`, but HEAD has one committed.
+        let tmp = init_repo();
+        let path = tmp.path();
+        // Configure a local identity so commits work without HOME.
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(["config", "user.name", "test"])
+            .status();
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(["config", "user.email", "test@example.com"])
+            .status();
+        std::fs::write(path.join(".lfsconfig"), "[lfs]\n\turl = http://from-head/\n").unwrap();
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(["add", ".lfsconfig"])
+            .status();
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(["-c", "commit.gpgsign=false", "commit", "-m", "init"])
+            .status();
+        // Remove the working-tree copy so only HEAD has it.
+        std::fs::remove_file(path.join(".lfsconfig")).unwrap();
+
+        let entries = read_lfsconfig_blob(path, "HEAD:.lfsconfig").unwrap().unwrap();
+        assert_eq!(
+            entries.get("lfs.url").map(|v| v.last().cloned()).flatten(),
+            Some("http://from-head/".to_owned())
+        );
+    }
+
+    #[test]
+    fn read_lfsconfig_blob_missing_returns_none() {
+        let tmp = init_repo();
+        // Empty repo: no `:.lfsconfig`, no `HEAD:.lfsconfig`.
+        assert!(read_lfsconfig_blob(tmp.path(), ":.lfsconfig").unwrap().is_none());
+        assert!(
+            read_lfsconfig_blob(tmp.path(), "HEAD:.lfsconfig")
+                .unwrap()
+                .is_none()
         );
     }
 

@@ -136,18 +136,7 @@ tree in the same hook-installed state upstream produces.
 
 ## Highest-leverage gaps (descending leverage)
 
-1. **`.lfsconfig` from HEAD's tree**. t-config test 2 walks a
-   detached HEAD that points at a branch with a `.lfsconfig`
-   committed but not checked out. Need `git show HEAD:.lfsconfig`
-   fallback when the working-tree file isn't present.
-   - **Scope**: `git/src/config.rs`. The `.lfsconfig` reader
-     currently reads the working-tree file. When it's missing, try
-     `git show HEAD:.lfsconfig` (or `git cat-file -p HEAD:.lfsconfig`)
-     and parse that. Failure → silent fallback, not an error.
-     Caching: read once per `cwd` invocation, since callers do
-     multiple `get_effective` lookups and we don't want N
-     subprocess spawns.
-2. **SSH endpoint reporting**. t-env test 11 expects two-line
+1. **SSH endpoint reporting**. t-env test 11 expects two-line
    endpoints: `Endpoint=…` followed by an indented
    `  SSH=user@host:path` derived from `git@host:path` style
    remote URLs.
@@ -161,13 +150,13 @@ tree in the same hook-installed state upstream produces.
      one. Bonus: test 11 expects a `GIT_SSH=lfs-ssh-echo` line
      (already covered by our env-var dump when the test harness
      sets it).
-3. **t-pull's remaining 4 failures** all need substantive features:
+2. **t-pull's remaining 4 failures** all need substantive features:
    test 11 wants `lfs.transfer.enablehrefrewrite` + git `insteadOf`
    rewrites and exit-2 on download failure; test 18 wants `git
    ls-files attr:filter=lfs` based discovery in bare repos (so an
    empty index → no fetch); test 19 needs partial-clone + sparse-
    checkout integration; test 20 needs pointer extensions.
-4. **t-checkout's remaining 5 failures** are all real features:
+3. **t-checkout's remaining 5 failures** are all real features:
    test 13 wants `--to <path> [--ours|--theirs|--base]` for merge
    conflict resolution (read the conflict pointer, write content
    to the target path); test 14 is a `GIT_DIR`/`GIT_WORK_TREE`
