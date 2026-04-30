@@ -59,11 +59,54 @@ pub fn lfs_alternate_dirs(cwd: &Path) -> Result<Vec<PathBuf>, Error> {
             if trimmed.is_empty() || trimmed.starts_with('#') {
                 continue;
             }
-            push(Path::new(trimmed));
+            let raw = unquote_alternate(trimmed);
+            push(Path::new(raw.as_ref()));
         }
     }
 
     Ok(dirs)
+}
+
+/// Strip C-style quotes from one `objects/info/alternates` line and
+/// expand the common escapes (`\\`, `\"`, `\n`, `\t`, `\r`). Git emits
+/// these when an alternate path contains characters that would
+/// otherwise be ambiguous on the line. Returns the input unchanged
+/// when there's no leading quote, so plain paths are still handled.
+fn unquote_alternate(line: &str) -> std::borrow::Cow<'_, str> {
+    if !line.starts_with('"') {
+        return std::borrow::Cow::Borrowed(line);
+    }
+    let Some(end) = line.rfind('"') else {
+        return std::borrow::Cow::Borrowed(line);
+    };
+    if end == 0 {
+        return std::borrow::Cow::Borrowed(line);
+    }
+    let inner = &line[1..end];
+    let mut out = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('\\') => out.push('\\'),
+            Some('"') => out.push('"'),
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('r') => out.push('\r'),
+            // Anything else: emit literally — git supports more
+            // (octal, \xNN), but the alternate-paths use case
+            // basically never needs them.
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    std::borrow::Cow::Owned(out)
 }
 
 #[cfg(test)]
@@ -150,6 +193,34 @@ mod tests {
 
         let dirs = lfs_alternate_dirs(target.path()).unwrap();
         assert_eq!(dirs.len(), 1);
+    }
+
+    #[test]
+    fn lfs_alternate_dirs_handles_quoted_path() {
+        let source = init_repo();
+        let lfs_objs = source.path().join(".git/lfs/objects");
+        std::fs::create_dir_all(&lfs_objs).unwrap();
+
+        let target = init_repo();
+        let alt_path = target.path().join(".git/objects/info/alternates");
+        std::fs::create_dir_all(alt_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &alt_path,
+            format!("\"{}\"\n", source.path().join(".git/objects").display()),
+        )
+        .unwrap();
+
+        let dirs = lfs_alternate_dirs(target.path()).unwrap();
+        assert_eq!(dirs, vec![lfs_objs]);
+    }
+
+    #[test]
+    fn unquote_alternate_handles_escapes() {
+        assert_eq!(unquote_alternate("/plain/path"), "/plain/path");
+        assert_eq!(unquote_alternate(r#""/quoted/path""#), "/quoted/path");
+        assert_eq!(unquote_alternate(r#""a\\b""#), "a\\b");
+        assert_eq!(unquote_alternate(r#""a\"b""#), "a\"b");
+        assert_eq!(unquote_alternate(r#""line1\nline2""#), "line1\nline2");
     }
 
     #[test]

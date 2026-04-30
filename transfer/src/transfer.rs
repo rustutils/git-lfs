@@ -109,6 +109,13 @@ impl Transfer {
         if let Some(r) = r#ref {
             req = req.with_ref(r);
         }
+        // GIT_TRACE breadcrumb mirroring upstream's `tq:` line in
+        // `tq/transfer_queue.go`. t-alternates greps for it to verify
+        // the queue *did* (or didn't) reach the server when the local
+        // alternates store should have satisfied the lookup.
+        if std::env::var_os("GIT_TRACE").is_some_and(|v| !v.is_empty() && v != "0") {
+            eprintln!("tq: sending batch of size {}", req.objects.len());
+        }
         let resp: BatchResponse = self.api.batch(&req).await?;
 
         let limit = Arc::new(Semaphore::new(self.config.concurrency.max(1)));
