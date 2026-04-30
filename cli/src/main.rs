@@ -14,6 +14,7 @@ mod fetch;
 mod fetcher;
 mod fsck;
 mod hooks;
+mod http_client;
 mod install;
 mod lock;
 mod lockable;

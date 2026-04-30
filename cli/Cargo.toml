@@ -16,6 +16,10 @@ default-run          = "git-lfs"
 [dependencies]
 clap       = { version = "4", features = ["derive", "wrap_help"] }
 globset    = { workspace = true }
+reqwest    = { workspace = true }
+rustls         = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
+rustls-pemfile = "2"
+rustls-pki-types = "1"
 serde      = { workspace = true }
 serde_json = { workspace = true }
 sha1       = { workspace = true }

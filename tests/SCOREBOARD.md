@@ -3,7 +3,7 @@
 Per-suite snapshot of the vendored upstream shell tests. Last
 refreshed: **2026-04-30**.
 
-**409 / 794 tests passing (~52%) across 104 suites.**
+**410 / 794 tests passing (~52%) across 104 suites.**
 
 Refresh:
 
@@ -54,7 +54,7 @@ t-mergetool.sh                     t-version.sh
 | `t-batch-unknown-oids.sh` | 0 / 1 |
 | `t-checkout.sh` | 15 / 18 |
 | `t-clean.sh` | 5 / 6 |
-| `t-clone.sh` | 8 / 13 |
+| `t-clone.sh` | 9 / 13 |
 | `t-completion.sh` | 0 / 5 |
 | `t-content-type.sh` | 0 / 3 |
 | `t-credentials-no-prompt.sh` | 0 / 2 |

@@ -65,11 +65,16 @@ impl LfsFetcher {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        let api = build_api_client(cwd, remote);
+        let endpoint_url = git_lfs_git::endpoint_for_remote(cwd, remote);
+        let http = endpoint_url
+            .as_ref()
+            .map(|u| crate::http_client::build(cwd, u))
+            .unwrap_or_default();
+        let api = build_api_client_with(cwd, remote, http.clone());
         let config = transfer_config_for(cwd);
         let transfer = api
             .clone()
-            .map(|c| Transfer::new(c, store.clone(), config));
+            .map(|c| Transfer::with_http_client(c, store.clone(), config, http));
         let refspec = git_lfs_git::refs::current_refspec(cwd).map(Ref::new);
         Ok(Self {
             runtime,
@@ -217,8 +222,22 @@ impl LfsFetcher {
 pub fn build_api_client(cwd: &Path, remote: Option<&str>) -> Result<ApiClient, String> {
     let endpoint = git_lfs_git::endpoint_for_remote(cwd, remote)
         .map_err(|e| format!("resolving LFS endpoint: {e}"))?;
+    let http = crate::http_client::build(cwd, &endpoint);
+    build_api_client_with(cwd, remote, http)
+}
+
+fn build_api_client_with(
+    cwd: &Path,
+    remote: Option<&str>,
+    http: reqwest::Client,
+) -> Result<ApiClient, String> {
+    let endpoint = git_lfs_git::endpoint_for_remote(cwd, remote)
+        .map_err(|e| format!("resolving LFS endpoint: {e}"))?;
     let url = url::Url::parse(&endpoint).map_err(|e| format!("invalid LFS endpoint: {e}"))?;
-    Ok(ApiClient::new(url, Auth::None).with_credential_helper(default_helper_chain()))
+    Ok(
+        ApiClient::with_http_client(url, Auth::None, http)
+            .with_credential_helper(default_helper_chain()),
+    )
 }
 
 /// Build a [`TransferConfig`] for `cwd`, plumbing

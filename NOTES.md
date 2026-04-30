@@ -281,6 +281,11 @@ missing** and **why it was OK to skip for v0**.
   wires up to transfer.
 
 ### `api`
+- **HTTP client cert (`http.sslCert` / `http.sslKey`).** The CA-pin
+  path lands via `cli/src/http_client.rs` (clears `t-clone::cloneSSL`),
+  but mTLS (encrypted private keys, the `cert` credential helper
+  protocol) is still missing — `t-clone::clone ClientCert` (×2) is
+  blocked on it.
 - **`LFS-Authenticate`-driven access mode.** We surface the header on
   401s but don't act on it (e.g. promoting to NTLM/Negotiate). Basic-auth
   retry via `creds/` is implemented; everything else is deferred.

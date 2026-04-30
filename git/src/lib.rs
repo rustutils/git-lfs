@@ -13,6 +13,7 @@ pub mod cat_file;
 pub mod config;
 pub mod diff_index;
 pub mod endpoint;
+pub mod http_options;
 pub mod path;
 pub mod pktline;
 pub mod refs;
@@ -27,6 +28,7 @@ pub use endpoint::{
     EndpointError, EndpointInfo, SshInfo, derive_lfs_url, endpoint_for_remote, looks_like_url,
     parse_ssh_url, resolve_endpoint,
 };
+pub use http_options::HttpOptions;
 pub use path::{git_dir, lfs_alternate_dirs, lfs_dir};
 pub use rev_list::{RevListEntry, rev_list, rev_list_with_args};
 pub use scanner::{
