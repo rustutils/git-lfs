@@ -1893,12 +1893,15 @@ fn env_outside_repo_emits_empty_repo_paths_and_succeeds() {
     );
     // Outside a repo, upstream still emits the path lines with empty
     // values for the repo-specific ones (and relative forms for
-    // LocalMediaDir / TempDir / LfsStorageDir). Filter config falls
-    // back to the canonical install-time defaults.
+    // LocalMediaDir / TempDir / LfsStorageDir). The filter.lfs.* keys
+    // come straight from `git config` — empty here because this test
+    // points GIT_CONFIG_{GLOBAL,SYSTEM} at /dev/null, so no scope has
+    // them set. (When a real user has run `git lfs install`, the
+    // global scope is present and would supply the canonical strings.)
     assert!(stdout.contains("LocalGitDir="), "{stdout}");
     assert!(stdout.contains("LocalWorkingDir="), "{stdout}");
     assert!(
-        stdout.contains("git config filter.lfs.process = \"git-lfs filter-process\""),
+        stdout.contains("git config filter.lfs.process = \"\""),
         "{stdout}"
     );
 }
