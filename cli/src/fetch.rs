@@ -151,7 +151,40 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
 
     let store = Store::new(git_lfs_git::lfs_dir(cwd)?)
         .with_references(git_lfs_git::lfs_alternate_dirs(cwd).unwrap_or_default());
-    let pointers = scan_pointers(cwd, &ref_strs, &[])?;
+    let mut pointers = scan_pointers(cwd, &ref_strs, &[])?;
+
+    // Augment each pointer's `paths` with every working-tree path the
+    // same LFS object lives at across the named refs. `git rev-list
+    // --objects` only emits each blob OID once (with one of its
+    // paths), so two `--include` patterns like `big/a` vs `big/b` —
+    // pointing at files that share a blob — would otherwise see one
+    // arbitrary side and reject the OID. `scan_tree` does walk every
+    // path in one ref, so unioning that gives us the full set.
+    {
+        use std::collections::HashMap;
+        let mut extra_paths: HashMap<git_lfs_pointer::Oid, Vec<PathBuf>> = HashMap::new();
+        for r in &walk_refs {
+            let Ok(entries) = git_lfs_git::scan_tree(cwd, r) else {
+                continue;
+            };
+            for e in entries {
+                let Some(p) = e.path else { continue };
+                let bucket = extra_paths.entry(e.oid).or_default();
+                if !bucket.contains(&p) {
+                    bucket.push(p);
+                }
+            }
+        }
+        for ptr in &mut pointers {
+            if let Some(extras) = extra_paths.get(&ptr.oid) {
+                for p in extras {
+                    if !ptr.paths.contains(p) {
+                        ptr.paths.push(p.clone());
+                    }
+                }
+            }
+        }
+    }
 
     // Apply include/exclude path filters. CLI flags take precedence
     // over `lfs.fetchinclude` / `lfs.fetchexclude`; an empty CLI flag
@@ -161,7 +194,7 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
     let exclude_set = build_pattern_set(cwd, opts.exclude, "lfs.fetchexclude")?;
     let filtered: Vec<PointerEntry> = pointers
         .into_iter()
-        .filter(|p| path_passes_filter(p.path.as_deref(), &include_set, &exclude_set))
+        .filter(|p| paths_pass_filter(&p.paths, &include_set, &exclude_set))
         .collect();
 
     // Decide what to actually fetch. With `--refetch`, download
@@ -457,32 +490,72 @@ pub(crate) fn build_pattern_set(
 /// rev-list — keep them, since the user can't filter what they can't
 /// see). Exposed pub(crate) so `fsck` can apply the same
 /// `lfs.fetchinclude` / `lfs.fetchexclude` semantics.
+/// True if *any* of `paths` would pass [`path_passes_filter`]. A
+/// single LFS OID can be checked in at multiple working-tree paths
+/// across history, so a filter that picks one of those paths must
+/// pull the OID even when the scanner's "primary" path doesn't
+/// match. t-fetch-include 3 is the smoke test.
+pub(crate) fn paths_pass_filter(
+    paths: &[PathBuf],
+    include: &Option<GlobSet>,
+    exclude: &Option<GlobSet>,
+) -> bool {
+    if paths.is_empty() {
+        return path_passes_filter(None, include, exclude);
+    }
+    paths
+        .iter()
+        .any(|p| path_passes_filter(Some(p), include, exclude))
+}
+
 pub(crate) fn path_passes_filter(
     path: Option<&Path>,
     include: &Option<GlobSet>,
     exclude: &Option<GlobSet>,
 ) -> bool {
     let Some(path) = path else { return true };
-    if let Some(inc) = include {
-        if !inc.is_match(path) {
-            // Try matching the basename too — upstream's tests use
-            // `a*` to match `a.dat` regardless of directory depth.
-            let basename = path.file_name().map(Path::new).unwrap_or(path);
-            if !inc.is_match(basename) {
-                return false;
-            }
-        }
+    if let Some(inc) = include
+        && !matches_with_prefix(path, inc)
+    {
+        return false;
     }
-    if let Some(exc) = exclude {
-        if exc.is_match(path) {
-            return false;
-        }
-        let basename = path.file_name().map(Path::new).unwrap_or(path);
-        if exc.is_match(basename) {
-            return false;
-        }
+    if let Some(exc) = exclude
+        && matches_with_prefix(path, exc)
+    {
+        return false;
     }
     true
+}
+
+/// Match `path` against `set` with three escape hatches that mirror
+/// `.gitignore` / upstream `filepathfilter` semantics:
+///   1. Exact path match (`big/b/b1.big` against `big/b/*.big`).
+///   2. Basename match (`b1.big` against `b*.big`) so users can
+///      filter without knowing where in the tree the file lives.
+///   3. Ancestor-directory match (`big/b/b1.big` accepted when the
+///      pattern is `big/b`) — t-fetch-include's `--include=big/b`
+///      relies on this.
+fn matches_with_prefix(path: &Path, set: &GlobSet) -> bool {
+    if set.is_match(path) {
+        return true;
+    }
+    let basename = path.file_name().map(Path::new).unwrap_or(path);
+    if set.is_match(basename) {
+        return true;
+    }
+    // Walk up the path checking each ancestor directory. Skip the
+    // path itself (already checked) and the empty root.
+    let mut ancestor = path.parent();
+    while let Some(a) = ancestor {
+        if a.as_os_str().is_empty() {
+            break;
+        }
+        if set.is_match(a) {
+            return true;
+        }
+        ancestor = a.parent();
+    }
+    false
 }
 
 /// Decimal SI byte humanizer matching `dustin/go-humanize`'s `Bytes()`.

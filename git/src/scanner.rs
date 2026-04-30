@@ -15,7 +15,6 @@
 //!    not the git blob OID): the same LFS object can appear in many
 //!    blobs/paths, but we only need to fetch it once.
 
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -36,6 +35,13 @@ pub struct PointerEntry {
     /// Useful for progress display ("downloading foo/bar.bin"); not the
     /// authoritative source — caller should not rely on it for routing.
     pub path: Option<PathBuf>,
+    /// Every working-tree path the pointer was seen at (across history
+    /// and refs). Callers that filter by path (`--include`/`--exclude`)
+    /// must check this set rather than just `path`, otherwise an LFS
+    /// OID shared between two paths gets filtered out whenever the
+    /// scanner happens to dedup down to the wrong one. Always
+    /// non-empty when `path` is `Some`.
+    pub paths: Vec<PathBuf>,
     /// `true` if the pointer's source bytes were byte-canonical. Used by
     /// `git lfs fsck --pointers` to flag pointers that parse but don't
     /// match the canonical encoding.
@@ -90,10 +96,11 @@ pub fn scan_pointers_with_args(
 
     // Phase 2: read content of each candidate, parse as pointer, dedup
     // by LFS OID. Same LFS object referenced from multiple paths/commits
-    // collapses to one entry (its `path` is the first git emitted).
+    // collapses to one entry — but we accumulate every path it appeared
+    // at so include/exclude filters can match any of them.
     let mut batch = CatFileBatch::spawn(cwd)?;
-    let mut seen: HashSet<Oid> = HashSet::new();
-    let mut out = Vec::new();
+    let mut by_oid: std::collections::HashMap<Oid, usize> = std::collections::HashMap::new();
+    let mut out: Vec<PointerEntry> = Vec::new();
     for (oid, name) in candidates {
         let Some(blob) = batch.read(&oid)? else {
             continue;
@@ -101,14 +108,24 @@ pub fn scan_pointers_with_args(
         let Ok(pointer) = Pointer::parse(&blob.content) else {
             continue;
         };
-        if seen.insert(pointer.oid) {
-            out.push(PointerEntry {
-                oid: pointer.oid,
-                size: pointer.size,
-                path: name.map(PathBuf::from),
-                canonical: pointer.canonical,
-            });
+        let path_buf = name.map(PathBuf::from);
+        if let Some(&idx) = by_oid.get(&pointer.oid) {
+            if let Some(p) = path_buf
+                && !out[idx].paths.contains(&p)
+            {
+                out[idx].paths.push(p);
+            }
+            continue;
         }
+        let paths: Vec<PathBuf> = path_buf.iter().cloned().collect();
+        by_oid.insert(pointer.oid, out.len());
+        out.push(PointerEntry {
+            oid: pointer.oid,
+            size: pointer.size,
+            path: path_buf,
+            paths,
+            canonical: pointer.canonical,
+        });
     }
     Ok(out)
 }
@@ -242,10 +259,12 @@ pub fn scan_tree(cwd: &Path, reference: &str) -> Result<Vec<PointerEntry>, Error
         let Ok(pointer) = Pointer::parse(&blob.content) else {
             continue;
         };
+        let path_buf = PathBuf::from(path);
         entries.push(PointerEntry {
             oid: pointer.oid,
             size: pointer.size,
-            path: Some(PathBuf::from(path)),
+            path: Some(path_buf.clone()),
+            paths: vec![path_buf],
             canonical: pointer.canonical,
         });
     }

@@ -219,7 +219,7 @@ fn push_by_oid(
     } else {
         ((succeeded_bytes as u128 * 100) / total_bytes as u128) as u32
     };
-    eprintln!(
+    println!(
         "Uploading LFS objects: {percent}% ({succeeded}/{total}), {}",
         human_bytes(succeeded_bytes),
     );
@@ -531,7 +531,7 @@ pub(crate) fn upload_in_range_with_args(
     } else {
         ((succeeded_bytes as u128 * 100) / total_bytes as u128) as u32
     };
-    eprintln!(
+    println!(
         "Uploading LFS objects: {percent}% ({succeeded}/{total}), {}",
         human_bytes(succeeded_bytes),
     );

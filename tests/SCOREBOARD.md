@@ -3,7 +3,7 @@
 Per-suite snapshot of the vendored upstream shell tests. Last
 refreshed: **2026-04-30**.
 
-**402 / 794 tests passing (~51%) across 104 suites.**
+**405 / 794 tests passing (~51%) across 104 suites.**
 
 Refresh:
 
@@ -18,7 +18,7 @@ you want the per-suite breakdown saved. The Full pass / Partial /
 Skipped split below is derived from the `prove` summary at the bottom
 of that log — see the log for exact failing test numbers.
 
-## Full pass — 26 suites, 159 tests
+## Full pass — 27 suites, 162 tests
 
 ```
 t-alternates.sh                    t-path.sh
@@ -29,14 +29,15 @@ t-commit-delete-push.sh            t-progress-meter.sh
 t-config.sh                        t-push-bad-dns.sh
 t-duplicate-oids.sh                t-push-file-with-branch-name.sh
 t-env.sh                           t-status.sh
-t-fetch-refspec.sh                 t-submodule-recurse.sh
-t-fetch.sh                         t-submodule.sh
-t-filter-branch.sh                 t-track.sh
-t-mergetool.sh                     t-unlock.sh
-t-object-authenticated.sh          t-version.sh
+t-fetch-include.sh                 t-submodule-recurse.sh
+t-fetch-refspec.sh                 t-submodule.sh
+t-fetch.sh                         t-track.sh
+t-filter-branch.sh                 t-unlock.sh
+t-mergetool.sh                     t-version.sh
+t-object-authenticated.sh
 ```
 
-## Partial — 75 suites, 240 / 635 tests
+## Partial — 74 suites, 243 / 632 tests
 
 | Suite | Pass / Total |
 | --- | --- |
@@ -64,7 +65,6 @@ t-object-authenticated.sh          t-version.sh
 | `t-expired.sh` | 0 / 6 |
 | `t-ext.sh` | 0 / 1 |
 | `t-extra-header.sh` | 0 / 4 |
-| `t-fetch-include.sh` | 0 / 3 |
 | `t-fetch-paths.sh` | 1 / 5 |
 | `t-fetch-recent.sh` | 1 / 7 |
 | `t-filter-process.sh` | 6 / 8 |
