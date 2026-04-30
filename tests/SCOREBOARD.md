@@ -3,7 +3,7 @@
 Per-suite snapshot of the vendored upstream shell tests. Last
 refreshed: **2026-04-30**.
 
-**394 / 794 tests passing (~50%) across 104 suites.**
+**396 / 794 tests passing (~50%) across 104 suites.**
 
 Refresh:
 
@@ -18,28 +18,29 @@ you want the per-suite breakdown saved. The Full pass / Partial /
 Skipped split below is derived from the `prove` summary at the bottom
 of that log — see the log for exact failing test numbers.
 
-## Full pass — 24 suites, 125 tests
+## Full pass — 25 suites, 131 tests
 
 ```
-t-cherry-pick-commits.sh           t-post-checkout.sh
-t-chunked-transfer-encoding.sh     t-post-commit.sh
-t-clone-deprecated.sh              t-post-merge.sh
-t-commit-delete-push.sh            t-progress-meter.sh
-t-config.sh                        t-push-bad-dns.sh
-t-duplicate-oids.sh                t-push-file-with-branch-name.sh
-t-env.sh                           t-status.sh
-t-fetch-refspec.sh                 t-submodule-recurse.sh
-t-filter-branch.sh                 t-submodule.sh
-t-mergetool.sh                     t-track.sh
-t-object-authenticated.sh          t-unlock.sh
-t-path.sh                          t-version.sh
+t-alternates.sh                    t-post-commit.sh
+t-cherry-pick-commits.sh           t-post-merge.sh
+t-chunked-transfer-encoding.sh     t-progress-meter.sh
+t-clone-deprecated.sh              t-push-bad-dns.sh
+t-commit-delete-push.sh            t-push-file-with-branch-name.sh
+t-config.sh                        t-status.sh
+t-duplicate-oids.sh                t-submodule-recurse.sh
+t-env.sh                           t-submodule.sh
+t-fetch-refspec.sh                 t-track.sh
+t-filter-branch.sh                 t-unlock.sh
+t-mergetool.sh                     t-version.sh
+t-object-authenticated.sh
+t-path.sh
+t-post-checkout.sh
 ```
 
-## Partial — 77 suites, 269 / 669 tests
+## Partial — 76 suites, 265 / 663 tests
 
 | Suite | Pass / Total |
 | --- | --- |
-| `t-alternates.sh` | 5 / 6 |
 | `t-askpass.sh` | 1 / 6 |
 | `t-attributes.sh` | 0 / 4 |
 | `t-batch-error-handling.sh` | 0 / 1 |
@@ -88,7 +89,7 @@ t-path.sh                          t-version.sh
 | `t-multiple-remotes.sh` | 0 / 12 |
 | `t-no-remote.sh` | 1 / 2 |
 | `t-pointer.sh` | 20 / 26 |
-| `t-pre-push.sh` | 34 / 40 |
+| `t-pre-push.sh` | 35 / 40 |
 | `t-progress.sh` | 0 / 1 |
 | `t-prune-worktree.sh` | 0 / 2 |
 | `t-prune.sh` | 4 / 18 |

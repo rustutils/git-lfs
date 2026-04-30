@@ -33,6 +33,18 @@ pub fn pre_push<R: BufRead>(
         return Ok(PushOutcome::default());
     }
 
+    // Validate the remote upfront — `git lfs pre-push not-a-remote …`
+    // (t-pre-push 15) wants the user-facing "Invalid remote name"
+    // message before we try anything else. We accept anything that
+    // looks like a URL, an SCP-style `host:path`, a local directory
+    // (so `git push ../sibling-clone` works), or a configured remote.
+    // Anything else is rejected.
+    if !is_acceptable_remote(cwd, remote) {
+        return Err(PushCommandError::Usage(format!(
+            "Invalid remote name {remote:?}"
+        )));
+    }
+
     let mut includes: Vec<String> = Vec::new();
     let mut excludes: Vec<String> = Vec::new();
     let mut remote_refs: Vec<String> = Vec::new();
@@ -99,6 +111,33 @@ pub fn pre_push<R: BufRead>(
 /// and SHA-256 (64 chars) both work.
 fn is_zero_oid(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| b == b'0')
+}
+
+/// Is `remote` something we should accept as a destination? Mirrors
+/// upstream's `git.ValidateRemote` + `RewriteLocalPathAsURL`:
+/// configured remote names, URL-shaped strings, SCP-style `host:path`,
+/// and local directories all pass.
+fn is_acceptable_remote(cwd: &Path, remote: &str) -> bool {
+    if remote.is_empty() {
+        return false;
+    }
+    if git_lfs_git::looks_like_url(remote) {
+        return true;
+    }
+    if remote.contains(':') {
+        // SCP-style `git@host:path/to/repo`. `looks_like_url` already
+        // catches anything with `@`, so this picks up the colon-only
+        // forms upstream's `ValidateRemoteURL` allows.
+        return true;
+    }
+    if git_lfs_git::endpoint_for_remote(cwd, Some(remote)).is_ok() {
+        return true;
+    }
+    // Local path push (`git push ../sibling`, `git push .`). Accept if
+    // it's a directory we can read; the actual git/LFS push semantics
+    // happen further down — the remote-name layer just needs to know
+    // this isn't a typo.
+    std::path::Path::new(remote).is_dir()
 }
 
 #[cfg(test)]

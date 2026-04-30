@@ -170,7 +170,7 @@ fn list_remotes(cwd: &Path) -> Result<Vec<String>, Error> {
 /// Quick syntactic check: does `s` look like one of the URL forms
 /// [`derive_lfs_url`] recognizes? Used to decide whether to treat a
 /// "remote name" argument as a literal URL.
-fn looks_like_url(s: &str) -> bool {
+pub fn looks_like_url(s: &str) -> bool {
     s.starts_with("http://")
         || s.starts_with("https://")
         || s.starts_with("ssh://")

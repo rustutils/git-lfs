@@ -24,8 +24,8 @@ pub use cat_file::{BlobContent, CatFileBatch, CatFileBatchCheck, CatFileHeader};
 pub use config::ConfigScope;
 pub use diff_index::{DiffEntry, diff_index};
 pub use endpoint::{
-    EndpointError, EndpointInfo, SshInfo, derive_lfs_url, endpoint_for_remote, parse_ssh_url,
-    resolve_endpoint,
+    EndpointError, EndpointInfo, SshInfo, derive_lfs_url, endpoint_for_remote, looks_like_url,
+    parse_ssh_url, resolve_endpoint,
 };
 pub use path::{git_dir, lfs_alternate_dirs, lfs_dir};
 pub use rev_list::{RevListEntry, rev_list};
