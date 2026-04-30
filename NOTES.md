@@ -565,10 +565,6 @@ import and export share it.
   branch args + `--everything`. Append-style refspec flags are a small
   follow-on; left out so the first cut keeps the CLI surface tight.
 - **`--unit <unit>`.** v0 always prints with auto-scaling KB/MB/GB.
-- **`--fixup`.** Infer the include set from existing `.gitattributes`
-  entries. Parser is now available (`git-lfs-git::attr`); the remaining
-  work is reading `.gitattributes` from history rather than the working
-  tree (the parser only knows about the live workdir today).
 - **`--object-map`.** Records old→new commit SHAs.
 
 **Phase 2 deferrals (import):**
@@ -585,8 +581,12 @@ import and export share it.
 - **`--object-map <file>`.** Same gap as info — emit old→new SHA
   mapping for downstream tooling.
 - **`--verbose` per-commit progress.** v0 prints a one-line summary.
-- **`--fixup` mode.** Parser available; needs history-aware
-  `.gitattributes` loading (see info above).
+- **`--fixup` + multi-attribute-file precedence.** The v0 fixup pass
+  reads `.gitattributes` from each commit's tree (top-level + nested),
+  but doesn't consult `.git/info/attributes` or the user-level
+  `core.attributesFile`. `t-migrate-fixup::special attributes` exercises
+  exactly this layering — left for v1 since the basic and nested
+  cases already work.
 - **Working-copy-clean prompt.** v0 errors out on a dirty tree;
   upstream prompts. The friendly prompt requires TTY interaction.
 - **Pattern accumulation timing.** Patterns visible to commit N

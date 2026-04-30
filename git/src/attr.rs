@@ -60,6 +60,30 @@ impl AttrSet {
         me
     }
 
+    /// Add a `.gitattributes` buffer that should match paths under
+    /// `dir` (forward-slash separated, no trailing slash, `""` for the
+    /// repo root). For per-commit evaluation during streaming
+    /// rewrites where the on-disk working tree isn't authoritative.
+    /// Order of calls matters — gix-attributes iterates lists in
+    /// reverse, so deeper directories should be added *after*
+    /// shallower ones to win precedence (matching Git's "more
+    /// specific path overrides shallower" semantics).
+    pub fn add_buffer_at(&mut self, bytes: &[u8], dir: &str) {
+        let virtual_root = std::path::PathBuf::from("/__lfs_virt");
+        let source = if dir.is_empty() {
+            virtual_root.join(".gitattributes")
+        } else {
+            virtual_root.join(dir).join(".gitattributes")
+        };
+        self.search.add_patterns_buffer(
+            bytes,
+            source,
+            Some(&virtual_root),
+            &mut self.collection,
+            true,
+        );
+    }
+
     /// Discover every `.gitattributes` reachable from `repo_root` (skipping
     /// the `.git/` directory) and load them along with `.git/info/attributes`
     /// if it exists.

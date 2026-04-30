@@ -235,7 +235,7 @@ fn remote_exists(cwd: &Path, remote: &str) -> bool {
 /// history. Failures are conservative — if `git` isn't reachable for
 /// some reason, we say "no symlink" and let the rest of the pipeline
 /// surface a real error.
-fn any_attrs_symlink(cwd: &Path, refs: &[String]) -> bool {
+pub(super) fn any_attrs_symlink(cwd: &Path, refs: &[String]) -> bool {
     for r in refs {
         let out = std::process::Command::new("git")
             .arg("-C")

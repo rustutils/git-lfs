@@ -56,6 +56,11 @@ pub enum Mode {
     /// LFS pointer → raw content from local store. `--above` ignored
     /// since pointer files are tiny by definition.
     Export,
+    /// Per-commit `.gitattributes` evaluation: convert any plain blob
+    /// whose path the commit's attrs declare LFS-tracked. The
+    /// `.gitattributes` content itself is passed through unchanged.
+    /// Used by `migrate import --fixup`.
+    Fixup,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -160,9 +165,115 @@ impl<'a> Transform<'a> {
                 }
                 Ok(())
             }
-            Command::Commit(c) => self.process_commit(c, writer),
+            Command::Commit(c) => match self.mode {
+                Mode::Fixup => self.process_commit_fixup(c, writer),
+                _ => self.process_commit(c, writer),
+            },
             other => writer.write(&other),
         }
+    }
+
+    /// Per-commit `.gitattributes` evaluation pass. For each commit,
+    /// build a fresh [`AttrSet`] from the commit's tree's
+    /// `.gitattributes` blobs (top-level + nested); for each
+    /// non-attrs blob the attrs say should be LFS-tracked, convert
+    /// plain content into a pointer. `.gitattributes` itself is
+    /// passed through unchanged — the user already wrote the
+    /// tracking lines, fixup is just bringing the bytes in line with
+    /// what they declared.
+    fn process_commit_fixup<W: Write>(
+        &mut self,
+        c: Commit,
+        writer: &mut Writer<W>,
+    ) -> io::Result<()> {
+        self.stats.commits_seen += 1;
+        if let (Some(mark), Some(oid)) = (c.mark, c.original_oid.as_ref()) {
+            self.stats.commit_marks.push((mark, oid.clone()));
+        }
+
+        // Collect this commit's `.gitattributes` blobs. Inline
+        // (`ModifyInline`) and mark-referenced both legal — the
+        // upstream test fixtures only emit mark form, but we handle
+        // both for safety.
+        let mut attrs_dirs: Vec<(String, Vec<u8>)> = Vec::new();
+        for ch in &c.file_changes {
+            match ch {
+                FileChange::Modify {
+                    dataref: DataRef::Mark(m),
+                    path,
+                    ..
+                } if is_attrs_path(path) => {
+                    if let Some(content) = self.blob_buffer.get(m) {
+                        attrs_dirs.push((dir_of(path), content.clone()));
+                    }
+                }
+                FileChange::ModifyInline { path, data, .. } if is_attrs_path(path) => {
+                    attrs_dirs.push((dir_of(path), data.clone()));
+                }
+                _ => {}
+            }
+        }
+        // Shallow → deep so deeper dirs win (gix-attributes iterates
+        // pattern lists in reverse, last-added matches first).
+        attrs_dirs.sort_by_key(|(d, _)| d.matches('/').count());
+
+        let mut attrs = git_lfs_git::AttrSet::empty();
+        for (dir, content) in &attrs_dirs {
+            attrs.add_buffer_at(content, dir);
+        }
+
+        // Pass: for each non-attrs M directive, decide conversion.
+        // Symlinks (mode 120000) are never LFS pointers; skip them.
+        for change in &c.file_changes {
+            if let FileChange::Modify {
+                dataref: DataRef::Mark(m),
+                path,
+                mode,
+            } = change
+                && !is_attrs_path(path)
+                && mode != "120000"
+                && !self.emitted.contains(m)
+                && let Some(content) = self.blob_buffer.remove(m)
+            {
+                if attrs.is_lfs_tracked(path) {
+                    let (out, _) = self.import_blob(path, content)?;
+                    writer.write(&Command::Blob(Blob {
+                        mark: Some(*m),
+                        original_oid: None,
+                        data: out,
+                    }))?;
+                } else {
+                    writer.write(&Command::Blob(Blob {
+                        mark: Some(*m),
+                        original_oid: None,
+                        data: content,
+                    }))?;
+                }
+                self.emitted.insert(*m);
+            }
+        }
+
+        // Pass-through `.gitattributes` blobs as-is.
+        for change in &c.file_changes {
+            if let FileChange::Modify {
+                dataref: DataRef::Mark(m),
+                path,
+                ..
+            } = change
+                && is_attrs_path(path)
+                && !self.emitted.contains(m)
+                && let Some(content) = self.blob_buffer.remove(m)
+            {
+                writer.write(&Command::Blob(Blob {
+                    mark: Some(*m),
+                    original_oid: None,
+                    data: content,
+                }))?;
+                self.emitted.insert(*m);
+            }
+        }
+
+        writer.write(&Command::Commit(c))
     }
 
     fn process_commit<W: Write>(
@@ -234,6 +345,9 @@ impl<'a> Transform<'a> {
         match self.mode {
             Mode::Import => self.import_blob(path, content),
             Mode::Export => self.export_blob(path, content),
+            // Mode::Fixup uses its own per-commit dispatch in
+            // `process_commit_fixup`; this path never sees it.
+            Mode::Fixup => Ok((content, false)),
         }
     }
 
@@ -323,6 +437,25 @@ impl<'a> Transform<'a> {
         let m = self.next_fresh;
         self.next_fresh += 1;
         m
+    }
+}
+
+/// True if `path` names a `.gitattributes` file (top-level or any
+/// directory under the tree).
+fn is_attrs_path(path: &str) -> bool {
+    path == ATTRS_PATH
+        || path
+            .rsplit_once('/')
+            .is_some_and(|(_, leaf)| leaf == ATTRS_PATH)
+}
+
+/// Directory portion of a tree path, with no trailing slash. Empty
+/// for top-level paths. Forward slashes only — fast-export paths are
+/// already POSIX.
+fn dir_of(path: &str) -> String {
+    match path.rsplit_once('/') {
+        Some((parent, _)) => parent.to_owned(),
+        None => String::new(),
     }
 }
 

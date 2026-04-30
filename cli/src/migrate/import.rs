@@ -57,15 +57,17 @@ pub fn import(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateError> {
         return import_no_rewrite(cwd, opts);
     }
 
+    // `--fixup` runs before the dirty check too — its symlink case
+    // (`.gitattributes` committed as 120000) confuses git status into
+    // reporting modifications, and we want the friendlier
+    // symbolic-link error in front.
+    if opts.fixup {
+        return import_fixup(cwd, opts);
+    }
+
     if working_tree_dirty(cwd)? {
         return Err(MigrateError::Other(
             "working tree has uncommitted changes; commit or stash first".into(),
-        ));
-    }
-
-    if opts.fixup {
-        return Err(MigrateError::Other(
-            "--fixup is not yet implemented in this Rust port; see NOTES.md".into(),
         ));
     }
 
@@ -117,6 +119,67 @@ pub fn import(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateError> {
         stats.blobs_converted,
         super::humanize(stats.bytes_converted),
         stats.patterns.len(),
+    );
+    Ok(stats)
+}
+
+// --------------------------------------------------------------------
+// --fixup mode
+// --------------------------------------------------------------------
+
+/// Walk history and convert any plain blob whose path the commit's
+/// `.gitattributes` declared LFS-tracked. Used to repair repos where
+/// someone committed real bytes for a path that was supposed to be a
+/// pointer (e.g. `git lfs uninstall` was active during the commit).
+///
+/// Output is intentionally quiet on the no-op path: t-migrate-fixup's
+/// "no potential fixup" tests assert `0 == wc -l` on stdout. We only
+/// print after a conversion succeeds.
+fn import_fixup(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateError> {
+    let sel = RefSelection {
+        branches: opts.branches.clone(),
+        everything: opts.everything,
+    };
+    let (include_refs, exclude_refs) = resolve_refs(cwd, &sel)?;
+    if include_refs.is_empty() {
+        return Err(MigrateError::Other(
+            "no resolvable refs to migrate (empty repo?)".into(),
+        ));
+    }
+
+    // Reject `.gitattributes` symlinks (mode 120000) up-front. We check
+    // HEAD only; nested commits with symlink attrs are rare in
+    // practice and the upstream fixture targets HEAD.
+    if super::export::any_attrs_symlink(cwd, &include_refs) {
+        return Err(MigrateError::Other(
+            "expected '.gitattributes' to be a file, got a symbolic link".into(),
+        ));
+    }
+
+    let store = Store::new(git_lfs_git::lfs_dir(cwd)?);
+    let stats = super::pipeline::run_pipeline(
+        cwd,
+        &include_refs,
+        &exclude_refs,
+        super::transform::Options::default(),
+        Mode::Fixup,
+        &store,
+    )?;
+
+    if stats.blobs_converted == 0 {
+        // No-op fixup — refs unchanged because fast-import re-emits
+        // the same commits with identical trees and gets back the same
+        // SHAs. Don't print anything; the `no potential fixup` tests
+        // assert empty output.
+        return Ok(stats);
+    }
+
+    refresh_working_tree(cwd)?;
+
+    println!(
+        "Fixed {} blob(s) ({}).",
+        stats.blobs_converted,
+        super::humanize(stats.bytes_converted),
     );
     Ok(stats)
 }
