@@ -30,7 +30,13 @@ impl ConfigScope {
 }
 
 /// Read a single config value from the given scope. Returns `Ok(None)` if
-/// the key isn't set.
+/// the key isn't set, *or* if the scope itself isn't readable here:
+/// `git config --local` exits 128 outside any repo, and any scope exits
+/// 128 when env-vars like `GIT_WORK_TREE` point at a missing path.
+/// Treating both as "no value" matches upstream's `cfg.Git.Get(key)`
+/// semantics — `git lfs env` distinguishes a configured value from an
+/// unconfigured one, but not between "key not set" and "scope
+/// unreachable."
 pub fn get(cwd: &Path, scope: ConfigScope, key: &str) -> Result<Option<String>, Error> {
     let out = Command::new("git")
         .arg("-C")
@@ -39,8 +45,9 @@ pub fn get(cwd: &Path, scope: ConfigScope, key: &str) -> Result<Option<String>, 
         .output()?;
     match out.status.code() {
         Some(0) => Ok(Some(String::from_utf8_lossy(&out.stdout).trim().to_owned())),
-        // `git config --get` exits 1 when the key isn't set.
-        Some(1) => Ok(None),
+        // `git config --get` exits 1 when the key isn't set, 128 when
+        // the scope can't be read (no repo, bad work tree, etc.).
+        Some(1) | Some(128) => Ok(None),
         _ => Err(Error::Failed(
             String::from_utf8_lossy(&out.stderr).trim().to_owned(),
         )),

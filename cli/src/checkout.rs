@@ -36,6 +36,11 @@ pub enum CheckoutError {
     /// tree to write to — surface upstream's exact wording.
     #[error("This operation must be run in a work tree.")]
     NotInWorkTree,
+    /// Caller isn't inside any git repo at all. Distinct from
+    /// `NotInWorkTree` (bare repo) — upstream prints a different
+    /// message and the t-checkout outside-repo test greps for it.
+    #[error("Not in a Git repository.")]
+    NotInRepo,
 }
 
 #[derive(Debug, Clone)]
@@ -45,6 +50,13 @@ pub struct Options {
 }
 
 pub fn run(cwd: &Path, opts: &Options) -> Result<(), CheckoutError> {
+    // Outside any git repo: upstream prints "Not in a Git repository."
+    // and exits 128. Check before bare/smudge-installed because those
+    // also need a repo to be meaningful.
+    if !is_in_git_repo(cwd) {
+        return Err(CheckoutError::NotInRepo);
+    }
+
     // Bare repos have no working tree to materialize into. Surface
     // the upstream-compatible message and let the dispatcher emit
     // it on stdout (test 15).
@@ -367,6 +379,15 @@ fn is_bare_repo(cwd: &Path) -> bool {
         .args(["rev-parse", "--is-bare-repository"])
         .output();
     matches!(out, Ok(o) if o.status.success() && o.stdout.starts_with(b"true"))
+}
+
+fn is_in_git_repo(cwd: &Path) -> bool {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["rev-parse", "--git-dir"])
+        .output();
+    matches!(out, Ok(o) if o.status.success())
 }
 
 fn smudge_installed(cwd: &Path) -> bool {

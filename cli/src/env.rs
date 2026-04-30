@@ -13,13 +13,16 @@ use std::process::Command;
 
 use git_lfs_git::{SshInfo, resolve_endpoint};
 
-/// Canonical `filter.lfs.*` values written by `git lfs install`. Used
-/// outside a repo (where there's no git config to read) and as the
-/// fallback when the keys are unset; matches the lines `t-env` greps for.
-const FILTER_DEFAULTS: &[(&str, &str)] = &[
-    ("filter.lfs.process", "git-lfs filter-process"),
-    ("filter.lfs.smudge", "git-lfs smudge -- %f"),
-    ("filter.lfs.clean", "git-lfs clean -- %f"),
+/// `filter.lfs.*` keys we emit. The value comes straight from git
+/// config — empty string when unset or unreadable — to match upstream's
+/// raw `cfg.Git.Get(key)` semantics. Tests like
+/// `t-env::env with environment variables` distinguish between
+/// "configured" (defaults from `git lfs install --skip-repo`) and
+/// "unconfigured" (literal `""`), so we can't synthesize defaults here.
+const FILTER_KEYS: &[&str] = &[
+    "filter.lfs.process",
+    "filter.lfs.smudge",
+    "filter.lfs.clean",
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -62,29 +65,37 @@ pub fn run(cwd: &Path) -> Result<(), EnvError> {
     // them (the test framework greps `^GIT_` from its own env to
     // build the expected list). The harness filters out
     // `GIT_EXEC_PATH=` itself before diffing, so emitting it is fine.
+    //
+    // Path-shaped vars (GIT_DIR / GIT_WORK_TREE / …) get rewritten to
+    // absolute form at process startup so subprocess invocations work;
+    // here we restore the *original* value via `original_path_env` so
+    // the dump matches what the user actually set in their shell.
     println!();
     let mut vars: Vec<(String, String)> = std::env::vars()
         .filter(|(k, _)| k.starts_with("GIT_"))
+        .map(|(k, v)| {
+            let restored = crate::original_path_env(&k)
+                .map(|os| os.to_string_lossy().into_owned())
+                .unwrap_or(v);
+            (k, restored)
+        })
         .collect();
     vars.sort();
     for (k, v) in vars {
         println!("{k}={v}");
     }
 
-    // Filter config dump. In a repo we read the effective git config;
-    // outside, we fall back to the canonical install-time values so
-    // scripts that scrape `git lfs env` for the filter lines (and the
-    // `t-env outside a repository` test) get sensible output.
+    // Filter config dump. We always go through `get_effective` —
+    // outside a repo, `--local` errors out but `--global`/`--system`
+    // still produce values when the user has run `git lfs install`.
+    // Truly unconfigured (or unreachable, e.g. `GIT_WORK_TREE` points
+    // at a missing path) keys come back as `""`.
     println!();
-    for (key, default) in FILTER_DEFAULTS {
-        let value = if git_dir.is_some() {
-            git_lfs_git::config::get_effective(cwd, key)
-                .ok()
-                .flatten()
-                .unwrap_or_else(|| (*default).to_owned())
-        } else {
-            (*default).to_owned()
-        };
+    for key in FILTER_KEYS {
+        let value = git_lfs_git::config::get_effective(cwd, key)
+            .ok()
+            .flatten()
+            .unwrap_or_default();
         println!("git config {key} = {value:?}");
     }
 

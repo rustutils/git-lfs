@@ -53,6 +53,66 @@ fn main() -> ExitCode {
     }
 }
 
+/// Path-shaped git env vars that interpret relative values against
+/// the caller's cwd. We canonicalize them once up front so subprocess
+/// invocations using `git -C <dir>` don't re-resolve them.
+const PATH_GIT_ENV_VARS: &[&str] = &[
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+];
+
+/// Snapshot of `PATH_GIT_ENV_VARS` taken before [`canonicalize_path_envs`]
+/// rewrites them to absolute paths. `git lfs env` reports the original
+/// (possibly relative) values to match upstream's output.
+static ORIGINAL_PATH_ENVS: std::sync::OnceLock<
+    Vec<(&'static str, std::ffi::OsString)>,
+> = std::sync::OnceLock::new();
+
+/// Look up the *original* value of a path-shaped git env var, before
+/// canonicalization. Returns `None` if the variable wasn't set or
+/// wasn't in the path-shaped allowlist.
+pub fn original_path_env(name: &str) -> Option<std::ffi::OsString> {
+    ORIGINAL_PATH_ENVS
+        .get()?
+        .iter()
+        .find(|(k, _)| *k == name)
+        .map(|(_, v)| v.clone())
+}
+
+/// Make any relative path-shaped git env var absolute against `base`,
+/// so subsequent `git -C <some_dir>` calls don't re-resolve them
+/// against the wrong directory. Operates in place via `set_var`. Saves
+/// the originals via [`original_path_env`] so `git lfs env` can still
+/// echo the user-visible value.
+fn canonicalize_path_envs(base: &std::path::Path) {
+    let mut snapshot = Vec::new();
+    for name in PATH_GIT_ENV_VARS {
+        let Some(raw) = std::env::var_os(name) else {
+            continue;
+        };
+        snapshot.push((*name, raw.clone()));
+        if raw.is_empty() {
+            continue;
+        }
+        let p = std::path::Path::new(&raw);
+        if p.is_absolute() {
+            continue;
+        }
+        let absolute = base.join(p);
+        // SAFETY: We're early in `dispatch` before any threads are
+        // spawned. `set_var` is unsafe in 2024 edition because of
+        // multi-threaded races; the single-threaded prelude here is
+        // exactly the documented safe usage pattern.
+        unsafe {
+            std::env::set_var(name, absolute);
+        }
+    }
+    let _ = ORIGINAL_PATH_ENVS.set(snapshot);
+}
+
 /// `GIT_LFS_SKIP_SMUDGE=1` (any value other than empty/0/false) tells
 /// the smudge filter to leave pointer text in place rather than fetch.
 /// Used by clones that intentionally don't materialize content (e.g.
@@ -69,6 +129,13 @@ fn skip_smudge_env() -> bool {
 
 fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
     let cwd = std::env::current_dir()?;
+    // `GIT_DIR` / `GIT_WORK_TREE` (and the auxiliary `GIT_OBJECT_*`
+    // variants) come in relative to the *caller's* cwd. Many of our
+    // subprocess invocations later use `git -C <repo_root>`, which
+    // would re-resolve those relative paths against the wrong base.
+    // Canonicalize once up front so every downstream `git` call sees
+    // absolute paths regardless of where it's chdir'd to.
+    canonicalize_path_envs(&cwd);
 
     match cmd {
         Command::Clean { path: _ } => {
@@ -406,6 +473,12 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                     // bare-repo expectation. Exit 0 with the
                     // upstream-compatible message.
                     println!("This operation must be run in a work tree.");
+                }
+                Err(checkout::CheckoutError::NotInRepo) => {
+                    // Outside any repo. Exit 128 with the wording the
+                    // t-checkout outside-repo test greps for.
+                    println!("Not in a Git repository.");
+                    return Ok(128);
                 }
                 Err(e) => return Err(e.into()),
             }
