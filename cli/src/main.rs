@@ -464,8 +464,20 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 migrate::info(&cwd, &opts)?;
             }
         },
-        Command::Checkout { paths } => {
-            let opts = checkout::Options { paths };
+        Command::Checkout {
+            paths,
+            to,
+            ours,
+            theirs,
+            base,
+        } => {
+            let opts = checkout::Options {
+                paths,
+                to,
+                ours,
+                theirs,
+                base,
+            };
             match checkout::run(&cwd, &opts) {
                 Ok(()) => {}
                 Err(checkout::CheckoutError::NotInWorkTree) => {
@@ -479,6 +491,13 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                     // t-checkout outside-repo test greps for.
                     println!("Not in a Git repository.");
                     return Ok(128);
+                }
+                Err(checkout::CheckoutError::Usage(msg)) => {
+                    // Conflict-mode flag validation errors. Upstream
+                    // exits via `Exit()` which writes to stderr and
+                    // returns 2; mirror that.
+                    eprintln!("{msg}");
+                    return Ok(2);
                 }
                 Err(e) => return Err(e.into()),
             }

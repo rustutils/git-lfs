@@ -10,9 +10,15 @@
 //! - trailing-slash prefix match (e.g. `data/` matches everything under
 //!   `data/`)
 //!
-//! Out of scope (NOTES.md): glob/wildcard patterns (shells handle the
-//! common case), and the `--to <path> [--ours|--theirs|--base]` form
-//! for resolving conflicted LFS files during a merge.
+//! `--to <path> --ours|--theirs|--base <file>` switches into
+//! conflict-resolution mode: read the staged pointer for the
+//! conflicted file from one of the merge stages (1=base, 2=ours,
+//! 3=theirs), fetch the LFS object, and write it to `<path>`. The
+//! target may be outside the work tree; intermediate directories
+//! are created on the fly. See [`run_to_conflict`].
+//!
+//! Out of scope (NOTES.md): glob/wildcard patterns for the regular
+//! materialize path (shells handle the common case).
 
 use std::collections::HashSet;
 use std::io::Write;
@@ -23,6 +29,8 @@ use git_lfs_git::scan_tree;
 use git_lfs_pointer::Pointer;
 use git_lfs_store::Store;
 use globset::{Glob, GlobSetBuilder};
+
+use crate::fetcher::LfsFetcher;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CheckoutError {
@@ -41,15 +49,40 @@ pub enum CheckoutError {
     /// message and the t-checkout outside-repo test greps for it.
     #[error("Not in a Git repository.")]
     NotInRepo,
+    /// Argument validation failure for `--to`/`--ours`/`--theirs`/
+    /// `--base`. The contained message is upstream-formatted and
+    /// printed verbatim by main.rs to stderr; exit code 2.
+    #[error("{0}")]
+    Usage(String),
 }
 
 #[derive(Debug, Clone)]
 pub struct Options {
     /// Patterns to filter pointers by; empty means "all of HEAD".
+    /// In conflict mode (`--to` set), this must contain exactly one
+    /// path — the conflicted file to read from the index.
     pub paths: Vec<String>,
+    /// Conflict-mode destination path. Resolves relative to cwd.
+    pub to: Option<String>,
+    /// `--ours` flag: stage 2 (HEAD's version of a conflict).
+    pub ours: bool,
+    /// `--theirs` flag: stage 3 (the merging-in version).
+    pub theirs: bool,
+    /// `--base` flag: stage 1 (the common ancestor).
+    pub base: bool,
 }
 
 pub fn run(cwd: &Path, opts: &Options) -> Result<(), CheckoutError> {
+    // Conflict-mode (`--to <path> --base|--ours|--theirs <file>`)
+    // takes a different code path: read the requested stage from
+    // the index, fetch the LFS object, write it to `--to`. Validate
+    // the flag combination first — upstream's wording is part of
+    // the t-checkout/conflicts test contract.
+    let stage = which_stage(opts)?;
+    if opts.to.is_some() || stage.is_some() {
+        return run_to_conflict(cwd, opts, stage);
+    }
+
     // Outside any git repo: upstream prints "Not in a Git repository."
     // and exits 128. Check before bare/smudge-installed because those
     // also need a repo to be meaningful.
@@ -488,4 +521,185 @@ fn resolve_user_pattern(cwd: &Path, repo_root: &Path, pat: &str) -> Option<Vec<S
     // directory's contents — gitignore-style semantics.
     let subtree = format!("{combined}/**");
     Some(vec![combined, subtree])
+}
+
+/// Map the `--base` / `--ours` / `--theirs` flags onto a merge stage
+/// number (1/2/3), or `None` when no stage flag is set. Returns a
+/// usage error when more than one stage flag is set, mirroring
+/// upstream's "at most one of --base, --theirs, and --ours is
+/// allowed."
+fn which_stage(opts: &Options) -> Result<Option<u8>, CheckoutError> {
+    let mut stage = None;
+    let mut count = 0u8;
+    if opts.base {
+        stage = Some(1);
+        count += 1;
+    }
+    if opts.ours {
+        stage = Some(2);
+        count += 1;
+    }
+    if opts.theirs {
+        stage = Some(3);
+        count += 1;
+    }
+    if count > 1 {
+        return Err(CheckoutError::Usage(
+            "at most one of --base, --theirs, and --ours is allowed".into(),
+        ));
+    }
+    Ok(stage)
+}
+
+/// Conflict-resolution mode: write the LFS content from one merge
+/// stage to a user-specified path.
+///
+/// The stage flag and the path argument come paired (`--to PATH
+/// --ours FILE`). We read `:STAGE:FILE` from the index, decode the
+/// pointer, ensure the object is local (downloading if needed), and
+/// write its bytes to PATH — replacing whatever's there, including
+/// symlinks (which we want to overwrite as plain files) and
+/// hardlinks (which we want to break so the original file's content
+/// is preserved).
+fn run_to_conflict(
+    cwd: &Path,
+    opts: &Options,
+    stage: Option<u8>,
+) -> Result<(), CheckoutError> {
+    // `--to` and a stage flag must come together. Either alone is a
+    // usage error with this exact wording (test 13's first two
+    // greps).
+    let (Some(to), Some(stage)) = (opts.to.as_deref(), stage) else {
+        return Err(CheckoutError::Usage(
+            "--to and exactly one of --theirs, --ours, and --base must be used together".into(),
+        ));
+    };
+    // Conflict mode requires exactly one path argument — the
+    // conflicted file to read from the index. Zero or many is a
+    // usage error.
+    if opts.paths.len() != 1 {
+        return Err(CheckoutError::Usage(
+            "--to requires exactly one Git LFS object file path".into(),
+        ));
+    }
+    let file_arg = &opts.paths[0];
+
+    // Conflict mode still needs a real (non-bare) repo to read the
+    // index from.
+    if !is_in_git_repo(cwd) {
+        return Err(CheckoutError::NotInRepo);
+    }
+    if is_bare_repo(cwd) {
+        return Err(CheckoutError::NotInWorkTree);
+    }
+
+    // Resolve `--to` against the caller's cwd; create intermediate
+    // dirs so e.g. `--to dir1/dir2/foo.txt` from a fresh repo just
+    // works. Absolute `--to` paths pass through unchanged.
+    let to_path = if Path::new(to).is_absolute() {
+        PathBuf::from(to)
+    } else {
+        cwd.join(to)
+    };
+    if let Some(parent) = to_path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    // Look up the staged blob. Pass the user's path through verbatim
+    // — `git rev-parse :<stage>:<arg>` resolves relative paths against
+    // the caller's cwd already, so subdirectory invocations work
+    // without us doing manual repo-relative conversion. On any
+    // failure (missing index entry, no merge in progress, the path
+    // pointing at a directory like ".") we surface the upstream
+    // error wording the test greps for.
+    let ref_str = format!(":{stage}:{file_arg}");
+    let blob_oid = match resolve_index_blob(cwd, &ref_str) {
+        Some(oid) => oid,
+        None => {
+            return Err(CheckoutError::Other(format!(
+                "Could not checkout (are you not in the middle of a merge?): \
+                 Git can't resolve ref: {ref_str:?}"
+            )));
+        }
+    };
+
+    // Read the blob and parse it as an LFS pointer. Non-LFS files
+    // (e.g. `other.txt` in test 13) come back as plain text and fail
+    // pointer parsing — surface the upstream wording.
+    let blob = read_blob(cwd, &blob_oid)?;
+    let pointer = match Pointer::parse(&blob) {
+        Ok(p) => p,
+        Err(e) => {
+            return Err(CheckoutError::Other(format!(
+                "Could not find decoder pointer for object {blob_oid:?}: {e}"
+            )));
+        }
+    };
+
+    // Make sure the object is local. If not, fetch through the same
+    // pipeline `git lfs fetch` uses; failures bubble up as a generic
+    // "Error checking out" line.
+    let store = Store::new(git_lfs_git::lfs_dir(cwd)?);
+    if !store.contains_with_size(pointer.oid, pointer.size) {
+        let fetcher = LfsFetcher::from_repo(cwd, &store)?;
+        fetcher.fetch(&pointer).map_err(|e| {
+            CheckoutError::Other(format!(
+                "Error checking out {} to {:?}: {e}",
+                pointer.oid,
+                to_path.display(),
+            ))
+        })?;
+    }
+
+    // Write the smudged content. Unlinking first handles three cases
+    // we have to support per upstream parity:
+    //   - read-only existing file (write fails otherwise)
+    //   - symlink at PATH (we want to overwrite the symlink itself)
+    //   - hardlink at PATH (we want to break the link so the original
+    //     file the user has elsewhere isn't clobbered)
+    match std::fs::remove_file(&to_path) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
+    let mut src = store.open(pointer.oid)?;
+    let mut out = std::fs::File::create(&to_path)?;
+    std::io::copy(&mut src, &mut out)?;
+    Ok(())
+}
+
+/// `git rev-parse <ref>` — return the object SHA, or `None` if the
+/// ref doesn't resolve. Used by conflict-mode lookup of `:<stage>:
+/// <file>`.
+fn resolve_index_blob(cwd: &Path, ref_str: &str) -> Option<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["rev-parse", "--verify", ref_str])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    if s.is_empty() { None } else { Some(s) }
+}
+
+/// `git cat-file -p <oid>` — return the blob bytes. Used to read
+/// the conflicted pointer text out of the index.
+fn read_blob(cwd: &Path, oid: &str) -> Result<Vec<u8>, CheckoutError> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["cat-file", "-p", oid])
+        .output()?;
+    if !out.status.success() {
+        return Err(CheckoutError::Other(format!(
+            "Could not read blob {oid}: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(out.stdout)
 }
