@@ -141,6 +141,10 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
         Command::Clean { path: _ } => {
             let _ = install::try_install_hooks(&cwd);
             let store = Store::new(git_lfs_git::lfs_dir(&cwd)?);
+            // No `with_references` here: clean writes new content
+            // computed from working-tree input, so alternate stores
+            // can't satisfy the lookup (and we don't want to reuse
+            // their inode for a freshly-staged file).
             let stdin = io::stdin().lock();
             let mut input: Box<dyn Read> = Box::new(stdin);
             let mut output: Box<dyn Write> = Box::new(BufWriter::new(io::stdout().lock()));
@@ -149,7 +153,8 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
         }
         Command::Smudge { path: _, skip } => {
             let _ = install::try_install_hooks(&cwd);
-            let store = Store::new(git_lfs_git::lfs_dir(&cwd)?);
+            let store = Store::new(git_lfs_git::lfs_dir(&cwd)?)
+                .with_references(git_lfs_git::lfs_alternate_dirs(&cwd).unwrap_or_default());
             let stdin = io::stdin().lock();
             let mut input: Box<dyn Read> = Box::new(stdin);
             let mut output: Box<dyn Write> = Box::new(BufWriter::new(io::stdout().lock()));
@@ -201,7 +206,8 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
         }
         Command::FilterProcess { skip } => {
             let _ = install::try_install_hooks(&cwd);
-            let store = Store::new(git_lfs_git::lfs_dir(&cwd)?);
+            let store = Store::new(git_lfs_git::lfs_dir(&cwd)?)
+                .with_references(git_lfs_git::lfs_alternate_dirs(&cwd).unwrap_or_default());
             let fetcher = LfsFetcher::from_repo(&cwd, &store)?;
             let stdin = io::stdin().lock();
             let stdout = io::stdout().lock();

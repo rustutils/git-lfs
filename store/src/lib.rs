@@ -28,9 +28,19 @@ const NULL_DEVICE: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
 const COPY_BUFFER: usize = 64 * 1024;
 
 /// A local LFS object store rooted at `<lfs_dir>` (typically `.git/lfs`).
+///
+/// May reference any number of alternate stores — typically the LFS
+/// objects of a `git clone --shared` source — and will materialize a
+/// hit from one of them into the local store on demand. See
+/// [`Store::with_references`].
 #[derive(Debug, Clone)]
 pub struct Store {
     root: PathBuf,
+    /// Paths to alternate `lfs/objects/` directories. Each maps to a
+    /// `.git/objects/info/alternates` entry: when the local store
+    /// misses, [`Store::contains_with_size`] / [`Store::open`] walk
+    /// these in order and hardlink (or copy) any hit into `root`.
+    references: Vec<PathBuf>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -47,7 +57,22 @@ impl Store {
     pub fn new(lfs_dir: impl Into<PathBuf>) -> Self {
         Self {
             root: lfs_dir.into(),
+            references: Vec::new(),
         }
+    }
+
+    /// Attach alternate `lfs/objects/` directories that the store may
+    /// hardlink-or-copy from when a local lookup misses. Used by
+    /// `git clone --shared` setups so the new repo can read the
+    /// source's existing LFS objects without re-downloading.
+    ///
+    /// Pass [`git_lfs_git::lfs_alternate_dirs`](https://docs.rs/git-lfs-git)
+    /// (`<git-dir>/objects/info/alternates` resolved to LFS-objects
+    /// dirs) at construction.
+    #[must_use]
+    pub fn with_references(mut self, refs: impl IntoIterator<Item = PathBuf>) -> Self {
+        self.references = refs.into_iter().collect();
+        self
     }
 
     /// Root LFS directory.
@@ -78,23 +103,68 @@ impl Store {
     }
 
     /// `true` if this object is present locally as a regular file. The empty
-    /// OID is always considered present.
+    /// OID is always considered present. If the local copy is missing but
+    /// an alternate store has the object, materializes it locally first.
     pub fn contains(&self, oid: Oid) -> bool {
         if oid == Oid::EMPTY {
             return true;
         }
-        self.object_path(oid).is_file()
+        if self.object_path(oid).is_file() {
+            return true;
+        }
+        self.materialize_from_reference(oid, None)
     }
 
     /// `true` if the object is present and its on-disk size matches `size`.
-    /// Used to detect partial/corrupted local copies.
+    /// Used to detect partial/corrupted local copies. Like [`contains`],
+    /// will fault in a matching alternate-store object on demand.
     pub fn contains_with_size(&self, oid: Oid, size: u64) -> bool {
         if oid == Oid::EMPTY {
             return size == 0;
         }
-        std::fs::metadata(self.object_path(oid))
+        let local = std::fs::metadata(self.object_path(oid))
             .map(|m| m.is_file() && m.len() == size)
-            .unwrap_or(false)
+            .unwrap_or(false);
+        if local {
+            return true;
+        }
+        self.materialize_from_reference(oid, Some(size))
+    }
+
+    /// Walk reference stores looking for `oid`; the first hit (matching
+    /// `size` if specified) is hardlinked — or copied, on cross-device
+    /// fallback — into the local store. Returns `true` if the object
+    /// is now present locally as a result.
+    fn materialize_from_reference(&self, oid: Oid, size: Option<u64>) -> bool {
+        if self.references.is_empty() {
+            return false;
+        }
+        let hex = oid.to_string();
+        for refdir in &self.references {
+            let src = refdir.join(&hex[0..2]).join(&hex[2..4]).join(&hex);
+            let Ok(meta) = std::fs::metadata(&src) else {
+                continue;
+            };
+            if !meta.is_file() {
+                continue;
+            }
+            if let Some(want) = size
+                && meta.len() != want
+            {
+                continue;
+            }
+            let dest = self.object_path(oid);
+            if let Some(parent) = dest.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            // Hardlink first (free, O(1), shares inode); fall back to
+            // copy on EXDEV / NotSupported (e.g. alternate on a
+            // different filesystem).
+            if std::fs::hard_link(&src, &dest).is_ok() || std::fs::copy(&src, &dest).is_ok() {
+                return true;
+            }
+        }
+        false
     }
 
     /// Walk every object file in the store, yielding (oid, size_on_disk).
@@ -142,9 +212,21 @@ impl Store {
     }
 
     /// Open an object for reading. Errors with [`io::ErrorKind::NotFound`]
-    /// if the object isn't in the store.
+    /// if the object isn't in the store. Faults in from a reference
+    /// store if needed.
     pub fn open(&self, oid: Oid) -> io::Result<File> {
-        File::open(self.object_path(oid))
+        let path = self.object_path(oid);
+        match File::open(&path) {
+            Ok(f) => Ok(f),
+            Err(e) if e.kind() == io::ErrorKind::NotFound && oid != Oid::EMPTY => {
+                if self.materialize_from_reference(oid, None) {
+                    File::open(&path)
+                } else {
+                    Err(e)
+                }
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Stream `src` into the store, computing SHA-256 as we go.
@@ -428,5 +510,59 @@ mod tests {
         let (oid, _) = store.insert(&mut b"abc".as_slice()).unwrap();
         assert!(store.tmp_dir().is_dir());
         assert!(store.object_path(oid).is_file());
+    }
+
+    /// Build a "source" store with an object pre-installed, plus an
+    /// empty "shared" store that references it. Mirrors the
+    /// `git clone --shared` setup from t-fetch's init.
+    fn shared_fixture() -> (TempDir, Store, Store, Oid) {
+        let tmp = TempDir::new().unwrap();
+        let source = Store::new(tmp.path().join("src/lfs"));
+        let (oid, _) = source.insert(&mut b"abc".as_slice()).unwrap();
+        let shared = Store::new(tmp.path().join("shared/lfs"))
+            .with_references([source.root().join("objects")]);
+        (tmp, source, shared, oid)
+    }
+
+    #[test]
+    fn contains_finds_object_via_reference() {
+        let (_tmp, _source, shared, oid) = shared_fixture();
+        // Object lives only in the source's lfs/objects/ at this
+        // point — `contains` should report it as present (and fault
+        // it in along the way).
+        assert!(shared.contains(oid));
+        assert!(shared.object_path(oid).is_file());
+    }
+
+    #[test]
+    fn open_faults_in_from_reference() {
+        let (_tmp, _source, shared, oid) = shared_fixture();
+        let mut buf = Vec::new();
+        shared.open(oid).unwrap().read_to_end(&mut buf).unwrap();
+        assert_eq!(buf, b"abc");
+        // After open, the object is materialized locally so future
+        // reads are independent of the alternate.
+        assert!(shared.object_path(oid).is_file());
+    }
+
+    #[test]
+    fn contains_with_size_rejects_size_mismatch_in_reference() {
+        let (_tmp, _source, shared, oid) = shared_fixture();
+        // Real size is 3; ask for 4 → reference hit gets rejected.
+        assert!(!shared.contains_with_size(oid, 4));
+        assert!(!shared.object_path(oid).is_file());
+    }
+
+    #[test]
+    fn store_without_references_misses() {
+        // Sanity: same OID that the shared fixture finds via
+        // alternates is genuinely absent in a plain store.
+        let (_tmp, store) = fixture();
+        let oid = abc_oid();
+        assert!(!store.contains(oid));
+        assert!(matches!(
+            store.open(oid).unwrap_err().kind(),
+            io::ErrorKind::NotFound,
+        ));
     }
 }

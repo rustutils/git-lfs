@@ -58,7 +58,8 @@ pub fn export(cwd: &Path, opts: &ExportOptions) -> Result<Stats, MigrateError> {
 
     print_pre_migrate_refs(cwd, &include_refs);
 
-    let store = Store::new(git_lfs_git::lfs_dir(cwd)?);
+    let store = Store::new(git_lfs_git::lfs_dir(cwd)?)
+        .with_references(git_lfs_git::lfs_alternate_dirs(cwd).unwrap_or_default());
     let include = build_globset(&opts.include)?;
     let exclude = build_globset(&opts.exclude)?;
 

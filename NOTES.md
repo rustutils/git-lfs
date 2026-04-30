@@ -207,9 +207,6 @@ Things we built minimally and need to come back to. Each entry says **what's
 missing** and **why it was OK to skip for v0**.
 
 ### `store`
-- **Alternates / reference dirs.** Needed by `t-alternates.sh` (clone with
-  `--reference`). Defer until we have the config plumbing to know about
-  `objects/info/alternates`.
 - **Log directory** (`<lfs>/logs/`). Needed by `t-logs.sh` once we have
   commands that emit logs (push/fetch failures).
 - **Permission/umask handling.** Needed by `t-umask.sh`. Tempfile defaults
@@ -415,13 +412,6 @@ missing** and **why it was OK to skip for v0**.
   `actions` field). For non-dry-run we currently emit transfers
   without action URLs — needs the transfer queue to surface the
   batch response back to the caller.
-- **Alternates / `--shared` clone.** `t-fetch.sh::init for fetch
-  tests` and `fetch (shared repository)` fail because a `--shared`
-  clone has its own empty `.git/lfs/objects` while git's
-  `objects/info/alternates` points at the source repo's `.git/objects`.
-  Our store doesn't yet inspect alternates for LFS objects, so smudge
-  fails on checkout. Fix: walk `.git/objects/info/alternates` lines,
-  treat each as a fallback `<root>/lfs/objects` for store reads.
 - **`--prune` integration.** Wired as a best-effort prune after the
   fetch. Upstream may have a more nuanced "fetch + prune in one
   walk" — confirm before declaring parity.

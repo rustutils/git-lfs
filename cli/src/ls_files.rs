@@ -65,7 +65,8 @@ struct JsonFile {
 }
 
 pub fn run(cwd: &Path, refspec: Option<&str>, opts: &Options) -> Result<(), LsFilesError> {
-    let store = Store::new(git_lfs_git::lfs_dir(cwd)?);
+    let store = Store::new(git_lfs_git::lfs_dir(cwd)?)
+        .with_references(git_lfs_git::lfs_alternate_dirs(cwd).unwrap_or_default());
 
     let pointers = if opts.all {
         // `--all`: walk every reachable commit from every ref. We

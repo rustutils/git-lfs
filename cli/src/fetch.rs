@@ -142,7 +142,8 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
     };
     let ref_strs: Vec<&str> = walk_refs.iter().map(String::as_str).collect();
 
-    let store = Store::new(git_lfs_git::lfs_dir(cwd)?);
+    let store = Store::new(git_lfs_git::lfs_dir(cwd)?)
+        .with_references(git_lfs_git::lfs_alternate_dirs(cwd).unwrap_or_default());
     let pointers = scan_pointers(cwd, &ref_strs, &[])?;
 
     // Apply include/exclude path filters. CLI flags take precedence

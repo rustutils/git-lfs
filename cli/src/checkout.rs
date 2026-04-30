@@ -105,7 +105,8 @@ pub fn run(cwd: &Path, opts: &Options) -> Result<(), CheckoutError> {
         return Ok(());
     }
 
-    let store = Store::new(git_lfs_git::lfs_dir(cwd)?);
+    let store = Store::new(git_lfs_git::lfs_dir(cwd)?)
+        .with_references(git_lfs_git::lfs_alternate_dirs(cwd).unwrap_or_default());
     let repo_root = repo_root(cwd)?;
 
     // Walk HEAD's tree for the set of LFS pointers, then drop any
@@ -641,7 +642,8 @@ fn run_to_conflict(
     // Make sure the object is local. If not, fetch through the same
     // pipeline `git lfs fetch` uses; failures bubble up as a generic
     // "Error checking out" line.
-    let store = Store::new(git_lfs_git::lfs_dir(cwd)?);
+    let store = Store::new(git_lfs_git::lfs_dir(cwd)?)
+        .with_references(git_lfs_git::lfs_alternate_dirs(cwd).unwrap_or_default());
     if !store.contains_with_size(pointer.oid, pointer.size) {
         let fetcher = LfsFetcher::from_repo(cwd, &store)?;
         fetcher.fetch(&pointer).map_err(|e| {

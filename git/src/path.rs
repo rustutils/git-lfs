@@ -16,6 +16,56 @@ pub fn lfs_dir(cwd: &Path) -> Result<PathBuf, Error> {
     Ok(git_dir(cwd)?.join("lfs"))
 }
 
+/// LFS-objects directories belonging to alternate object stores
+/// referenced by this repository. Used to satisfy a `git lfs smudge`
+/// or `git lfs fetch` from a `git clone --shared <source>` checkout
+/// without re-downloading bytes the source already has.
+///
+/// Sources, in order:
+/// 1. `GIT_ALTERNATE_OBJECT_DIRECTORIES` env var (path-list separated).
+/// 2. `<git-dir>/objects/info/alternates` — one object directory per
+///    line; blank lines and `#`-comments skipped.
+///
+/// Each entry names a git *objects* directory (e.g.
+/// `/path/to/source/.git/objects`); the matching LFS-objects
+/// directory lives next to it at `<entry>/../lfs/objects`. Only
+/// directories that actually exist are returned.
+pub fn lfs_alternate_dirs(cwd: &Path) -> Result<Vec<PathBuf>, Error> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    let mut push = |objs_dir: &Path| {
+        if let Some(parent) = objs_dir.parent() {
+            let candidate = parent.join("lfs").join("objects");
+            if candidate.is_dir() && !dirs.iter().any(|d| d == &candidate) {
+                dirs.push(candidate);
+            }
+        }
+    };
+
+    if let Some(env) = std::env::var_os("GIT_ALTERNATE_OBJECT_DIRECTORIES") {
+        for raw in std::env::split_paths(&env) {
+            if !raw.as_os_str().is_empty() {
+                push(&raw);
+            }
+        }
+    }
+
+    let alternates_file = git_dir(cwd)?
+        .join("objects")
+        .join("info")
+        .join("alternates");
+    if let Ok(contents) = std::fs::read_to_string(&alternates_file) {
+        for line in contents.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            push(Path::new(trimmed));
+        }
+    }
+
+    Ok(dirs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -53,5 +103,71 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let err = git_dir(tmp.path()).unwrap_err();
         assert!(matches!(err, Error::Failed(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn lfs_alternate_dirs_empty_without_alternates_file() {
+        let tmp = init_repo();
+        let dirs = lfs_alternate_dirs(tmp.path()).unwrap();
+        assert!(dirs.is_empty());
+    }
+
+    #[test]
+    fn lfs_alternate_dirs_resolves_via_alternates_file() {
+        let source = init_repo();
+        let lfs_objs = source.path().join(".git/lfs/objects");
+        std::fs::create_dir_all(&lfs_objs).unwrap();
+
+        let target = init_repo();
+        let alt_path = target.path().join(".git/objects/info/alternates");
+        std::fs::create_dir_all(alt_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &alt_path,
+            format!("{}\n", source.path().join(".git/objects").display()),
+        )
+        .unwrap();
+
+        let dirs = lfs_alternate_dirs(target.path()).unwrap();
+        assert_eq!(dirs, vec![lfs_objs]);
+    }
+
+    #[test]
+    fn lfs_alternate_dirs_skips_blank_and_comment_lines() {
+        let source = init_repo();
+        std::fs::create_dir_all(source.path().join(".git/lfs/objects")).unwrap();
+
+        let target = init_repo();
+        let alt_path = target.path().join(".git/objects/info/alternates");
+        std::fs::create_dir_all(alt_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &alt_path,
+            format!(
+                "# preamble comment\n\n{}\n",
+                source.path().join(".git/objects").display()
+            ),
+        )
+        .unwrap();
+
+        let dirs = lfs_alternate_dirs(target.path()).unwrap();
+        assert_eq!(dirs.len(), 1);
+    }
+
+    #[test]
+    fn lfs_alternate_dirs_skips_alternates_without_lfs_storage() {
+        // A .git that has /objects/ but no /lfs/objects/ — common for
+        // repos that don't use LFS — should be silently skipped.
+        let source = init_repo();
+        // Note: deliberately *not* creating .git/lfs/objects.
+        let target = init_repo();
+        let alt_path = target.path().join(".git/objects/info/alternates");
+        std::fs::create_dir_all(alt_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &alt_path,
+            format!("{}\n", source.path().join(".git/objects").display()),
+        )
+        .unwrap();
+
+        let dirs = lfs_alternate_dirs(target.path()).unwrap();
+        assert!(dirs.is_empty());
     }
 }

@@ -27,7 +27,7 @@ pub use endpoint::{
     EndpointError, EndpointInfo, SshInfo, derive_lfs_url, endpoint_for_remote, parse_ssh_url,
     resolve_endpoint,
 };
-pub use path::{git_dir, lfs_dir};
+pub use path::{git_dir, lfs_alternate_dirs, lfs_dir};
 pub use rev_list::{RevListEntry, rev_list};
 pub use scanner::{PointerEntry, TreeBlob, scan_pointers, scan_tree, scan_tree_blobs};
 

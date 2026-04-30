@@ -87,7 +87,8 @@ pub fn pull_with_filter(
     let include_set = fetch::build_pattern_set(cwd, include, "lfs.fetchinclude")?;
     let exclude_set = fetch::build_pattern_set(cwd, exclude, "lfs.fetchexclude")?;
 
-    let store = Store::new(git_lfs_git::lfs_dir(cwd)?);
+    let store = Store::new(git_lfs_git::lfs_dir(cwd)?)
+        .with_references(git_lfs_git::lfs_alternate_dirs(cwd).unwrap_or_default());
     let repo_root = repo_root(cwd)?;
     let pointers = scan_tree(&repo_root, "HEAD")?;
     let mut rewritten_paths: Vec<String> = Vec::new();

@@ -3,7 +3,7 @@
 Per-suite snapshot of the vendored upstream shell tests. Last
 refreshed: **2026-04-30**.
 
-**392 / 794 tests passing (~49%) across 104 suites.**
+**394 / 794 tests passing (~50%) across 104 suites.**
 
 Refresh:
 
@@ -35,7 +35,7 @@ t-object-authenticated.sh          t-unlock.sh
 t-path.sh                          t-version.sh
 ```
 
-## Partial — 77 suites, 267 / 669 tests
+## Partial — 77 suites, 269 / 669 tests
 
 | Suite | Pass / Total |
 | --- | --- |
@@ -67,7 +67,7 @@ t-path.sh                          t-version.sh
 | `t-fetch-include.sh` | 0 / 3 |
 | `t-fetch-paths.sh` | 1 / 5 |
 | `t-fetch-recent.sh` | 1 / 7 |
-| `t-fetch.sh` | 23 / 28 |
+| `t-fetch.sh` | 25 / 28 |
 | `t-filter-process.sh` | 6 / 8 |
 | `t-fsck.sh` | 10 / 16 |
 | `t-happy-path.sh` | 4 / 5 |

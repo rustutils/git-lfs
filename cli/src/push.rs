@@ -168,7 +168,8 @@ fn push_by_oid(
         ));
     }
 
-    let store = Store::new(git_lfs_git::lfs_dir(cwd)?);
+    let store = Store::new(git_lfs_git::lfs_dir(cwd)?)
+        .with_references(git_lfs_git::lfs_alternate_dirs(cwd).unwrap_or_default());
     let mut to_upload: Vec<ObjectSpec> = Vec::with_capacity(oids.len());
     for raw in oids {
         let oid = parse_oid(raw)?;
@@ -324,7 +325,8 @@ pub(crate) fn upload_in_range(
     refspec: Option<String>,
     dry_run: bool,
 ) -> Result<PushOutcome, PushCommandError> {
-    let store = Store::new(git_lfs_git::lfs_dir(cwd)?);
+    let store = Store::new(git_lfs_git::lfs_dir(cwd)?)
+        .with_references(git_lfs_git::lfs_alternate_dirs(cwd).unwrap_or_default());
     let pointers = scan_pointers(cwd, includes, excludes)?;
 
     // Partition pointers: present locally vs. only-as-pointer. We need
