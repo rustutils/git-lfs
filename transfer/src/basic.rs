@@ -46,7 +46,7 @@ pub(crate) async fn download(
         req = req.header(k, v);
     }
     let resp = req.send().await?;
-    check_status(&resp)?;
+    check_status(&resp, &action.href)?;
 
     let mut bytes_done: u64 = 0;
     let oid_owned = oid.to_owned();
@@ -125,7 +125,7 @@ pub(crate) async fn upload(
     }
 
     let resp = req.body(body).send().await?;
-    check_status(&resp)?;
+    check_status(&resp, &upload_action.href)?;
 
     if let Some(verify_action) = &actions.verify {
         verify(http, oid, size, verify_action).await?;
@@ -150,16 +150,25 @@ async fn verify(
         req = req.header(k, v);
     }
     let resp = req.json(&VerifyBody { oid, size }).send().await?;
-    check_status(&resp)?;
+    check_status(&resp, &action.href)?;
     Ok(())
 }
 
-fn check_status(resp: &Response) -> Result<(), TransferError> {
+fn check_status(resp: &Response, url: &str) -> Result<(), TransferError> {
     if resp.status().is_success() {
         Ok(())
     } else {
         Err(TransferError::ActionStatus {
             status: resp.status().as_u16(),
+            url: strip_query(url).to_owned(),
         })
     }
+}
+
+/// Strip the query string from `url`. Mirrors upstream's
+/// `strings.SplitN(url, "?", 2)[0]` in `lfshttp.defaultError` —
+/// auth tokens / signed-URL params shouldn't leak into error
+/// messages or test grep patterns.
+fn strip_query(url: &str) -> &str {
+    url.split_once('?').map_or(url, |(base, _)| base)
 }

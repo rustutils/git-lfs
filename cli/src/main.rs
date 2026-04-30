@@ -280,6 +280,14 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                     println!("{msg}");
                     return Ok(128);
                 }
+                Err(e @ pull::PullCommandError::FetchFailures(_)) => {
+                    // Per-object transfer failures (per-object-batch
+                    // 404s, action-URL 4xx/5xx) — upstream exits 2
+                    // here, and t-pull's `pull with invalid insteadof`
+                    // greps for that exit code specifically.
+                    eprintln!("git-lfs: {e}");
+                    return Ok(2);
+                }
                 Err(e) => return Err(e.into()),
             }
         }

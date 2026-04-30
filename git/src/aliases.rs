@@ -54,8 +54,10 @@ pub fn rewrite(cwd: &Path, url: &str) -> Result<String, Error> {
 
 /// Pure function: given a built alias map and a URL, do the longest-
 /// prefix-match rewrite. Split out so unit tests don't need a temp
-/// repo.
-fn apply(aliases: &Aliases, url: &str) -> String {
+/// repo, and exposed so callers that already hold an [`Aliases`] map
+/// (e.g. the transfer queue, which captures the map once at startup
+/// instead of re-locking the per-call cache) can apply it directly.
+pub fn apply(aliases: &Aliases, url: &str) -> String {
     let mut best: Option<&str> = None;
     for alias in aliases.keys() {
         if !url.starts_with(alias.as_str()) {

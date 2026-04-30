@@ -66,9 +66,10 @@ impl LfsFetcher {
             .enable_all()
             .build()?;
         let api = build_api_client(cwd, remote);
+        let config = transfer_config_for(cwd);
         let transfer = api
             .clone()
-            .map(|c| Transfer::new(c, store.clone(), TransferConfig::default()));
+            .map(|c| Transfer::new(c, store.clone(), config));
         let refspec = git_lfs_git::refs::current_refspec(cwd).map(Ref::new);
         Ok(Self {
             runtime,
@@ -218,6 +219,35 @@ pub fn build_api_client(cwd: &Path, remote: Option<&str>) -> Result<ApiClient, S
         .map_err(|e| format!("resolving LFS endpoint: {e}"))?;
     let url = url::Url::parse(&endpoint).map_err(|e| format!("invalid LFS endpoint: {e}"))?;
     Ok(ApiClient::new(url, Auth::None).with_credential_helper(default_helper_chain()))
+}
+
+/// Build a [`TransferConfig`] for `cwd`, plumbing
+/// `lfs.transfer.enablehrefrewrite` + `url.<base>.insteadOf` into
+/// `url_rewriter` when the flag is enabled. The rewrite map is captured
+/// at construction so the queue's hot path doesn't shell out to git for
+/// every action URL.
+fn transfer_config_for(cwd: &Path) -> TransferConfig {
+    let mut config = TransferConfig::default();
+    if href_rewrite_enabled(cwd) {
+        if let Ok(aliases) = git_lfs_git::aliases::load_aliases(cwd) {
+            if !aliases.is_empty() {
+                config.url_rewriter = Some(Arc::new(move |url: &str| {
+                    git_lfs_git::aliases::apply(&aliases, url)
+                }));
+            }
+        }
+    }
+    config
+}
+
+/// Read `lfs.transfer.enablehrefrewrite` from the effective config
+/// (default false). Accepts the standard git-bool spellings.
+fn href_rewrite_enabled(cwd: &Path) -> bool {
+    let raw = git_lfs_git::config::get_effective(cwd, "lfs.transfer.enablehrefrewrite")
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    matches!(raw.to_ascii_lowercase().as_str(), "true" | "1" | "yes" | "on")
 }
 
 /// Default credential resolution chain: in-process cache → `git credential`.

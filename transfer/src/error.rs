@@ -20,9 +20,13 @@ pub enum TransferError {
     #[error("server returned no download action for object")]
     NoDownloadAction,
 
-    /// The action URL responded with a non-success status.
-    #[error("transfer action returned status {status}")]
-    ActionStatus { status: u16 },
+    /// The action URL responded with a non-success status. The URL is
+    /// embedded in the [`Display`](std::fmt::Display) impl so users can
+    /// see *which* endpoint failed (in particular, what `insteadOf`
+    /// rewriting did to the original batch URL — see t-pull's
+    /// `pull with invalid insteadof`).
+    #[error("{}", format_action_status(*.status, .url))]
+    ActionStatus { status: u16, url: String },
 
     /// HTTP transport failure (connection reset, TLS error, …).
     /// Retryable.
@@ -45,6 +49,26 @@ pub enum TransferError {
     InvalidOid(#[from] OidParseError),
 }
 
+/// Format the action-URL error message to match upstream's
+/// `lfshttp.defaultError` strings — the test suite greps these
+/// verbatim (e.g. t-pull's `pull with invalid insteadof`).
+fn format_action_status(status: u16, url: &str) -> String {
+    let prefix = match status {
+        400 => "Client error:",
+        401 | 403 => "Authorization error:",
+        404 => "Repository or object not found:",
+        422 => "Unprocessable entity:",
+        429 => "Rate limit exceeded:",
+        500 => "Server error:",
+        501 => "Not Implemented:",
+        507 => "Insufficient server storage:",
+        509 => "Bandwidth limit exceeded:",
+        _ if status < 500 => return format!("LFS: Client error {url} from HTTP {status}"),
+        _ => return format!("LFS: Server error {url} from HTTP {status}"),
+    };
+    format!("LFS: {prefix} {url}")
+}
+
 impl TransferError {
     /// Worth another attempt? Network blips and 5xx are retryable; spec
     /// violations and hash mismatches are not.
@@ -56,7 +80,7 @@ impl TransferError {
                 // surfaces via Store, not Http.
                 !e.is_decode() && !e.is_builder()
             }
-            TransferError::ActionStatus { status } => {
+            TransferError::ActionStatus { status, .. } => {
                 matches!(status, 408 | 429 | 500..=599)
             }
             TransferError::Io(_) => true,

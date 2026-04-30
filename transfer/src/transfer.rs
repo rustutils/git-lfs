@@ -120,6 +120,20 @@ impl Transfer {
                     obj.size = *s;
                 }
             }
+            if let Some(rewriter) = &self.config.url_rewriter {
+                if let Some(actions) = obj.actions.as_mut() {
+                    for action in [
+                        actions.download.as_mut(),
+                        actions.upload.as_mut(),
+                        actions.verify.as_mut(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    {
+                        action.href = rewriter(&action.href);
+                    }
+                }
+            }
             let permit_src = limit.clone();
             let http = self.http.clone();
             let store = self.store.clone();

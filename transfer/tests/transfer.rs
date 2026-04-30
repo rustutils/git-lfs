@@ -31,6 +31,7 @@ fn fast_config() -> TransferConfig {
         max_attempts: 3,
         initial_backoff: Duration::from_millis(1),
         backoff_max: Duration::from_millis(5),
+        url_rewriter: None,
     }
 }
 

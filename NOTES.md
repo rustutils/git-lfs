@@ -136,12 +136,11 @@ tree in the same hook-installed state upstream produces.
 
 ## Highest-leverage gaps (descending leverage)
 
-1. **t-pull's remaining 4 failures** all need substantive features:
-   test 11 wants `lfs.transfer.enablehrefrewrite` + git `insteadOf`
-   rewrites and exit-2 on download failure; test 18 wants `git
-   ls-files attr:filter=lfs` based discovery in bare repos (so an
-   empty index → no fetch); test 19 needs partial-clone + sparse-
-   checkout integration; test 20 needs pointer extensions.
+1. **t-pull's remaining 3 failures** all need substantive features:
+   test 18 wants `git ls-files attr:filter=lfs` based discovery in
+   bare repos (so an empty index → no fetch); test 19 needs partial-
+   clone + sparse-checkout integration; test 20 needs pointer
+   extensions.
 2. **t-checkout's remaining 5 failures** are all real features:
    test 13 wants `--to <path> [--ours|--theirs|--base]` for merge
    conflict resolution (read the conflict pointer, write content
@@ -312,9 +311,10 @@ missing** and **why it was OK to skip for v0**.
 - **`remote.<name>.pushurl`.** Upstream honors a separate push URL for
   the same remote; we only read `remote.<name>.url`. Minor accuracy gap
   for users with split read/write URLs.
-- **`url.<base>.insteadof` / `pushinsteadof`.** Git config aliases let
-  you rewrite remote URL prefixes. Upstream applies these before endpoint
-  derivation; we don't.
+- **`url.<base>.pushinsteadof`.** Push-only URL alias variant of
+  `insteadof`. Upstream applies it for upload-direction transfers under
+  `lfs.transfer.enablehrefrewrite`; we honor `insteadof` (download +
+  endpoint derivation) but not `pushinsteadof`. Owns t-push 22.
 - **`remote.<name>.lfspushurl`.** Per-remote push-only LFS URL. Skipped.
 - **`lfs.<url>.access`.** Force an access mode (basic/ntlm/negotiate) per
   endpoint. Relevant once NTLM/Negotiate land.
@@ -389,10 +389,11 @@ missing** and **why it was OK to skip for v0**.
 - **Deprecated `_links` field.** `t-push.sh::push with deprecated
   _links` — old servers send `_links` instead of `actions`. Add it
   as a serde alias (or tolerant `flatten`).
-- **`lfs.transfer.enablehrefrewrite` + `url.<base>.pushInsteadOf`.**
-  `t-push.sh::push with invalid pushInsteadof` exercises rewriting
-  the action URL via `url.<base>.pushInsteadOf` when
-  `lfs.transfer.enablehrefrewrite=true`. Skipped for now.
+- **`url.<base>.pushInsteadOf`.** `t-push.sh::push with invalid
+  pushInsteadof` exercises rewriting the action URL via
+  `url.<base>.pushInsteadOf` when `lfs.transfer.enablehrefrewrite=true`.
+  We honor `insteadOf` (download direction) but not the push-only
+  variant — needs a direction-aware alias loader.
 - **Custom-namespace refs in `--all` setup.** `t-push.sh::push
   custom reference` uses `lfstest-testutils addcommits` (excluded),
   so it's gated on porting that helper.
