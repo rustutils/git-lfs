@@ -3,7 +3,7 @@
 Per-suite snapshot of the vendored upstream shell tests. Last
 refreshed: **2026-04-30**.
 
-**399 / 794 tests passing (~50%) across 104 suites.**
+**400 / 794 tests passing (~50%) across 104 suites.**
 
 Refresh:
 
@@ -87,7 +87,7 @@ t-object-authenticated.sh          t-version.sh
 | `t-multiple-remotes.sh` | 0 / 12 |
 | `t-no-remote.sh` | 1 / 2 |
 | `t-pointer.sh` | 20 / 26 |
-| `t-pre-push.sh` | 35 / 40 |
+| `t-pre-push.sh` | 36 / 40 |
 | `t-progress.sh` | 0 / 1 |
 | `t-prune-worktree.sh` | 0 / 2 |
 | `t-prune.sh` | 4 / 18 |

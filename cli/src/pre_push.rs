@@ -20,7 +20,7 @@
 use std::io::BufRead;
 use std::path::Path;
 
-use crate::push::{PushCommandError, PushOutcome, remote_tracking_refs, upload_in_range};
+use crate::push::{PushCommandError, PushOutcome, remote_tracking_refs, upload_in_range_with_args};
 
 /// Run the pre-push command. `stdin_lines` is typically `io::stdin().lock()`.
 pub fn pre_push<R: BufRead>(
@@ -84,7 +84,26 @@ pub fn pre_push<R: BufRead>(
         return Ok(PushOutcome::default());
     }
 
-    if needs_remote_tracking {
+    // Resolve `remote` (which can be a URL when the user runs
+    // `git push <url>`) to the configured remote name whose URL it
+    // matches, if any. Drives the upstream `--not --remotes=<name>`
+    // optimization below: when the push target *is* one of our
+    // tracked remotes, we can hand its full ref namespace to
+    // rev-list as one expression rather than enumerating each
+    // `refs/remotes/<name>/<branch>` ourselves.
+    let resolved_remote_name = matching_remote_name(cwd, remote);
+
+    let mut extra_args: Vec<String> = Vec::new();
+    if let Some(name) = &resolved_remote_name {
+        // Pass on the cmdline (not via stdin) so the GIT_TRACE output
+        // shows it verbatim — t-pre-push 37 greps the trace for
+        // `rev-list.*--not --remotes=origin`.
+        extra_args.push("--not".into());
+        extra_args.push(format!("--remotes={name}"));
+    } else if needs_remote_tracking {
+        // Fallback for URL pushes that don't match any remote: still
+        // exclude objects already in the (now name-pinned) remote
+        // tracking branches by listing each ref explicitly.
         excludes.extend(remote_tracking_refs(cwd, remote)?);
     }
 
@@ -103,7 +122,48 @@ pub fn pre_push<R: BufRead>(
 
     let inc: Vec<&str> = includes.iter().map(String::as_str).collect();
     let exc: Vec<&str> = excludes.iter().map(String::as_str).collect();
-    upload_in_range(cwd, remote, &inc, &exc, refspec, dry_run)
+    let extra: Vec<&str> = extra_args.iter().map(String::as_str).collect();
+    upload_in_range_with_args(cwd, remote, &inc, &exc, &extra, refspec, dry_run)
+}
+
+/// Find the configured remote whose `remote.<name>.url` equals
+/// `value` (or matches `value` as a name directly). Used by pre-push
+/// to enable the `--not --remotes=<name>` rev-list optimization on
+/// URL-style pushes.
+fn matching_remote_name(cwd: &Path, value: &str) -> Option<String> {
+    if value.is_empty() {
+        return None;
+    }
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["remote"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    for name in String::from_utf8_lossy(&out.stdout).lines() {
+        let name = name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        if name == value {
+            return Some(name.to_owned());
+        }
+        let url_out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(cwd)
+            .args(["config", "--get", &format!("remote.{name}.url")])
+            .output()
+            .ok()?;
+        if url_out.status.success()
+            && String::from_utf8_lossy(&url_out.stdout).trim() == value
+        {
+            return Some(name.to_owned());
+        }
+    }
+    None
 }
 
 /// True if `s` is a non-empty hex string of all zeros — git's marker for

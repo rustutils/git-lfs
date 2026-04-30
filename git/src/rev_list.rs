@@ -39,13 +39,38 @@ pub fn rev_list(
     include: &[&str],
     exclude: &[&str],
 ) -> Result<Vec<RevListEntry>, Error> {
-    let mut child = Command::new("git")
-        .arg("-C")
-        .arg(cwd)
-        .args(["rev-list", "--objects", "--do-walk", "--stdin", "--"])
+    rev_list_with_args(cwd, include, exclude, &[])
+}
+
+/// [`rev_list`] with extra command-line args spliced before `--stdin`.
+///
+/// Used for the upstream `--not --remotes=<name>` optimization: pre-push
+/// invokes rev-list with that pair on the command line so the trace
+/// (`GIT_TRACE=1`) shows it verbatim — `t-pre-push.sh` greps for
+/// `rev-list.*--not --remotes=origin` to confirm the optimization
+/// kicked in for a `git push <url>` whose URL matches a configured
+/// remote.
+pub fn rev_list_with_args(
+    cwd: &Path,
+    include: &[&str],
+    exclude: &[&str],
+    extra_cmdline_args: &[&str],
+) -> Result<Vec<RevListEntry>, Error> {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(cwd);
+    cmd.args(["rev-list", "--objects", "--do-walk"]);
+    cmd.args(extra_cmdline_args);
+    cmd.args(["--stdin", "--"]);
+    // Inherit stderr so `GIT_TRACE=1` users see the rev-list
+    // invocation. t-pre-push 37 greps the trace for a literal
+    // `rev-list.*--not --remotes=origin` to confirm the upstream
+    // optimization fired. The cost is failure messages no longer
+    // appear in our wrapped Error — exit status still tells us
+    // *that* it failed, just not why.
+    let mut child = cmd
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::inherit())
         .spawn()?;
 
     {
@@ -71,15 +96,7 @@ pub fn rev_list(
 
     let status = child.wait()?;
     if !status.success() {
-        let mut stderr = String::new();
-        if let Some(mut s) = child.stderr {
-            use std::io::Read;
-            let _ = s.read_to_string(&mut stderr);
-        }
-        return Err(Error::Failed(format!(
-            "git rev-list failed: {}",
-            stderr.trim()
-        )));
+        return Err(Error::Failed(format!("git rev-list failed: {status}")));
     }
     Ok(entries)
 }
@@ -157,12 +174,11 @@ mod tests {
     fn rev_list_unknown_ref_errors() {
         let repo = init_repo();
         commit_file(&repo, "a.txt", b"x");
+        // We only inspect that it failed — stderr inherits to the
+        // parent (so `GIT_TRACE=1` users see git's error directly),
+        // which means our wrapped message no longer carries git's
+        // text.
         let err = rev_list(repo.path(), &["does-not-exist"], &[]).unwrap_err();
-        match err {
-            Error::Failed(msg) => {
-                assert!(msg.contains("does-not-exist") || msg.contains("unknown"))
-            }
-            _ => panic!("expected Failed, got {err:?}"),
-        }
+        assert!(matches!(err, Error::Failed(_)), "got {err:?}");
     }
 }

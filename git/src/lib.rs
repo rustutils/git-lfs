@@ -28,8 +28,10 @@ pub use endpoint::{
     parse_ssh_url, resolve_endpoint,
 };
 pub use path::{git_dir, lfs_alternate_dirs, lfs_dir};
-pub use rev_list::{RevListEntry, rev_list};
-pub use scanner::{PointerEntry, TreeBlob, scan_pointers, scan_tree, scan_tree_blobs};
+pub use rev_list::{RevListEntry, rev_list, rev_list_with_args};
+pub use scanner::{
+    PointerEntry, TreeBlob, scan_pointers, scan_pointers_with_args, scan_tree, scan_tree_blobs,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

@@ -24,7 +24,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use git_lfs_api::ObjectSpec;
-use git_lfs_git::scan_pointers;
 use git_lfs_pointer::Oid;
 use git_lfs_store::Store;
 use git_lfs_transfer::Report;
@@ -325,9 +324,25 @@ pub(crate) fn upload_in_range(
     refspec: Option<String>,
     dry_run: bool,
 ) -> Result<PushOutcome, PushCommandError> {
+    upload_in_range_with_args(cwd, remote, includes, excludes, &[], refspec, dry_run)
+}
+
+/// Like [`upload_in_range`] but threads `extra_rev_list_args` through
+/// to [`scan_pointers_with_args`]. Used by `pre_push` to enable the
+/// upstream `--not --remotes=<name>` optimization when the push URL
+/// matches a configured remote.
+pub(crate) fn upload_in_range_with_args(
+    cwd: &Path,
+    remote: &str,
+    includes: &[&str],
+    excludes: &[&str],
+    extra_rev_list_args: &[&str],
+    refspec: Option<String>,
+    dry_run: bool,
+) -> Result<PushOutcome, PushCommandError> {
     let store = Store::new(git_lfs_git::lfs_dir(cwd)?)
         .with_references(git_lfs_git::lfs_alternate_dirs(cwd).unwrap_or_default());
-    let pointers = scan_pointers(cwd, includes, excludes)?;
+    let pointers = git_lfs_git::scan_pointers_with_args(cwd, includes, excludes, extra_rev_list_args)?;
 
     // Partition pointers: present locally vs. only-as-pointer. We need
     // the missing ones to ask the server about — if the server holds

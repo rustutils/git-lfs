@@ -22,7 +22,7 @@ use std::process::Command;
 use git_lfs_pointer::{MAX_POINTER_SIZE, Oid, Pointer};
 
 use crate::cat_file::{CatFileBatch, CatFileBatchCheck, CatFileHeader};
-use crate::{Error, rev_list};
+use crate::Error;
 
 /// One LFS pointer discovered by the scanner.
 #[derive(Debug, Clone)]
@@ -58,7 +58,18 @@ pub fn scan_pointers(
     include: &[&str],
     exclude: &[&str],
 ) -> Result<Vec<PointerEntry>, Error> {
-    let entries = rev_list(cwd, include, exclude)?;
+    scan_pointers_with_args(cwd, include, exclude, &[])
+}
+
+/// [`scan_pointers`] with extra rev-list cmdline args. See
+/// [`rev_list_with_args`](crate::rev_list_with_args).
+pub fn scan_pointers_with_args(
+    cwd: &Path,
+    include: &[&str],
+    exclude: &[&str],
+    extra_cmdline_args: &[&str],
+) -> Result<Vec<PointerEntry>, Error> {
+    let entries = crate::rev_list::rev_list_with_args(cwd, include, exclude, extra_cmdline_args)?;
 
     // Phase 1: header-only check. Filter to blobs whose size could plausibly
     // be a pointer file. Tracking name alongside so we can report it.

@@ -12,7 +12,7 @@ in the binaries.
 
 ## Status
 
-Work in progress. **About 399 of the 794 vendored upstream shell tests
+Work in progress. **About 400 of the 794 vendored upstream shell tests
 currently pass across 104 test files (~50%)**, with 26 suites at a
 full pass — see [`tests/SCOREBOARD.md`](tests/SCOREBOARD.md) for the
 per-suite breakdown. The remaining gaps cluster in commands that
