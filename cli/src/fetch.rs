@@ -521,7 +521,16 @@ fn is_remote_or_url(cwd: &Path, name: &str) -> bool {
     matches!(git_lfs_git::config::get_effective(cwd, &key), Ok(Some(_)))
 }
 
-fn is_resolvable_ref(cwd: &Path, r: &str) -> bool {
+pub(crate) fn is_resolvable_ref(cwd: &Path, r: &str) -> bool {
+    // Range syntax (`A..B`, `A...B`) — validate each side separately.
+    // `git rev-parse --verify` doesn't accept ranges, but `git lfs fsck
+    // HEAD^..HEAD` is a thing the test suite exercises.
+    if let Some((a, b)) = r.split_once("...") {
+        return is_resolvable_ref(cwd, a) && is_resolvable_ref(cwd, b);
+    }
+    if let Some((a, b)) = r.split_once("..") {
+        return is_resolvable_ref(cwd, a) && is_resolvable_ref(cwd, b);
+    }
     let out = Command::new("git")
         .arg("-C")
         .arg(cwd)

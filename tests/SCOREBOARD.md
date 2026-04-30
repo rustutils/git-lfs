@@ -3,7 +3,7 @@
 Per-suite snapshot of the vendored upstream shell tests. Last
 refreshed: **2026-04-30**.
 
-**400 / 794 tests passing (~50%) across 104 suites.**
+**402 / 794 tests passing (~51%) across 104 suites.**
 
 Refresh:
 
@@ -68,7 +68,7 @@ t-object-authenticated.sh          t-version.sh
 | `t-fetch-paths.sh` | 1 / 5 |
 | `t-fetch-recent.sh` | 1 / 7 |
 | `t-filter-process.sh` | 6 / 8 |
-| `t-fsck.sh` | 10 / 16 |
+| `t-fsck.sh` | 12 / 16 |
 | `t-happy-path.sh` | 4 / 5 |
 | `t-install-custom-hooks-path.sh` | 0 / 3 |
 | `t-install-worktree.sh` | 0 / 5 |

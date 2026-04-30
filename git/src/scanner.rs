@@ -124,6 +124,10 @@ pub struct TreeBlob {
     pub blob_oid: String,
     /// Size of the blob in bytes, per `cat-file --batch-check`.
     pub size: u64,
+    /// Git tree-entry mode in octal (e.g. `100644`, `100755`,
+    /// `120000` for symlinks). Callers that classify entries by
+    /// mode (e.g. `fsck --pointers` skipping symlinks) read this.
+    pub mode: String,
 }
 
 /// Walk the tree at `reference` and return *every* blob — no size filter,
@@ -150,7 +154,9 @@ pub fn scan_tree_blobs(cwd: &Path, reference: &str) -> Result<Vec<TreeBlob>, Err
             .split_once('\t')
             .ok_or_else(|| Error::Failed(format!("ls-tree: malformed record {s:?}")))?;
         let mut parts = header.split_whitespace();
-        let _mode = parts.next();
+        let mode = parts
+            .next()
+            .ok_or_else(|| Error::Failed(format!("ls-tree: missing mode in {s:?}")))?;
         let kind = parts.next();
         let oid = parts
             .next()
@@ -165,6 +171,7 @@ pub fn scan_tree_blobs(cwd: &Path, reference: &str) -> Result<Vec<TreeBlob>, Err
                 path: PathBuf::from(path),
                 blob_oid: oid.to_owned(),
                 size,
+                mode: mode.to_owned(),
             });
         }
     }

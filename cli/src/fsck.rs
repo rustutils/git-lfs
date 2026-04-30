@@ -47,6 +47,10 @@ pub enum FsckError {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Fetch(#[from] crate::fetch::FetchCommandError),
+    /// User-facing error printed verbatim. Used for things like
+    /// `Git can't resolve ref: "..."` that the test suite greps.
+    #[error("{0}")]
+    Other(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,6 +81,15 @@ pub fn run(cwd: &Path, refspec: Option<&str>, opts: &Options) -> Result<i32, Fsc
     }
     let store = Store::new(git_lfs_git::lfs_dir(cwd)?);
     let r = refspec.unwrap_or("HEAD");
+
+    // Validate the ref upfront so a typo surfaces as the upstream-
+    // format `Git can't resolve ref: "<r>"` line (t-fsck 16) instead
+    // of a stack of internal `git rev-list failed` messages.
+    if !crate::fetch::is_resolvable_ref(cwd, r) {
+        return Err(FsckError::Other(format!(
+            "Git can't resolve ref: {r:?}"
+        )));
+    }
 
     let mut corrupt_oids: Vec<Oid> = Vec::new();
     let mut non_canonical: usize = 0;
@@ -134,6 +147,13 @@ pub fn run(cwd: &Path, refspec: Option<&str>, opts: &Options) -> Result<i32, Fsc
         let blobs = scan_tree_blobs(cwd, r)?;
         let mut batch = CatFileBatch::spawn(cwd)?;
         for blob in &blobs {
+            // Symlinks store their target path as the blob content;
+            // they're not LFS pointers regardless of `.gitattributes`
+            // and upstream's fsck (`fsck does not detect invalid
+            // pointers with symlinks`) expects them to pass through.
+            if blob.mode == "120000" {
+                continue;
+            }
             // Use forward slashes for path matching — gix-attributes
             // works in repo-relative `/`-separated paths.
             let path_str = blob.path.to_string_lossy().replace('\\', "/");
