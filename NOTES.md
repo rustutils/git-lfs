@@ -136,27 +136,13 @@ tree in the same hook-installed state upstream produces.
 
 ## Highest-leverage gaps (descending leverage)
 
-1. **SSH endpoint reporting**. t-env test 11 expects two-line
-   endpoints: `Endpoint=…` followed by an indented
-   `  SSH=user@host:path` derived from `git@host:path` style
-   remote URLs.
-   - **Scope**: `cli/src/env.rs::emit_endpoints`. After
-     `endpoint_for_remote` resolves a URL, also keep the original
-     remote URL string. If it's an SSH-shaped URL (matches
-     `git@host:path`, `ssh://`, `git+ssh://`, `ssh+git://`), print
-     `  SSH=<original>` on the next line, indented two spaces.
-     `derive_lfs_url` already understands all the SSH forms; just
-     need to expose the pre-rewrite URL alongside the post-rewrite
-     one. Bonus: test 11 expects a `GIT_SSH=lfs-ssh-echo` line
-     (already covered by our env-var dump when the test harness
-     sets it).
-2. **t-pull's remaining 4 failures** all need substantive features:
+1. **t-pull's remaining 4 failures** all need substantive features:
    test 11 wants `lfs.transfer.enablehrefrewrite` + git `insteadOf`
    rewrites and exit-2 on download failure; test 18 wants `git
    ls-files attr:filter=lfs` based discovery in bare repos (so an
    empty index → no fetch); test 19 needs partial-clone + sparse-
    checkout integration; test 20 needs pointer extensions.
-3. **t-checkout's remaining 5 failures** are all real features:
+2. **t-checkout's remaining 5 failures** are all real features:
    test 13 wants `--to <path> [--ours|--theirs|--base]` for merge
    conflict resolution (read the conflict pointer, write content
    to the target path); test 14 is a `GIT_DIR`/`GIT_WORK_TREE`

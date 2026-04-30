@@ -11,7 +11,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
-use git_lfs_git::endpoint_for_remote;
+use git_lfs_git::{SshInfo, resolve_endpoint};
 
 /// Canonical `filter.lfs.*` values written by `git lfs install`. Used
 /// outside a repo (where there's no git config to read) and as the
@@ -105,19 +105,31 @@ fn emit_endpoints(cwd: &Path) {
             .flatten()
             .is_some();
     if has_origin || has_default_url {
-        if let Ok(url) = endpoint_for_remote(cwd, None) {
-            let auth = access_for(cwd, &url);
-            println!("Endpoint={url} (auth={auth})");
+        if let Ok(info) = resolve_endpoint(cwd, None) {
+            let auth = access_for(cwd, &info.url);
+            println!("Endpoint={} (auth={auth})", info.url);
+            print_ssh_line(&info.ssh);
         }
     }
     for r in &remotes {
         if r == "origin" {
             continue;
         }
-        if let Ok(url) = endpoint_for_remote(cwd, Some(r)) {
-            let auth = access_for(cwd, &url);
-            println!("Endpoint ({r})={url} (auth={auth})");
+        if let Ok(info) = resolve_endpoint(cwd, Some(r)) {
+            let auth = access_for(cwd, &info.url);
+            println!("Endpoint ({r})={} (auth={auth})", info.url);
+            print_ssh_line(&info.ssh);
         }
+    }
+}
+
+/// Emit the indented `  SSH=<user_and_host>:<path>` line `git lfs env`
+/// shows below an `Endpoint=` line when the underlying URL was SSH-
+/// shaped. Path comes through as already-formatted by [`SshInfo`] (with
+/// or without leading slash, matching upstream's per-source behavior).
+fn print_ssh_line(ssh: &Option<SshInfo>) {
+    if let Some(info) = ssh {
+        println!("  SSH={}:{}", info.user_and_host, info.path);
     }
 }
 

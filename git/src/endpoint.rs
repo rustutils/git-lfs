@@ -39,22 +39,55 @@ pub enum EndpointError {
     InvalidUrl { url: String, reason: String },
 }
 
+/// SSH-shaped remote/endpoint URL parsed into the components `git lfs
+/// env` echoes back as `  SSH=<user_and_host>:<path>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SshInfo {
+    /// Either `<user>@<host>` if a user was present, or just `<host>`.
+    pub user_and_host: String,
+    /// The path portion — `:foo/bar.git` from `git@host:foo/bar.git`,
+    /// or `/foo/bar.git` from `ssh://host/foo/bar.git` (we keep
+    /// upstream's exact form: leading `/` preserved for `ssh://`,
+    /// stripped for bare SSH).
+    pub path: String,
+}
+
+/// LFS endpoint resolution result with the optional SSH metadata
+/// upstream's `git lfs env` displays alongside the HTTPS-equivalent
+/// endpoint URL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EndpointInfo {
+    pub url: String,
+    pub ssh: Option<SshInfo>,
+}
+
 /// Resolve the LFS endpoint URL for `cwd` + `remote`. Pass `None` for the
 /// default (`origin`, with a "single remote" fallback when origin doesn't
 /// exist and exactly one other remote does).
 pub fn endpoint_for_remote(cwd: &Path, remote: Option<&str>) -> Result<String, EndpointError> {
+    Ok(resolve_endpoint(cwd, remote)?.url)
+}
+
+/// Like [`endpoint_for_remote`], but also returns the SSH metadata
+/// when the underlying URL was SSH-shaped. Used by `git lfs env` to
+/// render the `  SSH=<user_and_host>:<path>` line alongside the
+/// HTTPS-equivalent endpoint.
+pub fn resolve_endpoint(
+    cwd: &Path,
+    remote: Option<&str>,
+) -> Result<EndpointInfo, EndpointError> {
     let caller_specified_remote = remote.is_some();
     let mut remote = remote.unwrap_or(DEFAULT_REMOTE).to_owned();
 
     if let Some(v) = std::env::var_os("GIT_LFS_URL") {
         let s = v.to_string_lossy().into_owned();
         if !s.is_empty() {
-            return Ok(aliases::rewrite(cwd, &s)?);
+            return Ok(direct_endpoint(cwd, &s)?);
         }
     }
 
     if let Some(v) = config::get_effective(cwd, "lfs.url")? {
-        return Ok(aliases::rewrite(cwd, &v)?);
+        return Ok(direct_endpoint(cwd, &v)?);
     }
 
     // When the caller didn't pin a remote name and `origin` doesn't
@@ -71,7 +104,7 @@ pub fn endpoint_for_remote(cwd: &Path, remote: Option<&str>) -> Result<String, E
 
     let remote_lfsurl_key = format!("remote.{remote}.lfsurl");
     if let Some(v) = config::get_effective(cwd, &remote_lfsurl_key)? {
-        return Ok(aliases::rewrite(cwd, &v)?);
+        return Ok(direct_endpoint(cwd, &v)?);
     }
 
     if let Some(remote_url) = remote_url(cwd, &remote)? {
@@ -79,7 +112,10 @@ pub fn endpoint_for_remote(cwd: &Path, remote: Option<&str>) -> Result<String, E
         // a `gh:org/repo` style alias resolves to the real URL first
         // and `derive_lfs_url` sees a URL it can parse.
         let rewritten = aliases::rewrite(cwd, &remote_url)?;
-        return derive_lfs_url(&rewritten);
+        return Ok(EndpointInfo {
+            url: derive_lfs_url(&rewritten)?,
+            ssh: parse_ssh_url(&rewritten),
+        });
     }
 
     // Last fallback: the caller may have passed a URL directly in
@@ -90,10 +126,25 @@ pub fn endpoint_for_remote(cwd: &Path, remote: Option<&str>) -> Result<String, E
     // also covers the SCP-style case the rewriter understands.
     if looks_like_url(&remote) {
         let rewritten = aliases::rewrite(cwd, &remote)?;
-        return derive_lfs_url(&rewritten);
+        return Ok(EndpointInfo {
+            url: derive_lfs_url(&rewritten)?,
+            ssh: parse_ssh_url(&rewritten),
+        });
     }
 
     Err(EndpointError::Unresolved(remote))
+}
+
+/// Build an `EndpointInfo` from a directly-configured LFS URL value
+/// (`GIT_LFS_URL`, `lfs.url`, `remote.X.lfsurl`). These values are
+/// returned to callers as-is — no `.git/info/lfs` derivation — but we
+/// still parse SSH metadata so `git lfs env` can echo the original
+/// SSH-shaped string back. Aliases are applied first so users can
+/// store something like `lfs.url = gh:org/repo` and have it resolve.
+fn direct_endpoint(cwd: &Path, value: &str) -> Result<EndpointInfo, EndpointError> {
+    let rewritten = aliases::rewrite(cwd, value)?;
+    let ssh = parse_ssh_url(&rewritten);
+    Ok(EndpointInfo { url: rewritten, ssh })
 }
 
 /// `git remote` enumeration. Returns the configured remote names in
@@ -208,6 +259,58 @@ pub fn derive_lfs_url(remote_url: &str) -> Result<String, EndpointError> {
     Err(EndpointError::InvalidUrl {
         url: remote_url.to_owned(),
         reason: "unrecognized URL form".into(),
+    })
+}
+
+/// Extract the SSH metadata from a remote URL — the `<user_and_host>`
+/// and `<path>` pieces `git lfs env` echoes back as
+/// `  SSH=<user_and_host>:<path>`. Returns `None` for URLs that don't
+/// look SSH-shaped (HTTP(S), git://, file://, plain paths).
+///
+/// Mirrors upstream's `EndpointFromSshUrl` / `EndpointFromBareSshUrl`
+/// for the metadata fields specifically; the URL itself is rewritten
+/// elsewhere (see [`derive_lfs_url`]).
+pub fn parse_ssh_url(rawurl: &str) -> Option<SshInfo> {
+    let trimmed = rawurl.trim();
+    // Schemes upstream classifies as SSH: `ssh://`, `git+ssh://`,
+    // `ssh+git://`. Plain HTTP(S) and `git://` are not SSH; `file://`
+    // and bare paths aren't either.
+    let ssh_rest = trimmed
+        .strip_prefix("ssh://")
+        .or_else(|| trimmed.strip_prefix("git+ssh://"))
+        .or_else(|| trimmed.strip_prefix("ssh+git://"));
+    if let Some(rest) = ssh_rest {
+        let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
+        if authority.is_empty() {
+            return None;
+        }
+        // Drop the port component for the user_and_host string —
+        // upstream's `EndpointFromSshUrl` keeps user@host but stores
+        // the port separately.
+        let user_and_host = authority
+            .rsplit_once(':')
+            .map(|(host, _port)| host)
+            .unwrap_or(authority);
+        return Some(SshInfo {
+            user_and_host: user_and_host.to_owned(),
+            // Leading `/` preserved for ssh:// to match upstream.
+            path: format!("/{}", path.trim_start_matches('/')),
+        });
+    }
+    // HTTP/HTTPS/git/file aren't SSH.
+    if trimmed.starts_with("http://")
+        || trimmed.starts_with("https://")
+        || trimmed.starts_with("git://")
+        || trimmed.starts_with("file://")
+    {
+        return None;
+    }
+    // Bare-SSH form: `[user@]host:path`. Strip leading `/` from path
+    // (upstream's `EndpointFromBareSshUrl` does this explicitly).
+    let (host, path) = bare_ssh_split(trimmed)?;
+    Some(SshInfo {
+        user_and_host: host.to_owned(),
+        path: path.trim_start_matches('/').to_owned(),
     })
 }
 
@@ -385,6 +488,58 @@ mod tests {
     fn relative_path_is_rejected_not_treated_as_ssh() {
         assert!(derive_lfs_url("./relative/path").is_err());
         assert!(derive_lfs_url("/abs/path").is_err());
+    }
+
+    // ---- parse_ssh_url ----------------------------------------------------
+
+    #[test]
+    fn ssh_metadata_for_bare_user_at_host() {
+        let info = parse_ssh_url("git@github.com:user/repo.git").unwrap();
+        assert_eq!(info.user_and_host, "git@github.com");
+        assert_eq!(info.path, "user/repo.git");
+    }
+
+    #[test]
+    fn ssh_metadata_for_bare_host_only() {
+        let info = parse_ssh_url("badalias:rest").unwrap();
+        assert_eq!(info.user_and_host, "badalias");
+        assert_eq!(info.path, "rest");
+    }
+
+    #[test]
+    fn ssh_metadata_for_ssh_scheme_keeps_leading_slash() {
+        let info = parse_ssh_url("ssh://git@host.example/path/to/repo.git").unwrap();
+        assert_eq!(info.user_and_host, "git@host.example");
+        assert_eq!(info.path, "/path/to/repo.git");
+    }
+
+    #[test]
+    fn ssh_metadata_for_ssh_scheme_drops_port_from_host() {
+        let info = parse_ssh_url("ssh://git@host.example:2222/path").unwrap();
+        assert_eq!(info.user_and_host, "git@host.example");
+        assert_eq!(info.path, "/path");
+    }
+
+    #[test]
+    fn ssh_metadata_for_https_returns_none() {
+        assert!(parse_ssh_url("https://host.example/path").is_none());
+        assert!(parse_ssh_url("http://host.example/path").is_none());
+    }
+
+    #[test]
+    fn ssh_metadata_for_git_protocol_returns_none() {
+        assert!(parse_ssh_url("git://host.example/path").is_none());
+    }
+
+    #[test]
+    fn ssh_metadata_for_file_url_returns_none() {
+        assert!(parse_ssh_url("file:///srv/repos/foo.git").is_none());
+    }
+
+    #[test]
+    fn ssh_metadata_for_local_path_returns_none() {
+        assert!(parse_ssh_url("/abs/path").is_none());
+        assert!(parse_ssh_url("./relative").is_none());
     }
 
     // ---- endpoint_for_remote ---------------------------------------------

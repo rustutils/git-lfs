@@ -23,7 +23,10 @@ pub use attr::AttrSet;
 pub use cat_file::{BlobContent, CatFileBatch, CatFileBatchCheck, CatFileHeader};
 pub use config::ConfigScope;
 pub use diff_index::{DiffEntry, diff_index};
-pub use endpoint::{EndpointError, derive_lfs_url, endpoint_for_remote};
+pub use endpoint::{
+    EndpointError, EndpointInfo, SshInfo, derive_lfs_url, endpoint_for_remote, parse_ssh_url,
+    resolve_endpoint,
+};
 pub use path::{git_dir, lfs_dir};
 pub use rev_list::{RevListEntry, rev_list};
 pub use scanner::{PointerEntry, TreeBlob, scan_pointers, scan_tree, scan_tree_blobs};
