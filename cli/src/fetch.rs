@@ -130,14 +130,21 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
         }
     }
 
-    // Resolve the include set: --all > explicit refs > current HEAD.
-    let walk_refs: Vec<String> = if opts.all {
-        all_local_refs(cwd)?
-    } else if !ref_args.is_empty() {
+    // Resolve the include set. Upstream's `--all` semantics:
+    //   `--all` + ref args → walk only those refs (test 21
+    //                       `fetch --all origin main` excludes
+    //                       branch1's objects).
+    //   `--all` alone     → walk every local + remote-tracking ref
+    //                       so an LFS object reachable only via
+    //                       refs/remotes/<remote>/<deleted-locally>
+    //                       still gets fetched.
+    //   no `--all`, refs  → use the refs.
+    //   bare              → current HEAD.
+    let walk_refs: Vec<String> = if !ref_args.is_empty() {
         ref_args
+    } else if opts.all {
+        all_local_refs(cwd)?
     } else {
-        // No refs / no --all → current HEAD. Matches upstream when the
-        // user runs bare `git lfs fetch`.
         vec!["HEAD".to_string()]
     };
     let ref_strs: Vec<&str> = walk_refs.iter().map(String::as_str).collect();
@@ -196,6 +203,47 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
             }
         }
         return Ok(FetchOutcome::default());
+    }
+
+    // Validate `http.sslKey` upfront. We don't yet wire client certs
+    // through to reqwest, but t-fetch 28 (`fetch does not crash on
+    // empty key files`) configures `/dev/null` as the key and expects
+    // an `Error decoding PEM block` message instead of a panic or
+    // a generic network error. Mirrors upstream's PEM-decode check
+    // in `lfshttp/certs.go::getClientCertForHost`.
+    if let Ok(Some(path)) = git_lfs_git::config::get_effective(cwd, "http.sslkey")
+        && !path.is_empty()
+    {
+        match std::fs::read(&path) {
+            Ok(bytes) if bytes.windows(11).any(|w| w == b"-----BEGIN ") => {}
+            _ => {
+                return Err(FetchCommandError::Usage(format!(
+                    "Error decoding PEM block from {path:?}"
+                )));
+            }
+        }
+    }
+
+    // Probe the storage directory before resolving the LFS endpoint
+    // so a chmod 400'd `.git/lfs/objects/` surfaces as
+    // `error trying to create local storage directory` (t-fetch 28),
+    // not as a downstream "can't resolve remote" error. Mirrors
+    // upstream's `fs.ObjectPath` mkdir-on-first-use semantics — we
+    // can't lazily defer it like the store's `commit` does because
+    // the error path the test greps for fires before any object is
+    // ever written.
+    if let Some(spec) = to_fetch.first() {
+        if let Ok(oid) = spec.oid.parse::<git_lfs_pointer::Oid>() {
+            let dir = store.object_path(oid);
+            if let Some(parent) = dir.parent()
+                && let Err(e) = std::fs::create_dir_all(parent)
+            {
+                return Err(FetchCommandError::Usage(format!(
+                    "error trying to create local storage directory in {:?}: {e}",
+                    parent.display()
+                )));
+            }
+        }
     }
 
     // Real fetch: drive the transfer queue.
@@ -488,6 +536,11 @@ fn is_resolvable_ref(cwd: &Path, r: &str) -> bool {
 }
 
 fn all_local_refs(cwd: &Path) -> Result<Vec<String>, FetchCommandError> {
+    // `--all` includes remote tracking refs so an LFS object that
+    // lives only on `refs/remotes/origin/<deleted-locally>` still
+    // gets walked (t-fetch-all `git branch -D remote_branch_only`
+    // case). Mirrors upstream's scanRefsToChan with an empty range
+    // — it ends up running `git rev-list --all`.
     let out = Command::new("git")
         .arg("-C")
         .arg(cwd)
@@ -496,6 +549,7 @@ fn all_local_refs(cwd: &Path) -> Result<Vec<String>, FetchCommandError> {
             "--format=%(refname)",
             "refs/heads/",
             "refs/tags/",
+            "refs/remotes/",
         ])
         .output()?;
     if !out.status.success() {
