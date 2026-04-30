@@ -136,24 +136,7 @@ tree in the same hook-installed state upstream produces.
 
 ## Highest-leverage gaps (descending leverage)
 
-1. **`.lfsconfig` "unsafe key" filtering**. Owns t-config tests
-   8, 9, parts of t-env test 8. Upstream restricts which keys can
-   come from `.lfsconfig` (URL-related ones are safe; transfer /
-   credential settings are unsafe and surface a warning). Without
-   it, `.lfsconfig`'s `concurrenttransfers = 5` overrides the git-
-   config default and the env output diverges.
-   - **Scope**: `git/src/config.rs::get_effective`. Today it merges
-     `.lfsconfig` and git-config without distinguishing them. Add a
-     "safe-keys" predicate (URL-shaped keys: `lfs.url`,
-     `lfs.<url>.access`, `remote.<r>.lfsurl`,
-     `lfs.<url>.locksverify`, … — vendor the upstream list rather
-     than re-deriving it) and have lookups for non-safe keys skip
-     `.lfsconfig`. On first read of `.lfsconfig` per process, log
-     unsafe keys via the same `warning: ...` channel t-config 9
-     greps for. Bonus: t-config 9 wants the warning to fire only
-     when the key was actually used somewhere, but a one-shot dump
-     at first read should be enough to pass.
-2. **URL `insteadOf` alias resolution for LFS endpoints**. Owns
+1. **URL `insteadOf` alias resolution for LFS endpoints**. Owns
    t-config tests 5–8 and t-env test 17. `git config
    url.<base>.insteadOf <alias>` should rewrite LFS URLs through
    the same pipeline `git fetch` uses. Detect duplicates → emit
@@ -167,7 +150,7 @@ tree in the same hook-installed state upstream produces.
      value, emit the warning to stderr (test 6 / 17 grep). t-env
      17 also wants a "duplicate alias" warning when
      `url.X.insteadOf` is set twice with the same alias.
-3. **`.lfsconfig` from HEAD's tree**. t-config test 2 walks a
+2. **`.lfsconfig` from HEAD's tree**. t-config test 2 walks a
    detached HEAD that points at a branch with a `.lfsconfig`
    committed but not checked out. Need `git show HEAD:.lfsconfig`
    fallback when the working-tree file isn't present.
@@ -178,7 +161,7 @@ tree in the same hook-installed state upstream produces.
      Caching: read once per `cwd` invocation, since callers do
      multiple `get_effective` lookups and we don't want N
      subprocess spawns.
-4. **SSH endpoint reporting**. t-env test 11 expects two-line
+3. **SSH endpoint reporting**. t-env test 11 expects two-line
    endpoints: `Endpoint=…` followed by an indented
    `  SSH=user@host:path` derived from `git@host:path` style
    remote URLs.
@@ -192,13 +175,13 @@ tree in the same hook-installed state upstream produces.
      one. Bonus: test 11 expects a `GIT_SSH=lfs-ssh-echo` line
      (already covered by our env-var dump when the test harness
      sets it).
-5. **t-pull's remaining 4 failures** all need substantive features:
+4. **t-pull's remaining 4 failures** all need substantive features:
    test 11 wants `lfs.transfer.enablehrefrewrite` + git `insteadOf`
    rewrites and exit-2 on download failure; test 18 wants `git
    ls-files attr:filter=lfs` based discovery in bare repos (so an
    empty index → no fetch); test 19 needs partial-clone + sparse-
    checkout integration; test 20 needs pointer extensions.
-6. **t-checkout's remaining 5 failures** are all real features:
+5. **t-checkout's remaining 5 failures** are all real features:
    test 13 wants `--to <path> [--ours|--theirs|--base]` for merge
    conflict resolution (read the conflict pointer, write content
    to the target path); test 14 is a `GIT_DIR`/`GIT_WORK_TREE`
