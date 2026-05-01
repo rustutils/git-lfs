@@ -45,6 +45,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `lfs.fetchinclude` / `lfs.fetchexclude` patterns starting with `/`
+  (e.g. `/foo`) now match subtrees as upstream's filepathfilter does.
+  The leading `/` is upstream's root-anchor marker; we strip it
+  before compiling the glob, since `matches_with_prefix` already
+  walks ancestor directories. `git lfs fsck` is the most visible
+  caller — without the strip, `lfs.fetchexclude=/foo` failed to
+  exclude `foo/a.dat` from the corrupt-objects scan.
 - `git lfs pull` / `git lfs fetch` (no refs) no longer print
   `Downloading LFS objects: 0% (0/0)` when there's nothing to
   fetch — silent on the empty case.

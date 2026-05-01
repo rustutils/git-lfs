@@ -492,10 +492,20 @@ pub(crate) fn build_pattern_set(
         // A trailing `/` means "directory contents", e.g. `dir/` should
         // match `dir/a.dat`. Drop the slash so the ancestor-dir branch
         // of `matches_with_prefix` handles it. Don't strip a lone `/`.
-        let normalized = pat
+        let mut normalized: &str = pat
             .strip_suffix('/')
             .filter(|s| !s.is_empty())
             .unwrap_or(pat);
+        // Leading `/` is upstream's root-anchor marker (e.g.
+        // `lfs.fetchexclude=/foo` means "the foo directory at the
+        // repo root"). Globset has no path-anchor concept, so strip
+        // the slash before compiling — `matches_with_prefix` already
+        // walks ancestors, which gives the correct subtree match.
+        if let Some(rest) = normalized.strip_prefix('/')
+            && !rest.is_empty()
+        {
+            normalized = rest;
+        }
         let glob = Glob::new(normalized)
             .map_err(|e| FetchCommandError::Usage(format!("invalid pattern {pat:?}: {e}")))?;
         builder.add(glob);
