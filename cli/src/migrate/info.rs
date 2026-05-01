@@ -39,6 +39,9 @@ pub struct InfoOptions {
     pub above: u64,
     pub top: usize,
     pub pointers: PointerMode,
+    /// Force the byte-count unit. Parsed from `--unit=kb|mb|...` but
+    /// not yet honored — see `tests/SCOREBOARD.md` t-migrate-info 17.
+    #[allow(dead_code)]
     pub unit: Option<u64>,
     pub fixup: bool,
 }

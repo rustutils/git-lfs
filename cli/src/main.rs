@@ -68,9 +68,8 @@ const PATH_GIT_ENV_VARS: &[&str] = &[
 /// Snapshot of `PATH_GIT_ENV_VARS` taken before [`canonicalize_path_envs`]
 /// rewrites them to absolute paths. `git lfs env` reports the original
 /// (possibly relative) values to match upstream's output.
-static ORIGINAL_PATH_ENVS: std::sync::OnceLock<
-    Vec<(&'static str, std::ffi::OsString)>,
-> = std::sync::OnceLock::new();
+static ORIGINAL_PATH_ENVS: std::sync::OnceLock<Vec<(&'static str, std::ffi::OsString)>> =
+    std::sync::OnceLock::new();
 
 /// Look up the *original* value of a path-shaped git env var, before
 /// canonicalization. Returns `None` if the variable wasn't set or
@@ -208,13 +207,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 .as_deref()
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            clean(
-                &store,
-                &mut input,
-                &mut output,
-                &path_str,
-                &extensions,
-            )?;
+            clean(&store, &mut input, &mut output, &path_str, &extensions)?;
             output.flush()?;
         }
         Command::Smudge { path: _, skip } => {
@@ -302,7 +295,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 io::stdin()
                     .lock()
                     .lines()
-                    .filter_map(|l| l.ok())
+                    .map_while(Result::ok)
                     .map(|l| l.trim().to_owned())
                     .filter(|l| !l.is_empty())
                     .collect()
@@ -377,7 +370,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 io::stdin()
                     .lock()
                     .lines()
-                    .filter_map(|l| l.ok())
+                    .map_while(Result::ok)
                     .map(|l| l.trim().to_owned())
                     .filter(|l| !l.is_empty())
                     .collect()

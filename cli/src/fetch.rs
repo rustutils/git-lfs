@@ -265,17 +265,17 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
     // can't lazily defer it like the store's `commit` does because
     // the error path the test greps for fires before any object is
     // ever written.
-    if let Some(spec) = to_fetch.first() {
-        if let Ok(oid) = spec.oid.parse::<git_lfs_pointer::Oid>() {
-            let dir = store.object_path(oid);
-            if let Some(parent) = dir.parent()
-                && let Err(e) = std::fs::create_dir_all(parent)
-            {
-                return Err(FetchCommandError::Usage(format!(
-                    "error trying to create local storage directory in {:?}: {e}",
-                    parent.display()
-                )));
-            }
+    if let Some(spec) = to_fetch.first()
+        && let Ok(oid) = spec.oid.parse::<git_lfs_pointer::Oid>()
+    {
+        let dir = store.object_path(oid);
+        if let Some(parent) = dir.parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            return Err(FetchCommandError::Usage(format!(
+                "error trying to create local storage directory in {:?}: {e}",
+                parent.display()
+            )));
         }
     }
 
@@ -291,21 +291,20 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
     // when JSON is requested. The redundant second batch from the
     // transfer is harmless (server-side dedup, idempotent), and only
     // happens on the `--json` path which isn't a hot loop.
-    let batch_resp = if opts.json {
-        use git_lfs_api::{BatchRequest, Operation};
-        let mut req = BatchRequest::new(Operation::Download, to_fetch.clone());
-        if let Some(r) = git_lfs_git::refs::current_refspec(cwd).map(git_lfs_api::Ref::new) {
-            req = req.with_ref(r);
-        }
-        let api = fetcher.api_client().map_err(FetchCommandError::Fetch)?;
-        Some(
-            fetcher
-                .runtime_block_on(api.batch(&req))
-                .map_err(|e: git_lfs_api::ApiError| FetchCommandError::Fetch(e.to_string().into()))?,
-        )
-    } else {
-        None
-    };
+    let batch_resp =
+        if opts.json {
+            use git_lfs_api::{BatchRequest, Operation};
+            let mut req = BatchRequest::new(Operation::Download, to_fetch.clone());
+            if let Some(r) = git_lfs_git::refs::current_refspec(cwd).map(git_lfs_api::Ref::new) {
+                req = req.with_ref(r);
+            }
+            let api = fetcher.api_client().map_err(FetchCommandError::Fetch)?;
+            Some(fetcher.runtime_block_on(api.batch(&req)).map_err(
+                |e: git_lfs_api::ApiError| FetchCommandError::Fetch(e.to_string().into()),
+            )?)
+        } else {
+            None
+        };
 
     let report = fetcher
         .download_many(to_fetch.clone())
@@ -478,7 +477,10 @@ pub(crate) fn build_pattern_set(
         // A trailing `/` means "directory contents", e.g. `dir/` should
         // match `dir/a.dat`. Drop the slash so the ancestor-dir branch
         // of `matches_with_prefix` handles it. Don't strip a lone `/`.
-        let normalized = pat.strip_suffix('/').filter(|s| !s.is_empty()).unwrap_or(pat);
+        let normalized = pat
+            .strip_suffix('/')
+            .filter(|s| !s.is_empty())
+            .unwrap_or(pat);
         let glob = Glob::new(normalized)
             .map_err(|e| FetchCommandError::Usage(format!("invalid pattern {pat:?}: {e}")))?;
         builder.add(glob);

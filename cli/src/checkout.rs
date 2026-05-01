@@ -312,11 +312,7 @@ pub fn run(cwd: &Path, opts: &Options) -> Result<(), CheckoutError> {
     // Final progress line — format mirrors upstream's `tq.Meter` output
     // for the checkout queue. Goes to stderr so it doesn't mix with
     // stdout that callers may pipe.
-    let percent = if total == 0 {
-        100
-    } else {
-        materialized * 100 / total
-    };
+    let percent = (materialized * 100).checked_div(total).unwrap_or(100);
     eprintln!(
         "Checking out LFS objects: {percent}% ({materialized}/{total}), {}",
         crate::push::human_bytes(materialized_bytes)
@@ -562,11 +558,7 @@ fn which_stage(opts: &Options) -> Result<Option<u8>, CheckoutError> {
 /// symlinks (which we want to overwrite as plain files) and
 /// hardlinks (which we want to break so the original file's content
 /// is preserved).
-fn run_to_conflict(
-    cwd: &Path,
-    opts: &Options,
-    stage: Option<u8>,
-) -> Result<(), CheckoutError> {
+fn run_to_conflict(cwd: &Path, opts: &Options, stage: Option<u8>) -> Result<(), CheckoutError> {
     // `--to` and a stage flag must come together. Either alone is a
     // usage error with this exact wording (test 13's first two
     // greps).

@@ -350,11 +350,10 @@ mod tests {
     fn git_blob_oid_for_canonical_pointer() {
         // The OID upstream's t-pointer.sh expects for the standard
         // "simple\n" 7-byte pointer.
-        let pointer = format!(
-            "version https://git-lfs.github.com/spec/v1\n\
+        let pointer = "version https://git-lfs.github.com/spec/v1\n\
              oid sha256:6c17f2007cbe934aee6e309b28b2dba3c119c5dff2ef813ed124699efe319868\n\
-             size 7\n",
-        );
+             size 7\n"
+            .to_string();
         assert_eq!(
             git_blob_oid(pointer.as_bytes()),
             "e18acd45d7e3ce0451d1d637f9697aa508e07dee",

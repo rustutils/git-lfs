@@ -157,9 +157,7 @@ fn matching_remote_name(cwd: &Path, value: &str) -> Option<String> {
             .args(["config", "--get", &format!("remote.{name}.url")])
             .output()
             .ok()?;
-        if url_out.status.success()
-            && String::from_utf8_lossy(&url_out.stdout).trim() == value
-        {
+        if url_out.status.success() && String::from_utf8_lossy(&url_out.stdout).trim() == value {
             return Some(name.to_owned());
         }
     }

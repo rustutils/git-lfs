@@ -2155,11 +2155,7 @@ fn migrate_import_above_filters_by_size() {
     commit_plain_file(repo.path(), "small.bin", &[0u8; 50]);
     commit_plain_file(repo.path(), "large.bin", &vec![0u8; 5_000]);
 
-    let out = run_in(
-        repo.path(),
-        &["migrate", "import", "--above", "1k"],
-        b"",
-    );
+    let out = run_in(repo.path(), &["migrate", "import", "--above", "1k"], b"");
     assert!(
         out.status.success(),
         "stderr: {}",

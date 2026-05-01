@@ -51,18 +51,13 @@ impl HeldLocks {
         };
         let mut held = HashSet::new();
         let mut req = git_lfs_api::VerifyLocksRequest::default();
-        loop {
-            match runtime.block_on(api.verify_locks(&req)) {
-                Ok(resp) => {
-                    for l in resp.ours {
-                        held.insert(l.path);
-                    }
-                    match resp.next_cursor {
-                        Some(c) => req.cursor = Some(c),
-                        None => break,
-                    }
-                }
-                Err(_) => break,
+        while let Ok(resp) = runtime.block_on(api.verify_locks(&req)) {
+            for l in resp.ours {
+                held.insert(l.path);
+            }
+            match resp.next_cursor {
+                Some(c) => req.cursor = Some(c),
+                None => break,
             }
         }
         if held.is_empty() {

@@ -180,22 +180,22 @@ fn decode_args(raw: &[String]) -> DecodedArgs {
             bare = true;
         }
         // Bundled short flags: `-lvn` etc. Recognize -n inside.
-        if let Some(rest) = a.strip_prefix('-') {
-            if !rest.starts_with('-') && rest.len() > 1 && rest.contains('n') {
-                no_checkout = true;
-            }
+        if let Some(rest) = a.strip_prefix('-')
+            && !rest.starts_with('-')
+            && rest.len() > 1
+            && rest.contains('n')
+        {
+            no_checkout = true;
         }
         if a.starts_with('-') {
             forward.push(a.clone());
             // Some flags take a separate value (-b / --branch foo,
             // -o / --origin foo, --depth N, --template DIR, etc.).
             // Detect via "no `=`" + "is a known value-taking flag" + "next is not a flag".
-            if value_taking_long(a) || value_taking_short(a) {
-                if i + 1 < raw.len() {
-                    forward.push(raw[i + 1].clone());
-                    i += 2;
-                    continue;
-                }
+            if (value_taking_long(a) || value_taking_short(a)) && i + 1 < raw.len() {
+                forward.push(raw[i + 1].clone());
+                i += 2;
+                continue;
             }
             i += 1;
         } else {

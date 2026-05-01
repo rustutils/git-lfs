@@ -19,9 +19,7 @@ use git_lfs_pointer::{Oid, Pointer};
 use git_lfs_store::Store;
 use sha2::{Digest, Sha256};
 
-use super::pipeline::{
-    print_pre_migrate_refs, refresh_working_tree, run_pipeline, working_tree_dirty,
-};
+use super::pipeline::{print_pre_migrate_refs, refresh_working_tree, working_tree_dirty};
 use super::transform::{Mode, Stats};
 use super::{MigrateError, RefSelection, build_globset, head_exists, resolve_refs};
 
@@ -38,6 +36,9 @@ pub struct ImportOptions {
     pub message: Option<String>,
     pub paths: Vec<String>,
     pub fixup: bool,
+    /// Accepted from the CLI as a no-op — we never auto-fetch today.
+    /// Kept threaded so wiring up a fetch step is a one-line addition.
+    #[allow(dead_code)]
     pub skip_fetch: bool,
     pub object_map: Option<std::path::PathBuf>,
     pub verbose: bool,
@@ -62,9 +63,7 @@ pub fn import(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateError> {
     // --above is a size-only filter; mixing it with the path-based
     // include/exclude patterns or the per-commit fixup walk doesn't
     // cleanly compose, so upstream rejects the combo outright.
-    if opts.above > 0
-        && (!opts.include.is_empty() || !opts.exclude.is_empty() || opts.fixup)
-    {
+    if opts.above > 0 && (!opts.include.is_empty() || !opts.exclude.is_empty() || opts.fixup) {
         return Err(MigrateError::Other(
             "Cannot use --above with --include, --exclude, --fixup".into(),
         ));
@@ -98,12 +97,12 @@ pub fn import(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateError> {
         ));
     }
 
-    if let Some(remote) = opts.remote.as_deref() {
-        if !super::export::remote_exists(cwd, remote) {
-            return Err(MigrateError::Other(format!(
-                "Invalid remote {remote} provided"
-            )));
-        }
+    if let Some(remote) = opts.remote.as_deref()
+        && !super::export::remote_exists(cwd, remote)
+    {
+        return Err(MigrateError::Other(format!(
+            "Invalid remote {remote} provided"
+        )));
     }
 
     if super::export::any_attrs_symlink(cwd, &["HEAD".to_owned()]) {
@@ -204,8 +203,8 @@ pub fn import(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateError> {
         Some(marks_tmp.path()),
     )?;
 
-    let oid_map = super::export::read_oid_map(marks_tmp.path(), &stats.commit_marks)
-        .unwrap_or_default();
+    let oid_map =
+        super::export::read_oid_map(marks_tmp.path(), &stats.commit_marks).unwrap_or_default();
     if !oid_map.is_empty() {
         super::export::update_local_refs(cwd, &oid_map)?;
     }
@@ -336,10 +335,8 @@ fn import_no_rewrite(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateE
     // working tree to already declare each path as LFS in some
     // `.gitattributes`. Mismatches surface upstream-shaped errors that
     // the test suite greps verbatim.
-    let attrs = git_lfs_git::AttrSet::from_workdir(&repo_root)
-        .map_err(MigrateError::Io)?;
-    let listing = git_lfs_git::attr::list_lfs_patterns(&repo_root)
-        .map_err(MigrateError::Io)?;
+    let attrs = git_lfs_git::AttrSet::from_workdir(&repo_root).map_err(MigrateError::Io)?;
+    let listing = git_lfs_git::attr::list_lfs_patterns(&repo_root).map_err(MigrateError::Io)?;
     if listing.tracked().next().is_none() {
         return Err(MigrateError::Other(
             "No Git LFS filters found in '.gitattributes'".into(),

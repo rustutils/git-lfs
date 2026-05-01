@@ -177,7 +177,10 @@ mod tests {
     #[test]
     fn apply_returns_input_when_no_alias_matches() {
         let aliases = Aliases::new();
-        assert_eq!(apply(&aliases, "https://github.com/foo"), "https://github.com/foo");
+        assert_eq!(
+            apply(&aliases, "https://github.com/foo"),
+            "https://github.com/foo"
+        );
     }
 
     #[test]

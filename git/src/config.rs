@@ -188,11 +188,7 @@ fn is_safe_key(key: &str) -> bool {
     // `lfs.extension.<name>.priority` is the only extension knob safe
     // from `.lfsconfig`; `clean`/`smudge` are intentionally excluded
     // upstream because they're command-execution surfaces.
-    if parts.len() == 4
-        && parts[0] == "lfs"
-        && parts[1] == "extension"
-        && parts[3] == "priority"
-    {
+    if parts.len() == 4 && parts[0] == "lfs" && parts[1] == "extension" && parts[3] == "priority" {
         return true;
     }
 
@@ -208,7 +204,7 @@ fn is_safe_key(key: &str) -> bool {
         return true;
     }
 
-    SAFE_KEYS.iter().any(|s| *s == key)
+    SAFE_KEYS.contains(&key)
 }
 
 /// Canonicalize a config key the way git does: lowercase the first and
@@ -498,24 +494,15 @@ mod tests {
             parsed["lfs.url"],
             vec!["http://example.com/path?x=1".to_owned()]
         );
-        assert_eq!(
-            parsed["remote.origin.lfsurl"],
-            vec!["http://a".to_owned()]
-        );
+        assert_eq!(parsed["remote.origin.lfsurl"], vec!["http://a".to_owned()]);
     }
 
     #[test]
     fn parse_list_collects_repeated_keys_in_order() {
         let raw = b"url.http://a/.insteadof=alias\nurl.http://b/.insteadof=alias\n";
         let parsed = parse_list_output(raw);
-        assert_eq!(
-            parsed["url.http://a/.insteadof"],
-            vec!["alias".to_owned()]
-        );
-        assert_eq!(
-            parsed["url.http://b/.insteadof"],
-            vec!["alias".to_owned()]
-        );
+        assert_eq!(parsed["url.http://a/.insteadof"], vec!["alias".to_owned()]);
+        assert_eq!(parsed["url.http://b/.insteadof"], vec!["alias".to_owned()]);
     }
 
     #[test]
@@ -535,7 +522,11 @@ mod tests {
             .arg(path)
             .args(["config", "user.email", "test@example.com"])
             .status();
-        std::fs::write(path.join(".lfsconfig"), "[lfs]\n\turl = http://from-head/\n").unwrap();
+        std::fs::write(
+            path.join(".lfsconfig"),
+            "[lfs]\n\turl = http://from-head/\n",
+        )
+        .unwrap();
         let _ = Command::new("git")
             .arg("-C")
             .arg(path)
@@ -549,9 +540,11 @@ mod tests {
         // Remove the working-tree copy so only HEAD has it.
         std::fs::remove_file(path.join(".lfsconfig")).unwrap();
 
-        let entries = read_lfsconfig_blob(path, "HEAD:.lfsconfig").unwrap().unwrap();
+        let entries = read_lfsconfig_blob(path, "HEAD:.lfsconfig")
+            .unwrap()
+            .unwrap();
         assert_eq!(
-            entries.get("lfs.url").map(|v| v.last().cloned()).flatten(),
+            entries.get("lfs.url").and_then(|v| v.last().cloned()),
             Some("http://from-head/".to_owned())
         );
     }
@@ -560,7 +553,11 @@ mod tests {
     fn read_lfsconfig_blob_missing_returns_none() {
         let tmp = init_repo();
         // Empty repo: no `:.lfsconfig`, no `HEAD:.lfsconfig`.
-        assert!(read_lfsconfig_blob(tmp.path(), ":.lfsconfig").unwrap().is_none());
+        assert!(
+            read_lfsconfig_blob(tmp.path(), ":.lfsconfig")
+                .unwrap()
+                .is_none()
+        );
         assert!(
             read_lfsconfig_blob(tmp.path(), "HEAD:.lfsconfig")
                 .unwrap()

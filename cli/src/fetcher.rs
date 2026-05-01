@@ -166,7 +166,7 @@ impl LfsFetcher {
             .api
             .as_ref()
             .map_err(|m| -> FetchError { m.clone().into() })
-            .map_err(|e| crate::push::PushCommandError::Fetch(e))?;
+            .map_err(crate::push::PushCommandError::Fetch)?;
         crate::locks_verify::run(
             &self.runtime,
             api,
@@ -234,10 +234,8 @@ fn build_api_client_with(
     let endpoint = git_lfs_git::endpoint_for_remote(cwd, remote)
         .map_err(|e| format!("resolving LFS endpoint: {e}"))?;
     let url = url::Url::parse(&endpoint).map_err(|e| format!("invalid LFS endpoint: {e}"))?;
-    Ok(
-        ApiClient::with_http_client(url, Auth::None, http)
-            .with_credential_helper(default_helper_chain()),
-    )
+    Ok(ApiClient::with_http_client(url, Auth::None, http)
+        .with_credential_helper(default_helper_chain()))
 }
 
 /// Build a [`TransferConfig`] for `cwd`, plumbing
@@ -247,14 +245,13 @@ fn build_api_client_with(
 /// every action URL.
 fn transfer_config_for(cwd: &Path) -> TransferConfig {
     let mut config = TransferConfig::default();
-    if href_rewrite_enabled(cwd) {
-        if let Ok(aliases) = git_lfs_git::aliases::load_aliases(cwd) {
-            if !aliases.is_empty() {
-                config.url_rewriter = Some(Arc::new(move |url: &str| {
-                    git_lfs_git::aliases::apply(&aliases, url)
-                }));
-            }
-        }
+    if href_rewrite_enabled(cwd)
+        && let Ok(aliases) = git_lfs_git::aliases::load_aliases(cwd)
+        && !aliases.is_empty()
+    {
+        config.url_rewriter = Some(Arc::new(move |url: &str| {
+            git_lfs_git::aliases::apply(&aliases, url)
+        }));
     }
     config
 }
@@ -266,7 +263,10 @@ fn href_rewrite_enabled(cwd: &Path) -> bool {
         .ok()
         .flatten()
         .unwrap_or_default();
-    matches!(raw.to_ascii_lowercase().as_str(), "true" | "1" | "yes" | "on")
+    matches!(
+        raw.to_ascii_lowercase().as_str(),
+        "true" | "1" | "yes" | "on"
+    )
 }
 
 /// Default credential resolution chain: in-process cache → `git credential`.

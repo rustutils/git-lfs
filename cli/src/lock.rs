@@ -412,10 +412,8 @@ pub fn unlock(
                     // Restore the read-only invariant for lockable
                     // paths now that we no longer hold the lock —
                     // unless `lfs.setlockablereadonly=false` opts out.
-                    if lockable_readonly {
-                        if let Some(attrs) = attrs.as_ref() {
-                            let _ = lockable::enforce_readonly_if_lockable(&root, attrs, &path);
-                        }
+                    if lockable_readonly && let Some(attrs) = attrs.as_ref() {
+                        let _ = lockable::enforce_readonly_if_lockable(&root, attrs, &path);
                     }
                     if opts.json {
                         // Path-based unlocks emit only `path` and

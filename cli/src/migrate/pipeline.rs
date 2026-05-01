@@ -195,9 +195,7 @@ pub fn working_tree_dirty(cwd: &Path) -> Result<bool, MigrateError> {
         .args(["rev-parse", "--is-bare-repository"])
         .output()
         .map_err(MigrateError::Io)?;
-    if bare_out.status.success()
-        && String::from_utf8_lossy(&bare_out.stdout).trim() == "true"
-    {
+    if bare_out.status.success() && String::from_utf8_lossy(&bare_out.stdout).trim() == "true" {
         return Ok(false);
     }
     let out = Command::new("git")

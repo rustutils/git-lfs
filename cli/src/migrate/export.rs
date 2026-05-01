@@ -35,6 +35,9 @@ pub struct ExportOptions {
     pub exclude: Vec<String>,
     pub include_ref: Vec<String>,
     pub exclude_ref: Vec<String>,
+    /// Accepted from the CLI as a no-op — we never auto-fetch today.
+    /// Kept threaded so wiring up a fetch step is a one-line addition.
+    #[allow(dead_code)]
     pub skip_fetch: bool,
     pub object_map: Option<PathBuf>,
     pub verbose: bool,
@@ -50,12 +53,12 @@ pub fn export(cwd: &Path, opts: &ExportOptions) -> Result<Stats, MigrateError> {
             "One or more files must be specified with --include".into(),
         ));
     }
-    if let Some(remote) = opts.remote.as_deref() {
-        if !remote_exists(cwd, remote) {
-            return Err(MigrateError::Other(format!(
-                "Invalid remote {remote} provided"
-            )));
-        }
+    if let Some(remote) = opts.remote.as_deref()
+        && !remote_exists(cwd, remote)
+    {
+        return Err(MigrateError::Other(format!(
+            "Invalid remote {remote} provided"
+        )));
     }
 
     // Reject `.gitattributes` symlinks before the dirty check — git
@@ -150,8 +153,7 @@ pub fn export(cwd: &Path, opts: &ExportOptions) -> Result<Stats, MigrateError> {
     }
 
     if let Some(out_path) = &opts.object_map {
-        write_object_map_from(out_path, &oid_map, &stats.commit_marks)
-            .map_err(MigrateError::Io)?;
+        write_object_map_from(out_path, &oid_map, &stats.commit_marks).map_err(MigrateError::Io)?;
     }
 
     // Drop LFS objects that aren't reachable from any local head/tag.

@@ -115,12 +115,12 @@ fn emit_endpoints(cwd: &Path) {
             .ok()
             .flatten()
             .is_some();
-    if has_origin || has_default_url {
-        if let Ok(info) = resolve_endpoint(cwd, None) {
-            let auth = access_for(cwd, &info.url);
-            println!("Endpoint={} (auth={auth})", info.url);
-            print_ssh_line(&info.ssh);
-        }
+    if (has_origin || has_default_url)
+        && let Ok(info) = resolve_endpoint(cwd, None)
+    {
+        let auth = access_for(cwd, &info.url);
+        println!("Endpoint={} (auth={auth})", info.url);
+        print_ssh_line(&info.ssh);
     }
     for r in &remotes {
         if r == "origin" {

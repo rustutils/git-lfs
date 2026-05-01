@@ -20,8 +20,8 @@ use std::process::Command;
 
 use git_lfs_pointer::{MAX_POINTER_SIZE, Oid, Pointer};
 
-use crate::cat_file::{CatFileBatch, CatFileBatchCheck, CatFileHeader};
 use crate::Error;
+use crate::cat_file::{CatFileBatch, CatFileBatchCheck, CatFileHeader};
 
 /// One LFS pointer discovered by the scanner.
 #[derive(Debug, Clone)]

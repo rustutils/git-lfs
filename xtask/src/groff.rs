@@ -54,10 +54,8 @@ fn handle(event: Event<'_>, state: &mut State, out: &mut String) {
             ensure_blank_separator(out);
             out.push_str(".PP\n");
         }
-        Event::End(TagEnd::Paragraph) => {
-            if !out.ends_with('\n') {
-                out.push('\n');
-            }
+        Event::End(TagEnd::Paragraph) if !out.ends_with('\n') => {
+            out.push('\n');
         }
 
         Event::Start(Tag::Heading { .. }) => {
@@ -91,10 +89,8 @@ fn handle(event: Event<'_>, state: &mut State, out: &mut String) {
             Some(ListKind::Ordered) => out.push_str(".IP \\(bu 2\n"),
             None => out.push_str(".PP\n"),
         },
-        Event::End(TagEnd::Item) => {
-            if !out.ends_with('\n') {
-                out.push('\n');
-            }
+        Event::End(TagEnd::Item) if !out.ends_with('\n') => {
+            out.push('\n');
         }
 
         Event::Start(Tag::CodeBlock(_)) => {

@@ -122,23 +122,23 @@ impl Transfer {
         let mut join: JoinSet<(String, Result<(), TransferError>)> = JoinSet::new();
 
         for mut obj in resp.objects {
-            if obj.size == 0 {
-                if let Some(s) = req_sizes.get(&obj.oid) {
-                    obj.size = *s;
-                }
+            if obj.size == 0
+                && let Some(s) = req_sizes.get(&obj.oid)
+            {
+                obj.size = *s;
             }
-            if let Some(rewriter) = &self.config.url_rewriter {
-                if let Some(actions) = obj.actions.as_mut() {
-                    for action in [
-                        actions.download.as_mut(),
-                        actions.upload.as_mut(),
-                        actions.verify.as_mut(),
-                    ]
-                    .into_iter()
-                    .flatten()
-                    {
-                        action.href = rewriter(&action.href);
-                    }
+            if let Some(rewriter) = &self.config.url_rewriter
+                && let Some(actions) = obj.actions.as_mut()
+            {
+                for action in [
+                    actions.download.as_mut(),
+                    actions.upload.as_mut(),
+                    actions.verify.as_mut(),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    action.href = rewriter(&action.href);
                 }
             }
             let permit_src = limit.clone();

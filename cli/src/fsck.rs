@@ -86,9 +86,7 @@ pub fn run(cwd: &Path, refspec: Option<&str>, opts: &Options) -> Result<i32, Fsc
     // format `Git can't resolve ref: "<r>"` line (t-fsck 16) instead
     // of a stack of internal `git rev-list failed` messages.
     if !crate::fetch::is_resolvable_ref(cwd, r) {
-        return Err(FsckError::Other(format!(
-            "Git can't resolve ref: {r:?}"
-        )));
+        return Err(FsckError::Other(format!("Git can't resolve ref: {r:?}")));
     }
 
     let mut corrupt_oids: Vec<Oid> = Vec::new();

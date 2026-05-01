@@ -112,7 +112,12 @@ pub(super) fn validate_refs(
         let out = Command::new("git")
             .arg("-C")
             .arg(cwd)
-            .args(["rev-parse", "--verify", "--quiet", &format!("{r}^{{commit}}")])
+            .args([
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("{r}^{{commit}}"),
+            ])
             .output();
         let ok = matches!(out, Ok(o) if o.status.success());
         if !ok {

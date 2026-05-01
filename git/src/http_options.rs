@@ -100,7 +100,7 @@ fn scoped_keys(cwd: &Path, url: &str) -> Result<Scoped, Error> {
         }
     }
     // Longest prefix wins.
-    entries.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+    entries.sort_by_key(|e| std::cmp::Reverse(e.0.len()));
     Ok(Scoped(entries))
 }
 

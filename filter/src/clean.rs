@@ -132,9 +132,11 @@ pub fn clean<R: Read, W: Write>(
     for (i, ext) in extensions.iter().enumerate() {
         let cmd_str = ext.command.replace("%f", path);
         let mut parts = cmd_str.split_whitespace();
-        let prog = parts.next().ok_or_else(|| CleanError::ExtensionMissingCommand {
-            name: ext.name.clone(),
-        })?;
+        let prog = parts
+            .next()
+            .ok_or_else(|| CleanError::ExtensionMissingCommand {
+                name: ext.name.clone(),
+            })?;
         let args: Vec<&str> = parts.collect();
 
         let stdin_file = std::fs::File::open(current_tmp.path())?;
@@ -191,10 +193,7 @@ pub fn clean<R: Read, W: Write>(
     unreachable!("clean loop exited without storing")
 }
 
-fn build_pointer_extensions(
-    extensions: &[CleanExtension],
-    input_oids: &[Oid],
-) -> Vec<Extension> {
+fn build_pointer_extensions(extensions: &[CleanExtension], input_oids: &[Oid]) -> Vec<Extension> {
     extensions
         .iter()
         .enumerate()
@@ -443,6 +442,9 @@ mod tests {
         }];
         let mut out = Vec::new();
         let err = clean(&store, &mut &b"hello"[..], &mut out, "x", &exts).unwrap_err();
-        assert!(matches!(err, CleanError::ExtensionFailed { .. }), "got {err:?}");
+        assert!(
+            matches!(err, CleanError::ExtensionFailed { .. }),
+            "got {err:?}"
+        );
     }
 }

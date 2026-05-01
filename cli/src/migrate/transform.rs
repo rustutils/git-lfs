@@ -326,10 +326,10 @@ impl<'a> Transform<'a> {
                 self.emitted.insert(*m);
                 if was_converted {
                     self.add_pattern_for_path(path);
-                    if self.opts.verbose {
-                        if let Some(oid) = c.original_oid.as_deref() {
-                            eprintln!("  commit {oid}: {path}");
-                        }
+                    if self.opts.verbose
+                        && let Some(oid) = c.original_oid.as_deref()
+                    {
+                        eprintln!("  commit {oid}: {path}");
                     }
                 }
             }
@@ -578,7 +578,12 @@ fn build_attrs(
 fn replace_or_insert_attrs(changes: &mut Vec<FileChange>, attrs_mark: u32) {
     for ch in changes.iter_mut() {
         match ch {
-            FileChange::Modify { path, dataref, mode, .. } if path == ATTRS_PATH => {
+            FileChange::Modify {
+                path,
+                dataref,
+                mode,
+                ..
+            } if path == ATTRS_PATH => {
                 *dataref = DataRef::Mark(attrs_mark);
                 // Normalize: `.gitattributes` is a config file, not an
                 // executable. Strip the +x bit if the source happened

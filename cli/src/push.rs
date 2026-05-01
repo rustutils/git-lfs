@@ -342,7 +342,8 @@ pub(crate) fn upload_in_range_with_args(
 ) -> Result<PushOutcome, PushCommandError> {
     let store = Store::new(git_lfs_git::lfs_dir(cwd)?)
         .with_references(git_lfs_git::lfs_alternate_dirs(cwd).unwrap_or_default());
-    let pointers = git_lfs_git::scan_pointers_with_args(cwd, includes, excludes, extra_rev_list_args)?;
+    let pointers =
+        git_lfs_git::scan_pointers_with_args(cwd, includes, excludes, extra_rev_list_args)?;
 
     // Partition pointers: present locally vs. only-as-pointer. We need
     // the missing ones to ask the server about — if the server holds

@@ -72,22 +72,19 @@ pub fn endpoint_for_remote(cwd: &Path, remote: Option<&str>) -> Result<String, E
 /// when the underlying URL was SSH-shaped. Used by `git lfs env` to
 /// render the `  SSH=<user_and_host>:<path>` line alongside the
 /// HTTPS-equivalent endpoint.
-pub fn resolve_endpoint(
-    cwd: &Path,
-    remote: Option<&str>,
-) -> Result<EndpointInfo, EndpointError> {
+pub fn resolve_endpoint(cwd: &Path, remote: Option<&str>) -> Result<EndpointInfo, EndpointError> {
     let caller_specified_remote = remote.is_some();
     let mut remote = remote.unwrap_or(DEFAULT_REMOTE).to_owned();
 
     if let Some(v) = std::env::var_os("GIT_LFS_URL") {
         let s = v.to_string_lossy().into_owned();
         if !s.is_empty() {
-            return Ok(direct_endpoint(cwd, &s)?);
+            return direct_endpoint(cwd, &s);
         }
     }
 
     if let Some(v) = config::get_effective(cwd, "lfs.url")? {
-        return Ok(direct_endpoint(cwd, &v)?);
+        return direct_endpoint(cwd, &v);
     }
 
     // When the caller didn't pin a remote name and `origin` doesn't
@@ -104,7 +101,7 @@ pub fn resolve_endpoint(
 
     let remote_lfsurl_key = format!("remote.{remote}.lfsurl");
     if let Some(v) = config::get_effective(cwd, &remote_lfsurl_key)? {
-        return Ok(direct_endpoint(cwd, &v)?);
+        return direct_endpoint(cwd, &v);
     }
 
     if let Some(remote_url) = remote_url(cwd, &remote)? {
@@ -144,7 +141,10 @@ pub fn resolve_endpoint(
 fn direct_endpoint(cwd: &Path, value: &str) -> Result<EndpointInfo, EndpointError> {
     let rewritten = aliases::rewrite(cwd, value)?;
     let ssh = parse_ssh_url(&rewritten);
-    Ok(EndpointInfo { url: rewritten, ssh })
+    Ok(EndpointInfo {
+        url: rewritten,
+        ssh,
+    })
 }
 
 /// `git remote` enumeration. Returns the configured remote names in

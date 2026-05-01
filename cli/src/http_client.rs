@@ -30,10 +30,10 @@ pub fn build(cwd: &Path, endpoint_url: &str) -> reqwest::Client {
 
     if opts.ssl_verify == Some(false) {
         builder = builder.danger_accept_invalid_certs(true);
-    } else if let Some(path) = opts.ssl_ca_info.as_deref() {
-        if let Some(config) = pinned_cert_config(path) {
-            builder = builder.use_preconfigured_tls(config);
-        }
+    } else if let Some(path) = opts.ssl_ca_info.as_deref()
+        && let Some(config) = pinned_cert_config(path)
+    {
+        builder = builder.use_preconfigured_tls(config);
     }
     builder.build().unwrap_or_else(|_| reqwest::Client::new())
 }
@@ -79,7 +79,11 @@ impl ServerCertVerifier for PinnedCertVerifier {
         _ocsp_response: &[u8],
         _now: UnixTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
-        if self.pinned.iter().any(|p| p.as_ref() == end_entity.as_ref()) {
+        if self
+            .pinned
+            .iter()
+            .any(|p| p.as_ref() == end_entity.as_ref())
+        {
             Ok(ServerCertVerified::assertion())
         } else {
             Err(rustls::Error::General(

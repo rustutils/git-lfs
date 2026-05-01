@@ -200,7 +200,7 @@ pub fn run(args: Args<'_>) -> Result<u8, Box<dyn std::error::Error>> {
                 }
                 lockable::apply_modes(
                     args.cwd,
-                    matches.into_iter(),
+                    matches,
                     attrs.as_ref().unwrap(),
                     held.as_ref().unwrap(),
                 )?;
