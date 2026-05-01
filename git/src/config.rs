@@ -107,8 +107,8 @@ pub fn get_from_file(cwd: &Path, file: &Path, key: &str) -> Result<Option<String
 /// Mirrors upstream's effective config: settings written to `.lfsconfig`
 /// at the repo root are visible without overriding anything explicitly
 /// set in the user's git config. `.lfsconfig` reads are filtered through
-/// the safe-key allowlist (see [`is_safe_key`]) — settings that aren't
-/// URL/access related are ignored, with a one-shot warning to stderr.
+/// a safe-key allowlist — settings that aren't URL/access related are
+/// ignored, with a one-shot warning to stderr.
 pub fn get_effective(cwd: &Path, key: &str) -> Result<Option<String>, Error> {
     if let Some(v) = get_any_scope(cwd, key)? {
         return Ok(Some(v));

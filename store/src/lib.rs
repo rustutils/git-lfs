@@ -116,8 +116,9 @@ impl Store {
     }
 
     /// `true` if the object is present and its on-disk size matches `size`.
-    /// Used to detect partial/corrupted local copies. Like [`contains`],
-    /// will fault in a matching alternate-store object on demand.
+    /// Used to detect partial/corrupted local copies. Like
+    /// [`contains`](Self::contains), will fault in a matching alternate-store
+    /// object on demand.
     pub fn contains_with_size(&self, oid: Oid, size: u64) -> bool {
         if oid == Oid::EMPTY {
             return size == 0;
