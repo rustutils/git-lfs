@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `git lfs migrate import --fixup` now consults `.git/info/attributes`
+  (highest precedence) and `core.attributesFile` (lowest), in addition
+  to the per-commit `.gitattributes`, when deciding which paths should
+  be LFS-tracked. Matches Git's documented attribute lookup order.
 - HTTP 503 from a storage endpoint during upload is now reported as
   `LFS is temporarily unavailable` (matching upstream's wording),
   instead of the generic `Server error … from HTTP 503`.

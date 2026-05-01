@@ -87,6 +87,14 @@ pub struct Options {
     /// otherwise we'd duplicate or drift from the user's wording
     /// (e.g. `--include "a file.txt"` becoming `*.txt`).
     pub skip_path_derived_attrs: bool,
+    /// Contents of `.git/info/attributes`, if present. Layered on
+    /// top of per-commit `.gitattributes` during [`Mode::Fixup`]
+    /// evaluation — Git's precedence rule has info/attributes win
+    /// over per-directory .gitattributes.
+    pub info_attrs: Vec<u8>,
+    /// Contents of `core.attributesFile` (or its XDG default), if
+    /// present. Lowest precedence in the [`Mode::Fixup`] chain.
+    pub global_attrs: Vec<u8>,
 }
 
 #[derive(Debug, Default)]
@@ -232,9 +240,20 @@ impl<'a> Transform<'a> {
         // pattern lists in reverse, last-added matches first).
         attrs_dirs.sort_by_key(|(d, _)| d.matches('/').count());
 
+        // Source precedence (highest at top, but gix-attributes' last-
+        // added wins, so we add lowest first):
+        //   1. core.attributesFile — global / XDG defaults
+        //   2. .gitattributes (per-commit, shallow → deep)
+        //   3. .git/info/attributes — per-repo, overrides everything
         let mut attrs = git_lfs_git::AttrSet::empty();
+        if !self.opts.global_attrs.is_empty() {
+            attrs.add_buffer_at(&self.opts.global_attrs, "");
+        }
         for (dir, content) in &attrs_dirs {
             attrs.add_buffer_at(content, dir);
+        }
+        if !self.opts.info_attrs.is_empty() {
+            attrs.add_buffer_at(&self.opts.info_attrs, "");
         }
 
         // Pass: for each non-attrs M directive, decide conversion.

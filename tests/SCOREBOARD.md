@@ -3,7 +3,7 @@
 Per-suite snapshot of the vendored upstream shell tests. Last
 refreshed: **2026-05-01**.
 
-**529 / 794 tests passing (~67%) across 104 suites.**
+**530 / 794 tests passing (~67%) across 104 suites.**
 
 Refresh:
 
@@ -18,7 +18,7 @@ you want the per-suite breakdown saved. The Full pass / Partial /
 Skipped split below is derived from the `prove` summary at the bottom
 of that log — see the log for exact failing test numbers.
 
-## Full pass — 33 suites, 248 tests
+## Full pass — 34 suites, 260 tests
 
 ```
 t-alternates.sh                       t-object-authenticated.sh
@@ -37,10 +37,10 @@ t-fetch.sh                            t-submodule.sh
 t-filter-branch.sh                    t-track.sh
 t-mergetool.sh                        t-unlock.sh
 t-migrate-export.sh                   t-version.sh
-t-migrate-import-no-rewrite.sh
+t-migrate-fixup.sh                    t-migrate-import-no-rewrite.sh
 ```
 
-## Partial — 68 suites, 273 / 546 tests
+## Partial — 67 suites, 262 / 534 tests
 
 | Suite | Pass / Total |
 | --- | --- |
@@ -80,7 +80,6 @@ t-migrate-import-no-rewrite.sh
 | `t-ls-files.sh` | 10 / 31 |
 | `t-malformed-pointers.sh` | 1 / 2 |
 | `t-merge-driver.sh` | 0 / 6 |
-| `t-migrate-fixup.sh` | 11 / 12 |
 | `t-migrate-import.sh` | 44 / 51 |
 | `t-migrate-info.sh` | 45 / 50 |
 | `t-multiple-remotes.sh` | 0 / 12 |

@@ -41,11 +41,18 @@ pub fn run_pipeline_with_export_marks(
     cwd: &Path,
     include_refs: &[String],
     exclude_refs: &[String],
-    transform_opts: TransformOptions,
+    mut transform_opts: TransformOptions,
     mode: Mode,
     store: &Store,
     marks_path: Option<&Path>,
 ) -> Result<Stats, MigrateError> {
+    // For `--fixup`, the per-commit `.gitattributes` evaluation needs
+    // to layer in the runtime-only attribute sources (info/attributes
+    // and core.attributesFile) that aren't part of the commit itself.
+    if mode == Mode::Fixup {
+        transform_opts.info_attrs = read_info_attrs(cwd).unwrap_or_default();
+        transform_opts.global_attrs = read_global_attrs(cwd).unwrap_or_default();
+    }
     let mut export = spawn_fast_export(cwd, include_refs, exclude_refs)?;
     let mut import = spawn_fast_import(cwd, marks_path.map(PathBuf::from).as_deref())?;
 
@@ -214,4 +221,68 @@ pub fn working_tree_dirty(cwd: &Path) -> Result<bool, MigrateError> {
         )));
     }
     Ok(!out.stdout.trim_ascii().is_empty())
+}
+
+/// Read `.git/info/attributes` for the repo at `cwd`. Returns an
+/// empty buffer if the file is missing or unreadable — the fixup
+/// caller treats empty as "no info-attrs source".
+fn read_info_attrs(cwd: &Path) -> Option<Vec<u8>> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["rev-parse", "--git-path", "info/attributes"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let raw = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    if raw.is_empty() {
+        return None;
+    }
+    let path = if Path::new(&raw).is_absolute() {
+        PathBuf::from(raw)
+    } else {
+        cwd.join(raw)
+    };
+    std::fs::read(path).ok()
+}
+
+/// Read `core.attributesFile` content. Falls back to the XDG default
+/// (`$XDG_CONFIG_HOME/git/attributes`, or `$HOME/.config/git/attributes`)
+/// when the config key is unset, matching git's lookup chain.
+fn read_global_attrs(cwd: &Path) -> Option<Vec<u8>> {
+    let configured = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["config", "--get", "core.attributesFile"])
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                let s = String::from_utf8_lossy(&o.stdout).trim().to_owned();
+                if s.is_empty() { None } else { Some(s) }
+            } else {
+                None
+            }
+        });
+
+    let path = if let Some(p) = configured {
+        expand_tilde(&p)?
+    } else {
+        let xdg = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+        xdg.join("git").join("attributes")
+    };
+    std::fs::read(path).ok()
+}
+
+fn expand_tilde(s: &str) -> Option<PathBuf> {
+    if let Some(rest) = s.strip_prefix("~/") {
+        let home = std::env::var_os("HOME")?;
+        Some(PathBuf::from(home).join(rest))
+    } else {
+        Some(PathBuf::from(s))
+    }
 }

@@ -135,6 +135,7 @@ pub fn export(cwd: &Path, opts: &ExportOptions) -> Result<Stats, MigrateError> {
             attrs_remove_initial,
             verbose: opts.verbose,
             skip_path_derived_attrs: false,
+            ..Default::default()
         },
         Mode::Export,
         &store,

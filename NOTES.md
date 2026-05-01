@@ -585,12 +585,6 @@ import and export share it.
 - **`--object-map <file>`.** Same gap as info — emit old→new SHA
   mapping for downstream tooling.
 - **`--verbose` per-commit progress.** v0 prints a one-line summary.
-- **`--fixup` + multi-attribute-file precedence.** The v0 fixup pass
-  reads `.gitattributes` from each commit's tree (top-level + nested),
-  but doesn't consult `.git/info/attributes` or the user-level
-  `core.attributesFile`. `t-migrate-fixup::special attributes` exercises
-  exactly this layering — left for v1 since the basic and nested
-  cases already work.
 - **Working-copy-clean prompt.** v0 errors out on a dirty tree;
   upstream prompts. The friendly prompt requires TTY interaction.
 - **Pattern accumulation timing.** Patterns visible to commit N
