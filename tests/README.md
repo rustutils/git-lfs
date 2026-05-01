@@ -13,6 +13,15 @@ These integration tests are copied from the `t` folder of the original
 `git-lfs` project, with some modifications. Re-using their test suite
 ensures that this implementation is compatible in functionality.
 
+The vendored snapshot is pinned to upstream commit
+[`12137348e03e290e6535f3eaeffb6c4c20de96ce`][upstream-pin]. To refresh
+against a newer upstream commit, sync each `t-*.sh` file individually
+(local modifications exist — diff before overwriting), bump the pin
+above, and re-run the suite to surface any new failures for the
+scoreboard.
+
+[upstream-pin]: https://github.com/git-lfs/git-lfs/tree/12137348e03e290e6535f3eaeffb6c4c20de96ce/t
+
 You can run all tests in this directory with any of the following:
 
 ```ShellSession
