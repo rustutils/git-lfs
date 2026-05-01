@@ -15,9 +15,9 @@ test-shell:
     cd tests && make test
 
 # Run a single shell test by filename, e.g.
-#   just test-one t-clone.sh
+# just test-one t-clone.sh
 test-one TEST:
-    cd tests && make ./{{TEST}}
+    cd tests && make ./{{ TEST }}
 
 # Build the release binary at target/release/git-lfs.
 build:
@@ -46,10 +46,17 @@ clean:
     cargo clean
     cd tests && make clean
 
+# Run tests and error on warnings
+check:
+    cargo fmt --check
+    cargo test
+    RUSTDOCFLAGS="-Dwarnings" cargo doc --no-deps
+    cargo clippy -- -Dwarnings
+
 branding:
-  typst compile docs/branding/logo.typ docs/branding/logo.svg
-  typst compile docs/branding/logo.typ docs/branding/logo.png --ppi 300
-  typst compile docs/branding/banner.typ docs/branding/banner-dark.svg  --input theme=dark
-  typst compile docs/branding/banner.typ docs/branding/banner-dark.png  --input theme=dark  --ppi 300
-  typst compile docs/branding/banner.typ docs/branding/banner-light.svg --input theme=light
-  typst compile docs/branding/banner.typ docs/branding/banner-light.png --input theme=light --ppi 300
+    typst compile docs/branding/logo.typ docs/branding/logo.svg
+    typst compile docs/branding/logo.typ docs/branding/logo.png --ppi 300
+    typst compile docs/branding/banner.typ docs/branding/banner-dark.svg  --input theme=dark
+    typst compile docs/branding/banner.typ docs/branding/banner-dark.png  --input theme=dark  --ppi 300
+    typst compile docs/branding/banner.typ docs/branding/banner-light.svg --input theme=light
+    typst compile docs/branding/banner.typ docs/branding/banner-light.png --input theme=light --ppi 300
