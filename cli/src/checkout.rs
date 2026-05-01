@@ -3,12 +3,16 @@
 //! pull when the smudge filter wasn't configured (so files landed on
 //! disk as pointer text instead of real bytes).
 //!
-//! No args → re-smudge every LFS pointer in HEAD's tree. With path
-//! arguments → filter to those paths. Each pattern is matched against
-//! the repo-relative path:
+//! No args → re-smudge every LFS pointer in the index (via
+//! `git ls-files :(attr:filter=lfs)`). With path arguments → filter to
+//! those paths. Each pattern is matched against the repo-relative path:
 //! - exact match (e.g. `data/foo.bin`)
 //! - trailing-slash prefix match (e.g. `data/` matches everything under
 //!   `data/`)
+//!
+//! Going through the index (rather than HEAD's tree) makes us
+//! sparse-checkout-aware: out-of-cone files don't appear in the index
+//! view, so we don't materialize them. Same discovery model as `pull`.
 //!
 //! `--to <path> --ours|--theirs|--base <file>` switches into
 //! conflict-resolution mode: read the staged pointer for the
@@ -20,12 +24,11 @@
 //! Out of scope (NOTES.md): glob/wildcard patterns for the regular
 //! materialize path (shells handle the common case).
 
-use std::collections::HashSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use git_lfs_git::scan_tree;
+use git_lfs_git::scan_index_lfs;
 use git_lfs_pointer::Pointer;
 use git_lfs_store::Store;
 use globset::{Glob, GlobSetBuilder};
@@ -109,40 +112,20 @@ pub fn run(cwd: &Path, opts: &Options) -> Result<(), CheckoutError> {
         .with_references(git_lfs_git::lfs_alternate_dirs(cwd).unwrap_or_default());
     let repo_root = repo_root(cwd)?;
 
-    // Walk HEAD's tree for the set of LFS pointers, then drop any
-    // whose path was removed from the index since (e.g. `git rm`).
-    // Both walks run from the repo root so they return repo-relative
-    // paths regardless of where the user invoked checkout. Upstream
-    // consults `git diff-index HEAD <path>` per file and skips
-    // entries reported as deleted; intersecting with the
-    // `git ls-files` set is the equivalent in one shell-out.
-    let pointers = scan_tree(&repo_root, "HEAD")?;
-    let indexed = indexed_paths(&repo_root)?;
-    let pointers: Vec<_> = pointers
-        .into_iter()
-        .filter(|p| match p.path.as_deref() {
-            Some(path) => indexed.contains(path.to_string_lossy().as_ref()),
-            None => true,
-        })
-        .collect();
+    // Discover LFS pointers via the index (`git ls-files
+    // :(attr:filter=lfs)`). Sparse-checkout-aware (out-of-cone files
+    // are absent), inherently respects `git rm` (removed entries
+    // aren't in the index), and works in bare repos. `scan_index_lfs`
+    // dedups by LFS OID — one entry can map to multiple working-tree
+    // paths, iterated below.
+    let pointers = scan_index_lfs(&repo_root)?;
 
-    // Filter by path patterns if any were given. Each user pattern is
-    // resolved to a repo-relative glob, then fed to a single globset
-    // matcher. Supports `*` wildcards, trailing-slash directory
-    // patterns, `.` (cwd subtree), `..` (cwd's parent subtree), and
-    // exact relative paths. Emit `filepathfilter: accepting`/
-    // `rejecting` trace lines under GIT_TRACE so the upstream test
-    // suite's grep assertions still line up.
-    let trace = trace_enabled();
-    let pointers = if opts.paths.is_empty() {
-        if trace {
-            for p in &pointers {
-                if let Some(path) = p.path.as_deref() {
-                    eprintln!("filepathfilter: accepting {:?}", path.to_string_lossy());
-                }
-            }
-        }
-        pointers
+    // Build the user-supplied path filter once. Each pattern is
+    // resolved to one or more repo-relative globs (`*` wildcards,
+    // trailing-slash directory patterns, `.` cwd-subtree, `..`,
+    // exact relative paths).
+    let glob_set = if opts.paths.is_empty() {
+        None
     } else {
         let mut builder = GlobSetBuilder::new();
         for pat in &opts.paths {
@@ -155,27 +138,36 @@ pub fn run(cwd: &Path, opts: &Options) -> Result<(), CheckoutError> {
                 builder.add(glob);
             }
         }
-        let set = builder
-            .build()
-            .map_err(|e| CheckoutError::Other(format!("pattern set build failed: {e}")))?;
-        pointers
-            .into_iter()
-            .filter(|p| {
-                let Some(path) = p.path.as_deref() else {
-                    return false;
-                };
-                let s = path.to_string_lossy();
-                let accepted = set.is_match(s.as_ref());
-                if trace {
-                    let verb = if accepted { "accepting" } else { "rejecting" };
-                    eprintln!("filepathfilter: {verb} {s:?}");
-                }
-                accepted
-            })
-            .collect()
+        Some(
+            builder
+                .build()
+                .map_err(|e| CheckoutError::Other(format!("pattern set build failed: {e}")))?,
+        )
     };
 
-    if pointers.is_empty() {
+    // Flatten (entry, path) pairs and apply the filter. Emit
+    // `filepathfilter: accepting`/`rejecting` trace lines under
+    // GIT_TRACE so the upstream test suite's grep assertions line up.
+    let trace = trace_enabled();
+    let mut work: Vec<(&git_lfs_git::PointerEntry, &PathBuf)> = Vec::new();
+    for p in &pointers {
+        for rel in &p.paths {
+            let s = rel.to_string_lossy();
+            let accepted = match &glob_set {
+                None => true,
+                Some(set) => set.is_match(s.as_ref()),
+            };
+            if trace {
+                let verb = if accepted { "accepting" } else { "rejecting" };
+                eprintln!("filepathfilter: {verb} {s:?}");
+            }
+            if accepted {
+                work.push((p, rel));
+            }
+        }
+    }
+
+    if work.is_empty() {
         println!("Nothing to checkout.");
         return Ok(());
     }
@@ -183,16 +175,12 @@ pub fn run(cwd: &Path, opts: &Options) -> Result<(), CheckoutError> {
     // Materialize, but don't fetch. Upstream's checkout never
     // downloads — that's `git lfs fetch`'s job. If an object is
     // missing locally, we fall back to writing the pointer text
-    // (handled below per-file). Skip pointers whose objects still aren't local
-    // (download failed); they stay as pointer text.
-    let total = pointers.len();
+    // (handled below per-file).
+    let total = work.len();
     let mut materialized = 0usize;
     let mut materialized_bytes: u64 = 0;
     let mut refreshed_paths: Vec<String> = Vec::new();
-    for p in &pointers {
-        let Some(rel) = &p.path else {
-            continue;
-        };
+    for (p, rel) in &work {
         // Empty pointers (size 0) come from genuinely empty files.
         // git stores those under the empty-blob hash, parses as
         // Pointer::empty(), and there's nothing to materialize —
@@ -342,28 +330,6 @@ fn check_safe_parent(repo_root: &Path, rel_parent: &Path) -> Result<(), &'static
         }
     }
     Ok(())
-}
-
-/// `git ls-files -z` listing of paths currently in the index. Used
-/// to drop pointers that have been removed (e.g. `git rm`) from the
-/// re-materialize set. `--full-name` is required so the listing is
-/// repo-relative even when invoked from a subdirectory; otherwise
-/// the intersection with scan_tree's `--full-tree` output misses.
-fn indexed_paths(cwd: &Path) -> std::io::Result<HashSet<String>> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(cwd)
-        .args(["ls-files", "-z", "--full-name"])
-        .output()?;
-    if !out.status.success() {
-        return Ok(HashSet::new());
-    }
-    Ok(out
-        .stdout
-        .split(|&b| b == 0)
-        .filter(|s| !s.is_empty())
-        .map(|b| String::from_utf8_lossy(b).into_owned())
-        .collect())
 }
 
 fn refresh_index(cwd: &Path, paths: &[String]) -> std::io::Result<()> {

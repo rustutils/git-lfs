@@ -2699,6 +2699,7 @@ fn checkout_materializes_pointer_text_into_real_content() {
     let repo = fresh_repo_with_identity();
     install_lfs(repo.path());
     let oid = put_object_in_store(repo.path(), b"hello world\n");
+    commit_gitattributes(repo.path(), "*.bin filter=lfs diff=lfs merge=lfs -text\n");
     // Working-tree file is currently the pointer text (just-after-clone state).
     commit_pointer_at(repo.path(), "x.bin", &pointer_text(&oid, 12));
 
@@ -2721,6 +2722,7 @@ fn checkout_with_path_filters_only_those_files() {
     install_lfs(repo.path());
     let oid_a = put_object_in_store(repo.path(), b"alpha bytes\n");
     let oid_b = put_object_in_store(repo.path(), b"beta bytes!\n");
+    commit_gitattributes(repo.path(), "*.bin filter=lfs diff=lfs merge=lfs -text\n");
     commit_pointer_at(repo.path(), "a.bin", &pointer_text(&oid_a, 12));
     commit_pointer_at(repo.path(), "b.bin", &pointer_text(&oid_b, 12));
 
@@ -2750,6 +2752,7 @@ fn checkout_with_directory_pattern_matches_subtree() {
     std::fs::create_dir_all(repo.path().join("data")).unwrap();
     let oid_top = put_object_in_store(repo.path(), b"top-level!!!\n");
     let oid_sub = put_object_in_store(repo.path(), b"in subtree!!\n");
+    commit_gitattributes(repo.path(), "*.bin filter=lfs diff=lfs merge=lfs -text\n");
     commit_pointer_at(repo.path(), "top.bin", &pointer_text(&oid_top, 13));
     commit_pointer_at(repo.path(), "data/sub.bin", &pointer_text(&oid_sub, 13));
 
@@ -2793,6 +2796,7 @@ fn checkout_skips_pointer_when_object_missing_locally() {
     // alone rather than truncating the file.
     let repo = fresh_repo_with_identity();
     install_lfs(repo.path());
+    commit_gitattributes(repo.path(), "*.bin filter=lfs diff=lfs merge=lfs -text\n");
     commit_pointer_at(repo.path(), "x.bin", &pointer_text(HELLO_OID, HELLO_LEN));
 
     let out = run_in(repo.path(), &["checkout"], b"");

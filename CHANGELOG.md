@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `git lfs checkout` (no path args) now discovers LFS pointers via
+  `git ls-files :(attr:filter=lfs)` instead of walking HEAD's tree.
+  Same sparse-checkout / bare-repo / partial-clone behavior as the
+  recent `pull` change: out-of-cone files in a cone-mode sparse
+  checkout aren't materialized, even after their objects have been
+  fetched. Per-path filters and `--to`-mode conflict checkout are
+  unchanged.
 - `cargo xtask test [<suite>...] [--failures]` — runs upstream shell
   suites via `make` and prints a clean per-suite summary by parsing
   prove's TAP output (failing / passing / empty groups, plus totals).
