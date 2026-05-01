@@ -53,14 +53,21 @@ check:
     RUSTDOCFLAGS="-Dwarnings" cargo doc --no-deps
     cargo clippy -- -Dwarnings
 
-# Run the full check suite, terse on success. Wired into the
-# pre-commit hook (see `install-hooks`). If `cargo fmt --check`
-# fails, run `cargo fmt && git add -u` to fix and re-commit.
+# Run the full check suite, silent on success. Wired into the
+# pre-commit hook (see `install-hooks`). On the first failing step,
+# dumps that step's captured output to stderr and exits non-zero —
+# you see exactly what broke without re-running anything. If
+# `cargo fmt --check` fails, run `cargo fmt && git add -u` to fix
+# and re-commit.
 pre-commit:
-    @cargo fmt --check
-    @set -o pipefail; cargo test --quiet 2>/dev/null | awk '/^[.FE!]+$/ || (/^test result:/ && !/ok\. 0 passed/) { print; fflush() }'
-    @RUSTDOCFLAGS="-Dwarnings" cargo doc --quiet --no-deps
-    @cargo clippy --quiet -- -Dwarnings
+    @echo -e "\033[1;32mChecking\033[0m cargo fmt"
+    @out=$(cargo fmt --check 2>&1) || { printf '%s\n' "$out" >&2; exit 1; }
+    @echo -e "\033[1;32mChecking\033[0m cargo test"
+    @out=$(cargo test --quiet 2>&1) || { printf '%s\n' "$out" >&2; exit 1; }
+    @echo -e "\033[1;32mChecking\033[0m cargo doc"
+    @out=$(RUSTDOCFLAGS="-Dwarnings" cargo doc --quiet --no-deps 2>&1) || { printf '%s\n' "$out" >&2; exit 1; }
+    @echo -e "\033[1;32mChecking\033[0m cargo clippy"
+    @out=$(cargo clippy --quiet -- -Dwarnings 2>&1) || { printf '%s\n' "$out" >&2; exit 1; }
 
 # One-time per clone: write `.git/hooks/pre-commit` so every commit
 # runs `just pre-commit` first. Idempotent — overwrites any prior
