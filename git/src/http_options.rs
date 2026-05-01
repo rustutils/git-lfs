@@ -5,9 +5,10 @@
 //! resolved by longest prefix match against the request URL, the same
 //! way git itself routes them.
 //!
-//! Only a few keys are surfaced for now (CA bundle + verify toggle);
-//! the rest of the surface (`sslCert`, `sslKey`, `sslCertPasswordProtected`,
-//! `cookieFile`, …) is on the deferred list.
+//! Only a few keys are surfaced for now (CA bundle, verify toggle, and
+//! the client-cert pair for mTLS); the rest of the surface
+//! (`sslCertPasswordProtected`, `cookieFile`, …) is on the deferred
+//! list.
 
 use std::path::Path;
 use std::process::Command;
@@ -21,6 +22,11 @@ pub struct HttpOptions {
     /// `http.sslVerify` — false flips reqwest into accept-any-cert mode.
     /// Default is true; this only stores the explicit value.
     pub ssl_verify: Option<bool>,
+    /// `http.sslCert` — path to a PEM-encoded client certificate (for
+    /// mTLS). Pairs with `ssl_key`.
+    pub ssl_cert: Option<String>,
+    /// `http.sslKey` — path to the matching PEM-encoded private key.
+    pub ssl_key: Option<String>,
 }
 
 impl HttpOptions {
@@ -37,6 +43,12 @@ impl HttpOptions {
                 .lookup("sslverify")
                 .or_else(|| get_global(cwd, "http.sslVerify").ok().flatten())
                 .map(|v| parse_bool(&v)),
+            ssl_cert: scoped
+                .lookup("sslcert")
+                .or_else(|| get_global(cwd, "http.sslCert").ok().flatten()),
+            ssl_key: scoped
+                .lookup("sslkey")
+                .or_else(|| get_global(cwd, "http.sslKey").ok().flatten()),
         })
     }
 }

@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Client-cert mTLS via `http.sslCert` and `http.sslKey` (per-URL or
+  global). Honored alongside `http.sslcainfo`'s pinned-CA verifier
+  for the same TLS handshake.
 - `git lfs update` (minimal) — (re-)installs the four LFS git hooks
   (`pre-push`, `post-checkout`, `post-commit`, `post-merge`) for the
   current repository. Outside any git repo, prints
@@ -22,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `git lfs lock <path>` no longer follows symlinks when normalizing
+  the user-supplied path. `git lfs lock folder1/folder2/a.dat`
+  records the path as typed, even when an intermediate component is
+  a symlink to a sibling directory.
 - `git lfs migrate import --fixup` now consults `.git/info/attributes`
   (highest precedence) and `core.attributesFile` (lowest), in addition
   to the per-commit `.gitattributes`, when deciding which paths should

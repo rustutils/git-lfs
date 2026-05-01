@@ -3,7 +3,7 @@
 Per-suite snapshot of the vendored upstream shell tests. Last
 refreshed: **2026-05-01**.
 
-**530 / 794 tests passing (~67%) across 104 suites.**
+**532 / 794 tests passing (~67%) across 104 suites.**
 
 Refresh:
 
@@ -18,7 +18,7 @@ you want the per-suite breakdown saved. The Full pass / Partial /
 Skipped split below is derived from the `prove` summary at the bottom
 of that log — see the log for exact failing test numbers.
 
-## Full pass — 34 suites, 260 tests
+## Full pass — 35 suites, 277 tests
 
 ```
 t-alternates.sh                       t-object-authenticated.sh
@@ -35,12 +35,13 @@ t-fetch-paths.sh                      t-status.sh
 t-fetch-refspec.sh                    t-submodule-recurse.sh
 t-fetch.sh                            t-submodule.sh
 t-filter-branch.sh                    t-track.sh
-t-mergetool.sh                        t-unlock.sh
-t-migrate-export.sh                   t-version.sh
-t-migrate-fixup.sh                    t-migrate-import-no-rewrite.sh
+t-lock.sh                             t-unlock.sh
+t-mergetool.sh                        t-version.sh
+t-migrate-export.sh                   t-migrate-fixup.sh
+t-migrate-import-no-rewrite.sh
 ```
 
-## Partial — 67 suites, 262 / 534 tests
+## Partial — 66 suites, 255 / 517 tests
 
 | Suite | Pass / Total |
 | --- | --- |
@@ -74,7 +75,6 @@ t-migrate-fixup.sh                    t-migrate-import-no-rewrite.sh
 | `t-install-custom-hooks-path.sh` | 0 / 3 |
 | `t-install-worktree.sh` | 0 / 5 |
 | `t-install.sh` | 5 / 14 |
-| `t-lock.sh` | 15 / 17 |
 | `t-locks.sh` | 6 / 9 |
 | `t-logs.sh` | 0 / 1 |
 | `t-ls-files.sh` | 10 / 31 |

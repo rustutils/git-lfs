@@ -20,7 +20,7 @@ use std::sync::Arc;
 use git_lfs_git::HttpOptions;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::{DigitallySignedStruct, SignatureScheme};
-use rustls_pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 
 /// Construct a `reqwest::Client` for `endpoint_url`. URL-specific
 /// `http.<url>.<key>` overrides win over global `http.<key>`.
@@ -31,7 +31,8 @@ pub fn build(cwd: &Path, endpoint_url: &str) -> reqwest::Client {
     if opts.ssl_verify == Some(false) {
         builder = builder.danger_accept_invalid_certs(true);
     } else if let Some(path) = opts.ssl_ca_info.as_deref()
-        && let Some(config) = pinned_cert_config(path)
+        && let Some(config) =
+            pinned_cert_config(path, opts.ssl_cert.as_deref(), opts.ssl_key.as_deref())
     {
         builder = builder.use_preconfigured_tls(config);
     }
@@ -40,7 +41,13 @@ pub fn build(cwd: &Path, endpoint_url: &str) -> reqwest::Client {
 
 /// Read `path` as one or more PEM-encoded certs and build a rustls
 /// `ClientConfig` that trusts only those certs (by exact byte match).
-fn pinned_cert_config(path: &str) -> Option<rustls::ClientConfig> {
+/// If `cert_path`+`key_path` are also set, attaches a client identity
+/// for mTLS (matches `http.sslCert` / `http.sslKey`).
+fn pinned_cert_config(
+    path: &str,
+    cert_path: Option<&str>,
+    key_path: Option<&str>,
+) -> Option<rustls::ClientConfig> {
     let pem = std::fs::read(path).ok()?;
     let mut cursor = std::io::Cursor::new(&pem);
     let pinned: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cursor)
@@ -51,13 +58,41 @@ fn pinned_cert_config(path: &str) -> Option<rustls::ClientConfig> {
     }
 
     let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let config = rustls::ClientConfig::builder_with_provider(provider)
+    let builder = rustls::ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
         .ok()?
         .dangerous()
-        .with_custom_certificate_verifier(Arc::new(PinnedCertVerifier { pinned }))
-        .with_no_client_auth();
+        .with_custom_certificate_verifier(Arc::new(PinnedCertVerifier { pinned }));
+
+    let config = match (cert_path, key_path) {
+        (Some(cp), Some(kp)) => {
+            let identity = load_client_identity(cp, kp)?;
+            builder.with_client_auth_cert(identity.0, identity.1).ok()?
+        }
+        _ => builder.with_no_client_auth(),
+    };
     Some(config)
+}
+
+/// Load a client cert chain + private key from two PEM files for mTLS.
+fn load_client_identity(
+    cert_path: &str,
+    key_path: &str,
+) -> Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {
+    let cert_pem = std::fs::read(cert_path).ok()?;
+    let mut cursor = std::io::Cursor::new(&cert_pem);
+    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cursor)
+        .filter_map(Result::ok)
+        .collect();
+    if certs.is_empty() {
+        return None;
+    }
+
+    let key_pem = std::fs::read(key_path).ok()?;
+    let mut cursor = std::io::Cursor::new(&key_pem);
+    let key = rustls_pemfile::private_key(&mut cursor).ok()??;
+
+    Some((certs, key))
 }
 
 /// Trusts a server cert iff the leaf's DER bytes match one of the

@@ -534,7 +534,12 @@ fn repo_root(cwd: &Path) -> Result<PathBuf, String> {
 }
 
 /// Resolve `file` to a repo-relative POSIX path suitable for the locking
-/// API. Mirrors upstream's `lockPath`.
+/// API. Mirrors upstream's `lockPath` — it uses `filepath.Abs` which
+/// also does not follow symlinks, just lexical normalization. That
+/// matters when the user is locking a path that traverses a symlink:
+/// `git lfs lock folder1/folder2/a.dat` (where `folder1/folder2` is a
+/// symlink) should record the path as typed, not the resolved target
+/// (`t-lock` test 14).
 fn resolve_lock_path(cwd: &Path, repo_root: &Path, file: &str) -> Result<String, String> {
     let file_path = Path::new(file);
     let abs = if file_path.is_absolute() {
@@ -542,47 +547,43 @@ fn resolve_lock_path(cwd: &Path, repo_root: &Path, file: &str) -> Result<String,
     } else {
         cwd.join(file_path)
     };
+    let cleaned = lexical_clean(&abs);
+    let root_cleaned = lexical_clean(repo_root);
 
-    // Canonicalize parents but allow non-existent leaves (locking a file
-    // that doesn't exist yet should still work — server stores the path
-    // verbatim). We canonicalize the parent, then re-attach the file
-    // name.
-    let canonical = match abs.canonicalize() {
-        Ok(p) => p,
-        Err(_) => match abs.parent() {
-            Some(parent) => {
-                let parent_canon = parent
-                    .canonicalize()
-                    .map_err(|e| format!("canonicalizing {}: {e}", parent.display()))?;
-                if let Some(name) = abs.file_name() {
-                    parent_canon.join(name)
-                } else {
-                    return Err(format!("invalid path: {file}"));
-                }
-            }
-            None => return Err(format!("invalid path: {file}")),
-        },
-    };
-
-    let root_canon = repo_root
-        .canonicalize()
-        .map_err(|e| format!("canonicalizing repo root: {e}"))?;
-
-    let rel = canonical
-        .strip_prefix(&root_canon)
+    let rel = cleaned
+        .strip_prefix(&root_cleaned)
         .map_err(|_| format!("path is outside the repository: {file}"))?;
     let s = rel.to_string_lossy().replace('\\', "/");
     if s.is_empty() || s == "." {
         return Err(format!("cannot lock the repository root: {file}"));
     }
 
-    if canonical.is_dir() {
+    // is_dir() follows symlinks for the metadata syscall but doesn't
+    // change the path text — so we still emit the user-typed form on
+    // success.
+    if cleaned.is_dir() {
         // Test grep expects "cannot lock directory" verbatim
         // (`t-lock.sh::locking a directory`).
         return Err(format!("cannot lock directory: {file}"));
     }
 
     Ok(s)
+}
+
+/// Lexical path normalization: collapse `.` and `..` components without
+/// touching the filesystem. Equivalent of Go's `path/filepath.Clean`.
+fn lexical_clean(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 fn print_lock_table(locks: &[Lock], owned: Option<&std::collections::HashSet<String>>) {
