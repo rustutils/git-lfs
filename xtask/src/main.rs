@@ -3,6 +3,10 @@
 //! Usage:
 //! - `cargo run -p xtask -- gen-man [<out-dir>]` (default: `target/man/`)
 //! - `cargo run -p xtask -- gen-md [<out-dir>]` (default: `docs/`)
+//! - `cargo xtask test [<suite>...] [--failures]` (runs the upstream
+//!   shell suites via `make` and prints a clean per-suite summary).
+//!   Suite names accept `pull`, `t-pull`, or `t-pull.sh`. With no
+//!   names, every `t-*.sh` runs.
 //!
 //! See [`xtask`] for the rendering details. This bin is a thin wrapper
 //! over [`xtask::gen_man`] / [`xtask::gen_md`] so the snapshot test
@@ -40,14 +44,46 @@ enum Cmd {
         #[arg(default_value = "docs/cmds")]
         out: PathBuf,
     },
+    /// Run upstream shell suites and print a clean per-suite summary.
+    /// Streams `make`'s output verbatim during the run, then groups
+    /// TAP results by suite at the end. With no suite names, runs the
+    /// full set under one setup/shutdown; otherwise runs only the
+    /// listed suites.
+    Test {
+        /// Suite names. Accepts `pull`, `t-pull`, or `t-pull.sh`.
+        suites: Vec<String>,
+        /// Tests directory containing the Makefile and `t-*.sh`
+        /// suites.
+        #[arg(long, default_value = "tests")]
+        dir: PathBuf,
+        /// Also list the per-test failure descriptions under each
+        /// failing suite.
+        #[arg(long)]
+        failures: bool,
+    },
 }
 
 fn main() -> ExitCode {
-    let result = match Args::parse().cmd {
-        Cmd::GenMan { out } => xtask::gen_man(&out),
-        Cmd::GenMd { out } => xtask::gen_md(&out),
-    };
-    match result {
+    match Args::parse().cmd {
+        Cmd::GenMan { out } => to_exit(xtask::gen_man(&out)),
+        Cmd::GenMd { out } => to_exit(xtask::gen_md(&out)),
+        Cmd::Test {
+            suites,
+            dir,
+            failures,
+        } => match xtask::run_tests(&dir, &suites, failures) {
+            Ok(0) => ExitCode::SUCCESS,
+            Ok(code) => ExitCode::from(code.clamp(1, 255) as u8),
+            Err(e) => {
+                eprintln!("xtask: {e}");
+                ExitCode::FAILURE
+            }
+        },
+    }
+}
+
+fn to_exit(r: std::io::Result<()>) -> ExitCode {
+    match r {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("xtask: {e}");

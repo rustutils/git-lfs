@@ -19,6 +19,9 @@ use git_lfs::man::extras_for;
 mod groff;
 mod markdown;
 mod render;
+mod test;
+
+pub use test::run as run_tests;
 
 /// Generate one `git-lfs-<sub>.1` per subcommand plus a top-level
 /// `git-lfs.1`, written to `out`. Creates `out` if missing.

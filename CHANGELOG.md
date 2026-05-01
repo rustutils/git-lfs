@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `cargo xtask test [<suite>...] [--failures]` — runs upstream shell
+  suites via `make` and prints a clean per-suite summary by parsing
+  prove's TAP output (failing / passing / empty groups, plus totals).
+  With no suite names, runs the full `t-*.sh` set under one outer
+  setup/shutdown; with names (`pull push` or `t-pull.sh`) runs only
+  those. `--failures` adds per-test failure descriptions under each
+  failing suite. Also exposed as `just testsuite-summary`.
 - `git lfs pull` and `git lfs fetch` (no ref args) now discover LFS
   pointers via `git ls-files :(attr:filter=lfs)` instead of walking
   HEAD's tree. Picks up the index's view of the repo: respects

@@ -10,6 +10,12 @@ test:
 testsuite TEST="test":
     cd tests && make ./{{ TEST }}
 
+# Run the upstream test suite and print a clean per-suite summary.
+# Pass suite names (e.g. `pull push`) to limit the run; otherwise runs
+# every `t-*.sh`. `--failures` lists per-test failures under each suite.
+testsuite-summary *ARGS:
+    cargo xtask test {{ ARGS }}
+
 # Build the release binary at target/release/git-lfs.
 build:
     cargo build --release
