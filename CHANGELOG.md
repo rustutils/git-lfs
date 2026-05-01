@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `git lfs update` (minimal) — (re-)installs the four LFS git hooks
+  (`pre-push`, `post-checkout`, `post-commit`, `post-merge`) for the
+  current repository. Outside any git repo, prints
+  `"Not in a Git repository."` and exits 128. Hook-conflict UI,
+  `--manual` mode, leading-space template migration, and the
+  `lfs.<url>.access` migration are still pending — tracked in
+  `NOTES.md`.
+- `pre-push` now supports local-path remotes (`git push ../sibling`,
+  `git push .`) by copying each reachable LFS object directly into
+  the target repo's `lfs/objects/` (hardlink with copy fallback).
+
+### Fixed
+
+- `pre-push` no longer errors with `fatal: bad object …` after a
+  force-push whose old remote-side commit was GC'd locally — excludes
+  whose OIDs aren't in the local object database are dropped before
+  rev-list.
+- `pre-push` lock verification now covers lockable-but-non-LFS files
+  (`*.dat lockable` without `filter=lfs`). The intersection set is
+  every path changed in the push range, not just LFS pointer paths.
+- `pre-push` catches LFS objects the server has GC'd while a stale
+  local remote-tracking ref still points at them — a safety-net
+  unrestricted rev-list pass after the optimized one routes any
+  newly-discovered pointers through the missing-on-server probe.
+
 ## [0.3.0] - 2026-05-01
 
 ### Added

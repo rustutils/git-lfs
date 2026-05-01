@@ -224,7 +224,10 @@ fn push_to_local_path(
             continue;
         }
         let hex = oid.to_string();
-        let dst = target_objects_root.join(&hex[0..2]).join(&hex[2..4]).join(&hex);
+        let dst = target_objects_root
+            .join(&hex[0..2])
+            .join(&hex[2..4])
+            .join(&hex);
         if dst.is_file() {
             continue;
         }
