@@ -462,7 +462,7 @@ dependencies = [
 
 [[package]]
 name = "git-lfs"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "clap",
  "git-lfs-api",
@@ -490,7 +490,7 @@ dependencies = [
 
 [[package]]
 name = "git-lfs-api"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64",
  "git-lfs-creds",
@@ -506,7 +506,7 @@ dependencies = [
 
 [[package]]
 name = "git-lfs-creds"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "git-lfs-git",
  "tempfile",
@@ -516,7 +516,7 @@ dependencies = [
 
 [[package]]
 name = "git-lfs-filter"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "git-lfs-git",
  "git-lfs-pointer",
@@ -529,7 +529,7 @@ dependencies = [
 
 [[package]]
 name = "git-lfs-git"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bstr",
  "git-lfs-pointer",
@@ -542,14 +542,14 @@ dependencies = [
 
 [[package]]
 name = "git-lfs-pointer"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "git-lfs-store"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "git-lfs-pointer",
  "sha2",
@@ -559,7 +559,7 @@ dependencies = [
 
 [[package]]
 name = "git-lfs-transfer"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "futures",
  "git-lfs-api",

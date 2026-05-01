@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-01
+
 ### Added
 
 - `git lfs ext` — list configured pointer extensions.
@@ -130,5 +132,6 @@ Eight workspace crates published under the `git-lfs-*` prefix:
 `git-lfs-transfer`, `git-lfs-creds`, `git-lfs-filter`, and the
 `git-lfs` binary.
 
-[Unreleased]: https://gitlab.com/rustutils/git-lfs/-/compare/v0.2.0...HEAD
+[Unreleased]: https://gitlab.com/rustutils/git-lfs/-/compare/v0.3.0...HEAD
+[0.3.0]: https://gitlab.com/rustutils/git-lfs/-/compare/v0.2.0...v0.3.0
 [0.2.0]: https://gitlab.com/rustutils/git-lfs/-/tags/v0.2.0
