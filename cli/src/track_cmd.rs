@@ -23,6 +23,10 @@ pub struct Args<'a> {
     /// `--filename`: each pattern is a literal name; escape glob
     /// metacharacters before writing to `.gitattributes`.
     pub filename: bool,
+    /// `--no-modify-attrs`: skip the `.gitattributes` write entirely
+    /// (the user has hand-edited the file). Still walks the index and
+    /// bumps mtimes on matching files so git's stat-cache invalidates.
+    pub no_modify_attrs: bool,
 }
 
 pub fn run(args: Args<'_>) -> Result<u8, Box<dyn std::error::Error>> {
@@ -93,18 +97,26 @@ pub fn run(args: Args<'_>) -> Result<u8, Box<dyn std::error::Error>> {
     let lockable_unchanged = matches!(lockable, LockableMode::Default);
     let mut already_supported: Vec<String> = Vec::new();
     let mut to_track: Vec<String> = Vec::new();
-    for pat in args.patterns {
-        let full = join_repo_relative(&cwd_prefix, pat);
-        let already = known_full.iter().any(|(p, lockable_flag)| {
-            *p == full
-                && (lockable_unchanged
-                    || (lockable == LockableMode::Yes && *lockable_flag)
-                    || (lockable == LockableMode::No && !*lockable_flag))
-        });
-        if already {
-            already_supported.push(pat.clone());
-        } else {
-            to_track.push(pat.clone());
+    if args.no_modify_attrs {
+        // User asserts `.gitattributes` is already correct — skip the
+        // already-supported partitioning and treat every input as a
+        // fresh track so the index walk + mtime bump fires for matching
+        // files.
+        to_track.extend(args.patterns.iter().cloned());
+    } else {
+        for pat in args.patterns {
+            let full = join_repo_relative(&cwd_prefix, pat);
+            let already = known_full.iter().any(|(p, lockable_flag)| {
+                *p == full
+                    && (lockable_unchanged
+                        || (lockable == LockableMode::Yes && *lockable_flag)
+                        || (lockable == LockableMode::No && !*lockable_flag))
+            });
+            if already {
+                already_supported.push(pat.clone());
+            } else {
+                to_track.push(pat.clone());
+            }
         }
     }
 
@@ -113,7 +125,22 @@ pub fn run(args: Args<'_>) -> Result<u8, Box<dyn std::error::Error>> {
         dry_run: args.dry_run,
         literal_filename: args.filename,
     };
-    let outcome = track::track(args.cwd, &to_track, opts)?;
+    let outcome = if args.no_modify_attrs {
+        // Skip the write — the user has hand-edited `.gitattributes`.
+        // Still synthesize an outcome so the mtime-bump loop below
+        // sees every input pattern as freshly tracked.
+        track::TrackOutcome {
+            patterns: to_track
+                .iter()
+                .map(|pat| track::TrackedPattern {
+                    pattern: pat.clone(),
+                    result: track::TrackResult::Added,
+                })
+                .collect(),
+        }
+    } else {
+        track::track(args.cwd, &to_track, opts)?
+    };
 
     // Re-emit messages in the user's input order so ordered scripts
     // still see the right pattern echoed first. We track which input

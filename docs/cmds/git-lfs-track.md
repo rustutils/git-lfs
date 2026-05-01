@@ -44,3 +44,6 @@ Track a file pattern with git-lfs by adding it to .gitattributes. With no patter
 - `--filename`
     Treat each pattern as a literal filename — escape glob metacharacters (`*`, `?`, `[`, `]`, backslash, space) so the entry in `.gitattributes` matches that exact name even when it contains shell-glob characters
 
+- `--no-modify-attrs`
+    Don't modify `.gitattributes` — the user has already added the LFS filter line themselves. Still walks the index and touches matching files' mtime so they show as modified on the next `git status`
+

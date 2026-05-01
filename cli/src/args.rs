@@ -278,6 +278,12 @@ pub enum Command {
         /// when it contains shell-glob characters.
         #[arg(long)]
         filename: bool,
+        /// Don't modify `.gitattributes` — the user has already added
+        /// the LFS filter line themselves. Still walks the index and
+        /// touches matching files' mtime so they show as modified on
+        /// the next `git status`.
+        #[arg(long)]
+        no_modify_attrs: bool,
     },
     /// Stop tracking a file pattern with git-lfs by removing it from
     /// .gitattributes. The matching pointer files in history (and the

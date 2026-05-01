@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `git lfs track --no-modify-attrs <pattern>` — track without writing
+  `.gitattributes` (the user has hand-edited it). Still walks the
+  index for files matching each pattern and bumps their mtime so
+  git's stat-cache invalidates and the next `git status` shows them
+  as modified — useful right after manually adding a `filter=lfs`
+  line for an already-committed file.
 - `git lfs checkout` (no path args) now discovers LFS pointers via
   `git ls-files :(attr:filter=lfs)` instead of walking HEAD's tree.
   Same sparse-checkout / bare-repo / partial-clone behavior as the
