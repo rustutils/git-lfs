@@ -1,6 +1,6 @@
 [package]
 name                 = "git-lfs"
-description          = "Git LFS — large file storage for git, reimplemented in Rust"
+description          = "Large file storage for git, implemented in Rust"
 version.workspace    = true
 edition.workspace    = true
 license.workspace    = true

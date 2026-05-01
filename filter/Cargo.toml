@@ -1,6 +1,6 @@
 [package]
 name                 = "git-lfs-filter"
-description          = "Clean/smudge filters and the filter-process protocol for Git LFS"
+description          = "Clean and smudge filters and the filter-process protocol for Git LFS"
 version.workspace    = true
 edition.workspace    = true
 license.workspace    = true
