@@ -53,13 +53,14 @@ check:
     RUSTDOCFLAGS="-Dwarnings" cargo doc --no-deps
     cargo clippy -- -Dwarnings
 
-# Apply formatting and run the full check suite. Used by the
-# pre-commit hook (see `install-hooks`). Note: if `cargo fmt`
-# rewrites a file you'd already staged, those edits are NOT in the
-# commit you're about to make — `git add -u` and re-commit.
+# Run the full check suite, terse on success. Wired into the
+# pre-commit hook (see `install-hooks`). If `cargo fmt --check`
+# fails, run `cargo fmt && git add -u` to fix and re-commit.
 pre-commit:
-    cargo fmt
-    just check
+    @cargo fmt --check
+    @set -o pipefail; cargo test --quiet 2>/dev/null | awk '/^[.FE!]+$/ || (/^test result:/ && !/ok\. 0 passed/) { print; fflush() }'
+    @RUSTDOCFLAGS="-Dwarnings" cargo doc --quiet --no-deps
+    @cargo clippy --quiet -- -Dwarnings
 
 # One-time per clone: write `.git/hooks/pre-commit` so every commit
 # runs `just pre-commit` first. Idempotent — overwrites any prior
@@ -68,7 +69,7 @@ install-hooks:
     #!/usr/bin/env bash
     set -euo pipefail
     hook="$(git rev-parse --git-path hooks)/pre-commit"
-    printf '#!/bin/sh\nexec just check\n' > "$hook"
+    printf '#!/bin/sh\nexec just pre-commit\n' > "$hook"
     chmod +x "$hook"
     echo "Installed $hook"
 
