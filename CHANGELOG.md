@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `git lfs pull` and `git lfs fetch` (no ref args) now discover LFS
+  pointers via `git ls-files :(attr:filter=lfs)` instead of walking
+  HEAD's tree. Picks up the index's view of the repo: respects
+  cone-mode sparse-checkout (out-of-cone files aren't fetched), works
+  in bare repos against whatever's in the index, and sidesteps a
+  rev-list traversal on partial clones.
 - Client-cert mTLS via `http.sslCert` and `http.sslKey` (per-URL or
   global). Honored alongside `http.sslcainfo`'s pinned-CA verifier
   for the same TLS handshake.
@@ -25,6 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `git lfs pull` / `git lfs fetch` (no refs) no longer print
+  `Downloading LFS objects: 0% (0/0)` when there's nothing to
+  fetch — silent on the empty case.
 - `git lfs lock <path>` no longer follows symlinks when normalizing
   the user-supplied path. `git lfs lock folder1/folder2/a.dat`
   records the path as typed, even when an intermediate component is

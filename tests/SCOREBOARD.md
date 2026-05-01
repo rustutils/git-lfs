@@ -3,7 +3,7 @@
 Per-suite snapshot of the vendored upstream shell tests. Last
 refreshed: **2026-05-01**.
 
-**532 / 794 tests passing (~67%) across 104 suites.**
+**534 / 794 tests passing (~67%) across 104 suites.**
 
 Refresh:
 
@@ -88,7 +88,7 @@ t-migrate-import-no-rewrite.sh
 | `t-progress.sh` | 0 / 1 |
 | `t-prune-worktree.sh` | 0 / 2 |
 | `t-prune.sh` | 4 / 18 |
-| `t-pull.sh` | 17 / 20 |
+| `t-pull.sh` | 19 / 20 |
 | `t-push-failures-local.sh` | 7 / 8 |
 | `t-push.sh` | 18 / 27 |
 | `t-reference-clone.sh` | 0 / 2 |

@@ -130,6 +130,131 @@ pub fn scan_pointers_with_args(
     Ok(out)
 }
 
+/// Scan the index for LFS pointers via
+/// `git ls-files --stage -z -- :(attr:filter=lfs)`.
+///
+/// Honors sparse-checkout (only entries in the sparse cone are listed)
+/// and works in bare repos against whatever's been written into the
+/// index. Empty result when the index is empty or no path matches the
+/// `filter=lfs` attribute. Symlinks (mode 120000) are skipped — they
+/// can never be LFS pointers.
+///
+/// This is the discovery path upstream's pull / fetch use on Git 2.42+;
+/// it sidesteps the rev-list traversal that's expensive on partial
+/// clones with `--filter=tree:0` and over-broad in bare repos with no
+/// committed `.gitattributes` reachable via the index.
+pub fn scan_index_lfs(cwd: &Path) -> Result<Vec<PointerEntry>, Error> {
+    // Run from the work-tree top (or git-dir for bare): `git ls-files`
+    // from a subdir restricts output to that subdir's entries, so
+    // running from `repo/dir1/` would miss `repo/a.dat`. Resolve via
+    // `--show-toplevel` first; fall back to the git-dir for bare repos
+    // (which legitimately have no work tree).
+    let scan_cwd = match crate::run_git(cwd, &["rev-parse", "--show-toplevel"]) {
+        Ok(s) if !s.is_empty() => PathBuf::from(s),
+        _ => crate::run_git(cwd, &["rev-parse", "--absolute-git-dir"])
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| cwd.to_path_buf()),
+    };
+    // Apply a parent-dir-existence filter only when there's a reason
+    // to: cone-mode sparse-checkout marks out-of-cone entries by
+    // omitting their working-tree parents, and bare repos have no
+    // working-tree subdirs at all. For ordinary checkouts where the
+    // user just `rm`'d a file, we want to fetch and restore — not
+    // skip — so the filter stays off.
+    let filter_by_parent_dir = is_bare_repo(&scan_cwd) || is_sparse_checkout(&scan_cwd);
+
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(&scan_cwd)
+        .args(["ls-files", "--stage", "-z", "--", ":(attr:filter=lfs)"])
+        .output()?;
+    if !out.status.success() {
+        return Err(Error::Failed(
+            String::from_utf8_lossy(&out.stderr).trim().to_owned(),
+        ));
+    }
+
+    let mut candidates: Vec<(String, PathBuf)> = Vec::new();
+    for record in out.stdout.split(|&b| b == 0).filter(|s| !s.is_empty()) {
+        let s = match std::str::from_utf8(record) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        // `<mode> SP <oid> SP <stage>\t<path>`
+        let Some((meta, path)) = s.split_once('\t') else {
+            continue;
+        };
+        let parts: Vec<&str> = meta.split_whitespace().collect();
+        if parts.len() < 3 {
+            continue;
+        }
+        let mode = parts[0];
+        let oid = parts[1];
+        if mode == "120000" {
+            continue;
+        }
+        let path = PathBuf::from(path);
+        // Skip paths whose parent dir isn't materialized in the work
+        // tree: that's how cone-mode sparse-checkout marks out-of-cone
+        // entries when ls-files emits the *expanded* index (the trees
+        // are local but the working-tree dirs were never created).
+        // The same check naturally drops non-root entries in bare
+        // repos, where only the top-level scan_cwd exists as a
+        // directory. Skipped on plain checkouts so a user `rm`'d
+        // file still gets restored by `git lfs pull`.
+        if filter_by_parent_dir
+            && let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+            && !scan_cwd.join(parent).is_dir()
+        {
+            continue;
+        }
+        candidates.push((oid.to_string(), path));
+    }
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut batch = CatFileBatch::spawn(cwd)?;
+    let mut by_oid: std::collections::HashMap<Oid, usize> = std::collections::HashMap::new();
+    let mut out: Vec<PointerEntry> = Vec::new();
+    for (oid, path) in candidates {
+        let Some(blob) = batch.read(&oid)? else {
+            continue;
+        };
+        let Ok(pointer) = Pointer::parse(&blob.content) else {
+            continue;
+        };
+        if let Some(&idx) = by_oid.get(&pointer.oid) {
+            if !out[idx].paths.contains(&path) {
+                out[idx].paths.push(path);
+            }
+            continue;
+        }
+        by_oid.insert(pointer.oid, out.len());
+        out.push(PointerEntry {
+            oid: pointer.oid,
+            size: pointer.size,
+            path: Some(path.clone()),
+            paths: vec![path],
+            canonical: pointer.canonical,
+        });
+    }
+    Ok(out)
+}
+
+fn is_bare_repo(cwd: &Path) -> bool {
+    crate::run_git(cwd, &["rev-parse", "--is-bare-repository"])
+        .map(|s| s.trim() == "true")
+        .unwrap_or(false)
+}
+
+fn is_sparse_checkout(cwd: &Path) -> bool {
+    crate::run_git(cwd, &["config", "--get", "core.sparseCheckout"])
+        .map(|s| s.trim().eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
 /// One blob found while walking a tree, before any pointer-parsing or
 /// size-based filtering. Paths and OIDs are reported verbatim from
 /// `git ls-tree`.

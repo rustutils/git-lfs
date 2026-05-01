@@ -139,19 +139,28 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
     //                       refs/remotes/<remote>/<deleted-locally>
     //                       still gets fetched.
     //   no `--all`, refs  → use the refs.
-    //   bare              → current HEAD.
+    //   no args + no all  → discover via `git ls-files :(attr:filter=lfs)`
+    //                       (matches upstream's git 2.42+ behavior:
+    //                       respects sparse-checkout, skips bare repos
+    //                       without an index, sidesteps rev-list on
+    //                       partial clones).
+    let store = Store::new(git_lfs_git::lfs_dir(cwd)?)
+        .with_references(git_lfs_git::lfs_alternate_dirs(cwd).unwrap_or_default());
+
     let walk_refs: Vec<String> = if !ref_args.is_empty() {
         ref_args
     } else if opts.all {
         all_local_refs(cwd)?
     } else {
-        vec!["HEAD".to_string()]
+        Vec::new()
     };
     let ref_strs: Vec<&str> = walk_refs.iter().map(String::as_str).collect();
 
-    let store = Store::new(git_lfs_git::lfs_dir(cwd)?)
-        .with_references(git_lfs_git::lfs_alternate_dirs(cwd).unwrap_or_default());
-    let mut pointers = scan_pointers(cwd, &ref_strs, &[])?;
+    let mut pointers = if walk_refs.is_empty() {
+        git_lfs_git::scan_index_lfs(cwd)?
+    } else {
+        scan_pointers(cwd, &ref_strs, &[])?
+    };
 
     // Augment each pointer's `paths` with every working-tree path the
     // same LFS object lives at across the named refs. `git rev-list
@@ -160,7 +169,9 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
     // pointing at files that share a blob — would otherwise see one
     // arbitrary side and reject the OID. `scan_tree` does walk every
     // path in one ref, so unioning that gives us the full set.
-    {
+    // Skipped on the index path — ls-files emits one entry per index
+    // path already.
+    if !walk_refs.is_empty() {
         use std::collections::HashMap;
         let mut extra_paths: HashMap<git_lfs_pointer::Oid, Vec<PathBuf>> = HashMap::new();
         for r in &walk_refs {
@@ -324,7 +335,11 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
 
     if opts.json {
         print_json_transfers(&store, &to_fetch, &paths, batch_resp.as_ref())?;
-    } else {
+    } else if total > 0 {
+        // Suppress the progress line when there's literally nothing to
+        // fetch — t-pull `with partial clone and sparse checkout` greps
+        // for absence of "Downloading LFS objects" to confirm no
+        // out-of-cone work happened.
         eprintln!(
             "Downloading LFS objects: {percent}% ({succeeded}/{total}), {}",
             human_bytes(succeeded_bytes),

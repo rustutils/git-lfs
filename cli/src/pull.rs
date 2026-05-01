@@ -17,7 +17,7 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use git_lfs_git::scan_tree;
+use git_lfs_git::scan_index_lfs;
 use git_lfs_pointer::Pointer;
 use git_lfs_store::Store;
 
@@ -90,10 +90,13 @@ pub fn pull_with_filter(
     let store = Store::new(git_lfs_git::lfs_dir(cwd)?)
         .with_references(git_lfs_git::lfs_alternate_dirs(cwd).unwrap_or_default());
     let repo_root = repo_root(cwd)?;
-    let pointers = scan_tree(&repo_root, "HEAD")?;
+    // Walk via the index (`git ls-files :(attr:filter=lfs)`) instead
+    // of HEAD's tree: respects sparse-checkout (don't materialize
+    // out-of-cone files) and reads what's *staged*, matching what a
+    // checkout would actually smudge.
+    let pointers = scan_index_lfs(&repo_root)?;
     let mut rewritten_paths: Vec<String> = Vec::new();
     for p in &pointers {
-        let Some(rel) = &p.path else { continue };
         // Empty pointers (size 0) come from genuinely empty files in
         // the index — git stores those under the empty-blob hash, and
         // `Pointer::parse` of empty bytes is Ok(empty()). There's
@@ -102,98 +105,108 @@ pub fn pull_with_filter(
         if p.size == 0 {
             continue;
         }
-        if !fetch::path_passes_filter(Some(rel), &include_set, &exclude_set) {
-            continue;
-        }
-        let rel_str = rel.to_string_lossy();
-        let dst = repo_root.join(rel);
-
-        // Walk the parent path components. If any is a regular file or
-        // symlink, refuse to write through it — matches upstream's
-        // "skip and warn" behavior on dir/file/symlink conflicts.
-        if let Some(rel_parent) = rel.parent()
-            && !rel_parent.as_os_str().is_empty()
-            && let Err(msg) = check_safe_parent(&repo_root, rel_parent)
-        {
-            println!("{rel_str:?}: {msg}");
-            continue;
-        }
-
-        // Destination policy. Symlink at the destination is a "not a
-        // regular file" warning (we won't overwrite a symlink). For
-        // regular files, mirror checkout / upstream's
-        // `singleCheckout.Run`: leave alone raw content or
-        // different-OID pointers; materialize over our own pointer.
-        // Capture permissions of the existing file so a read-only
-        // pointer text → read-only smudged content (test 16).
-        let mut preserved_perms: Option<std::fs::Permissions> = None;
-        match std::fs::symlink_metadata(&dst) {
-            Ok(meta) if meta.file_type().is_symlink() => {
-                println!("{rel_str:?}: not a regular file");
+        // Iterate every working-tree path the same LFS object lives
+        // at — `scan_index_lfs` dedups by LFS OID, but a deduped
+        // entry can have multiple paths (`dir1/dir.dat` and
+        // `dir2/dir.dat` sharing the same LFS pointer text).
+        for rel in &p.paths {
+            if !fetch::path_passes_filter(Some(rel), &include_set, &exclude_set) {
                 continue;
             }
-            Ok(meta) if meta.is_file() => {
-                preserved_perms = Some(meta.permissions());
-                match std::fs::read(&dst) {
-                    Ok(bytes) => match Pointer::parse(&bytes) {
-                        Ok(existing) if existing.oid == p.oid => {}
-                        Ok(_) => continue,
-                        Err(_) => continue,
-                    },
-                    Err(e) => return Err(e.into()),
+            let rel_str = rel.to_string_lossy();
+            let dst = repo_root.join(rel);
+
+            // Walk the parent path components. If any is a regular
+            // file or symlink, refuse to write through it — matches
+            // upstream's "skip and warn" behavior on dir/file/symlink
+            // conflicts.
+            if let Some(rel_parent) = rel.parent()
+                && !rel_parent.as_os_str().is_empty()
+                && let Err(msg) = check_safe_parent(&repo_root, rel_parent)
+            {
+                println!("{rel_str:?}: {msg}");
+                continue;
+            }
+
+            // Destination policy. Symlink at the destination is a
+            // "not a regular file" warning (we won't overwrite a
+            // symlink). For regular files, mirror checkout / upstream's
+            // `singleCheckout.Run`: leave alone raw content or
+            // different-OID pointers; materialize over our own
+            // pointer. Capture permissions of the existing file so a
+            // read-only pointer text → read-only smudged content
+            // (test 16).
+            let mut preserved_perms: Option<std::fs::Permissions> = None;
+            match std::fs::symlink_metadata(&dst) {
+                Ok(meta) if meta.file_type().is_symlink() => {
+                    println!("{rel_str:?}: not a regular file");
+                    continue;
                 }
+                Ok(meta) if meta.is_file() => {
+                    preserved_perms = Some(meta.permissions());
+                    match std::fs::read(&dst) {
+                        Ok(bytes) => match Pointer::parse(&bytes) {
+                            Ok(existing) if existing.oid == p.oid => {}
+                            Ok(_) => continue,
+                            Err(_) => continue,
+                        },
+                        Err(e) => return Err(e.into()),
+                    }
+                }
+                Ok(_) => {
+                    // Some other file type (dir, fifo, …). Skip.
+                    println!("{rel_str:?}: not a regular file");
+                    continue;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
             }
-            Ok(_) => {
-                // Some other file type (dir, fifo, …). Skip.
-                println!("{rel_str:?}: not a regular file");
+
+            if !store.contains_with_size(p.oid, p.size) {
+                // Object missing locally (fetch failed or skipped).
+                // Leave whatever is on disk alone.
                 continue;
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
-        }
 
-        if !store.contains_with_size(p.oid, p.size) {
-            // Object missing locally (fetch failed or skipped). Leave
-            // whatever is on disk alone.
-            continue;
-        }
-
-        if let Some(parent) = dst.parent()
-            && let Err(_e) = std::fs::create_dir_all(parent)
-        {
-            println!("{rel_str:?}: not a directory");
-            continue;
-        }
-        // Unlink the existing file (if any) before recreating: this
-        // works around a read-only existing file (we only need write
-        // permission on the parent directory). Ignore NotFound.
-        match std::fs::remove_file(&dst) {
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
-        }
-        let mut src = store.open(p.oid)?;
-        let mut out = match std::fs::File::create(&dst) {
-            Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-                // Read-only parent directory (test 15): warn in the
-                // upstream-compatible format and keep going. Object
-                // is in the local store; user can chmod and rerun.
-                println!("could not check out {rel_str:?}");
-                println!("could not create working directory file");
-                println!("permission denied");
+            if let Some(parent) = dst.parent()
+                && let Err(_e) = std::fs::create_dir_all(parent)
+            {
+                println!("{rel_str:?}: not a directory");
                 continue;
             }
-            Err(e) => return Err(e.into()),
-        };
-        std::io::copy(&mut src, &mut out)?;
-        drop(out);
-        if let Some(perms) = preserved_perms {
-            // Restore the original mode so a chmod-a-w pointer
-            // remains read-only after we materialize.
-            let _ = std::fs::set_permissions(&dst, perms);
+            // Unlink the existing file (if any) before recreating:
+            // this works around a read-only existing file (we only
+            // need write permission on the parent directory). Ignore
+            // NotFound.
+            match std::fs::remove_file(&dst) {
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+            let mut src = store.open(p.oid)?;
+            let mut out = match std::fs::File::create(&dst) {
+                Ok(f) => f,
+                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                    // Read-only parent directory (test 15): warn in
+                    // the upstream-compatible format and keep going.
+                    // Object is in the local store; user can chmod
+                    // and rerun.
+                    println!("could not check out {rel_str:?}");
+                    println!("could not create working directory file");
+                    println!("permission denied");
+                    continue;
+                }
+                Err(e) => return Err(e.into()),
+            };
+            std::io::copy(&mut src, &mut out)?;
+            drop(out);
+            if let Some(perms) = preserved_perms {
+                // Restore the original mode so a chmod-a-w pointer
+                // remains read-only after we materialize.
+                let _ = std::fs::set_permissions(&dst, perms);
+            }
+            rewritten_paths.push(rel.to_string_lossy().into_owned());
         }
-        rewritten_paths.push(rel.to_string_lossy().into_owned());
     }
     if !rewritten_paths.is_empty() {
         // After overwriting working-tree files, the stat info in the

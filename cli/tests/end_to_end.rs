@@ -787,12 +787,20 @@ fn git_in(cwd: &Path, args: &[&str]) {
     // installed globally, which would clean-filter test fixtures behind
     // our back. Strip global + system config so test repos see only what
     // the test sets up.
+    //
+    // PATH is augmented with the test binary's directory so `git add`
+    // can find `git-lfs` when a `filter.lfs.process` config (set by
+    // `install_lfs`) hands the file off for clean-filtering.
+    let bin_dir = Path::new(BIN).parent().unwrap();
+    let path_var = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{}", bin_dir.display(), path_var);
     let status = Command::new("git")
         .arg("-C")
         .arg(cwd)
         .args(args)
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("PATH", new_path)
         .status()
         .unwrap();
     assert!(status.success(), "git {args:?} failed");
@@ -886,6 +894,7 @@ async fn fetch_downloads_objects_referenced_by_head() {
         repo.path(),
         &["config", "--local", "lfs.url", &server.uri()],
     );
+    commit_gitattributes(repo.path(), "*.bin filter=lfs diff=lfs merge=lfs -text\n");
     commit_pointer_at(repo.path(), "a.bin", &pointer_text(OID_A, A.len()));
     commit_pointer_at(repo.path(), "b.bin", &pointer_text(OID_B, B.len()));
 
@@ -996,6 +1005,7 @@ async fn pull_materializes_pointer_files_into_real_content() {
     // Commit the pointer text directly. This simulates the post-clone
     // state where the working tree holds pointer text (because clone's
     // smudge was skipped or the store was empty at the time).
+    commit_gitattributes(repo.path(), "*.bin filter=lfs diff=lfs merge=lfs -text\n");
     commit_pointer_at(repo.path(), "data.bin", &pointer_text(OID, CONTENT.len()));
     // Sanity: working tree currently has pointer text, not real content.
     let wt_before = std::fs::read(repo.path().join("data.bin")).unwrap();
@@ -1045,6 +1055,7 @@ async fn fetch_returns_failure_exit_when_some_objects_fail() {
         repo.path(),
         &["config", "--local", "lfs.url", &server.uri()],
     );
+    commit_gitattributes(repo.path(), "*.bin filter=lfs diff=lfs merge=lfs -text\n");
     commit_pointer_at(repo.path(), "a.bin", &pointer_text(OID, SIZE));
 
     let path = repo.path().to_owned();
