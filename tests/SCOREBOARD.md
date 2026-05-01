@@ -1,9 +1,9 @@
 # Test scoreboard
 
 Per-suite snapshot of the vendored upstream shell tests. Last
-refreshed: **2026-04-30**.
+refreshed: **2026-05-01**.
 
-**523 / 794 tests passing (~66%) across 104 suites.**
+**528 / 794 tests passing (~67%) across 104 suites.**
 
 Refresh:
 
@@ -18,7 +18,7 @@ you want the per-suite breakdown saved. The Full pass / Partial /
 Skipped split below is derived from the `prove` summary at the bottom
 of that log — see the log for exact failing test numbers.
 
-## Full pass — 31 suites, 198 tests
+## Full pass — 32 suites, 238 tests
 
 ```
 t-alternates.sh                       t-object-authenticated.sh
@@ -26,20 +26,20 @@ t-cherry-pick-commits.sh              t-path.sh
 t-chunked-transfer-encoding.sh        t-post-checkout.sh
 t-clean.sh                            t-post-commit.sh
 t-clone-deprecated.sh                 t-post-merge.sh
-t-commit-delete-push.sh               t-progress-meter.sh
-t-config.sh                           t-push-bad-dns.sh
-t-duplicate-oids.sh                   t-push-file-with-branch-name.sh
-t-env.sh                              t-status.sh
-t-fetch-include.sh                    t-submodule-recurse.sh
-t-fetch-paths.sh                      t-submodule.sh
-t-fetch-refspec.sh                    t-track.sh
-t-fetch.sh                            t-unlock.sh
-t-filter-branch.sh                    t-version.sh
-t-mergetool.sh                        t-migrate-import-no-rewrite.sh
-t-migrate-export.sh
+t-commit-delete-push.sh               t-pre-push.sh
+t-config.sh                           t-progress-meter.sh
+t-duplicate-oids.sh                   t-push-bad-dns.sh
+t-env.sh                              t-push-file-with-branch-name.sh
+t-fetch-include.sh                    t-status.sh
+t-fetch-paths.sh                      t-submodule-recurse.sh
+t-fetch-refspec.sh                    t-submodule.sh
+t-fetch.sh                            t-track.sh
+t-filter-branch.sh                    t-unlock.sh
+t-mergetool.sh                        t-version.sh
+t-migrate-export.sh                   t-migrate-import-no-rewrite.sh
 ```
 
-## Partial — 70 suites, 317 / 596 tests
+## Partial — 69 suites, 282 / 556 tests
 
 | Suite | Pass / Total |
 | --- | --- |
@@ -85,7 +85,6 @@ t-migrate-export.sh
 | `t-multiple-remotes.sh` | 0 / 12 |
 | `t-no-remote.sh` | 1 / 2 |
 | `t-pointer.sh` | 20 / 26 |
-| `t-pre-push.sh` | 36 / 40 |
 | `t-progress.sh` | 0 / 1 |
 | `t-prune-worktree.sh` | 0 / 2 |
 | `t-prune.sh` | 4 / 18 |
@@ -107,7 +106,7 @@ t-migrate-export.sh
 | `t-uninstall.sh` | 6 / 10 |
 | `t-untrack.sh` | 3 / 7 |
 | `t-unusual-filenames.sh` | 0 / 1 |
-| `t-update.sh` | 1 / 4 |
+| `t-update.sh` | 2 / 4 |
 | `t-upload-redirect.sh` | 0 / 1 |
 | `t-usage.sh` | 0 / 1 |
 | `t-verify.sh` | 0 / 4 |

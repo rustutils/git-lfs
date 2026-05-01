@@ -75,13 +75,24 @@ pub fn pre_push<R: BufRead>(
             // to "everything else the remote tracks" as the exclude
             // set, same as our `git lfs push` default.
             needs_remote_tracking = true;
-        } else {
+        } else if object_exists(cwd, remote_sha) {
             excludes.push(remote_sha.to_owned());
         }
+        // If the remote-side OID isn't in our local store (force-push
+        // after local GC, t-pre-push 39), drop it from the exclude
+        // set — `git rev-list --not <missing>` would error out.
     }
 
     if includes.is_empty() {
         return Ok(PushOutcome::default());
+    }
+
+    // Local-path push (`git push ../sibling`, `git push .`) — there's
+    // no LFS server, so we can't go through the batch API. Copy each
+    // reachable LFS object directly into the target repo's
+    // `lfs/objects/` so the downstream checkout can smudge.
+    if is_local_path_remote(cwd, remote) {
+        return push_to_local_path(cwd, remote, &includes, &excludes);
     }
 
     // Resolve `remote` (which can be a URL when the user runs
@@ -175,6 +186,91 @@ fn is_zero_oid(s: &str) -> bool {
 /// upstream's `git.ValidateRemote` + `RewriteLocalPathAsURL`:
 /// configured remote names, URL-shaped strings, SCP-style `host:path`,
 /// and local directories all pass.
+/// Copy every LFS object reachable from `includes` (minus those
+/// reachable from `excludes`) into `remote`'s LFS object store.
+/// Hardlinks where possible, falls back to copy on cross-device or
+/// unsupported errors. Used by pre-push when the user is pushing to
+/// a local-path remote (`git push ../sibling`, `git push .`).
+fn push_to_local_path(
+    cwd: &Path,
+    remote: &str,
+    includes: &[String],
+    excludes: &[String],
+) -> Result<PushOutcome, PushCommandError> {
+    let target = std::path::Path::new(remote);
+    let target_lfs_dir = git_lfs_git::lfs_dir(target).map_err(|e| {
+        PushCommandError::Usage(format!("local-path remote {remote:?} has no git dir: {e}"))
+    })?;
+    if target_lfs_dir == git_lfs_git::lfs_dir(cwd).unwrap_or_default() {
+        // `git push . main:foo` — source and target share an LFS
+        // store. Nothing to copy.
+        return Ok(PushOutcome::default());
+    }
+
+    let inc: Vec<&str> = includes.iter().map(String::as_str).collect();
+    let exc: Vec<&str> = excludes.iter().map(String::as_str).collect();
+    let pointers = git_lfs_git::scan_pointers_with_args(cwd, &inc, &exc, &[])?;
+
+    let local_store = git_lfs_store::Store::new(git_lfs_git::lfs_dir(cwd)?);
+    let target_objects_root = target_lfs_dir.join("objects");
+
+    for entry in &pointers {
+        let oid = entry.oid;
+        let src = local_store.object_path(oid);
+        if !src.is_file() {
+            // Object isn't in our store — same situation as a missing
+            // upload to a regular remote. Quietly skip; the downstream
+            // smudge will surface the gap if it matters.
+            continue;
+        }
+        let hex = oid.to_string();
+        let dst = target_objects_root.join(&hex[0..2]).join(&hex[2..4]).join(&hex);
+        if dst.is_file() {
+            continue;
+        }
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        if std::fs::hard_link(&src, &dst).is_err() {
+            std::fs::copy(&src, &dst)?;
+        }
+    }
+
+    Ok(PushOutcome::default())
+}
+
+/// `true` if `git cat-file -e <oid>` succeeds — i.e. the object is
+/// present in the repo's object database (or any borrowed alternate).
+/// Used to filter excludes that point at GC'd objects.
+fn object_exists(cwd: &Path, oid: &str) -> bool {
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["cat-file", "-e", oid])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// `true` when `remote` resolves to a local directory and isn't also a
+/// configured remote name or a URL we can derive an LFS endpoint from.
+/// Used by pre-push to short-circuit `git push ../sibling-clone`
+/// style invocations that have no LFS server.
+fn is_local_path_remote(cwd: &Path, remote: &str) -> bool {
+    if git_lfs_git::looks_like_url(remote) {
+        return false;
+    }
+    if remote.contains(':') {
+        return false;
+    }
+    if git_lfs_git::endpoint_for_remote(cwd, Some(remote)).is_ok() {
+        return false;
+    }
+    std::path::Path::new(remote).is_dir()
+}
+
 fn is_acceptable_remote(cwd: &Path, remote: &str) -> bool {
     if remote.is_empty() {
         return false;

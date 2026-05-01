@@ -368,8 +368,36 @@ pub(crate) fn upload_in_range_with_args(
         }
     }
 
-    if to_upload.is_empty() && missing.is_empty() {
-        return Ok(PushOutcome::default());
+    // Safety net: the `--not --remotes=<name>` optimization may have
+    // excluded LFS pointers that a stale local origin-tracking ref
+    // claims are on the server. Re-scan unrestricted and let the
+    // downstream missing/has-on-server check catch any GC'd objects.
+    if !extra_rev_list_args.is_empty() {
+        use std::collections::HashSet;
+        let known: HashSet<git_lfs_pointer::Oid> = to_upload
+            .iter()
+            .chain(missing.iter().map(|(s, _)| s))
+            .filter_map(|s| s.oid.parse().ok())
+            .collect();
+        let full = git_lfs_git::scan_pointers_with_args(cwd, includes, excludes, &[])?;
+        for entry in full {
+            if known.contains(&entry.oid) {
+                continue;
+            }
+            let oid_str = entry.oid.to_string();
+            if let Some(p) = entry.path.clone() {
+                paths.entry(oid_str.clone()).or_insert(p);
+            }
+            let spec = ObjectSpec {
+                oid: oid_str,
+                size: entry.size,
+            };
+            if store.contains_with_size(entry.oid, entry.size) {
+                to_upload.push(spec);
+            } else {
+                missing.push((spec, entry.path));
+            }
+        }
     }
 
     if dry_run {
@@ -402,9 +430,14 @@ pub(crate) fn upload_in_range_with_args(
     // Pre-flight `/locks/verify`. Comes before any byte transfer (and
     // before the missing-object batch) so a "verification required"
     // failure aborts the push without touching the upload endpoint.
+    //
+    // The intersection set is *every* path changed in the push range,
+    // not just LFS-pointer paths — locks can be held on lockable-but-
+    // non-LFS files too (`*.dat lockable` without `filter=lfs`), and
+    // those still need to gate the push.
     let endpoint = git_lfs_git::endpoint_for_remote(cwd, Some(remote))
         .map_err(|e| std::io::Error::other(e.to_string()))?;
-    let pushed_paths: Vec<&PathBuf> = paths.values().collect();
+    let changed_paths = changed_paths_in_range(cwd, includes, excludes, extra_rev_list_args)?;
     let theirs_blockers: Vec<git_lfs_api::Lock> =
         match fetcher.preflight_verify_locks(cwd, remote, &endpoint)? {
             crate::locks_verify::Outcome::Aborted => {
@@ -417,17 +450,16 @@ pub(crate) fn upload_in_range_with_args(
             crate::locks_verify::Outcome::Verified { ours, theirs } => {
                 if !ours.is_empty() {
                     let ours_paths: Vec<&str> = ours.iter().map(|l| l.path.as_str()).collect();
-                    let any_ours_pushed = pushed_paths.iter().any(|p| {
-                        let p = p.to_string_lossy();
-                        ours_paths.iter().any(|op| p == *op)
-                    });
+                    let any_ours_pushed = ours_paths
+                        .iter()
+                        .any(|op| changed_paths.iter().any(|p| p == op));
                     if any_ours_pushed {
                         eprintln!(
                             "Consider unlocking your own locked files: \
                              (`git lfs unlock <path>`)"
                         );
                         for op in &ours_paths {
-                            if pushed_paths.iter().any(|p| p.to_string_lossy() == *op) {
+                            if changed_paths.iter().any(|p| p == op) {
                                 eprintln!("* {op}");
                             }
                         }
@@ -437,7 +469,7 @@ pub(crate) fn upload_in_range_with_args(
                 // those are the entries that actually block this push.
                 theirs
                     .into_iter()
-                    .filter(|l| pushed_paths.iter().any(|p| p.to_string_lossy() == l.path))
+                    .filter(|l| changed_paths.iter().any(|p| p == &l.path))
                     .collect()
             }
         };
@@ -544,6 +576,52 @@ pub(crate) fn upload_in_range_with_args(
         report,
         aborted: false,
     })
+}
+
+/// Every working-tree path touched by a commit reachable from `includes`
+/// minus those reachable from `excludes` / `extra_rev_list_args`. Used
+/// by the lock-verify intersect: a `*.dat lockable` file with no LFS
+/// filter still gates the push if someone else holds its lock.
+fn changed_paths_in_range(
+    cwd: &Path,
+    includes: &[&str],
+    excludes: &[&str],
+    extra_rev_list_args: &[&str],
+) -> Result<Vec<String>, PushCommandError> {
+    if includes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut args: Vec<&str> = vec!["log", "-z", "--pretty=format:", "--name-only"];
+    args.extend(includes.iter().copied());
+    if !excludes.is_empty() {
+        args.push("--not");
+        args.extend(excludes.iter().copied());
+    }
+    args.extend(extra_rev_list_args.iter().copied());
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(&args)
+        .output()
+        .map_err(PushCommandError::Io)?;
+    if !out.status.success() {
+        return Err(PushCommandError::Usage(format!(
+            "git log failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for raw in out.stdout.split(|&b| b == 0) {
+        if raw.is_empty() {
+            continue;
+        }
+        let s = String::from_utf8_lossy(raw);
+        let trimmed = s.trim();
+        if !trimmed.is_empty() {
+            seen.insert(trimmed.to_owned());
+        }
+    }
+    Ok(seen.into_iter().collect())
 }
 
 /// Effective value of `lfs.allowincompletepush`. Defaults to `false`

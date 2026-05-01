@@ -29,6 +29,7 @@ mod push;
 mod status;
 mod track;
 mod track_cmd;
+mod update;
 
 use fetcher::LfsFetcher;
 
@@ -468,6 +469,17 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
         Command::Ext => {
             ext::run(&cwd)?;
         }
+        Command::Update { force, manual } => match update::run(&cwd, force, manual) {
+            Ok(()) => {}
+            Err(update::UpdateError::NotInRepo) => {
+                // Stdout, not stderr: upstream prints to stdout here
+                // and `t-update` test 4 redirects only `>check.log`
+                // (its `2>&1` is in the wrong order to capture stderr).
+                println!("Not in a Git repository.");
+                return Ok(128);
+            }
+            Err(e) => return Err(Box::new(e)),
+        },
         Command::Migrate { cmd } => match cmd {
             MigrateCmd::Export {
                 branches,

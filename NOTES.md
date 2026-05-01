@@ -681,6 +681,22 @@ import and export share it.
   configured exclude pattern, otherwise users who fetched a subset
   see false-positive "missing" reports.
 
+### `cli update`
+- **Hook-conflict UI.** When a custom hook exists, upstream prints
+  `Hook already exists: pre-push\n\n\t<contents>\n\nTo resolve …` with
+  the merge / `--force` / `--manual` advisory. We currently surface
+  the install-error message inline. Owns t-update test 1.
+- **Leading-space hook migration.** Upstream rewrites old templates
+  whose body lines have leading TAB characters (the pre-2.6 form);
+  ours treats those as a custom hook and refuses. Owns t-update
+  test 2.
+- **`lfs.<url>.access` migration.** Upstream rewrites `private` →
+  `basic` and prunes invalid values during `update`. Tracked but no
+  test currently asserts it after our 0.3 cleanups (t-update test 3
+  was a no-op assertion).
+- **`--manual` mode.** Print the install-by-hand instructions
+  instead of writing the hook files.
+
 ### `cli pointer`
 - **`--no-extensions`.** Build a non-extension-aware pointer when this
   flag is set, even with `lfs.extension.<n>.*` configured. Clean now

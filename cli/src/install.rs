@@ -110,7 +110,7 @@ fn set_filter_config(cwd: &Path, opts: &InstallOptions) -> Result<(), InstallErr
     Ok(())
 }
 
-fn install_all_hooks(cwd: &Path, opts: &InstallOptions) -> Result<(), InstallError> {
+pub(crate) fn install_all_hooks(cwd: &Path, opts: &InstallOptions) -> Result<(), InstallError> {
     let hooks_dir = git_dir(cwd)?.join("hooks");
     fs::create_dir_all(&hooks_dir)?;
     for hook in HOOKS {

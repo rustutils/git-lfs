@@ -42,6 +42,7 @@ Git LFS — large file storage for git
 - `pointer` — Debug helper: build a pointer from a file, parse one from disk or stdin, or just check whether some bytes are a valid pointer
 - `env` — Show the LFS environment: version, endpoints, on-disk paths, and the three `filter.lfs.*` config values
 - `ext` — List the configured LFS pointer extensions (`lfs.extension.<name>.*`). Extensions chain external clean/smudge programs around each LFS object; this prints their resolved configuration in priority order
+- `update` — (Re-)install the four LFS git hooks (`pre-push`, `post-checkout`, `post-commit`, `post-merge`) for the current repository
 - `migrate` — Analyze or rewrite history for LFS conversion. Phase 1 ships `info` only; `import` and `export` will land in subsequent phases
 - `checkout` — Replace pointer text in the working tree with actual LFS object content. With no args, materializes every LFS pointer in HEAD's tree. With paths (literal file names or trailing-slash directory prefixes), restricts to matching pointers
 - `prune` — Delete local LFS objects that aren't reachable from HEAD or any unpushed commit. Reclaims disk for repos whose history has moved past their objects

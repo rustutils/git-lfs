@@ -444,6 +444,16 @@ pub enum Command {
     /// Extensions chain external clean/smudge programs around each LFS
     /// object; this prints their resolved configuration in priority order.
     Ext,
+    /// (Re-)install the four LFS git hooks (`pre-push`, `post-checkout`,
+    /// `post-commit`, `post-merge`) for the current repository.
+    Update {
+        /// Overwrite any custom hook contents.
+        #[arg(long)]
+        force: bool,
+        /// Print install instructions instead of writing the hook files.
+        #[arg(long)]
+        manual: bool,
+    },
     /// Analyze or rewrite history for LFS conversion. Phase 1 ships
     /// `info` only; `import` and `export` will land in subsequent phases.
     Migrate {
