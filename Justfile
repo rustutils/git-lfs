@@ -53,6 +53,25 @@ check:
     RUSTDOCFLAGS="-Dwarnings" cargo doc --no-deps
     cargo clippy -- -Dwarnings
 
+# Apply formatting and run the full check suite. Used by the
+# pre-commit hook (see `install-hooks`). Note: if `cargo fmt`
+# rewrites a file you'd already staged, those edits are NOT in the
+# commit you're about to make — `git add -u` and re-commit.
+pre-commit:
+    cargo fmt
+    just check
+
+# One-time per clone: write `.git/hooks/pre-commit` so every commit
+# runs `just pre-commit` first. Idempotent — overwrites any prior
+# hook with our wrapper.
+install-hooks:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    hook="$(git rev-parse --git-path hooks)/pre-commit"
+    printf '#!/bin/sh\nexec just check\n' > "$hook"
+    chmod +x "$hook"
+    echo "Installed $hook"
+
 branding:
     typst compile docs/branding/logo.typ docs/branding/logo.svg
     typst compile docs/branding/logo.typ docs/branding/logo.png --ppi 300
