@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- HTTP 503 from a storage endpoint during upload is now reported as
+  `LFS is temporarily unavailable` (matching upstream's wording),
+  instead of the generic `Server error … from HTTP 503`.
 - `pre-push` no longer errors with `fatal: bad object …` after a
   force-push whose old remote-side commit was GC'd locally — excludes
   whose OIDs aren't in the local object database are dropped before

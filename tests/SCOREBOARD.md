@@ -3,7 +3,7 @@
 Per-suite snapshot of the vendored upstream shell tests. Last
 refreshed: **2026-05-01**.
 
-**528 / 794 tests passing (~67%) across 104 suites.**
+**529 / 794 tests passing (~67%) across 104 suites.**
 
 Refresh:
 
@@ -18,7 +18,7 @@ you want the per-suite breakdown saved. The Full pass / Partial /
 Skipped split below is derived from the `prove` summary at the bottom
 of that log — see the log for exact failing test numbers.
 
-## Full pass — 32 suites, 238 tests
+## Full pass — 33 suites, 248 tests
 
 ```
 t-alternates.sh                       t-object-authenticated.sh
@@ -29,17 +29,18 @@ t-clone-deprecated.sh                 t-post-merge.sh
 t-commit-delete-push.sh               t-pre-push.sh
 t-config.sh                           t-progress-meter.sh
 t-duplicate-oids.sh                   t-push-bad-dns.sh
-t-env.sh                              t-push-file-with-branch-name.sh
-t-fetch-include.sh                    t-status.sh
-t-fetch-paths.sh                      t-submodule-recurse.sh
-t-fetch-refspec.sh                    t-submodule.sh
-t-fetch.sh                            t-track.sh
-t-filter-branch.sh                    t-unlock.sh
-t-mergetool.sh                        t-version.sh
-t-migrate-export.sh                   t-migrate-import-no-rewrite.sh
+t-env.sh                              t-push-failures-remote.sh
+t-fetch-include.sh                    t-push-file-with-branch-name.sh
+t-fetch-paths.sh                      t-status.sh
+t-fetch-refspec.sh                    t-submodule-recurse.sh
+t-fetch.sh                            t-submodule.sh
+t-filter-branch.sh                    t-track.sh
+t-mergetool.sh                        t-unlock.sh
+t-migrate-export.sh                   t-version.sh
+t-migrate-import-no-rewrite.sh
 ```
 
-## Partial — 69 suites, 282 / 556 tests
+## Partial — 68 suites, 273 / 546 tests
 
 | Suite | Pass / Total |
 | --- | --- |
@@ -90,7 +91,6 @@ t-migrate-export.sh                   t-migrate-import-no-rewrite.sh
 | `t-prune.sh` | 4 / 18 |
 | `t-pull.sh` | 17 / 20 |
 | `t-push-failures-local.sh` | 7 / 8 |
-| `t-push-failures-remote.sh` | 9 / 10 |
 | `t-push.sh` | 18 / 27 |
 | `t-reference-clone.sh` | 0 / 2 |
 | `t-repo-format.sh` | 0 / 1 |

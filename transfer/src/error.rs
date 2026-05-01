@@ -61,6 +61,7 @@ fn format_action_status(status: u16, url: &str) -> String {
         429 => "Rate limit exceeded:",
         500 => "Server error:",
         501 => "Not Implemented:",
+        503 => "LFS is temporarily unavailable:",
         507 => "Insufficient server storage:",
         509 => "Bandwidth limit exceeded:",
         _ if status < 500 => return format!("LFS: Client error {url} from HTTP {status}"),
