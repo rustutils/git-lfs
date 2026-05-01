@@ -253,6 +253,12 @@ fn transfer_config_for(cwd: &Path) -> TransferConfig {
             git_lfs_git::aliases::apply(&aliases, url)
         }));
     }
+    if let Ok(Some(raw)) = git_lfs_git::config::get_effective(cwd, "lfs.transfer.batchSize")
+        && let Ok(n) = raw.trim().parse::<usize>()
+        && n > 0
+    {
+        config.batch_size = n;
+    }
     config
 }
 

@@ -28,6 +28,11 @@ pub struct TransferConfig {
     /// Optional rewriter applied to every action URL before transfer.
     /// `None` ⇒ use action URLs verbatim.
     pub url_rewriter: Option<UrlRewriter>,
+    /// Max objects per `POST /objects/batch` call. The transfer queue
+    /// chunks the input list into runs of this size and issues one
+    /// batch API call per chunk. Default: 100 (matches upstream's
+    /// `lfs.transfer.batchSize` default). Values < 1 are clamped to 1.
+    pub batch_size: usize,
 }
 
 impl Default for TransferConfig {
@@ -38,6 +43,7 @@ impl Default for TransferConfig {
             initial_backoff: Duration::from_millis(100),
             backoff_max: Duration::from_secs(30),
             url_rewriter: None,
+            batch_size: 100,
         }
     }
 }
@@ -50,6 +56,7 @@ impl std::fmt::Debug for TransferConfig {
             .field("initial_backoff", &self.initial_backoff)
             .field("backoff_max", &self.backoff_max)
             .field("url_rewriter", &self.url_rewriter.as_ref().map(|_| "<fn>"))
+            .field("batch_size", &self.batch_size)
             .finish()
     }
 }

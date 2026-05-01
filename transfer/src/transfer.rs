@@ -98,6 +98,21 @@ impl Transfer {
         if objects.is_empty() {
             return Ok(Report::default());
         }
+        // Chunk the input into `batch_size`-sized runs so an
+        // `lfs.transfer.batchSize` of 1 produces one batch API call
+        // per object, etc. Each chunk goes through the existing
+        // batch + concurrent-transfer machinery; reports are merged.
+        let batch_size = self.config.batch_size.max(1);
+        if objects.len() > batch_size {
+            let mut report = Report::default();
+            for chunk in objects.chunks(batch_size) {
+                let chunk_report =
+                    Box::pin(self.run(dir, chunk.to_vec(), r#ref.clone(), events.clone())).await?;
+                report.succeeded.extend(chunk_report.succeeded);
+                report.failed.extend(chunk_report.failed);
+            }
+            return Ok(report);
+        }
 
         // Index the request's sizes by oid so we can fill them back in
         // for servers that omit `size` from the response (the upstream

@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `lfs.transfer.batchSize` is now honored. The transfer queue chunks
+  the input list into runs of this size and issues one
+  `POST /objects/batch` per chunk; default 100 (matches upstream).
+  Each chunk emits `tq: sending batch of size N` under `GIT_TRACE`,
+  the trace breadcrumb the upstream test suite greps for.
 - `git lfs track --no-modify-attrs <pattern>` — track without writing
   `.gitattributes` (the user has hand-edited it). Still walks the
   index for files matching each pattern and bumps their mtime so
