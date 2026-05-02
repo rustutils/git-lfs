@@ -2,7 +2,7 @@
 
 ## Name
 
-`git-lfs-push` — Upload every LFS object reachable from the given refs that the remote doesn't already have. The "doesn't have" set is approximated by `refs/remotes/<remote>/*`; the LFS server's batch API also dedupes server-side so missing exclusions don't waste bandwidth
+`git-lfs-push` — Push queued large files to the Git LFS endpoint
 
 ## Synopsis
 
@@ -12,31 +12,39 @@ git-lfs-push [OPTIONS] <REMOTE> [ARGS]...
 
 ## Description
 
-Upload every LFS object reachable from the given refs that the remote doesn't already have. The "doesn't have" set is approximated by `refs/remotes/<remote>/*`; the LFS server's batch API also dedupes server-side so missing exclusions don't waste bandwidth
+Push queued large files to the Git LFS endpoint
+
+Upload Git LFS files to the configured endpoint for the current Git remote. By default, filters out objects that are already referenced by the local clone of the remote (approximated via `refs/remotes/<remote>/*`); the server's batch API dedupes again, so a missing local tracking ref doesn't waste bandwidth.
 
 ## Options
 
 ### Arguments
 
 - `<REMOTE>`
-    Name of the remote (e.g. "origin") whose tracking refs are excluded from the upload set
+    Remote to push to (e.g. `origin`). The remote's tracking refs are excluded from the upload set so already-pushed objects aren't sent again
 
 - `<ARGS>`
     Refs (or, with `--object-id`, raw OIDs) to push. With `--all`, restricts the all-refs walk to these; with `--stdin`, ignored (a warning is emitted)
 
 ### Flags
 
-- `--dry-run`
-    List the objects that would be pushed without actually uploading them (one `push <oid> => <path>` line per object)
+- `-d`, `--dry-run`
+    Print the files that would be pushed, without actually pushing them
 
-- `--all`
-    Push every local ref under `refs/heads/*` and `refs/tags/*` (intersected with `args` if any are given)
+- `-a`, `--all`
+    Push all objects reachable from the refs given as arguments.
+
+    If no refs are provided, all local refs are pushed. Note this behavior differs from `git lfs fetch --all`, which fetches every ref including refs outside `refs/heads` / `refs/tags`. If you're migrating a repository, run `git lfs push` for any additional remote refs that contain LFS objects not reachable from your local refs.
+
+- `-o`, `--object-id`
+    Push only the object OIDs listed on the command line (or read from stdin with `--stdin`), separated by spaces
 
 - `--stdin`
-    Read refs (or OIDs, with `--object-id`) from stdin, one per line. Blank lines are skipped
+    Read newline-delimited refs (or object IDs when using `--object-id`) from standard input instead of the command line
 
-- `--object-id`
-    Treat positional args / stdin entries as raw LFS OIDs rather than git refs, and upload those objects directly from the local store
+## See also
+
+[git-lfs-fetch(1)](./git-lfs-fetch.md), [git-lfs-pre-push(1)](./git-lfs-pre-push.md).
 
 ## Reporting bugs
 

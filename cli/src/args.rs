@@ -358,36 +358,51 @@ pub struct PullArgs {
     pub exclude: Vec<String>,
 }
 
-/// Upload every LFS object reachable from the given refs that the
-/// remote doesn't already have. The "doesn't have" set is approximated
-/// by `refs/remotes/<remote>/*`; the LFS server's batch API also
-/// dedupes server-side so missing exclusions don't waste bandwidth.
+/// Push queued large files to the Git LFS endpoint
+///
+/// Upload Git LFS files to the configured endpoint for the current Git
+/// remote. By default, filters out objects that are already referenced
+/// by the local clone of the remote (approximated via
+/// `refs/remotes/<remote>/*`); the server's batch API dedupes again,
+/// so a missing local tracking ref doesn't waste bandwidth.
 #[derive(Args)]
 pub struct PushArgs {
-    /// Name of the remote (e.g. "origin") whose tracking refs are
-    /// excluded from the upload set.
+    /// Remote to push to (e.g. `origin`). The remote's tracking refs
+    /// are excluded from the upload set so already-pushed objects
+    /// aren't sent again.
     pub remote: String,
-    /// Refs (or, with `--object-id`, raw OIDs) to push. With
-    /// `--all`, restricts the all-refs walk to these; with
-    /// `--stdin`, ignored (a warning is emitted).
+
+    /// Refs (or, with `--object-id`, raw OIDs) to push. With `--all`,
+    /// restricts the all-refs walk to these; with `--stdin`, ignored
+    /// (a warning is emitted).
     pub args: Vec<String>,
-    /// List the objects that would be pushed without actually
-    /// uploading them (one `push <oid> => <path>` line per object).
-    #[arg(long)]
+
+    /// Print the files that would be pushed, without actually pushing
+    /// them.
+    #[arg(short, long)]
     pub dry_run: bool,
-    /// Push every local ref under `refs/heads/*` and `refs/tags/*`
-    /// (intersected with `args` if any are given).
-    #[arg(long)]
+
+    /// Push all objects reachable from the refs given as arguments.
+    ///
+    /// If no refs are provided, all local refs are pushed. Note this
+    /// behavior differs from `git lfs fetch --all`, which fetches
+    /// every ref including refs outside `refs/heads` / `refs/tags`. If
+    /// you're migrating a repository, run `git lfs push` for any
+    /// additional remote refs that contain LFS objects not reachable
+    /// from your local refs.
+    #[arg(short, long)]
     pub all: bool,
-    /// Read refs (or OIDs, with `--object-id`) from stdin, one per
-    /// line. Blank lines are skipped.
+
+    /// Push only the object OIDs listed on the command line (or read
+    /// from stdin with `--stdin`), separated by spaces.
+    #[arg(short, long)]
+    pub object_id: bool,
+
+    /// Read newline-delimited refs (or object IDs when using
+    /// `--object-id`) from standard input instead of the command
+    /// line.
     #[arg(long)]
     pub stdin: bool,
-    /// Treat positional args / stdin entries as raw LFS OIDs
-    /// rather than git refs, and upload those objects directly
-    /// from the local store.
-    #[arg(long)]
-    pub object_id: bool,
 }
 
 /// Deprecated. Wraps `git clone` so the working tree is populated

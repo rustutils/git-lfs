@@ -32,7 +32,7 @@ Git LFS — large file storage for git
 - `filter-process` — Run the long-running filter-process protocol with git over stdin/stdout. This is what git invokes via filter.lfs.process and is the batched alternative to per-invocation `clean`/`smudge`
 - `fetch` — Download all Git LFS files for a given ref
 - `pull` — Download all Git LFS files for current ref and checkout
-- `push` — Upload every LFS object reachable from the given refs that the remote doesn't already have. The "doesn't have" set is approximated by `refs/remotes/<remote>/*`; the LFS server's batch API also dedupes server-side so missing exclusions don't waste bandwidth
+- `push` — Push queued large files to the Git LFS endpoint
 - `clone` — Deprecated. Wraps `git clone` so the working tree is populated with pointer text first, then runs `git lfs pull` to download LFS content in batch. Modern `git clone` parallelizes the smudge filter and is no slower; prefer it
 - `post-checkout` — Git post-checkout hook entry point. Receives `<prev-sha> <post-sha> <flag>` (flag is "1" if HEAD moved). Currently a no-op stub — exists so installed hook scripts don't fail. Real behavior arrives with `track --lockable`
 - `post-commit` — Git post-commit hook entry point. No arguments. Currently a no-op stub

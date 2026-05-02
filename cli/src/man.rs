@@ -103,6 +103,11 @@ const PULL: ManContent = ManContent {
     ],
 };
 
+const PUSH: ManContent = ManContent {
+    description: None,
+    extra_sections: &[("SEE ALSO", include_str!("../man/push/see_also.md"))],
+};
+
 /// Look up the doc extras for `subcommand` (e.g. `"fetch"`,
 /// `"checkout"`). Pass `""` for the top-level `git-lfs` page.
 /// Returns a reference to [`ManContent::empty`] when there's no entry,
@@ -113,6 +118,7 @@ pub fn extras_for(subcommand: &str) -> &'static ManContent {
         "checkout" => &CHECKOUT,
         "fetch" => &FETCH,
         "pull" => &PULL,
+        "push" => &PUSH,
         _ => &EMPTY,
     }
 }

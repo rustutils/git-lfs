@@ -30,6 +30,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   partial-clone / bare-repo behavior, since the same prose
   already lives there) plus DEFAULT REMOTE, INCLUDE AND
   EXCLUDE, and SEE ALSO sections.
+- `git-lfs-push(1)` gets the upstream-faithful DESCRIPTION,
+  per-flag wording (including the "behavior differs from
+  `git lfs fetch --all`" warning on `--all`), and a SEE
+  ALSO section. Adds `-d`/`-a`/`-o` short aliases for
+  `--dry-run`/`--all`/`--object-id` to match upstream.
 - Every man page and mdbook page now ends with a REPORTING BUGS
   section pointing at the project issue tracker and clarifying
   that this is the Rust port (so reports don't end up on the
