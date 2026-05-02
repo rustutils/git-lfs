@@ -19,7 +19,7 @@ What's implemented today:
   on the download path.
 
 Not yet here: tus uploads, custom transfer agents, retry/Retry-After
-handling. Tracked in `NOTES.md` upstream.
+handling. Tracked in the workspace `NOTES.md`.
 
 Part of the [git-lfs Rust workspace](https://gitlab.com/rustutils/git-lfs).
 Experimental — not yet ready for production. License: MIT.

@@ -62,19 +62,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Client-cert mTLS via `http.sslCert` and `http.sslKey` (per-URL or
   global). Honored alongside `http.sslcainfo`'s pinned-CA verifier
   for the same TLS handshake.
-- `git lfs update` (minimal) — (re-)installs the four LFS git hooks
+- `git lfs update` — (re-)installs the four LFS git hooks
   (`pre-push`, `post-checkout`, `post-commit`, `post-merge`) for the
   current repository. Outside any git repo, prints
-  `"Not in a Git repository."` and exits 128. Hook-conflict UI,
-  `--manual` mode, leading-space template migration, and the
-  `lfs.<url>.access` migration are still pending — tracked in
+  `"Not in a Git repository."` and exits 128. The
+  `lfs.<url>.access` config migration is still pending — tracked in
   `NOTES.md`.
 - `pre-push` now supports local-path remotes (`git push ../sibling`,
   `git push .`) by copying each reachable LFS object directly into
   the target repo's `lfs/objects/` (hardlink with copy fallback).
-
-### Added
-
 - `git lfs install` and `git lfs uninstall` gain `--system`,
   `--worktree`, and `--file=<path>` scope flags alongside the
   existing `--local`/`--global` toggle, plus the upstream

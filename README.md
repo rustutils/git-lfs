@@ -12,15 +12,15 @@ in the binaries.
 
 ## Status
 
-Work in progress. **About 534 of the 794 vendored upstream shell tests
-currently pass across 104 test files (~67%)**, with 35 suites at a
+Work in progress. **About 596 of the 794 vendored upstream shell tests
+currently pass across 104 test files (~75%)**, with 57 suites at a
 full pass — see [`tests/SCOREBOARD.md`](tests/SCOREBOARD.md) for the
 per-suite breakdown. The remaining gaps cluster in commands that
-aren't started yet (`dedup`, custom transfer adapters, SSH,
-`merge-driver`) and in long-tail flag behavior on otherwise-shipped
-commands. Day-to-day flows (clean / smudge, `fetch` / `pull` / `push`,
-`track`, locking, `migrate`) work end to end against authenticated
-LFS endpoints.
+aren't started yet (`dedup`, custom transfer adapters, SSH
+`git-lfs-authenticate`, `merge-driver`) and in long-tail flag behavior
+on otherwise-shipped commands. Day-to-day flows (clean / smudge,
+`fetch` / `pull` / `push`, `track`, locking, `migrate`) work end to end
+against authenticated LFS endpoints.
 
 ## Why
 
@@ -40,6 +40,36 @@ experimentation.
 Down the line that could mean plugging into `gitoxide`'s `gix`, or
 hosting Git LFS extensions — for example, content-defined chunking to
 reduce how much data needs uploading when large files change.
+
+## Installing
+
+This crate is published on crates.io, you can install it with:
+
+    cargo install git-lfs
+
+If you run into an issue, make sure that you have installed the latest
+version, we push updates as we reach milestones (see the [roadmap](ROADMAP.md)).
+
+## Building and testing
+
+This codebase has two sets of tests. The in-tree Rust tests run
+through cargo:
+
+    cargo test
+
+We also ship the upstream git-lfs test suite. Running it requires
+`go`, `prove`, and `perl` — see the
+[tests README](tests/README.md) for the full setup. Once those are
+in place, our xtask runs the suite and prints a per-suite summary:
+
+    cargo xtask test
+
+For the failing suites, the summary includes a count of failing
+tests so you can spot near-misses.
+
+Building is done using regular cargo builds:
+
+    cargo build --release
 
 ## License
 
