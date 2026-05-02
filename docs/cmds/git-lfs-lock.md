@@ -32,3 +32,7 @@ Acquire an exclusive server-side lock on one or more files. Other users will be 
 - `-j`, `--json`
     Stable JSON output for scripts
 
+## Reporting bugs
+
+This command is from the Rust implementation of git-lfs, not the original
+Go implementation. Please report bugs to our [issue tracker](https://gitlab.com/rustutils/git-lfs/issues).

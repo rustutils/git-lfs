@@ -36,3 +36,7 @@ Debug helper: build a pointer from a file, parse one from disk or stdin, or just
 - `--no-strict`
     Explicitly disable strict mode (paired with `--strict`)
 
+## Reporting bugs
+
+This command is from the Rust implementation of git-lfs, not the original
+Go implementation. Please report bugs to our [issue tracker](https://gitlab.com/rustutils/git-lfs/issues).

@@ -80,3 +80,7 @@ Checkout a path with a merge conflict into separate files:
     $ git add path/to/conflicting/file.dat
     $ git merge --continue
 
+## Reporting bugs
+
+This command is from the Rust implementation of git-lfs, not the original
+Go implementation. Please report bugs to our [issue tracker](https://gitlab.com/rustutils/git-lfs/issues).

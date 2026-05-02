@@ -21,3 +21,7 @@ Run the long-running filter-process protocol with git over stdin/stdout. This is
 - `--skip`
     Pass smudge requests' pointer text through unchanged; equivalent to `GIT_LFS_SKIP_SMUDGE=1`. Wired up by `install --skip-smudge`
 
+## Reporting bugs
+
+This command is from the Rust implementation of git-lfs, not the original
+Go implementation. Please report bugs to our [issue tracker](https://gitlab.com/rustutils/git-lfs/issues).

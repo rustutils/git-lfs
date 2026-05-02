@@ -53,3 +53,7 @@ Git LFS — large file storage for git
 - `unlock` — Release a file lock previously acquired with `git lfs lock`. Either provide one or more paths, or `--id <id>` (mutually exclusive)
 - `ls-files` — List LFS-tracked files visible at a ref (default: HEAD), or across all reachable history with `--all`
 
+## Reporting bugs
+
+This command is from the Rust implementation of git-lfs, not the original
+Go implementation. Please report bugs to our [issue tracker](https://gitlab.com/rustutils/git-lfs/issues).

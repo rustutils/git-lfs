@@ -47,3 +47,7 @@ Track a file pattern with git-lfs by adding it to .gitattributes. With no patter
 - `--no-modify-attrs`
     Don't modify `.gitattributes` — the user has already added the LFS filter line themselves. Still walks the index and touches matching files' mtime so they show as modified on the next `git status`
 
+## Reporting bugs
+
+This command is from the Rust implementation of git-lfs, not the original
+Go implementation. Please report bugs to our [issue tracker](https://gitlab.com/rustutils/git-lfs/issues).

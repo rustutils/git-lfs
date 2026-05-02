@@ -21,3 +21,7 @@ Deprecated. Wraps `git clone` so the working tree is populated with pointer text
 - `<ARGS>`
     `git clone` and LFS pass-through args. The repository URL is required; an optional target directory follows
 
+## Reporting bugs
+
+This command is from the Rust implementation of git-lfs, not the original
+Go implementation. Please report bugs to our [issue tracker](https://gitlab.com/rustutils/git-lfs/issues).

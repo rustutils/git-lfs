@@ -12,7 +12,7 @@
 //! The two rendering backends share that order; only the surface markup
 //! differs (groff macros vs. markdown headings/lists/code).
 
-use git_lfs::man::ManContent;
+use git_lfs::man::{ManContent, REPORTING_BUGS};
 
 use crate::{groff, markdown, post_process};
 
@@ -56,6 +56,12 @@ pub fn render_man(
         out.extend_from_slice(groff::from_markdown(body_md).as_bytes());
     }
 
+    // REPORTING BUGS goes between the page-specific extras and the
+    // VERSION footer — same on every page, sourced from
+    // `cli/man/reporting_bugs.md` via the [`REPORTING_BUGS`] const.
+    writeln!(out, ".SH REPORTING BUGS")?;
+    out.extend_from_slice(groff::from_markdown(REPORTING_BUGS).as_bytes());
+
     man.render_version_section(&mut out)?;
 
     // Convert the markdown conventions in clap-derived help text
@@ -92,6 +98,12 @@ pub fn render_md(page_name: &str, cmd: &clap::Command, extras: &ManContent) -> S
         out.push_str(body.trim_end());
         out.push_str("\n\n");
     }
+
+    // REPORTING BUGS — last, sourced from the same const as the man
+    // page so the URL has one home (`cli/man/reporting_bugs.md`).
+    out.push_str("## Reporting bugs\n\n");
+    out.push_str(REPORTING_BUGS.trim_end());
+    out.push('\n');
 
     // Rewrite man-page cross-references (e.g. `git-lfs-config(5)`,
     // `gitignore(5)`) into real markdown links — internal pages get a

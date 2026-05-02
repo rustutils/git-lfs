@@ -38,3 +38,7 @@ Upload every LFS object reachable from the given refs that the remote doesn't al
 - `--object-id`
     Treat positional args / stdin entries as raw LFS OIDs rather than git refs, and upload those objects directly from the local store
 
+## Reporting bugs
+
+This command is from the Rust implementation of git-lfs, not the original
+Go implementation. Please report bugs to our [issue tracker](https://gitlab.com/rustutils/git-lfs/issues).

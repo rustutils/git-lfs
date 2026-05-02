@@ -24,3 +24,7 @@ Delete local LFS objects that aren't reachable from HEAD or any unpushed commit.
 - `-v`, `--verbose`
     Print each prunable object's OID and size
 
+## Reporting bugs
+
+This command is from the Rust implementation of git-lfs, not the original
+Go implementation. Please report bugs to our [issue tracker](https://gitlab.com/rustutils/git-lfs/issues).

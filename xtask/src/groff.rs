@@ -14,7 +14,7 @@
 //! just won't render to groff prettily — fine, the markdown side is the
 //! primary docs target anyway.
 
-use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Event, LinkType, Options, Parser, Tag, TagEnd};
 
 /// Render `md` as groff macros suitable for splicing inside a `.SH`
 /// section. Always returns text terminated with `\n`.
@@ -31,7 +31,33 @@ pub fn from_markdown(md: &str) -> String {
     if !out.ends_with('\n') {
         out.push('\n');
     }
-    out
+    fold_punct_after_ue(out)
+}
+
+/// Fold sentence-ending punctuation that lands on the line after `.UE`
+/// into the macro's optional argument (`.UE .` is the canonical groff
+/// idiom that places the punctuation right after the angle-bracketed
+/// URL, so the sentence reads naturally instead of orphaning the
+/// punctuation on its own line). Pulldown-cmark emits trailing
+/// punctuation as a separate `Text` event, after `TagEnd::Link`, so we
+/// can't catch it at link-end time without lookahead.
+fn fold_punct_after_ue(mut s: String) -> String {
+    // `.` and `'` get a leading `\&` from `escape` so groff doesn't
+    // interpret them as macro-call lines; we have to match either form.
+    let patterns: &[(&str, &str)] = &[
+        (".UE\n\\&.", ".UE .\n"),
+        (".UE\n\\&'", ".UE '\n"),
+        (".UE\n,", ".UE ,\n"),
+        (".UE\n;", ".UE ;\n"),
+        (".UE\n:", ".UE :\n"),
+        (".UE\n!", ".UE !\n"),
+        (".UE\n?", ".UE ?\n"),
+        (".UE\n)", ".UE )\n"),
+    ];
+    for (from, to) in patterns {
+        s = s.replace(from, to);
+    }
+    s
 }
 
 #[derive(Default)]
@@ -54,6 +80,11 @@ struct State {
     /// already produced the line ending and a stray `\n` would render
     /// as a blank line (and groff treats blanks as implicit `.PP`).
     suppress_next_soft_break: bool,
+    /// True between an inline-style `Tag::Link` start and end. We use
+    /// this to remember whether to emit the matching `.UE` (only for
+    /// inline / reference / shortcut links — autolinks render the URL
+    /// as text directly and don't get the `.UR` / `.UE` wrapper).
+    in_inline_link: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -176,6 +207,34 @@ fn handle(event: Event<'_>, state: &mut State, out: &mut String) {
             state.suppress_next_soft_break = true;
         }
 
+        // Markdown links → groff's `.UR` / `.UE` macros. In a modern
+        // terminal that supports OSC-8, the link text becomes
+        // clickable and is styled (typically blue/underlined); the
+        // URL gets appended in `< >` as a fallback for non-OSC-8
+        // viewers. Autolinks (`<https://...>`) and email autolinks
+        // skip the wrapper because their text *is* the URL — wrapping
+        // would render the URL twice.
+        Event::Start(Tag::Link {
+            link_type,
+            dest_url,
+            ..
+        }) => match link_type {
+            LinkType::Autolink | LinkType::Email => {}
+            _ => {
+                out.push_str("\n.UR ");
+                out.push_str(&dest_url);
+                out.push('\n');
+                state.in_inline_link = true;
+            }
+        },
+        Event::End(TagEnd::Link) if state.in_inline_link => {
+            if !out.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str(".UE\n");
+            state.in_inline_link = false;
+        }
+
         // Inline HTML: only `<br/>` / `<br>` is meaningful for our
         // surface. Inside a definition-list title, promote it to
         // `.TQ` so the next line stacks above the body at tag-level
@@ -269,6 +328,27 @@ mod tests {
         assert!(g.contains(".IP \\(bu 2\n"));
         assert!(g.contains("foo"));
         assert!(g.contains("bar"));
+    }
+
+    #[test]
+    fn inline_link_uses_ur_ue_macros() {
+        // Inline `[text](url)` becomes a `.UR` / `.UE` block so modern
+        // terminals can render it as a clickable hyperlink. Trailing
+        // sentence punctuation gets folded into the `.UE` argument so
+        // it doesn't orphan onto its own line.
+        let g = from_markdown("Report at our [issue tracker](https://example.com/issues).");
+        assert!(g.contains(".UR https://example.com/issues\n"), "got: {g}");
+        assert!(g.contains("issue tracker\n.UE .\n"), "got: {g}");
+    }
+
+    #[test]
+    fn autolink_skips_ur_ue_wrapper() {
+        // Autolinks (`<https://...>`) don't get the wrapper because the
+        // text is the URL — wrapping would render the URL twice.
+        let g = from_markdown("See <https://example.com/foo>");
+        assert!(g.contains("https://example.com/foo"), "got: {g}");
+        assert!(!g.contains(".UR"), "got: {g}");
+        assert!(!g.contains(".UE"), "got: {g}");
     }
 
     #[test]

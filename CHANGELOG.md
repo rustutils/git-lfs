@@ -30,6 +30,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   partial-clone / bare-repo behavior, since the same prose
   already lives there) plus DEFAULT REMOTE, INCLUDE AND
   EXCLUDE, and SEE ALSO sections.
+- Every man page and mdbook page now ends with a REPORTING BUGS
+  section pointing at the project issue tracker and clarifying
+  that this is the Rust port (so reports don't end up on the
+  upstream Go project's tracker by mistake). Sourced from a
+  single `cli/man/reporting_bugs.md`. The groff converter
+  learned `.UR`/`.UE` for markdown links, so "issue tracker"
+  renders as a clickable link in OSC-8-capable terminals and
+  falls back to "issue tracker ⟨URL⟩" everywhere else
+  (portable across groff and mandoc).
 
 ## [0.4.0] - 2026-05-02
 

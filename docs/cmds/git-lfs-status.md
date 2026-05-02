@@ -24,3 +24,7 @@ Show staged + unstaged changes, classifying each blob as LFS, Git, or working-tr
 - `-j`, `--json`
     Stable JSON output for scripts; only LFS entries are reported
 
+## Reporting bugs
+
+This command is from the Rust implementation of git-lfs, not the original
+Go implementation. Please report bugs to our [issue tracker](https://gitlab.com/rustutils/git-lfs/issues).

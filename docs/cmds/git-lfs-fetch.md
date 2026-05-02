@@ -137,3 +137,7 @@ Fetch the LFS objects for two branches and a commit from `origin`:
 
 [git-lfs-checkout(1)](./git-lfs-checkout.md), [git-lfs-pull(1)](./git-lfs-pull.md), [git-lfs-prune(1)](./git-lfs-prune.md), [gitconfig(5)](https://git-scm.com/docs/gitconfig).
 
+## Reporting bugs
+
+This command is from the Rust implementation of git-lfs, not the original
+Go implementation. Please report bugs to our [issue tracker](https://gitlab.com/rustutils/git-lfs/issues).

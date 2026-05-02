@@ -22,3 +22,7 @@ Analyze or rewrite history for LFS conversion. Phase 1 ships `info` only; `impor
 - `export` — Inverse of import: rewrite history so LFS pointers become the raw bytes they reference. Requires the LFS objects to already be in the local store — `git lfs fetch` first if not. Pointers whose objects are missing are left as-is
 - `info` — Walk history and report file extensions by total size. Read-only — no objects or history change
 
+## Reporting bugs
+
+This command is from the Rust implementation of git-lfs, not the original
+Go implementation. Please report bugs to our [issue tracker](https://gitlab.com/rustutils/git-lfs/issues).

@@ -39,3 +39,7 @@ Configure git to invoke git-lfs as the clean/smudge/process filter, and install 
 - `--skip-smudge`
     Configure the smudge filter to pass pointer text through unchanged. Use with a follow-up `git lfs pull` to download content on demand
 
+## Reporting bugs
+
+This command is from the Rust implementation of git-lfs, not the original
+Go implementation. Please report bugs to our [issue tracker](https://gitlab.com/rustutils/git-lfs/issues).

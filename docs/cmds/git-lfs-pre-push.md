@@ -29,3 +29,7 @@ Git pre-push hook entry point — not typically invoked by hand. Reads `<local-r
 - `--dry-run`
     List the objects that would be pushed without actually uploading them
 
+## Reporting bugs
+
+This command is from the Rust implementation of git-lfs, not the original
+Go implementation. Please report bugs to our [issue tracker](https://gitlab.com/rustutils/git-lfs/issues).

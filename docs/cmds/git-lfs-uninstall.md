@@ -38,3 +38,7 @@ Reverse of `install`: clear the `filter.lfs.*` config and remove the LFS git hoo
 - `--skip-repo`
     Only unset config; don't touch hooks
 
+## Reporting bugs
+
+This command is from the Rust implementation of git-lfs, not the original
+Go implementation. Please report bugs to our [issue tracker](https://gitlab.com/rustutils/git-lfs/issues).

@@ -29,3 +29,7 @@ Clean is not part of the user-facing Git plumbing commands. To preview the point
 
     Substituted for `%f` in any configured `lfs.extension.<name>.clean` command.
 
+## Reporting bugs
+
+This command is from the Rust implementation of git-lfs, not the original
+Go implementation. Please report bugs to our [issue tracker](https://gitlab.com/rustutils/git-lfs/issues).

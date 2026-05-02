@@ -52,6 +52,12 @@ impl ManContent {
 
 const EMPTY: ManContent = ManContent::empty();
 
+/// Markdown body for the `REPORTING BUGS` section that xtask appends
+/// to every generated man / mdbook page. Single source of truth for
+/// the project URL and the "this is the Rust implementation" framing
+/// — change here and every page picks it up on the next regen.
+pub const REPORTING_BUGS: &str = include_str!("../man/reporting_bugs.md");
+
 const SMUDGE: ManContent = ManContent {
     description: None,
     extra_sections: &[
