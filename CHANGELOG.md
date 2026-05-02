@@ -75,6 +75,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `git lfs push origin <ref>` no longer fails with
+  `fatal: ambiguous argument` when a working-tree file shares its
+  name with the pushed ref (e.g. `git lfs push origin main` in a
+  repo that tracks a file literally named `main`). The lock-verify
+  helper's `git log -z --pretty=format: --name-only <revs>` invocation
+  now ends with `--`, so git treats every preceding argument as a rev
+  and never attempts the rev/path disambiguation that was breaking
+  the push.
 - `git lfs filter-process` now emits the upstream-compatible
   `Encountered N file(s) that should have been pointer(s), but
   weren't:` warning to stderr at end-of-session, listing each

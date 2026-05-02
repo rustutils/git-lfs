@@ -660,6 +660,10 @@ fn changed_paths_in_range(
         args.extend(excludes.iter().copied());
     }
     args.extend(extra_rev_list_args.iter().copied());
+    // Disambiguate revs from paths so `git lfs push origin main` works
+    // when a file named `main` lives in the index alongside the branch
+    // ref of the same name.
+    args.push("--");
     let out = std::process::Command::new("git")
         .arg("-C")
         .arg(cwd)
