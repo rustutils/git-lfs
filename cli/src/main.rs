@@ -33,7 +33,14 @@ mod update;
 
 use fetcher::LfsFetcher;
 
-use git_lfs::args::{Cli, Command, MigrateCmd};
+use git_lfs::args::{
+    CheckoutArgs, CleanArgs, Cli, CloneArgs, Command, EnvArgs, ExtArgs, FetchArgs,
+    FilterProcessArgs, FsckArgs, InstallArgs, LockArgs, LocksArgs, LsFilesArgs, MigrateArgs,
+    MigrateCmd, MigrateExportArgs, MigrateImportArgs, MigrateInfoArgs, PointerArgs,
+    PostCheckoutArgs, PostCommitArgs, PostMergeArgs, PrePushArgs, PruneArgs, PullArgs, PushArgs,
+    SmudgeArgs, StatusArgs, TrackArgs, UninstallArgs, UnlockArgs, UntrackArgs, UpdateArgs,
+    VersionArgs,
+};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -281,7 +288,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
     }
 
     match cmd {
-        Command::Clean { path } => {
+        Command::Clean(CleanArgs { path }) => {
             let _ = install::try_install_hooks(&cwd);
             let store = Store::new(git_lfs_git::lfs_dir(&cwd)?);
             // No `with_references` here: clean writes new content
@@ -299,7 +306,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             clean(&store, &mut input, &mut output, &path_str, &extensions)?;
             output.flush()?;
         }
-        Command::Smudge { path, skip } => {
+        Command::Smudge(SmudgeArgs { path, skip }) => {
             let _ = install::try_install_hooks(&cwd);
             let store = Store::new(git_lfs_git::lfs_dir(&cwd)?)
                 .with_references(git_lfs_git::lfs_alternate_dirs(&cwd).unwrap_or_default());
@@ -327,7 +334,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             }
             output.flush()?;
         }
-        Command::Install {
+        Command::Install(InstallArgs {
             local,
             system,
             worktree,
@@ -335,7 +342,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             force,
             skip_repo,
             skip_smudge,
-        } => {
+        }) => {
             let scope = match resolve_install_scope(local, system, worktree, file) {
                 Ok(s) => s,
                 Err(msg) => {
@@ -387,14 +394,14 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 Err(e) => return Err(Box::new(e)),
             }
         }
-        Command::Uninstall {
+        Command::Uninstall(UninstallArgs {
             mode,
             local,
             system,
             worktree,
             file,
             skip_repo,
-        } => {
+        }) => {
             let scope = match resolve_install_scope(local, system, worktree, file) {
                 Ok(s) => s,
                 Err(msg) => {
@@ -442,10 +449,10 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 println!("Local Git LFS configuration has been removed.");
             }
         }
-        Command::Clone { args } => {
+        Command::Clone(CloneArgs { args }) => {
             clone::run(&cwd, &args)?;
         }
-        Command::FilterProcess { skip } => {
+        Command::FilterProcess(FilterProcessArgs { skip }) => {
             let _ = install::try_install_hooks(&cwd);
             let store = Store::new(git_lfs_git::lfs_dir(&cwd)?)
                 .with_references(git_lfs_git::lfs_alternate_dirs(&cwd).unwrap_or_default());
@@ -478,7 +485,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             )?;
             fetcher.persist_access_mode();
         }
-        Command::Fetch {
+        Command::Fetch(FetchArgs {
             args,
             dry_run,
             json,
@@ -488,7 +495,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             prune,
             include,
             exclude,
-        } => {
+        }) => {
             let stdin_lines: Vec<String> = if stdin {
                 io::stdin()
                     .lock()
@@ -529,11 +536,11 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 Err(e) => return Err(e.into()),
             }
         }
-        Command::Pull {
+        Command::Pull(PullArgs {
             refs,
             include,
             exclude,
-        } => {
+        }) => {
             match pull::pull_with_filter(&cwd, &refs, &include, &exclude) {
                 Ok(()) => {}
                 Err(pull::PullCommandError::Fetch(fetch::FetchCommandError::Usage(msg)))
@@ -556,14 +563,14 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 Err(e) => return Err(e.into()),
             }
         }
-        Command::Push {
+        Command::Push(PushArgs {
             remote,
             args,
             dry_run,
             all,
             stdin,
             object_id,
-        } => {
+        }) => {
             let stdin_lines: Vec<String> = if stdin {
                 io::stdin()
                     .lock()
@@ -591,20 +598,20 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 return Err("one or more objects failed to upload".into());
             }
         }
-        Command::PostCheckout { args } => {
+        Command::PostCheckout(PostCheckoutArgs { args }) => {
             hooks::post_checkout(&cwd, &args)?;
         }
-        Command::PostCommit { args } => {
+        Command::PostCommit(PostCommitArgs { args }) => {
             hooks::post_commit(&cwd, &args)?;
         }
-        Command::PostMerge { args } => {
+        Command::PostMerge(PostMergeArgs { args }) => {
             hooks::post_merge(&cwd, &args)?;
         }
-        Command::PrePush {
+        Command::PrePush(PrePushArgs {
             remote,
             url: _,
             dry_run,
-        } => {
+        }) => {
             let stdin = io::stdin().lock();
             let outcome = pre_push::pre_push(&cwd, &remote, stdin, dry_run)?;
             if outcome.aborted {
@@ -614,7 +621,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 return Err("pre-push: one or more objects failed to upload".into());
             }
         }
-        Command::Track {
+        Command::Track(TrackArgs {
             patterns,
             lockable,
             not_lockable,
@@ -624,7 +631,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             no_excluded,
             filename,
             no_modify_attrs,
-        } => {
+        }) => {
             return track_cmd::run(track_cmd::Args {
                 cwd: &cwd,
                 patterns: &patterns,
@@ -638,17 +645,17 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 no_modify_attrs,
             });
         }
-        Command::Version => {
+        Command::Version(VersionArgs) => {
             println!("git-lfs/{} (rust)", env!("CARGO_PKG_VERSION"));
         }
-        Command::Pointer {
+        Command::Pointer(PointerArgs {
             file,
             pointer,
             stdin,
             check,
             strict,
             no_strict,
-        } => {
+        }) => {
             let opts = pointer_cmd::Options {
                 file,
                 pointer,
@@ -662,13 +669,13 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             let code = pointer_cmd::run(&opts)?;
             return Ok(code as u8);
         }
-        Command::Env => {
+        Command::Env(EnvArgs) => {
             env::run(&cwd)?;
         }
-        Command::Ext => {
+        Command::Ext(ExtArgs) => {
             ext::run(&cwd)?;
         }
-        Command::Update { force, manual } => match update::run(&cwd, force, manual) {
+        Command::Update(UpdateArgs { force, manual }) => match update::run(&cwd, force, manual) {
             Ok(code) => return Ok(code),
             Err(update::UpdateError::NotInRepo) => {
                 // Stdout, not stderr: upstream prints to stdout here
@@ -679,8 +686,8 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             }
             Err(e) => return Err(Box::new(e)),
         },
-        Command::Migrate { cmd } => match cmd {
-            MigrateCmd::Export {
+        Command::Migrate(MigrateArgs { cmd }) => match cmd {
+            MigrateCmd::Export(MigrateExportArgs {
                 branches,
                 everything,
                 include,
@@ -692,7 +699,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 verbose,
                 remote,
                 yes: _,
-            } => {
+            }) => {
                 let opts = migrate::ExportOptions {
                     branches,
                     everything,
@@ -709,7 +716,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                     return Ok(handle_migrate_error(e));
                 }
             }
-            MigrateCmd::Import {
+            MigrateCmd::Import(MigrateImportArgs {
                 args,
                 everything,
                 include,
@@ -725,7 +732,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 object_map,
                 verbose,
                 remote,
-            } => {
+            }) => {
                 let above_bytes = migrate::parse_size(&above)?;
                 let (branches, paths) = if no_rewrite {
                     (Vec::new(), args)
@@ -755,7 +762,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                     return Ok(handle_migrate_error(e));
                 }
             }
-            MigrateCmd::Info {
+            MigrateCmd::Info(MigrateInfoArgs {
                 branches,
                 everything,
                 include,
@@ -769,7 +776,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 skip_fetch: _,
                 remote: _,
                 fixup,
-            } => {
+            }) => {
                 let pointer_mode = match pointers.as_deref() {
                     Some("follow") => migrate::PointerMode::Follow,
                     Some("no-follow") => migrate::PointerMode::NoFollow,
@@ -808,13 +815,13 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 }
             }
         },
-        Command::Checkout {
+        Command::Checkout(CheckoutArgs {
             paths,
             to,
             ours,
             theirs,
             base,
-        } => {
+        }) => {
             let opts = checkout::Options {
                 paths,
                 to,
@@ -846,16 +853,16 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 Err(e) => return Err(e.into()),
             }
         }
-        Command::Prune { dry_run, verbose } => {
+        Command::Prune(PruneArgs { dry_run, verbose }) => {
             let opts = prune::Options { dry_run, verbose };
             prune::run(&cwd, &opts)?;
         }
-        Command::Fsck {
+        Command::Fsck(FsckArgs {
             refspec,
             objects,
             pointers,
             dry_run,
-        } => {
+        }) => {
             let _ = install::try_install_hooks(&cwd);
             let mode = match (objects, pointers) {
                 (true, false) => fsck::Mode::Objects,
@@ -866,7 +873,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             let code = fsck::run(&cwd, refspec.as_deref(), &opts)?;
             return Ok(code as u8);
         }
-        Command::Status { porcelain, json } => {
+        Command::Status(StatusArgs { porcelain, json }) => {
             let format = if json {
                 status::Format::Json
             } else if porcelain {
@@ -892,12 +899,12 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 Err(e) => return Err(e.into()),
             }
         }
-        Command::Lock {
+        Command::Lock(LockArgs {
             paths,
             remote,
             refspec,
             json,
-        } => {
+        }) => {
             let opts = lock::LockOptions {
                 remote,
                 refspec,
@@ -908,7 +915,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 return Err("one or more locks failed".into());
             }
         }
-        Command::Locks {
+        Command::Locks(LocksArgs {
             remote,
             path,
             id,
@@ -917,7 +924,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             verify,
             local,
             json,
-        } => {
+        }) => {
             let opts = lock::LocksOptions {
                 remote,
                 refspec,
@@ -930,14 +937,14 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             };
             lock::locks(&cwd, &opts)?;
         }
-        Command::Unlock {
+        Command::Unlock(UnlockArgs {
             paths,
             id,
             force,
             remote,
             refspec,
             json,
-        } => {
+        }) => {
             let opts = lock::UnlockOptions {
                 remote,
                 refspec,
@@ -950,7 +957,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 return Err("one or more unlocks failed".into());
             }
         }
-        Command::LsFiles {
+        Command::LsFiles(LsFilesArgs {
             refspec,
             long,
             size,
@@ -958,7 +965,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             all,
             debug,
             json,
-        } => {
+        }) => {
             let format = if json {
                 ls_files::Format::Json
             } else if debug {
@@ -975,7 +982,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             };
             ls_files::run(&cwd, refspec.as_deref(), &opts)?;
         }
-        Command::Untrack { patterns } => {
+        Command::Untrack(UntrackArgs { patterns }) => {
             if patterns.is_empty() {
                 return Err("git lfs untrack <pattern> [pattern...]".into());
             }
