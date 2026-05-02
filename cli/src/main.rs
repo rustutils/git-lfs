@@ -144,6 +144,21 @@ fn resolve_install_scope(
     })
 }
 
+/// If `e` is a `git config <scope> ...` failure, render it on stdout
+/// in upstream's `error running 'git config ...': <stderr>` shape and
+/// return exit code 2. Otherwise return `None` and let the caller
+/// propagate the error normally. The `>out.log` redirection in
+/// t-install test 9 and t-install-worktree test 4 means this has to
+/// land on stdout, not stderr.
+fn handle_install_config_failure(e: &install::InstallError) -> Option<u8> {
+    if let install::InstallError::ConfigCommandFailed { .. } = e {
+        println!("{e}");
+        Some(2)
+    } else {
+        None
+    }
+}
+
 /// Print upstream's `Not in a Git repository.` to stdout and return a
 /// non-zero exit code if `cwd` isn't inside any git repo. Returns
 /// `None` to keep going. Mirrors the error path test 7 of t-uninstall
@@ -305,8 +320,13 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 skip_repo,
                 skip_smudge,
             };
-            install::install(&cwd, &opts)?;
-            println!("Git LFS initialized.");
+            match install::install(&cwd, &opts) {
+                Ok(()) => println!("Git LFS initialized."),
+                Err(e) if let Some(code) = handle_install_config_failure(&e) => {
+                    return Ok(code);
+                }
+                Err(e) => return Err(Box::new(e)),
+            }
         }
         Command::Uninstall {
             mode,
@@ -341,7 +361,19 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 skip_repo,
                 hooks_only,
             };
-            install::uninstall(&cwd, &opts)?;
+            if let Err(e) = install::uninstall(&cwd, &opts) {
+                if matches!(e, install::InstallError::ConfigCommandFailed { .. }) {
+                    // Uninstall is idempotent — a failing
+                    // `git config <scope> --unset` (e.g. --worktree
+                    // against a repo without the worktreeConfig
+                    // extension) becomes a stdout warning and we keep
+                    // going. Exit 0 matches upstream's t-uninstall-
+                    // worktree test 4.
+                    println!("{e}");
+                    return Ok(0);
+                }
+                return Err(Box::new(e));
+            }
             if hooks_only {
                 // No "configuration removed" message: hooks-only mode
                 // leaves the filter config exactly as-is.

@@ -92,6 +92,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when invoked outside any git repository, matching upstream's
   exit code and message. The check happens before any config or
   hook write.
+- A failed `git config <scope> ...` invocation during install /
+  uninstall now surfaces upstream's
+  `error running 'git config <scope> ...': <stderr>` line on
+  stdout. `install` exits 2 (e.g. `--local` against a chmod 500
+  `.git`, or `--worktree` without `extensions.worktreeConfig`);
+  `uninstall` treats the failure as a stdout warning and exits
+  0 — uninstall is idempotent and a missing target shouldn't be
+  fatal.
 
 ### Fixed
 

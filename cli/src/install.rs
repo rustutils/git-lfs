@@ -117,6 +117,14 @@ pub enum InstallError {
          rerun with --force to overwrite"
     )]
     HookConflict { hook: String },
+    /// `git config <scope> ...` failed (e.g. `--worktree` against a
+    /// repo that hasn't enabled `extensions.worktreeConfig`, or
+    /// `--local` against a `.git` the user can't write to). The CLI
+    /// dispatcher renders this verbatim to stdout (the upstream tests
+    /// `grep -E "error running.*git.*config"` against `>out.log`)
+    /// and exits 2.
+    #[error("error running 'git {}': {stderr}", args.join(" "))]
+    ConfigCommandFailed { args: Vec<String>, stderr: String },
 }
 
 /// Run the install. Writes the four LFS git hooks when in a repo and
@@ -185,40 +193,48 @@ fn scoped_set(
     scope: &InstallScope,
     key: &str,
     value: &str,
-) -> Result<(), git_lfs_git::Error> {
+) -> Result<(), InstallError> {
+    let scope_arg = scope.config_arg();
+    let args = vec!["config".into(), scope_arg.clone(), key.into(), value.into()];
     let out = Command::new("git")
         .arg("-C")
         .arg(cwd)
         .arg("config")
-        .arg(scope.config_arg())
+        .arg(&scope_arg)
         .args([key, value])
         .output()?;
     if out.status.success() {
         Ok(())
     } else {
-        Err(git_lfs_git::Error::Failed(
-            String::from_utf8_lossy(&out.stderr).trim().to_owned(),
-        ))
+        Err(InstallError::ConfigCommandFailed {
+            args,
+            stderr: String::from_utf8_lossy(&out.stderr).trim().to_owned(),
+        })
     }
 }
 
-fn scoped_unset(cwd: &Path, scope: &InstallScope, key: &str) -> Result<(), git_lfs_git::Error> {
+fn scoped_unset(cwd: &Path, scope: &InstallScope, key: &str) -> Result<(), InstallError> {
+    let scope_arg = scope.config_arg();
+    let args = vec![
+        "config".into(),
+        scope_arg.clone(),
+        "--unset".into(),
+        key.into(),
+    ];
     let out = Command::new("git")
         .arg("-C")
         .arg(cwd)
         .arg("config")
-        .arg(scope.config_arg())
+        .arg(&scope_arg)
         .args(["--unset", key])
         .output()?;
     match out.status.code() {
-        // 0 = unset; 5 = key wasn't there; 128 = scope unreachable
-        // (no repo for --local outside one). The latter is the caller's
-        // problem to detect upstream — we just need to be idempotent
-        // here so a redundant unset is harmless.
-        Some(0) | Some(5) | Some(128) => Ok(()),
-        _ => Err(git_lfs_git::Error::Failed(
-            String::from_utf8_lossy(&out.stderr).trim().to_owned(),
-        )),
+        // 0 = unset; 5 = key wasn't there.
+        Some(0) | Some(5) => Ok(()),
+        _ => Err(InstallError::ConfigCommandFailed {
+            args,
+            stderr: String::from_utf8_lossy(&out.stderr).trim().to_owned(),
+        }),
     }
 }
 
