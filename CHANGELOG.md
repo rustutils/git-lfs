@@ -75,6 +75,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `git lfs update` now recognizes seven previously-shipped hook
+  templates (plus their leading-tab indented variants) as ours and
+  silently upgrades them to the current template, prints the
+  upstream-format `Hook already exists: <hook>` block when a
+  user-edited hook is in the way, and supports `--manual` to print
+  install instructions for all four hooks. `--force` overwrites a
+  conflict; the conflict path exits non-zero without touching any
+  hook. The hooks directory now honors `core.hookspath` so writes
+  and the manual-mode display path follow whatever git would
+  actually invoke.
 - `git lfs push origin <ref>` no longer fails with
   `fatal: ambiguous argument` when a working-tree file shares its
   name with the pushed ref (e.g. `git lfs push origin main` in a

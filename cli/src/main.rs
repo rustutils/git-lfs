@@ -483,7 +483,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             ext::run(&cwd)?;
         }
         Command::Update { force, manual } => match update::run(&cwd, force, manual) {
-            Ok(()) => {}
+            Ok(code) => return Ok(code),
             Err(update::UpdateError::NotInRepo) => {
                 // Stdout, not stderr: upstream prints to stdout here
                 // and `t-update` test 4 redirects only `>check.log`
