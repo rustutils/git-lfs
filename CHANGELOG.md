@@ -75,6 +75,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The transfer queue now sorts each batch's objects by descending
+  size before issuing `POST /objects/batch`, so larger transfers
+  claim a parallel-transfer slot first and small ones fill in the
+  tail. Matches upstream `tq` ordering and fixes t-batch-transfer
+  test 2.
+- A batch response advertising a `hash_algo` other than the spec
+  default (`sha256`) now aborts the batch with `unsupported hash
+  algorithm: <name>` before any per-object work runs. The server
+  would otherwise be expecting OIDs computed under a different
+  digest and its action URLs would be invalid.
+- `GIT_CURL_VERBOSE=1` now dumps each `POST /objects/batch` request
+  body to stderr — previously only meaningful for the libcurl-backed
+  upstream. Shell tests grep these (e.g. `grep
+  '{"operation":"upload"' push.log` in t-batch-transfer test 2).
 - `git lfs untrack` now matches `.gitattributes` lines whose first
   token is escape-encoded (`file[[:space:]]with[[:space:]]spaces.\#`)
   against the user's literal pathname (`file with spaces.#`), and

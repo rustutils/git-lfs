@@ -120,6 +120,15 @@ impl Transfer {
         let req_sizes: std::collections::HashMap<String, u64> =
             objects.iter().map(|o| (o.oid.clone(), o.size)).collect();
 
+        // Sort the batch by descending object size. Larger blobs get
+        // their action URLs first, which gives the bigger uploads /
+        // downloads a head start on the parallel-transfer semaphore
+        // — short small transfers can complete in the tail while the
+        // big one is still streaming. Matches upstream's `tq` queue
+        // ordering (t-batch-transfer test 2 asserts the JSON order).
+        let mut objects = objects;
+        objects.sort_by_key(|o| std::cmp::Reverse(o.size));
+
         let mut req = BatchRequest::new(dir.into(), objects);
         if let Some(r) = r#ref {
             req = req.with_ref(r);
@@ -132,6 +141,18 @@ impl Transfer {
             eprintln!("tq: sending batch of size {}", req.objects.len());
         }
         let resp: BatchResponse = self.api.batch(&req).await?;
+
+        // The spec requires `sha256` and treats an absent/empty
+        // `hash_algo` as that default. Anything else means the server
+        // would expect us to recompute every OID under a different
+        // digest before its action URLs could be trusted — bail
+        // before any per-object work runs.
+        if let Some(h) = resp.hash_algo.as_deref()
+            && !h.is_empty()
+            && !h.eq_ignore_ascii_case("sha256")
+        {
+            return Err(TransferError::UnsupportedHashAlgo(h.to_owned()));
+        }
 
         let limit = Arc::new(Semaphore::new(self.config.concurrency.max(1)));
         let mut join: JoinSet<(String, Result<(), TransferError>)> = JoinSet::new();

@@ -47,6 +47,13 @@ pub enum TransferError {
     /// The OID returned by the server is not valid hex.
     #[error("invalid oid from server: {0}")]
     InvalidOid(#[from] OidParseError),
+
+    /// The batch response advertised a `hash_algo` we don't implement.
+    /// Per the spec the only required value is `sha256`; anything else
+    /// would mean we'd need to recompute every OID under a different
+    /// digest before we could trust the server's actions.
+    #[error("unsupported hash algorithm: {0}")]
+    UnsupportedHashAlgo(String),
 }
 
 /// Format the action-URL error message to match upstream's
@@ -88,7 +95,8 @@ impl TransferError {
             TransferError::ServerObject(_)
             | TransferError::NoDownloadAction
             | TransferError::Store(_)
-            | TransferError::InvalidOid(_) => false,
+            | TransferError::InvalidOid(_)
+            | TransferError::UnsupportedHashAlgo(_) => false,
         }
     }
 }

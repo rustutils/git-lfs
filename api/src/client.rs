@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 use git_lfs_creds::{Credentials, Helper, Query};
@@ -140,6 +141,19 @@ impl Client {
         let url = self.url(path)?;
         let body_bytes = serde_json::to_vec(body)
             .map_err(|e| ApiError::Decode(format!("serializing request body: {e}")))?;
+        // GIT_CURL_VERBOSE mimics upstream's libcurl-backed dump: shell
+        // tests grep request bodies (e.g. t-batch-transfer test 2 verifies
+        // descending-size object order in the upload batch). reqwest
+        // doesn't emit this on its own, so write the body to stderr
+        // ourselves when the env is set.
+        if std::env::var_os("GIT_CURL_VERBOSE").is_some_and(|v| !v.is_empty() && v != "0") {
+            let mut err = std::io::stderr().lock();
+            let _ = writeln!(err, "> POST {url}");
+            let _ = writeln!(err, "> Content-Type: {LFS_MEDIA_TYPE}");
+            let _ = writeln!(err);
+            let _ = err.write_all(&body_bytes);
+            let _ = writeln!(err);
+        }
         self.send_with_auth_retry(|| {
             self.request(Method::POST, url.clone())
                 .header(CONTENT_TYPE, LFS_MEDIA_TYPE)
