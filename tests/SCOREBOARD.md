@@ -3,7 +3,7 @@
 Per-suite snapshot of the vendored upstream shell tests. Last
 refreshed: **2026-05-02**.
 
-**549 / 794 tests passing (~69%) across 104 suites.**
+**575 / 794 tests passing (~72%) across 104 suites.**
 
 Refresh:
 
@@ -15,35 +15,38 @@ The xtask wrapper runs `make test` under the hood and parses prove's
 TAP output into the Full pass / Partial / Empty groups below. Pipe
 through `tee` if you want the per-suite breakdown saved.
 
-## Full pass — 46 suites, 307 tests
+## Full pass — 51 suites, 338 tests
 
 ```
-t-alternates.sh                       t-object-authenticated.sh
-t-batch-transfer-size.sh              t-path.sh
-t-cherry-pick-commits.sh              t-post-checkout.sh
-t-chunked-transfer-encoding.sh        t-post-commit.sh
-t-clean.sh                            t-post-merge.sh
-t-clone-deprecated.sh                 t-pre-push.sh
-t-commit-delete-push.sh               t-progress-meter.sh
-t-config.sh                           t-push-bad-dns.sh
-t-duplicate-oids.sh                   t-push-failures-local.sh
-t-env.sh                              t-push-failures-remote.sh
-t-fetch-include.sh                    t-push-file-with-branch-name.sh
-t-fetch-paths.sh                      t-reference-clone.sh
-t-fetch-refspec.sh                    t-status.sh
-t-fetch.sh                            t-submodule-lfsconfig.sh
-t-filter-branch.sh                    t-submodule-recurse.sh
-t-happy-path.sh                       t-submodule.sh
-t-lock.sh                             t-track-attrs.sh
-t-malformed-pointers.sh               t-track-wildcards.sh
-t-mergetool.sh                        t-track.sh
-t-migrate-export.sh                   t-unlock.sh
+t-alternates.sh                       t-post-checkout.sh
+t-batch-transfer-size.sh              t-post-commit.sh
+t-cherry-pick-commits.sh              t-post-merge.sh
+t-chunked-transfer-encoding.sh        t-pre-push.sh
+t-clean.sh                            t-progress-meter.sh
+t-clone-deprecated.sh                 t-push-bad-dns.sh
+t-commit-delete-push.sh               t-push-failures-local.sh
+t-config.sh                           t-push-failures-remote.sh
+t-duplicate-oids.sh                   t-push-file-with-branch-name.sh
+t-env.sh                              t-reference-clone.sh
+t-fetch-include.sh                    t-status.sh
+t-fetch-paths.sh                      t-submodule-lfsconfig.sh
+t-fetch-refspec.sh                    t-submodule-recurse.sh
+t-fetch.sh                            t-submodule.sh
+t-filter-branch.sh                    t-track-attrs.sh
+t-happy-path.sh                       t-track-wildcards.sh
+t-install-worktree.sh                 t-track.sh
+t-lock.sh                             t-uninstall-worktree.sh
+t-malformed-pointers.sh               t-uninstall.sh
+t-mergetool.sh                        t-unlock.sh
+t-migrate-export.sh                   t-untrack.sh
 t-migrate-fixup.sh                    t-unusual-filenames.sh
-t-migrate-import-no-rewrite.sh        t-version.sh
-t-no-remote.sh                        t-zero-len-file.sh
+t-migrate-import-no-rewrite.sh        t-update.sh
+t-no-remote.sh                        t-version.sh
+t-object-authenticated.sh             t-zero-len-file.sh
+t-path.sh
 ```
 
-## Partial — 55 suites, 242 / 487 tests
+## Partial — 50 suites, 237 / 456 tests
 
 | Suite | Pass / Total |
 | --- | --- |
@@ -55,7 +58,7 @@ t-no-remote.sh                        t-zero-len-file.sh
 | `t-batch-storage-retries-ratelimit.sh` | 0 / 5 |
 | `t-batch-storage-retries.sh` | 0 / 5 |
 | `t-batch-storage-upload-tus.sh` | 0 / 2 |
-| `t-batch-transfer.sh` | 5 / 8 |
+| `t-batch-transfer.sh` | 7 / 8 |
 | `t-batch-unknown-oids.sh` | 0 / 1 |
 | `t-checkout.sh` | 16 / 18 |
 | `t-clone.sh` | 9 / 13 |
@@ -73,8 +76,7 @@ t-no-remote.sh                        t-zero-len-file.sh
 | `t-filter-process.sh` | 6 / 8 |
 | `t-fsck.sh` | 13 / 16 |
 | `t-install-custom-hooks-path.sh` | 0 / 3 |
-| `t-install-worktree.sh` | 0 / 5 |
-| `t-install.sh` | 5 / 14 |
+| `t-install.sh` | 9 / 14 |
 | `t-locks.sh` | 6 / 9 |
 | `t-logs.sh` | 0 / 1 |
 | `t-ls-files.sh` | 10 / 31 |
@@ -94,10 +96,6 @@ t-no-remote.sh                        t-zero-len-file.sh
 | `t-standalone-file.sh` | 1 / 9 |
 | `t-tempfile.sh` | 0 / 1 |
 | `t-umask.sh` | 1 / 4 |
-| `t-uninstall-worktree.sh` | 0 / 5 |
-| `t-uninstall.sh` | 6 / 10 |
-| `t-untrack.sh` | 3 / 7 |
-| `t-update.sh` | 2 / 4 |
 | `t-upload-redirect.sh` | 0 / 1 |
 | `t-usage.sh` | 0 / 1 |
 | `t-verify.sh` | 0 / 4 |
