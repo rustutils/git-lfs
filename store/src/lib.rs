@@ -85,6 +85,45 @@ impl Store {
         self.root.join("tmp")
     }
 
+    /// Sweep `<root>/tmp/objects/` (upstream's path for in-flight
+    /// download temp files: `<oid>-<random>`) and remove any whose
+    /// leading 64-char OID is already complete in the store.
+    ///
+    /// Best-effort — the dir not existing, or any individual remove
+    /// failing, is silently ignored. Intended to run once per
+    /// command invocation, before the command's main work, so an
+    /// interrupted prior run doesn't leak temp files indefinitely
+    /// (matches upstream's `lfs.cleanupTempFiles` startup task).
+    pub fn cleanup_tmp_objects(&self) {
+        let dir = self.root.join("tmp").join("objects");
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.len() < 64 {
+                continue;
+            }
+            // Slice the leading 64 chars and reconstruct the
+            // object's sharded path purely as a string (no hex
+            // validation): upstream's cleanup is filesystem-level
+            // and accepts any 64-char prefix, which matters because
+            // the upstream test exercises this with non-hex
+            // sentinel strings like `good...` / `bad...`.
+            let oid_str = &name_str[..64];
+            let object_path = self
+                .root
+                .join("objects")
+                .join(&oid_str[0..2])
+                .join(&oid_str[2..4])
+                .join(oid_str);
+            if object_path.is_file() {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+
     /// Where the object with this OID lives on disk.
     ///
     /// For [`Oid::EMPTY`] this returns the platform null device, mirroring

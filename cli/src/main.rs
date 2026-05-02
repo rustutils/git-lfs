@@ -192,6 +192,15 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
     // absolute paths regardless of where it's chdir'd to.
     canonicalize_path_envs(&cwd);
 
+    // Sweep stale temp-object files (`<oid>-<random>` under
+    // `<lfs>/tmp/objects/`) whose object is already complete in the
+    // store. Mirrors upstream's `lfs.cleanupTempFiles` startup task.
+    // Skipped silently when we're not in a repo (e.g. `git lfs
+    // version` outside any repo).
+    if let Ok(lfs_root) = git_lfs_git::lfs_dir(&cwd) {
+        Store::new(lfs_root).cleanup_tmp_objects();
+    }
+
     match cmd {
         Command::Clean { path } => {
             let _ = install::try_install_hooks(&cwd);

@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Stale temp-object sweep on every command. At dispatch start, scan
+  `<lfs>/tmp/objects/` for files whose leading 64-char OID prefix has
+  a complete object in the store and remove them. Mirrors upstream's
+  `lfs.cleanupTempFiles` startup task — without it, an interrupted
+  download leaves behind `<oid>-<random>` temp files that pile up
+  over time.
 - LFS endpoint resolution now falls back to `.git/FETCH_HEAD` after
   the existing chain (`GIT_LFS_URL` → `lfs.url` → `remote.<n>.lfsurl`
   → derived from `remote.<n>.url`). Lets `git archive` smudge LFS
