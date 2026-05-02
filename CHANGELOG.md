@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `--help` output no longer renders rustdoc backticks literally. The
+  doc-comment markdown convention now produces clean terminal text
+  (backticks stripped), bold inline-code in man pages, and proper
+  links in the mdbook docs (`gitignore(5)`, `git-lfs-config(5)`,
+  etc. resolve to git-scm.com or the corresponding internal page).
+- `git-lfs-smudge(1)` gains ENVIRONMENT and KNOWN BUGS sections;
+  `git-lfs-checkout(1)` gets the upstream-faithful DESCRIPTION
+  (conflict mode, partial-clone / `GIT_ATTR_SOURCE` interaction,
+  bare-repo behavior) and an EXAMPLES section.
+
 ## [0.4.0] - 2026-05-02
 
 ### Added

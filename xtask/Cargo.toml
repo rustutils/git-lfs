@@ -9,6 +9,7 @@ publish           = false
 clap           = { workspace = true }
 clap_mangen    = { workspace = true }
 pulldown-cmark = { workspace = true }
+regex          = "1"
 git-lfs        = { path = "../cli" }
 
 [dev-dependencies]

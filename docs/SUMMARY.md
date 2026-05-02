@@ -52,3 +52,7 @@
 - [git lfs post-checkout](cmds/git-lfs-post-checkout.md)
 - [git lfs post-commit](cmds/git-lfs-post-commit.md)
 - [git lfs post-merge](cmds/git-lfs-post-merge.md)
+
+# Meta
+
+- [git lfs config](cmds/git-lfs-config.md)

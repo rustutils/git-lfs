@@ -14,7 +14,7 @@
 
 use git_lfs::man::ManContent;
 
-use crate::{groff, markdown};
+use crate::{groff, markdown, post_process};
 
 /// Build a man page as a byte vec. clap_mangen handles NAME / SYNOPSIS /
 /// OPTIONS / VERSION; we splice in the markdown-sourced extras
@@ -57,7 +57,13 @@ pub fn render_man(
     }
 
     man.render_version_section(&mut out)?;
-    Ok(out)
+
+    // Convert the markdown conventions in clap-derived help text
+    // (inline `code`, man-page cross-references) into proper groff.
+    // Clap_mangen emits them as raw text, which would otherwise leak
+    // through to the rendered page literally.
+    let s = String::from_utf8(out).expect("clap_mangen emits utf-8");
+    Ok(post_process::for_groff(s).into_bytes())
 }
 
 /// Build a markdown reference page as a String. Layout mirrors the man
@@ -86,7 +92,11 @@ pub fn render_md(page_name: &str, cmd: &clap::Command, extras: &ManContent) -> S
         out.push_str(body.trim_end());
         out.push_str("\n\n");
     }
-    out
+
+    // Rewrite man-page cross-references (e.g. `git-lfs-config(5)`,
+    // `gitignore(5)`) into real markdown links — internal pages get a
+    // sibling-relative link, upstream git pages link to git-scm.com.
+    post_process::for_markdown(out)
 }
 
 /// `EXAMPLES` → `Examples`. groff convention is uppercase headings;

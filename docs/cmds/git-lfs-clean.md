@@ -18,7 +18,7 @@ Read the contents of a large file from standard input, and write a Git LFS point
 
 Clean is typically run by Git’s clean filter, configured by the repository’s Git attributes.
 
-Clean is not part of the user-facing Git plumbing commands. To preview the pointer of a large file as it would be generated, see the git-lfs-pointer(1) command.
+Clean is not part of the user-facing Git plumbing commands. To preview the pointer of a large file as it would be generated, see the [git-lfs-pointer(1)](./git-lfs-pointer.md) command.
 
 ## Options
 

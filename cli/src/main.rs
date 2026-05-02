@@ -1,7 +1,7 @@
 use std::io::{self, BufRead, BufWriter, Read, Write};
 use std::process::ExitCode;
 
-use clap::{CommandFactory, Parser};
+use clap::{Arg, CommandFactory, FromArgMatches};
 use git_lfs_filter::{CleanExtension, SmudgeExtension, clean, filter_process, smudge_with_fetch};
 use git_lfs_store::Store;
 
@@ -42,8 +42,40 @@ use git_lfs::args::{
     VersionArgs,
 };
 
+/// Strip backtick characters from every help-text field in the clap
+/// command tree so `--help` reads as plain prose. The backticks live in
+/// the source rustdoc because the markdown and groff renderers consume
+/// them as code-span markers; in the terminal they're just noise.
+fn strip_backticks_in_help(cmd: clap::Command) -> clap::Command {
+    let mut cmd = cmd.mut_args(strip_backticks_in_arg);
+    let about = cmd.get_about().map(|s| s.to_string().replace('`', ""));
+    let long_about = cmd.get_long_about().map(|s| s.to_string().replace('`', ""));
+    if let Some(s) = about {
+        cmd = cmd.about(s);
+    }
+    if let Some(s) = long_about {
+        cmd = cmd.long_about(s);
+    }
+    cmd.mut_subcommands(strip_backticks_in_help)
+}
+
+fn strip_backticks_in_arg(arg: Arg) -> Arg {
+    let help = arg.get_help().map(|s| s.to_string().replace('`', ""));
+    let long_help = arg.get_long_help().map(|s| s.to_string().replace('`', ""));
+    let mut arg = arg;
+    if let Some(s) = help {
+        arg = arg.help(s);
+    }
+    if let Some(s) = long_help {
+        arg = arg.long_help(s);
+    }
+    arg
+}
+
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let cmd = strip_backticks_in_help(Cli::command());
+    let matches = cmd.get_matches();
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
     if cli.version {
         println!("git-lfs/{} (rust)", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;

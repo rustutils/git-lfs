@@ -18,6 +18,7 @@ use git_lfs::man::extras_for;
 
 mod groff;
 mod markdown;
+mod post_process;
 mod render;
 mod test;
 

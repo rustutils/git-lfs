@@ -52,18 +52,27 @@ impl ManContent {
 
 const EMPTY: ManContent = ManContent::empty();
 
+const SMUDGE: ManContent = ManContent {
+    description: None,
+    extra_sections: &[
+        ("ENVIRONMENT", include_str!("../man/smudge/environment.md")),
+        ("KNOWN BUGS", include_str!("../man/smudge/known_bugs.md")),
+    ],
+};
+
+const CHECKOUT: ManContent = ManContent {
+    description: None,
+    extra_sections: &[("EXAMPLES", include_str!("../man/checkout/examples.md"))],
+};
+
 /// Look up the doc extras for `subcommand` (e.g. `"fetch"`,
 /// `"checkout"`). Pass `""` for the top-level `git-lfs` page.
 /// Returns a reference to [`ManContent::empty`] when there's no entry,
 /// so the caller can always splice unconditionally.
-pub fn extras_for(_subcommand: &str) -> &'static ManContent {
-    // No entries yet. As we author content, replace this with a
-    // match on `subcommand`:
-    //
-    //     match subcommand {
-    //         "fetch" => &FETCH_DOCS,
-    //         "checkout" => &CHECKOUT_DOCS,
-    //         _ => &EMPTY,
-    //     }
-    &EMPTY
+pub fn extras_for(subcommand: &str) -> &'static ManContent {
+    match subcommand {
+        "smudge" => &SMUDGE,
+        "checkout" => &CHECKOUT,
+        _ => &EMPTY,
+    }
 }

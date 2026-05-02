@@ -113,15 +113,16 @@ pub struct CleanArgs {
 /// using wildcard matching as per gitignore(5). Git LFS pointer files that are
 /// not replaced with the contents of their corresponding object files are simply
 /// copied to standard output without change.
+///
+/// Without any options, git lfs smudge outputs the raw Git LFS content to standard
+/// output.
 #[derive(Args)]
-#[clap(
-    before_help = "Without any options, git lfs smudge outputs the raw Git LFS content to standard output."
-)]
 pub struct SmudgeArgs {
     /// Working-tree path of the file being smudged (currently unused).
     pub path: Option<PathBuf>,
-    /// Pass the pointer text through unchanged; equivalent to
-    /// `GIT_LFS_SKIP_SMUDGE=1`. Wired up by `install --skip-smudge`.
+    /// Skip automatic downloading of objects on clone or pull.
+    ///
+    /// Equivalent to `GIT_LFS_SKIP_SMUDGE=1`. Wired up by `git lfs install --skip-smudge`.
     #[arg(long)]
     pub skip: bool,
 }
@@ -130,6 +131,14 @@ pub struct SmudgeArgs {
 /// and install the LFS git hooks.
 #[derive(Args)]
 pub struct InstallArgs {
+    // TODO(post-1.0): replace the --local/--system/--worktree/--file mutex
+    // with a clap ArgGroup (multiple = false). Validation lives in
+    // resolve_install_scope (cli/src/main.rs); kept manual because
+    // tests/t-install.sh:329 (and the t-install-worktree / t-uninstall /
+    // t-uninstall-worktree variants) assert upstream's exact wording
+    // ("Only one of the --local, --system, --worktree, and --file
+    // options can be specified."). Worth taking once we're free to
+    // update those assertions.
     /// Set config in the local repo only (default: --global).
     #[arg(short, long)]
     pub local: bool,
@@ -161,6 +170,9 @@ pub struct InstallArgs {
 /// untouched.
 #[derive(Args)]
 pub struct UninstallArgs {
+    // TODO(post-1.0): same --local/--system/--worktree/--file mutex as
+    // InstallArgs — share a clap ArgGroup. See InstallArgs's TODO for
+    // the rationale and test references.
     /// Optional mode: `hooks` removes only the LFS git hooks and
     /// leaves the filter config alone (the inverse of `--skip-repo`).
     pub mode: Option<String>,
@@ -391,6 +403,12 @@ pub struct VersionArgs;
 /// or stdin, or just check whether some bytes are a valid pointer.
 #[derive(Args)]
 pub struct PointerArgs {
+    // TODO(post-1.0): replace the --strict/--no-strict, --check/--pointer,
+    // and --check/--file/--stdin manual checks (cli/src/pointer_cmd.rs:108,
+    // 218, 223, 230, 241) with clap arg_group/conflicts_with/requires.
+    // No shell test asserts this wording, so the constraint here is
+    // softer than for the other commands — the deferral is purely about
+    // upstream parity. Worth taking whenever.
     /// Build a pointer from this file (read content, hash, encode).
     #[arg(short, long)]
     pub file: Option<PathBuf>,
@@ -456,6 +474,16 @@ pub enum MigrateCmd {
 /// converted in place.
 #[derive(Args)]
 pub struct MigrateImportArgs {
+    // TODO(post-1.0): replace the manual --no-rewrite/--fixup/--above/
+    // --include/--exclude/--everything cross-flag validation
+    // (cli/src/migrate/import.rs:53-77, plus the shared
+    // --everything/positional check in migrate/mod.rs::resolve_refs)
+    // with clap arg_group/conflicts_with. Currently kept as-is because
+    // tests/t-migrate-fixup.sh:94,112,130 and t-migrate-import.sh:814,
+    // 825,836 assert upstream's exact wording (e.g. "--no-rewrite and
+    // --fixup cannot be combined", "Cannot use --everything with
+    // --include-ref or --exclude-ref"). Worth taking once we're free
+    // to update those assertions.
     /// Without `--no-rewrite`: branches/refs to rewrite (empty =
     /// current branch). With `--no-rewrite`: working-tree paths
     /// to convert.
@@ -525,6 +553,14 @@ pub struct MigrateImportArgs {
 /// whose objects are missing are left as-is.
 #[derive(Args)]
 pub struct MigrateExportArgs {
+    // TODO(post-1.0): make --include a required clap arg (it is required
+    // in practice — cli/src/migrate/export.rs:53). Currently kept as a
+    // runtime check because tests/t-migrate-export.sh:208 asserts
+    // upstream's exact wording ("One or more files must be specified
+    // with --include"); clap's "the following required arguments were
+    // not provided: --include <INCLUDE>" would be a strict UX win but
+    // a behavioral diff. Also see the shared --everything/positional
+    // check in migrate/mod.rs::resolve_refs.
     /// Branches / refs to rewrite. Empty = current branch.
     pub branches: Vec<String>,
     /// Walk every local branch and tag.
@@ -572,6 +608,16 @@ pub struct MigrateExportArgs {
 /// Read-only — no objects or history change.
 #[derive(Args)]
 pub struct MigrateInfoArgs {
+    // TODO(post-1.0): replace the manual --everything/--include-ref/
+    // --exclude-ref/--fixup/--pointers/--include/--exclude cross-flag
+    // validation (cli/src/migrate/info.rs:59-83, plus the shared
+    // --everything/positional check in migrate/mod.rs::resolve_refs)
+    // with clap arg_group/conflicts_with. Currently kept as-is because
+    // tests/t-migrate-info.sh:903,922,941,977,995,1013,1031 assert
+    // upstream's exact wording (e.g. "Cannot use --fixup with
+    // --pointers=follow"). The value-conditional --pointers checks
+    // ("=follow" / "=no-follow") may not all collapse cleanly to
+    // declarative clap rules.
     /// Branches / refs to scan. Empty = current branch.
     pub branches: Vec<String>,
     /// Walk every local branch and tag.
@@ -622,35 +668,83 @@ pub struct MigrateInfoArgs {
 
 /// Populate working copy with real content from Git LFS files.
 ///
-/// Replace pointer text in the working tree with actual LFS object
-/// content. With no args, materializes every LFS pointer in HEAD's
-/// tree. With paths (literal file names or trailing-slash directory
-/// prefixes), restricts to matching pointers.
+/// Try to ensure that the working copy contains file content for Git LFS
+/// objects for the current ref, if the object data is available. Does not
+/// download any content; see git-lfs-fetch(1) for that.
 ///
-/// During a merge conflict, `--to <path> --ours/--theirs/--base
-/// <file>` writes the LFS content from one of the conflicted
-/// stages to `<path>` (creating intermediate directories) so the
-/// user can compare or salvage versions.
+/// Checkout scans the current ref for all LFS objects that would be
+/// required, then where a file is either missing in the working copy, or
+/// contains placeholder pointer content with the same SHA, the real file
+/// content is written, provided we have it in the local store. Modified
+/// files are never overwritten.
+///
+/// One or more may be provided as arguments to restrict the set of files
+/// that are updated. Glob patterns are matched as per the format described
+/// in gitignore(5).
+///
+/// When used with `--to` and the working tree is in a conflicted state due
+/// to a merge, this option checks out one of the three stages a conflicting
+/// Git LFS object into a separate file (which can be outside of the work
+/// tree). This can make using diff tools to inspect and resolve merges
+/// easier. A single Git LFS object's file path must be provided in
+/// `PATHS`. If `FILE` already exists, whether as a regular
+/// file, symbolic link, or directory, it will be removed and replaced, unless
+/// it is a non-empty directory or otherwise cannot be deleted.
+///
+/// If the installed Git version is at least 2.42.0,
+/// this command will by default check out Git LFS objects for files
+/// only if they are present in the Git index and if they match a Git LFS
+/// filter attribute from a `.gitattributes` file that is present in either
+/// the index or the current working tree (or, as is always the case, if
+/// they match a Git LFS filter attribute in a local gitattributes file
+/// such as `$GIT_DIR/info/attributes`). These constraints do not apply
+/// with prior versions of Git.
+///
+/// In a repository with a partial clone or sparse checkout, it is therefore
+/// advisable to check out all `.gitattributes` files from HEAD before
+/// using this command, if Git v2.42.0 or later is installed. Alternatively,
+/// the `GIT_ATTR_SOURCE` environment variable may be set to HEAD, which
+/// will cause Git to only read attributes from `.gitattributes` files in
+/// HEAD and ignore those in the index or working tree.
+///
+/// In a bare repository, this command prints an informational message and
+/// exits without modifying anything. In a future version, it may exit with
+/// an error.
 #[derive(Args)]
 pub struct CheckoutArgs {
-    /// Paths to check out. Empty = everything in HEAD's tree.
-    /// In conflict mode (`--to`), exactly one path is required.
-    pub paths: Vec<String>,
-    /// Conflict-mode: write the chosen stage's content to this
-    /// path instead of into the working tree. Resolves relative
-    /// to the current directory.
-    #[arg(long, value_name = "PATH")]
-    pub to: Option<String>,
-    /// Conflict-mode: pull from stage 2 (HEAD's version). Mutually
-    /// exclusive with `--theirs` and `--base`.
-    #[arg(long)]
-    pub ours: bool,
-    /// Conflict-mode: pull from stage 3 (the merging-in version).
-    #[arg(long)]
-    pub theirs: bool,
-    /// Conflict-mode: pull from stage 1 (the common ancestor).
+    // TODO(post-1.0): replace this manual stage/--to validation with
+    // clap arg_group/requires/conflicts_with. Currently kept as-is
+    // because tests/t-checkout.sh:897-909 assert upstream's exact error
+    // wording; clap's wording would be a strict UX improvement but a
+    // behavioral diff. Worth taking once we're free to update those
+    // assertions.
+    /// Check out the merge base of the specified file
     #[arg(long)]
     pub base: bool,
+
+    /// Check out our side (that of the current branch) of the
+    /// conflict for the specified file
+    #[arg(long)]
+    pub ours: bool,
+
+    /// Check out their side (that of the other branch) of the
+    /// conflict for the specified file
+    #[arg(long)]
+    pub theirs: bool,
+
+    /// If the working tree is in a conflicted state, check out the
+    /// portion of the conflict specified by `--base`, `--ours`, or
+    /// `--theirs` to the given path. Exactly one of these options
+    /// is required.
+    #[arg(long, value_name = "FILE")]
+    pub to: Option<String>,
+
+    /// Paths to check out.
+    ///
+    /// When empty, everything in HEAD's tree is checked out. In
+    /// conflict mode (`--to <path>` together with one of `--base`,
+    /// `--ours`, or `--theirs`), exactly one path is required.
+    pub paths: Vec<String>,
 }
 
 /// Delete local LFS objects that aren't reachable from HEAD or any
@@ -754,6 +848,13 @@ pub struct LocksArgs {
 /// exclusive).
 #[derive(Args)]
 pub struct UnlockArgs {
+    // TODO(post-1.0): replace the manual --id-xor-paths check
+    // (cli/src/lock.rs:301-306) with a clap ArgGroup
+    // (required = true, multiple = false) covering --id and the
+    // positional paths arg. Currently kept as-is because
+    // tests/t-unlock.sh:228,431,482 assert upstream's exact wording
+    // ("Exactly one of --id or a set of paths must be provided").
+    // Worth taking once we're free to update those assertions.
     /// Paths to unlock; mutually exclusive with `--id`.
     pub paths: Vec<String>,
     /// Lock id to release; mutually exclusive with paths.

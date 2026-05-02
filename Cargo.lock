@@ -2324,6 +2324,7 @@ dependencies = [
  "clap_mangen",
  "git-lfs",
  "pulldown-cmark",
+ "regex",
  "tempfile",
 ]
 
