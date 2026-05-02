@@ -2,7 +2,7 @@ use std::io::{self, BufRead, BufWriter, Read, Write};
 use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser};
-use git_lfs_filter::{CleanExtension, clean, filter_process, smudge_with_fetch};
+use git_lfs_filter::{CleanExtension, SmudgeExtension, clean, filter_process, smudge_with_fetch};
 use git_lfs_store::Store;
 
 mod checkout;
@@ -239,6 +239,27 @@ fn collect_clean_extensions(cwd: &std::path::Path) -> Vec<CleanExtension> {
         .collect()
 }
 
+/// Same shape as [`collect_clean_extensions`] but builds the `smudge`
+/// side of the registered extensions. Used by the smudge filter,
+/// filter-process, and the pull/checkout materialize loops to invert
+/// what `clean` did during commit.
+fn collect_smudge_extensions(cwd: &std::path::Path) -> Vec<SmudgeExtension> {
+    git_lfs_git::list_extensions(cwd)
+        .into_iter()
+        .filter_map(|ext| {
+            if ext.smudge.trim().is_empty() {
+                return None;
+            }
+            let priority = u8::try_from(ext.priority).ok().filter(|&p| p <= 9)?;
+            Some(SmudgeExtension {
+                name: ext.name,
+                priority,
+                command: ext.smudge,
+            })
+        })
+        .collect()
+}
+
 fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
     let cwd = std::env::current_dir()?;
     // `GIT_DIR` / `GIT_WORK_TREE` (and the auxiliary `GIT_OBJECT_*`
@@ -277,7 +298,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             clean(&store, &mut input, &mut output, &path_str, &extensions)?;
             output.flush()?;
         }
-        Command::Smudge { path: _, skip } => {
+        Command::Smudge { path, skip } => {
             let _ = install::try_install_hooks(&cwd);
             let store = Store::new(git_lfs_git::lfs_dir(&cwd)?)
                 .with_references(git_lfs_git::lfs_alternate_dirs(&cwd).unwrap_or_default());
@@ -288,7 +309,19 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 io::copy(&mut input, &mut output)?;
             } else {
                 let fetcher = LfsFetcher::from_repo(&cwd, &store)?;
-                smudge_with_fetch(&store, &mut input, &mut output, |p| fetcher.fetch(p))?;
+                let smudge_extensions = collect_smudge_extensions(&cwd);
+                let path_str = path
+                    .as_deref()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                smudge_with_fetch(
+                    &store,
+                    &mut input,
+                    &mut output,
+                    &path_str,
+                    &smudge_extensions,
+                    |p| fetcher.fetch(p),
+                )?;
                 fetcher.persist_access_mode();
             }
             output.flush()?;
@@ -418,14 +451,16 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             let fetcher = LfsFetcher::from_repo(&cwd, &store)?;
             let stdin = io::stdin().lock();
             let stdout = io::stdout().lock();
-            let extensions = collect_clean_extensions(&cwd);
+            let clean_extensions = collect_clean_extensions(&cwd);
+            let smudge_extensions = collect_smudge_extensions(&cwd);
             filter_process(
                 &store,
                 stdin,
                 stdout,
                 |p| fetcher.fetch(p),
                 skip || skip_smudge_env(),
-                &extensions,
+                &clean_extensions,
+                &smudge_extensions,
             )?;
             fetcher.persist_access_mode();
         }

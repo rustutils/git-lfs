@@ -120,6 +120,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   overwritten. A successful install now prints
   `Updated Git hooks.\nGit LFS initialized.` (the first line was
   previously omitted) when hooks are touched.
+- Pointer-extension smudge support. The smudge filter, filter-process
+  protocol, `git lfs pull`, and `git lfs checkout` (including
+  `--to <path> --base|--ours|--theirs`) all now run configured
+  `lfs.extension.<name>.smudge` commands in reverse priority order
+  to reverse what `clean` did during commit. Each stage's output is
+  hashed and verified against the OID recorded in the pointer's
+  `ext-N-<name>` line; any mismatch surfaces as a typed error
+  rather than silently producing wrong bytes. The extension
+  subprocess runs from the work-tree root regardless of where the
+  user invoked the command, so case-inverter / encryption shims
+  that probe `.git/` work even from a subdirectory. Together these
+  fix t-pull 20, t-checkout 17/18, t-filter-process 4, and
+  t-smudge 4.
+- `git lfs checkout --to <path> --base|--ours|--theirs <file>`
+  invoked from a repo subdirectory now resolves `<file>` to a
+  repo-root-relative path before looking up the staged blob via
+  `git rev-parse :<stage>:<path>`. Mirrors upstream's
+  `lfs.NewCurrentToRepoPathConverter`: relative args are joined
+  against cwd, `..`/`.` segments are collapsed lexically, and a
+  bare `.` from the repo root stays `.` so the upstream "can't
+  resolve ref `:N:.`" error wording is preserved.
 
 ### Fixed
 

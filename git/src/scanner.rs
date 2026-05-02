@@ -18,7 +18,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use git_lfs_pointer::{MAX_POINTER_SIZE, Oid, Pointer};
+use git_lfs_pointer::{Extension, MAX_POINTER_SIZE, Oid, Pointer};
 
 use crate::Error;
 use crate::cat_file::{CatFileBatch, CatFileBatchCheck, CatFileHeader};
@@ -46,6 +46,12 @@ pub struct PointerEntry {
     /// `git lfs fsck --pointers` to flag pointers that parse but don't
     /// match the canonical encoding.
     pub canonical: bool,
+    /// Pointer extensions in priority-ascending order, mirroring
+    /// `Pointer::extensions`. Empty for plain pointers; non-empty when
+    /// the file was committed through a configured `lfs.extension.<n>`
+    /// chain. The materialize/checkout paths replay these in reverse to
+    /// reconstruct the working-tree content.
+    pub extensions: Vec<Extension>,
 }
 
 /// Walk history reachable from `include` minus `exclude`, return unique
@@ -125,6 +131,7 @@ pub fn scan_pointers_with_args(
             path: path_buf,
             paths,
             canonical: pointer.canonical,
+            extensions: pointer.extensions.clone(),
         });
     }
     Ok(out)
@@ -238,6 +245,7 @@ pub fn scan_index_lfs(cwd: &Path) -> Result<Vec<PointerEntry>, Error> {
             path: Some(path.clone()),
             paths: vec![path],
             canonical: pointer.canonical,
+            extensions: pointer.extensions.clone(),
         });
     }
     Ok(out)
@@ -391,6 +399,7 @@ pub fn scan_tree(cwd: &Path, reference: &str) -> Result<Vec<PointerEntry>, Error
             path: Some(path_buf.clone()),
             paths: vec![path_buf],
             canonical: pointer.canonical,
+            extensions: pointer.extensions.clone(),
         });
     }
     Ok(entries)

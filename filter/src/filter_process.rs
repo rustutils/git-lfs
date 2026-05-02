@@ -13,7 +13,7 @@ use git_lfs_git::pktline;
 use git_lfs_pointer::Pointer;
 use git_lfs_store::Store;
 
-use crate::{CleanExtension, FetchError, SmudgeOutcome, clean, smudge_with_fetch};
+use crate::{CleanExtension, FetchError, SmudgeExtension, SmudgeOutcome, clean, smudge_with_fetch};
 
 #[derive(Debug, thiserror::Error)]
 pub enum FilterProcessError {
@@ -47,7 +47,8 @@ pub fn filter_process<R, W, F>(
     output: W,
     mut fetch: F,
     skip_smudge: bool,
-    extensions: &[CleanExtension],
+    clean_extensions: &[CleanExtension],
+    smudge_extensions: &[SmudgeExtension],
 ) -> Result<(), FilterProcessError>
 where
     R: Read,
@@ -81,10 +82,17 @@ where
         let pathname = headers.get("pathname").map(String::as_str).unwrap_or("");
 
         match command.as_str() {
-            "clean" => process_clean(store, &mut writer, &payload, pathname, extensions)?,
+            "clean" => process_clean(store, &mut writer, &payload, pathname, clean_extensions)?,
             "smudge" if skip_smudge => process_smudge_passthrough(&mut writer, &payload)?,
             "smudge" => {
-                let outcome = process_smudge(store, &mut writer, &payload, &mut fetch)?;
+                let outcome = process_smudge(
+                    store,
+                    &mut writer,
+                    &payload,
+                    pathname,
+                    smudge_extensions,
+                    &mut fetch,
+                )?;
                 if matches!(outcome, Some(SmudgeOutcome::Passthrough)) {
                     malformed.push(pathname.to_owned());
                 }
@@ -241,6 +249,8 @@ fn process_smudge<W, F>(
     store: &Store,
     writer: &mut pktline::Writer<W>,
     payload: &[u8],
+    pathname: &str,
+    smudge_extensions: &[SmudgeExtension],
     fetch: &mut F,
 ) -> Result<Option<SmudgeOutcome>, FilterProcessError>
 where
@@ -251,9 +261,16 @@ where
     let mut outcome: Option<SmudgeOutcome> = None;
     let result = run_through_sink(writer, |sink| {
         // The protocol only differentiates success vs. error at this layer;
-        // the specific reason (ObjectMissing, Extensions, FetchFailed, …) is
-        // logged by the caller's stderr if they care.
-        match smudge_with_fetch(store, &mut { payload }, sink, |p| fetch(p)) {
+        // the specific reason (ObjectMissing, FetchFailed, ExtensionFailed,
+        // …) is logged by the caller's stderr if they care.
+        match smudge_with_fetch(
+            store,
+            &mut { payload },
+            sink,
+            pathname,
+            smudge_extensions,
+            |p| fetch(p),
+        ) {
             Ok(o) => {
                 outcome = Some(o);
                 Ok(())
@@ -381,7 +398,16 @@ mod tests {
 
     fn run(store: &Store, input: Vec<u8>) -> Vec<u8> {
         let mut output = Vec::new();
-        filter_process(store, Cursor::new(input), &mut output, no_fetch, false, &[]).unwrap();
+        filter_process(
+            store,
+            Cursor::new(input),
+            &mut output,
+            no_fetch,
+            false,
+            &[],
+            &[],
+        )
+        .unwrap();
         output
     }
 
@@ -514,6 +540,7 @@ mod tests {
                 Ok(())
             },
             false,
+            &[],
             &[],
         )
         .unwrap();

@@ -28,11 +28,13 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use git_lfs_filter::{SmudgeError, smudge_object_to};
 use git_lfs_git::scan_index_lfs;
 use git_lfs_pointer::Pointer;
 use git_lfs_store::Store;
 use globset::{Glob, GlobSetBuilder};
 
+use crate::collect_smudge_extensions;
 use crate::fetcher::LfsFetcher;
 
 #[derive(Debug, thiserror::Error)]
@@ -57,6 +59,8 @@ pub enum CheckoutError {
     /// printed verbatim by main.rs to stderr; exit code 2.
     #[error("{0}")]
     Usage(String),
+    #[error("smudge: {0}")]
+    Smudge(#[from] SmudgeError),
 }
 
 #[derive(Debug, Clone)]
@@ -111,6 +115,7 @@ pub fn run(cwd: &Path, opts: &Options) -> Result<(), CheckoutError> {
     let store = Store::new(git_lfs_git::lfs_dir(cwd)?)
         .with_references(git_lfs_git::lfs_alternate_dirs(cwd).unwrap_or_default());
     let repo_root = repo_root(cwd)?;
+    let smudge_extensions = collect_smudge_extensions(cwd);
 
     // Discover LFS pointers via the index (`git ls-files
     // :(attr:filter=lfs)`). Sparse-checkout-aware (out-of-cone files
@@ -261,7 +266,6 @@ pub fn run(cwd: &Path, opts: &Options) -> Result<(), CheckoutError> {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e.into()),
         }
-        let mut src = store.open(p.oid)?;
         let mut out = match std::fs::File::create(&dst) {
             Ok(f) => f,
             Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
@@ -275,7 +279,24 @@ pub fn run(cwd: &Path, opts: &Options) -> Result<(), CheckoutError> {
             }
             Err(e) => return Err(e.into()),
         };
-        std::io::copy(&mut src, &mut out)?;
+        // Same routing as pull: re-build the pointer from the index
+        // entry so its extensions, if any, drive the smudge chain.
+        // Plain pointers take the direct store→file copy path inside
+        // smudge_object_to.
+        let pointer = Pointer {
+            oid: p.oid,
+            size: p.size,
+            extensions: p.extensions.clone(),
+            canonical: true,
+        };
+        smudge_object_to(
+            &store,
+            &pointer,
+            &mut out,
+            &rel_str,
+            &smudge_extensions,
+            Some(&repo_root),
+        )?;
         drop(out);
         if let Some(perms) = preserved_perms {
             // Restore the original mode so a read-only pointer
@@ -566,14 +587,14 @@ fn run_to_conflict(cwd: &Path, opts: &Options, stage: Option<u8>) -> Result<(), 
         std::fs::create_dir_all(parent)?;
     }
 
-    // Look up the staged blob. Pass the user's path through verbatim
-    // — `git rev-parse :<stage>:<arg>` resolves relative paths against
-    // the caller's cwd already, so subdirectory invocations work
-    // without us doing manual repo-relative conversion. On any
-    // failure (missing index entry, no merge in progress, the path
-    // pointing at a directory like ".") we surface the upstream
-    // error wording the test greps for.
-    let ref_str = format!(":{stage}:{file_arg}");
+    // `git rev-parse :<stage>:<path>` interprets `<path>` from the
+    // repository root, not cwd — so a user invocation from inside
+    // `dir1/` with `abc.dat` would fail to resolve. Mirror upstream's
+    // `NewCurrentToRepoPathConverter` step: resolve the arg against
+    // the caller's cwd, then strip the repo-root prefix.
+    let repo_root_for_path = repo_root(cwd)?;
+    let lookup_path = repo_relative_path(cwd, &repo_root_for_path, file_arg);
+    let ref_str = format!(":{stage}:{lookup_path}");
     let blob_oid = match resolve_index_blob(cwd, &ref_str) {
         Some(oid) => oid,
         None => {
@@ -624,15 +645,87 @@ fn run_to_conflict(cwd: &Path, opts: &Options, stage: Option<u8>) -> Result<(), 
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e.into()),
     }
-    let mut src = store.open(pointer.oid)?;
     let mut out = std::fs::File::create(&to_path)?;
-    std::io::copy(&mut src, &mut out)?;
+    // Route through the smudge filter so pointers carrying
+    // extensions get their chain run on the way to disk. Spawn cwd
+    // is the work-tree root so the extension subprocess finds
+    // `.git/` regardless of where the user ran checkout from. The
+    // %f substitution gets the same repo-relative path we used to
+    // look up the staged blob — keeps the case-inverter's log line
+    // (`smudge: dir1/abc.dat`) stable across cwd.
+    let smudge_extensions = collect_smudge_extensions(cwd);
+    smudge_object_to(
+        &store,
+        &pointer,
+        &mut out,
+        &lookup_path,
+        &smudge_extensions,
+        Some(&repo_root_for_path),
+    )?;
     Ok(())
 }
 
 /// `git rev-parse <ref>` — return the object SHA, or `None` if the
 /// ref doesn't resolve. Used by conflict-mode lookup of `:<stage>:
 /// <file>`.
+/// Convert a user-supplied path argument to a repo-root-relative one,
+/// joining it against `cwd` first when relative and resolving any
+/// `..`/`.` segments lexically. Mirrors upstream's
+/// `lfs.NewCurrentToRepoPathConverter` — `git rev-parse :<stage>:<path>`
+/// always treats `<path>` as repo-rooted, so a `pushd dir1; git lfs
+/// checkout --to ../o.txt --ours abc.dat` invocation needs `abc.dat`
+/// rewritten to `dir1/abc.dat` before lookup. Likewise, a
+/// `pushd dir1/dir2; git lfs checkout --base ../../file1.dat` needs
+/// the `..` segments collapsed so the index lookup hits `file1.dat`,
+/// not the literal `dir1/dir2/../../file1.dat` (which the index
+/// doesn't store). A bare `.` from the repo root stays `.` so the
+/// upstream "can't resolve ref :N:." error wording survives test 13.
+///
+/// Falls back to the raw input when path arithmetic fails (the user
+/// gave an absolute path outside the repo, or the prefix-strip didn't
+/// match) — git's own error wording then surfaces.
+fn repo_relative_path(cwd: &Path, repo_root: &Path, raw: &str) -> String {
+    let absolute = if Path::new(raw).is_absolute() {
+        PathBuf::from(raw)
+    } else {
+        cwd.join(raw)
+    };
+    let normalized = normalize_lexical(&absolute);
+    match normalized.strip_prefix(repo_root) {
+        Ok(rel) => {
+            let s = rel.to_string_lossy();
+            if s.is_empty() {
+                ".".into()
+            } else {
+                s.into_owned()
+            }
+        }
+        Err(_) => raw.to_owned(),
+    }
+}
+
+/// Resolve `..` / `.` segments lexically. Doesn't touch the filesystem
+/// (so it works on paths that don't exist yet, like a `--to` target).
+/// Trailing `..` segments that overshoot the root are kept literally —
+/// the caller's strip_prefix will then fail and we fall back to the
+/// raw argument, matching upstream's "use absolute as best fallback"
+/// branch in `(*currentToRepoPathConverter).Convert`.
+fn normalize_lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            std::path::Component::ParentDir => {
+                if !out.pop() {
+                    out.push("..");
+                }
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 fn resolve_index_blob(cwd: &Path, ref_str: &str) -> Option<String> {
     let out = Command::new("git")
         .arg("-C")

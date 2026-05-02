@@ -12,7 +12,9 @@ mod smudge;
 
 pub use clean::{CleanError, CleanExtension, CleanOutcome, clean};
 pub use filter_process::{FilterProcessError, filter_process};
-pub use smudge::{SmudgeError, SmudgeOutcome, smudge, smudge_with_fetch};
+pub use smudge::{
+    SmudgeError, SmudgeExtension, SmudgeOutcome, smudge, smudge_object_to, smudge_with_fetch,
+};
 
 /// Boxed error returned by the on-demand fetch closure passed to
 /// [`smudge_with_fetch`] / [`filter_process`].

@@ -17,10 +17,12 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+use git_lfs_filter::{SmudgeError, smudge_object_to};
 use git_lfs_git::scan_index_lfs;
 use git_lfs_pointer::Pointer;
 use git_lfs_store::Store;
 
+use crate::collect_smudge_extensions;
 use crate::fetch::{self, FetchCommandError};
 
 #[derive(Debug, thiserror::Error)]
@@ -35,6 +37,8 @@ pub enum PullCommandError {
     LsFiles(String),
     #[error("partial pull: {0} object(s) failed to fetch — working tree not updated")]
     FetchFailures(usize),
+    #[error("smudge: {0}")]
+    Smudge(#[from] SmudgeError),
 }
 
 pub fn pull_with_filter(
@@ -90,6 +94,11 @@ pub fn pull_with_filter(
     let store = Store::new(git_lfs_git::lfs_dir(cwd)?)
         .with_references(git_lfs_git::lfs_alternate_dirs(cwd).unwrap_or_default());
     let repo_root = repo_root(cwd)?;
+    // Pointer extensions (case-inverter, encryption shims, etc.) need
+    // to run on the way out of the store. Resolve once before the
+    // walk; non-extension files take the direct-copy fast path inside
+    // the loop.
+    let smudge_extensions = collect_smudge_extensions(cwd);
     // Walk via the index (`git ls-files :(attr:filter=lfs)`) instead
     // of HEAD's tree: respects sparse-checkout (don't materialize
     // out-of-cone files) and reads what's *staged*, matching what a
@@ -183,7 +192,6 @@ pub fn pull_with_filter(
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => return Err(e.into()),
             }
-            let mut src = store.open(p.oid)?;
             let mut out = match std::fs::File::create(&dst) {
                 Ok(f) => f,
                 Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
@@ -198,8 +206,26 @@ pub fn pull_with_filter(
                 }
                 Err(e) => return Err(e.into()),
             };
-            std::io::copy(&mut src, &mut out)?;
-            drop(out);
+            // Reconstruct the pointer from the index entry and route
+            // through the smudge filter — for plain pointers this is
+            // a direct store→file copy; pointers with extensions get
+            // their chain run from the work-tree root (so case-
+            // inverter / encryption shims find `.git/`, even when
+            // pull was invoked from a subdirectory).
+            let pointer = Pointer {
+                oid: p.oid,
+                size: p.size,
+                extensions: p.extensions.clone(),
+                canonical: true,
+            };
+            smudge_object_to(
+                &store,
+                &pointer,
+                &mut out,
+                &rel_str,
+                &smudge_extensions,
+                Some(&repo_root),
+            )?;
             if let Some(perms) = preserved_perms {
                 // Restore the original mode so a chmod-a-w pointer
                 // remains read-only after we materialize.
