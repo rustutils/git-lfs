@@ -257,43 +257,75 @@ pub struct FilterProcessArgs {
     pub skip: bool,
 }
 
-/// Download every LFS object reachable from the given refs (default: HEAD)
-/// that isn't already in the local store. Walks history, dedupes by OID.
+/// Download all Git LFS files for a given ref
+///
+/// Download Git LFS objects at the given refs from the specified remote.
+/// See DEFAULT REMOTE and DEFAULT REFS for what happens if you don't
+/// specify.
+///
+/// This does not update the working copy; use git-lfs-pull(1) to
+/// download and replace pointer text with object content, or
+/// git-lfs-checkout(1) to materialize already-downloaded objects.
 #[derive(Args)]
 pub struct FetchArgs {
-    /// First positional arg is treated as a remote name (if it
-    /// resolves); subsequent args are refs.
+    /// Optional remote name followed by refs. The first positional
+    /// argument is treated as a remote name when it resolves; any
+    /// following arguments are refs to fetch.
     pub args: Vec<String>,
-    /// List the objects that would be fetched without downloading
-    /// them (one `fetch <oid> => <path>` line per object).
-    #[arg(long)]
-    pub dry_run: bool,
-    /// JSON output. With `--dry-run`, queries the server's batch
-    /// endpoint to populate `actions` URLs.
-    #[arg(long)]
-    pub json: bool,
-    /// Walk every local ref under `refs/heads/*` + `refs/tags/*`.
-    #[arg(long)]
+
+    /// Specify `lfs.fetchinclude` just for this invocation; see
+    /// INCLUDE AND EXCLUDE.
+    #[arg(short = 'I', long, help_heading = FILTER)]
+    pub include: Vec<String>,
+
+    /// Specify `lfs.fetchexclude` just for this invocation; see
+    /// INCLUDE AND EXCLUDE.
+    #[arg(short = 'X', long, help_heading = FILTER)]
+    pub exclude: Vec<String>,
+
+    /// Download all objects that are referenced by any commit
+    /// reachable from the refs provided as arguments.
+    ///
+    /// If no refs are provided, then all refs are fetched. This is
+    /// primarily for backup and migration purposes. Cannot be
+    /// combined with `--include`/`--exclude`. Ignores any globally
+    /// configured include and exclude paths to ensure that all
+    /// objects are downloaded.
+    #[arg(short, long)]
     pub all: bool,
-    /// Re-download objects we already have (e.g. recovery from a
-    /// corrupt local store).
-    #[arg(long)]
-    pub refetch: bool,
-    /// Read refs from stdin, one per line. Blank lines dropped.
+
+    /// Read a list of newline-delimited refs from standard input
+    /// instead of the command line.
     #[arg(long)]
     pub stdin: bool,
-    /// Run `prune` after the fetch completes.
-    #[arg(long)]
+
+    /// Prune old and unreferenced objects after fetching, equivalent
+    /// to running `git lfs prune` afterwards. See git-lfs-prune(1)
+    /// for more details.
+    #[arg(short, long)]
     pub prune: bool,
-    /// Comma-separated globs; only matching paths are fetched.
-    /// Falls back to `lfs.fetchinclude` when omitted.
-    #[arg(short = 'I', long)]
-    pub include: Vec<String>,
-    /// Comma-separated globs; matching paths are skipped. Falls
-    /// back to `lfs.fetchexclude` when omitted.
-    #[arg(short = 'X', long)]
-    pub exclude: Vec<String>,
+
+    /// Also fetch objects that are already present locally.
+    ///
+    /// Useful for recovery from a corrupt local store.
+    #[arg(long)]
+    pub refetch: bool,
+
+    /// Print what would be fetched, without actually fetching anything.
+    #[arg(short, long)]
+    pub dry_run: bool,
+
+    /// Write the details of all object transfer requests as JSON to
+    /// standard output.
+    ///
+    /// Intended for interoperation with external tools. When
+    /// `--dry-run` is also specified, writes the details of the
+    /// transfers that would occur if the objects were fetched.
+    #[arg(short, long)]
+    pub json: bool,
 }
+
+const FILTER: &str = "Filter options";
 
 /// `fetch` then re-run the smudge filter so the working tree contains
 /// real LFS file contents instead of pointer text. Requires

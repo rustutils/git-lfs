@@ -44,6 +44,16 @@ struct State {
     in_code_block: bool,
     /// True between heading start/end. Used to emit a `.SS` header.
     in_heading: bool,
+    /// True between `DefinitionListTitle` start/end. Lets us promote a
+    /// `<br/>` inside a multi-line term to `.TQ` (tagged-paragraph
+    /// continuation) instead of `.br` — `.TP` accepts only one tag
+    /// line, so plain `.br` would fold the second line into the body.
+    in_def_title: bool,
+    /// Set after we emit a break-style macro (`.br` / `.TQ`); causes
+    /// the immediately following SoftBreak to be skipped, since we've
+    /// already produced the line ending and a stray `\n` would render
+    /// as a blank line (and groff treats blanks as implicit `.PP`).
+    suppress_next_soft_break: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -101,9 +111,15 @@ fn handle(event: Event<'_>, state: &mut State, out: &mut String) {
         Event::End(TagEnd::DefinitionList) if !out.ends_with('\n') => {
             out.push('\n');
         }
-        Event::Start(Tag::DefinitionListTitle) => out.push_str(".TP\n"),
-        Event::End(TagEnd::DefinitionListTitle) if !out.ends_with('\n') => {
-            out.push('\n');
+        Event::Start(Tag::DefinitionListTitle) => {
+            out.push_str(".TP\n");
+            state.in_def_title = true;
+        }
+        Event::End(TagEnd::DefinitionListTitle) => {
+            state.in_def_title = false;
+            if !out.ends_with('\n') {
+                out.push('\n');
+            }
         }
         Event::Start(Tag::DefinitionListDefinition) => {}
         Event::End(TagEnd::DefinitionListDefinition) if !out.ends_with('\n') => {
@@ -148,8 +164,33 @@ fn handle(event: Event<'_>, state: &mut State, out: &mut String) {
             }
         }
 
-        Event::SoftBreak => out.push('\n'),
-        Event::HardBreak => out.push_str("\n.br\n"),
+        Event::SoftBreak => {
+            if state.suppress_next_soft_break {
+                state.suppress_next_soft_break = false;
+            } else {
+                out.push('\n');
+            }
+        }
+        Event::HardBreak => {
+            out.push_str("\n.br\n");
+            state.suppress_next_soft_break = true;
+        }
+
+        // Inline HTML: only `<br/>` / `<br>` is meaningful for our
+        // surface. Inside a definition-list title, promote it to
+        // `.TQ` so the next line stacks above the body at tag-level
+        // indent. Anywhere else, treat it like a hard break.
+        Event::InlineHtml(html) => {
+            let trimmed = html.trim().to_ascii_lowercase();
+            if trimmed == "<br/>" || trimmed == "<br>" || trimmed == "<br />" {
+                if state.in_def_title {
+                    out.push_str("\n.TQ\n");
+                } else {
+                    out.push_str("\n.br\n");
+                }
+                state.suppress_next_soft_break = true;
+            }
+        }
 
         // Best-effort: ignore everything else (links, images, html,
         // tables, footnotes, …). Authors writing the extras stick to
@@ -228,6 +269,27 @@ mod tests {
         assert!(g.contains(".IP \\(bu 2\n"));
         assert!(g.contains("foo"));
         assert!(g.contains("bar"));
+    }
+
+    #[test]
+    fn definition_list_multiline_title_via_br() {
+        // `<br/>` inside a def-list title becomes `.TQ` so the second
+        // line stacks at tag-level indent rather than folding into
+        // the body. The SoftBreak that pulldown-cmark emits after
+        // the inline HTML must be suppressed so we don't render a
+        // blank line between `.TQ` and the next term line.
+        let g = from_markdown(
+            "`first line`<br/>\n\
+             `second line`\n\
+             :   body text here\n",
+        );
+        assert!(
+            g.contains(".TP\n\\fBfirst line\\fR\n.TQ\n\\fBsecond line\\fR\n"),
+            "got: {g}"
+        );
+        // No blank line between .TQ and the second tag line.
+        assert!(!g.contains(".TQ\n\n"), "got: {g}");
+        assert!(g.contains("body text here"), "got: {g}");
     }
 
     #[test]

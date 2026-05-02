@@ -34,7 +34,7 @@ In a bare repository, this command prints an informational message and exits wit
 
 - `<PATHS>`
     Paths to check out.
-    
+
     When empty, everything in HEAD's tree is checked out. In conflict mode (`--to <path>` together with one of `--base`, `--ours`, or `--theirs`), exactly one path is required.
 
 ### Flags

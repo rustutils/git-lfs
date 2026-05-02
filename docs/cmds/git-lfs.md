@@ -30,7 +30,7 @@ Git LFS — large file storage for git
 - `track` — Track a file pattern with git-lfs by adding it to .gitattributes. With no patterns, lists currently-tracked patterns
 - `untrack` — Stop tracking a file pattern with git-lfs by removing it from .gitattributes. The matching pointer files in history (and the objects in the local store) are left in place
 - `filter-process` — Run the long-running filter-process protocol with git over stdin/stdout. This is what git invokes via filter.lfs.process and is the batched alternative to per-invocation `clean`/`smudge`
-- `fetch` — Download every LFS object reachable from the given refs (default: HEAD) that isn't already in the local store. Walks history, dedupes by OID
+- `fetch` — Download all Git LFS files for a given ref
 - `pull` — `fetch` then re-run the smudge filter so the working tree contains real LFS file contents instead of pointer text. Requires `git lfs install` to have wired up the smudge filter
 - `push` — Upload every LFS object reachable from the given refs that the remote doesn't already have. The "doesn't have" set is approximated by `refs/remotes/<remote>/*`; the LFS server's batch API also dedupes server-side so missing exclusions don't waste bandwidth
 - `clone` — Deprecated. Wraps `git clone` so the working tree is populated with pointer text first, then runs `git lfs pull` to download LFS content in batch. Modern `git clone` parallelizes the smudge filter and is no slower; prefer it

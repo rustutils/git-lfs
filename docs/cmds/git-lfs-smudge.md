@@ -33,7 +33,7 @@ Without any options, git lfs smudge outputs the raw Git LFS content to standard 
 
 - `--skip`
     Skip automatic downloading of objects on clone or pull.
-    
+
     Equivalent to `GIT_LFS_SKIP_SMUDGE=1`. Wired up by `git lfs install --skip-smudge`.
 
 ## Environment

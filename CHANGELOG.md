@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `git-lfs-checkout(1)` gets the upstream-faithful DESCRIPTION
   (conflict mode, partial-clone / `GIT_ATTR_SOURCE` interaction,
   bare-repo behavior) and an EXAMPLES section.
+- `git-lfs-fetch(1)` gets the upstream-faithful DESCRIPTION,
+  per-flag wording, and dedicated DEFAULT REMOTE / DEFAULT REFS /
+  INCLUDE AND EXCLUDE / EXAMPLES / SEE ALSO sections. Adds
+  `-a`/`-p`/`-d`/`-j` short aliases for `--all`/`--prune`/
+  `--dry-run`/`--json` to match upstream. The `--recent`
+  flag and the `lfs.fetchrecent*` configuration are still
+  unimplemented and the docs say so explicitly.
 
 ## [0.4.0] - 2026-05-02
 

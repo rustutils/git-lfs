@@ -26,6 +26,6 @@ Clean is not part of the user-facing Git plumbing commands. To preview the point
 
 - `<PATH>`
     Working-tree path of the file being cleaned.
-    
+
     Substituted for `%f` in any configured `lfs.extension.<name>.clean` command.
 

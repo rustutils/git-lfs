@@ -117,7 +117,14 @@ fn render_arg(out: &mut String, arg: &clap::Arg) {
 
     let _ = writeln!(out, "- {header}");
     for line in help.lines() {
-        let _ = writeln!(out, "    {line}");
+        // Indent body lines under the bullet; skip the indent on
+        // blank paragraph separators so we don't emit four-space
+        // trailing whitespace.
+        if line.is_empty() {
+            out.push('\n');
+        } else {
+            let _ = writeln!(out, "    {line}");
+        }
     }
     out.push('\n');
 }
