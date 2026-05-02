@@ -129,7 +129,50 @@ pub fn resolve_endpoint(cwd: &Path, remote: Option<&str>) -> Result<EndpointInfo
         });
     }
 
+    // No configured remote, no `lfs.url`, no URL-shaped argument.
+    // Last-resort fallback: parse `.git/FETCH_HEAD` for the URL of
+    // the most recent `git fetch <url>` and derive an endpoint from
+    // that. This is what makes `git archive` work in a bare repo
+    // that was populated via a one-off `git fetch <url> refs/...`
+    // without setting up a remote — the LFS smudge filter still has
+    // somewhere to look up objects (`t-no-remote` test 1). Skipped
+    // when the caller pinned a remote name, since that signals an
+    // intent that's incompatible with the FETCH_HEAD fallback.
+    if !caller_specified_remote && let Some(url) = read_fetch_head_url(cwd)? {
+        let rewritten = aliases::rewrite(cwd, &url)?;
+        return Ok(EndpointInfo {
+            url: derive_lfs_url(&rewritten)?,
+            ssh: parse_ssh_url(&rewritten),
+        });
+    }
+
     Err(EndpointError::Unresolved(remote))
+}
+
+/// Best-effort parse of `.git/FETCH_HEAD` for the source URL of the
+/// most recent `git fetch`. Each line is `<sha1>\t[not-for-merge]\t
+/// branch 'X' of <url>` — we take the first match's `<url>` token.
+/// Returns `None` if the file is missing, empty, or unparseable.
+fn read_fetch_head_url(cwd: &Path) -> Result<Option<String>, EndpointError> {
+    let git_dir = match crate::path::git_dir(cwd) {
+        Ok(p) => p,
+        Err(_) => return Ok(None),
+    };
+    let path = git_dir.join("FETCH_HEAD");
+    let content = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(EndpointError::Git(Error::Io(e))),
+    };
+    for line in content.lines() {
+        if let Some(idx) = line.rfind(" of ") {
+            let url = line[idx + 4..].trim();
+            if !url.is_empty() {
+                return Ok(Some(url.to_owned()));
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// Build an `EndpointInfo` from a directly-configured LFS URL value

@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- LFS endpoint resolution now falls back to `.git/FETCH_HEAD` after
+  the existing chain (`GIT_LFS_URL` → `lfs.url` → `remote.<n>.lfsurl`
+  → derived from `remote.<n>.url`). Lets `git archive` smudge LFS
+  files in a repo populated via a one-off `git fetch <url> refs/...`
+  with no remote configured. Skipped when the caller pinned a remote
+  name explicitly.
 - `lfs.transfer.batchSize` is now honored. The transfer queue chunks
   the input list into runs of this size and issues one
   `POST /objects/batch` per chunk; default 100 (matches upstream).
