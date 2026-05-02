@@ -56,6 +56,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `git push` now distinguishes locally-corrupt LFS objects (file
+  exists on disk but its size doesn't match the pointer) from
+  truly-missing ones. Corrupt objects are reported as
+  `(corrupt) <path> (<oid>)` after the healthy objects upload —
+  matching upstream's behavior where present-locally objects in the
+  same push reach the server even though the corrupt one fails the
+  overall push. Truly-missing objects keep their pre-flight gate
+  governed by `lfs.allowincompletepush`; corrupt always fails the
+  push regardless of that setting.
 - `lfs.fetchinclude` / `lfs.fetchexclude` patterns starting with `/`
   (e.g. `/foo`) now match subtrees as upstream's filepathfilter does.
   The leading `/` is upstream's root-anchor marker; we strip it

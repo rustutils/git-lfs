@@ -345,13 +345,23 @@ pub(crate) fn upload_in_range_with_args(
     let pointers =
         git_lfs_git::scan_pointers_with_args(cwd, includes, excludes, extra_rev_list_args)?;
 
-    // Partition pointers: present locally vs. only-as-pointer. We need
-    // the missing ones to ask the server about — if the server holds
-    // them, the push silently succeeds (test 11 territory); if not, it
-    // fails unless `lfs.allowincompletepush=true`.
+    // Partition pointers three ways:
+    //   - present-locally: full-size match → eligible for upload.
+    //   - corrupt: object file exists on disk but its size doesn't
+    //     match the pointer (e.g. truncated). Detected locally; we
+    //     don't ask the server about these — corruption is a local
+    //     data-integrity problem regardless of remote state. They get
+    //     reported `(corrupt) <path> (<oid>)` after the healthy
+    //     objects upload.
+    //   - missing: object file isn't on disk at all. We ask the
+    //     server about these (the optimistic "you might already have
+    //     it" path); whatever the server doesn't have becomes
+    //     `truly_missing` and is the gate that
+    //     `lfs.allowincompletepush` controls.
     let mut to_upload: Vec<ObjectSpec> = Vec::new();
     let mut paths: HashMap<String, PathBuf> = HashMap::new();
     let mut missing: Vec<(ObjectSpec, Option<PathBuf>)> = Vec::new();
+    let mut corrupt: Vec<(ObjectSpec, Option<PathBuf>)> = Vec::new();
     for entry in pointers {
         let oid_str = entry.oid.to_string();
         if let Some(p) = entry.path.clone() {
@@ -363,6 +373,8 @@ pub(crate) fn upload_in_range_with_args(
         };
         if store.contains_with_size(entry.oid, entry.size) {
             to_upload.push(spec);
+        } else if store.contains(entry.oid) {
+            corrupt.push((spec, entry.path));
         } else {
             missing.push((spec, entry.path));
         }
@@ -377,6 +389,7 @@ pub(crate) fn upload_in_range_with_args(
         let known: HashSet<git_lfs_pointer::Oid> = to_upload
             .iter()
             .chain(missing.iter().map(|(s, _)| s))
+            .chain(corrupt.iter().map(|(s, _)| s))
             .filter_map(|s| s.oid.parse().ok())
             .collect();
         let full = git_lfs_git::scan_pointers_with_args(cwd, includes, excludes, &[])?;
@@ -394,6 +407,8 @@ pub(crate) fn upload_in_range_with_args(
             };
             if store.contains_with_size(entry.oid, entry.size) {
                 to_upload.push(spec);
+            } else if store.contains(entry.oid) {
+                corrupt.push((spec, entry.path));
             } else {
                 missing.push((spec, entry.path));
             }
@@ -401,15 +416,15 @@ pub(crate) fn upload_in_range_with_args(
     }
 
     if dry_run {
-        // Dry-run lists all objects that would be considered — present
-        // and missing alike (matches upstream: it has nothing local to
-        // verify either, so the list is the same).
+        // Dry-run lists all objects that would be considered — present,
+        // missing, and corrupt alike (matches upstream: dry-run has
+        // nothing local to verify either, so the list is the same).
         for spec in &to_upload {
             if let Some(p) = paths.get(&spec.oid) {
                 println!("push {} => {}", spec.oid, p.display());
             }
         }
-        for (spec, _) in &missing {
+        for (spec, _) in missing.iter().chain(corrupt.iter()) {
             if let Some(p) = paths.get(&spec.oid) {
                 println!("push {} => {}", spec.oid, p.display());
             }
@@ -541,6 +556,22 @@ pub(crate) fn upload_in_range_with_args(
     }
 
     if to_upload.is_empty() {
+        // Nothing healthy to upload, but corrupt objects still need
+        // to be reported and fail the push.
+        if !corrupt.is_empty() {
+            eprintln!("LFS upload failed:");
+            for (spec, path) in &corrupt {
+                let path_str = path
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default();
+                eprintln!("  (corrupt) {path_str} ({})", spec.oid);
+            }
+            return Ok(PushOutcome {
+                report: Report::default(),
+                aborted: true,
+            });
+        }
         return Ok(PushOutcome::default());
     }
 
@@ -572,10 +603,27 @@ pub(crate) fn upload_in_range_with_args(
     for (oid, err) in &report.failed {
         eprintln!("  {oid}: {err}");
     }
-    Ok(PushOutcome {
-        report,
-        aborted: false,
-    })
+
+    // Locally-corrupt objects: detected during the partition step
+    // above, but reported here so healthy objects in `to_upload` got
+    // their chance to reach the server first (matches upstream — the
+    // present objects in test 7 are expected on the server even
+    // though the push exits non-zero). Always fails the push, even
+    // with `lfs.allowincompletepush=true`: corruption is a data-
+    // integrity problem the user needs to know about.
+    let aborted = !corrupt.is_empty();
+    if aborted {
+        eprintln!("LFS upload failed:");
+        for (spec, path) in &corrupt {
+            let path_str = path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            eprintln!("  (corrupt) {path_str} ({})", spec.oid);
+        }
+    }
+
+    Ok(PushOutcome { report, aborted })
 }
 
 /// Every working-tree path touched by a commit reachable from `includes`
