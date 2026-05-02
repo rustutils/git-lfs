@@ -56,6 +56,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `git lfs track` with a root-anchored pattern (e.g. `git lfs track
+  /a.dat`) now correctly mtime-bumps matching files. The post-track
+  `git ls-files -- /a.dat` was erroring with "outside repository"
+  (git treats a leading `/` as an absolute path in pathspecs); the
+  empty result meant no `Touching` line and no stat-cache invalidation,
+  so the next `git add` saw the file as unchanged and skipped the
+  clean filter. Strip the leading slash before passing the pattern
+  to `git ls-files`.
 - `git push` now distinguishes locally-corrupt LFS objects (file
   exists on disk but its size doesn't match the pointer) from
   truly-missing ones. Corrupt objects are reported as

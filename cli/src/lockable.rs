@@ -159,7 +159,17 @@ pub fn ls_files(cwd: &Path) -> io::Result<Vec<String>> {
 /// only wants to walk files matching the pattern that just changed
 /// lockable state.
 pub fn ls_files_matching(cwd: &Path, pattern: &str) -> io::Result<Vec<String>> {
-    ls_files_inner(cwd, &["--", pattern])
+    // Strip a leading `/` before passing to `git ls-files` — in
+    // `.gitattributes` it's the root-anchor marker (`/a.dat` matches
+    // `a.dat` at the repo root only), but as a pathspec git treats it
+    // as an absolute path and errors with "outside repository". The
+    // ancestor walk in `matches_with_prefix`-style consumers handles
+    // anchoring on its own, so dropping the slash here is safe.
+    let stripped = pattern
+        .strip_prefix('/')
+        .filter(|s| !s.is_empty())
+        .unwrap_or(pattern);
+    ls_files_inner(cwd, &["--", stripped])
 }
 
 fn ls_files_inner(cwd: &Path, extra: &[&str]) -> io::Result<Vec<String>> {
