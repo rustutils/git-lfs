@@ -7,8 +7,8 @@ boundary.
 
 ## Today
 
-**v0.3.0** — released 2026-05-01. 523 of 794 vendored upstream shell
-tests pass (~66%) across 31 full-pass suites. Day-to-day flows
+**v0.4.0** — released 2026-05-02. 596 of 794 vendored upstream shell
+tests pass (~75%) across 57 full-pass suites. Day-to-day flows
 (clean / smudge, fetch / pull / push, track, locking, migrate) work
 end-to-end. See [`tests/SCOREBOARD.md`](tests/SCOREBOARD.md) for the
 per-suite breakdown.
