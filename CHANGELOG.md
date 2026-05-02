@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `lfs.<url>.access = basic` is now persisted to local git config
+  after a successful HTTP-Basic-authenticated request. `git lfs env`
+  reads the cache to render `Endpoint=… (auth=basic)`, and the cred
+  flow uses it to fill upfront on subsequent runs. Persisted at the
+  end of `git lfs push`, `git lfs fetch`, smudge, and filter-process,
+  so a fresh repo gets the cache after the first authenticated
+  operation.
 - Stale temp-object sweep on every command. At dispatch start, scan
   `<lfs>/tmp/objects/` for files whose leading 64-char OID prefix has
   a complete object in the store and remove them. Mirrors upstream's

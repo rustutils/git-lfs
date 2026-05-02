@@ -207,6 +207,7 @@ fn push_by_oid(
     let report = fetcher
         .upload_many(to_upload)
         .map_err(PushCommandError::Fetch)?;
+    fetcher.persist_access_mode();
 
     let succeeded = report.succeeded.len();
     let succeeded_bytes: u64 = report
@@ -595,6 +596,7 @@ pub(crate) fn upload_in_range_with_args(
     let report = fetcher
         .upload_many(to_upload)
         .map_err(PushCommandError::Fetch)?;
+    fetcher.persist_access_mode();
 
     let succeeded = report.succeeded.len();
     let succeeded_bytes: u64 = report

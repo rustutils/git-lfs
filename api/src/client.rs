@@ -85,6 +85,21 @@ impl Client {
         self
     }
 
+    /// Read-only access to the endpoint URL this client was built
+    /// against. Used by callers that want to persist
+    /// `lfs.<url>.access` after a successful authenticated request.
+    pub fn endpoint(&self) -> &Url {
+        &self.endpoint
+    }
+
+    /// `true` if this client's current auth state is basic
+    /// (username/password). Used by callers to detect whether the
+    /// most recent operation actually used basic auth, so they can
+    /// persist `lfs.<url>.access = basic` to local git config.
+    pub fn used_basic_auth(&self) -> bool {
+        matches!(*self.auth.lock().unwrap(), Auth::Basic { .. })
+    }
+
     /// Build a URL by joining `path` onto the endpoint.
     ///
     /// `path` should be a relative path like `objects/batch` or `locks`.

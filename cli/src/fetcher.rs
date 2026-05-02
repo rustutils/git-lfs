@@ -14,12 +14,13 @@
 //! its already-fetched bytes.
 
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use git_lfs_api::{Auth, BatchRequest, Client as ApiClient, ObjectSpec, Operation, Ref};
 use git_lfs_creds::{CachingHelper, GitCredentialHelper, Helper, HelperChain};
 use git_lfs_filter::FetchError;
+use git_lfs_git::ConfigScope;
 use git_lfs_pointer::Pointer;
 use git_lfs_store::Store;
 use git_lfs_transfer::{Report, Transfer, TransferConfig};
@@ -42,6 +43,11 @@ pub struct LfsFetcher {
     /// scope LFS operations per-branch — without it, branch-required
     /// repos return `403 Expected ref ..., got ""` to push/pull.
     refspec: Option<Ref>,
+    /// Repo cwd captured at construction. Used to persist
+    /// `lfs.<url>.access` after a successful authenticated request,
+    /// so future `git lfs env` runs (and the cred-prompting flow)
+    /// know basic auth is in play.
+    cwd: PathBuf,
 }
 
 impl LfsFetcher {
@@ -81,7 +87,31 @@ impl LfsFetcher {
             transfer,
             api,
             refspec,
+            cwd: cwd.to_path_buf(),
         })
+    }
+
+    /// If our most recent operation authenticated via HTTP Basic,
+    /// persist `lfs.<url>.access = basic` to local git config so
+    /// future `git lfs env` runs render `(auth=basic)` and the
+    /// cred-prompting flow knows to fill upfront. No-op when the
+    /// endpoint isn't resolvable, no auth was used, or the value is
+    /// already set. Best-effort — config writes that fail are
+    /// swallowed (we'd rather complete the user's operation than
+    /// abort it on a bookkeeping write).
+    pub fn persist_access_mode(&self) {
+        let Ok(api) = self.api.as_ref() else { return };
+        if !api.used_basic_auth() {
+            return;
+        }
+        let url = api.endpoint().as_str();
+        let key = format!("lfs.{url}.access");
+        if let Ok(Some(existing)) = git_lfs_git::config::get_effective(&self.cwd, &key)
+            && existing.eq_ignore_ascii_case("basic")
+        {
+            return;
+        }
+        let _ = git_lfs_git::config::set(&self.cwd, ConfigScope::Local, &key, "basic");
     }
 
     /// Override the auto-resolved refspec. Used by `pre-push`, where

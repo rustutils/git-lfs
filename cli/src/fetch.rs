@@ -320,6 +320,7 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
     let report = fetcher
         .download_many(to_fetch.clone())
         .map_err(FetchCommandError::Fetch)?;
+    fetcher.persist_access_mode();
 
     let succeeded = report.succeeded.len();
     let succeeded_bytes: u64 = to_fetch
@@ -381,6 +382,7 @@ fn run_dry_run_with_json(
     let resp = fetcher
         .runtime_block_on(api.batch(&req))
         .map_err(|e: git_lfs_api::ApiError| FetchCommandError::Fetch(e.to_string().into()))?;
+    fetcher.persist_access_mode();
     print_json_transfers(store, &to_fetch, &paths, Some(&resp))?;
     Ok(FetchOutcome::default())
 }

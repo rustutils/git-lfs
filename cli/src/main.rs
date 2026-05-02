@@ -232,6 +232,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             } else {
                 let fetcher = LfsFetcher::from_repo(&cwd, &store)?;
                 smudge_with_fetch(&store, &mut input, &mut output, |p| fetcher.fetch(p))?;
+                fetcher.persist_access_mode();
             }
             output.flush()?;
         }
@@ -289,6 +290,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 skip || skip_smudge_env(),
                 &extensions,
             )?;
+            fetcher.persist_access_mode();
         }
         Command::Fetch {
             args,
