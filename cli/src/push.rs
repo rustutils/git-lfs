@@ -363,6 +363,15 @@ pub(crate) fn upload_in_range_with_args(
     let mut missing: Vec<(ObjectSpec, Option<PathBuf>)> = Vec::new();
     let mut corrupt: Vec<(ObjectSpec, Option<PathBuf>)> = Vec::new();
     for entry in pointers {
+        // Empty files committed to a `filter=lfs` path are stored by
+        // git as the empty blob — not as a pointer text. Our scanner
+        // still parses them as `Pointer::empty()` (size 0) since
+        // upstream's spec treats empty input as a valid empty pointer,
+        // but they're not real LFS objects to push. Skip so the
+        // "Uploading LFS objects: N/N" count matches upstream's view.
+        if entry.size == 0 {
+            continue;
+        }
         let oid_str = entry.oid.to_string();
         if let Some(p) = entry.path.clone() {
             paths.entry(oid_str.clone()).or_insert(p);
@@ -395,6 +404,9 @@ pub(crate) fn upload_in_range_with_args(
         let full = git_lfs_git::scan_pointers_with_args(cwd, includes, excludes, &[])?;
         for entry in full {
             if known.contains(&entry.oid) {
+                continue;
+            }
+            if entry.size == 0 {
                 continue;
             }
             let oid_str = entry.oid.to_string();

@@ -56,6 +56,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `git push` now skips empty files committed to a `filter=lfs` path
+  when counting LFS objects to upload. Git stores those as the empty
+  blob (not as a pointer text), but our scanner parses empty input as
+  `Pointer::empty()` (size 0), and that was inflating the
+  `Uploading LFS objects: N/N` count. Filtered out at the partition
+  step alongside the corrupt/missing logic.
 - `git lfs track` with a root-anchored pattern (e.g. `git lfs track
   /a.dat`) now correctly mtime-bumps matching files. The post-track
   `git ls-files -- /a.dat` was erroring with "outside repository"
