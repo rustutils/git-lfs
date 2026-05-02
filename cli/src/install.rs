@@ -3,9 +3,53 @@
 
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use git_lfs_git::{ConfigScope, config, git_dir};
+
+/// Which config file the install/uninstall write goes to. Maps to the
+/// scope flag git config takes; `File(path)` becomes `--file=<path>`,
+/// the rest are the obvious mappings.
+///
+/// `Global` and `System` and `File(_)` are "scoped outside the repo" —
+/// the success message says "Global Git LFS configuration has been
+/// removed." (per t-uninstall test 10's `--file` assertion). `Local`
+/// and `Worktree` are per-repo and stay quieter.
+#[derive(Debug, Clone)]
+pub enum InstallScope {
+    Global,
+    System,
+    Local,
+    Worktree,
+    File(PathBuf),
+}
+
+impl InstallScope {
+    fn config_arg(&self) -> String {
+        match self {
+            Self::Global => "--global".into(),
+            Self::System => "--system".into(),
+            Self::Local => "--local".into(),
+            Self::Worktree => "--worktree".into(),
+            Self::File(p) => format!("--file={}", p.display()),
+        }
+    }
+
+    /// `Local` / `Worktree` are per-repo; everything else operates on
+    /// a config file outside the repo and shouldn't try to touch hooks.
+    pub fn is_repo_scope(&self) -> bool {
+        matches!(self, Self::Local | Self::Worktree)
+    }
+
+    /// Whether the success message should say "Global ..." (vs the
+    /// quieter "Local ..." used for per-repo scopes). Mirrors
+    /// upstream's distinction — `--file` is treated as global-like
+    /// since it usually points at `$XDG_CONFIG_HOME/git/config`.
+    pub fn announces_global(&self) -> bool {
+        matches!(self, Self::Global | Self::System | Self::File(_))
+    }
+}
 
 /// `filter.lfs.<key>` settings written by install. Order is intentional —
 /// `process` is what git actually uses when filter-process is available;
@@ -44,7 +88,7 @@ git lfs {{Command}} \"$@\"
 
 #[derive(Debug, Clone)]
 pub struct InstallOptions {
-    pub scope: ConfigScope,
+    pub scope: InstallScope,
     pub force: bool,
     /// Skip writing hooks; only set the config.
     pub skip_repo: bool,
@@ -75,13 +119,14 @@ pub enum InstallError {
     HookConflict { hook: String },
 }
 
-/// Run the install. With `scope = Local` (or when `cwd` is inside a repo and
-/// `skip_repo` is false), this also writes the four LFS git hooks.
+/// Run the install. Writes the four LFS git hooks when in a repo and
+/// `skip_repo` is false; the scope governs which config file gets the
+/// `filter.lfs.*` writes.
 pub fn install(cwd: &Path, opts: &InstallOptions) -> Result<(), InstallError> {
     set_filter_config(cwd, opts)?;
 
     let in_repo = git_dir(cwd).is_ok();
-    let install_hooks_too = !opts.skip_repo && (opts.scope == ConfigScope::Local || in_repo);
+    let install_hooks_too = !opts.skip_repo && (opts.scope.is_repo_scope() || in_repo);
     if install_hooks_too {
         install_all_hooks(cwd, opts)?;
     }
@@ -95,7 +140,7 @@ fn set_filter_config(cwd: &Path, opts: &InstallOptions) -> Result<(), InstallErr
         FILTER_KEYS
     };
     for (key, wanted) in keys {
-        match config::get(cwd, opts.scope, key)? {
+        match scoped_get(cwd, &opts.scope, key)? {
             Some(v) if v == *wanted => continue,
             Some(v) if !opts.force => {
                 return Err(InstallError::ConfigConflict {
@@ -104,10 +149,77 @@ fn set_filter_config(cwd: &Path, opts: &InstallOptions) -> Result<(), InstallErr
                     wanted: (*wanted).into(),
                 });
             }
-            _ => config::set(cwd, opts.scope, key, wanted)?,
+            _ => scoped_set(cwd, &opts.scope, key, wanted)?,
         }
     }
     Ok(())
+}
+
+/// `git config <scope> --get <key>` for one of the install scopes,
+/// including `--file=<path>`. Returns `Ok(None)` when the key isn't
+/// set or when the scope is unreachable (matches `git_lfs_git::config`'s
+/// permissive interpretation of `git config` exit codes).
+fn scoped_get(
+    cwd: &Path,
+    scope: &InstallScope,
+    key: &str,
+) -> Result<Option<String>, git_lfs_git::Error> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["config", "--includes"])
+        .arg(scope.config_arg())
+        .args(["--get", key])
+        .output()?;
+    match out.status.code() {
+        Some(0) => Ok(Some(String::from_utf8_lossy(&out.stdout).trim().to_owned())),
+        Some(1) | Some(128) | Some(129) => Ok(None),
+        _ => Err(git_lfs_git::Error::Failed(
+            String::from_utf8_lossy(&out.stderr).trim().to_owned(),
+        )),
+    }
+}
+
+fn scoped_set(
+    cwd: &Path,
+    scope: &InstallScope,
+    key: &str,
+    value: &str,
+) -> Result<(), git_lfs_git::Error> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .arg("config")
+        .arg(scope.config_arg())
+        .args([key, value])
+        .output()?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(git_lfs_git::Error::Failed(
+            String::from_utf8_lossy(&out.stderr).trim().to_owned(),
+        ))
+    }
+}
+
+fn scoped_unset(cwd: &Path, scope: &InstallScope, key: &str) -> Result<(), git_lfs_git::Error> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .arg("config")
+        .arg(scope.config_arg())
+        .args(["--unset", key])
+        .output()?;
+    match out.status.code() {
+        // 0 = unset; 5 = key wasn't there; 128 = scope unreachable
+        // (no repo for --local outside one). The latter is the caller's
+        // problem to detect upstream — we just need to be idempotent
+        // here so a redundant unset is harmless.
+        Some(0) | Some(5) | Some(128) => Ok(()),
+        _ => Err(git_lfs_git::Error::Failed(
+            String::from_utf8_lossy(&out.stderr).trim().to_owned(),
+        )),
+    }
 }
 
 pub(crate) fn install_all_hooks(cwd: &Path, opts: &InstallOptions) -> Result<(), InstallError> {
@@ -304,9 +416,12 @@ fn set_executable(_path: &Path) -> io::Result<()> {
 
 #[derive(Debug, Clone)]
 pub struct UninstallOptions {
-    pub scope: ConfigScope,
+    pub scope: InstallScope,
     /// Skip removing hooks; only unset the config.
     pub skip_repo: bool,
+    /// Inverse of `skip_repo`: remove only the hooks and leave the
+    /// `filter.lfs.*` config alone. Set by `git lfs uninstall hooks`.
+    pub hooks_only: bool,
 }
 
 /// Run the uninstall. Mirrors [`install`]: clears the four `filter.lfs.*`
@@ -314,10 +429,13 @@ pub struct UninstallOptions {
 /// only deleted if their contents match what we'd write — a user-edited
 /// hook is left in place so we don't blow away local customizations.
 pub fn uninstall(cwd: &Path, opts: &UninstallOptions) -> Result<(), InstallError> {
-    unset_filter_config(cwd, opts)?;
+    if !opts.hooks_only {
+        unset_filter_config(cwd, opts)?;
+    }
 
     let in_repo = git_dir(cwd).is_ok();
-    let touch_hooks = !opts.skip_repo && (opts.scope == ConfigScope::Local || in_repo);
+    let touch_hooks =
+        opts.hooks_only || (!opts.skip_repo && (opts.scope.is_repo_scope() || in_repo));
     if touch_hooks {
         uninstall_all_hooks(cwd)?;
     }
@@ -326,13 +444,13 @@ pub fn uninstall(cwd: &Path, opts: &UninstallOptions) -> Result<(), InstallError
 
 fn unset_filter_config(cwd: &Path, opts: &UninstallOptions) -> Result<(), InstallError> {
     for (key, _) in FILTER_KEYS {
-        config::unset(cwd, opts.scope, key)?;
+        scoped_unset(cwd, &opts.scope, key)?;
     }
     Ok(())
 }
 
 fn uninstall_all_hooks(cwd: &Path) -> Result<(), InstallError> {
-    let hooks_dir = git_dir(cwd)?.join("hooks");
+    let hooks_dir = effective_hooks_dir(cwd)?;
     for hook in HOOKS {
         uninstall_one_hook(&hooks_dir, hook)?;
     }

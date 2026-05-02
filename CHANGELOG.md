@@ -73,6 +73,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `git push .`) by copying each reachable LFS object directly into
   the target repo's `lfs/objects/` (hardlink with copy fallback).
 
+### Added
+
+- `git lfs install` and `git lfs uninstall` gain `--system`,
+  `--worktree`, and `--file=<path>` scope flags alongside the
+  existing `--local`/`--global` toggle, plus the upstream
+  conflict-detection wording: "Only one of the --local, --system,
+  --worktree, and --file options can be specified." emitted to
+  stderr (exit 2) when more than one is passed. The new scope
+  flows through to a per-flag `git config <scope> ...` call rather
+  than the local/global-only `--global`/`--local` shortcut.
+- `git lfs uninstall hooks` removes the four LFS git hooks and
+  leaves the `filter.lfs.*` configuration untouched (the inverse
+  of `--skip-repo`). `mode` is the upstream-style positional
+  subcommand; the only accepted value today is `hooks`.
+- `git lfs install --local` and `git lfs uninstall --local` now
+  exit 128 with `Not in a Git repository.` (printed to stdout)
+  when invoked outside any git repository, matching upstream's
+  exit code and message. The check happens before any config or
+  hook write.
+
 ### Fixed
 
 - The transfer queue now sorts each batch's objects by descending

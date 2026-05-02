@@ -222,6 +222,16 @@ pub enum Command {
         /// Set config in the local repo only (default: --global).
         #[arg(short, long)]
         local: bool,
+        /// Operate on `/etc/gitconfig` (`git config --system`).
+        #[arg(long)]
+        system: bool,
+        /// Operate on `.git/config.worktree` for the current worktree.
+        #[arg(long)]
+        worktree: bool,
+        /// Operate on the given config file directly. Treated as
+        /// "global-like" for the success message.
+        #[arg(long, value_name = "PATH")]
+        file: Option<std::path::PathBuf>,
         /// Overwrite existing config and hooks.
         #[arg(short, long)]
         force: bool,
@@ -238,9 +248,22 @@ pub enum Command {
     /// the LFS git hooks. Hooks that don't match what we'd write are left
     /// untouched.
     Uninstall {
+        /// Optional mode: `hooks` removes only the LFS git hooks and
+        /// leaves the filter config alone (the inverse of `--skip-repo`).
+        mode: Option<String>,
         /// Operate on the local repo only (default: --global).
         #[arg(short, long)]
         local: bool,
+        /// Operate on `/etc/gitconfig` (`git config --system`).
+        #[arg(long)]
+        system: bool,
+        /// Operate on `.git/config.worktree` for the current worktree.
+        #[arg(long)]
+        worktree: bool,
+        /// Operate on the given config file directly. Treated as
+        /// "global-like" for the success message.
+        #[arg(long, value_name = "PATH")]
+        file: Option<std::path::PathBuf>,
         /// Only unset config; don't touch hooks.
         #[arg(long)]
         skip_repo: bool,

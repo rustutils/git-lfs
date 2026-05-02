@@ -63,7 +63,7 @@ pub fn run(cwd: &Path, force: bool, manual: bool) -> Result<u8, UpdateError> {
     }
 
     let opts = install::InstallOptions {
-        scope: git_lfs_git::ConfigScope::Local,
+        scope: install::InstallScope::Local,
         force,
         skip_repo: false,
         skip_smudge: false,

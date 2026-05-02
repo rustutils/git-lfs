@@ -3,7 +3,6 @@ use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser};
 use git_lfs_filter::{CleanExtension, clean, filter_process, smudge_with_fetch};
-use git_lfs_git::ConfigScope;
 use git_lfs_store::Store;
 
 mod checkout;
@@ -112,6 +111,49 @@ fn canonicalize_path_envs(base: &std::path::Path) {
         }
     }
     let _ = ORIGINAL_PATH_ENVS.set(snapshot);
+}
+
+/// Reduce the per-flag scope toggles for `install` / `uninstall` to a
+/// single [`install::InstallScope`]. Multiple scope flags is a usage
+/// error matching upstream's exact wording.
+fn resolve_install_scope(
+    local: bool,
+    system: bool,
+    worktree: bool,
+    file: Option<std::path::PathBuf>,
+) -> Result<install::InstallScope, &'static str> {
+    let count = [local, system, worktree, file.is_some()]
+        .iter()
+        .filter(|b| **b)
+        .count();
+    if count > 1 {
+        return Err(
+            "Only one of the --local, --system, --worktree, and --file options can be specified.",
+        );
+    }
+    Ok(if let Some(p) = file {
+        install::InstallScope::File(p)
+    } else if local {
+        install::InstallScope::Local
+    } else if system {
+        install::InstallScope::System
+    } else if worktree {
+        install::InstallScope::Worktree
+    } else {
+        install::InstallScope::Global
+    })
+}
+
+/// Print upstream's `Not in a Git repository.` to stdout and return a
+/// non-zero exit code if `cwd` isn't inside any git repo. Returns
+/// `None` to keep going. Mirrors the error path test 7 of t-uninstall
+/// (and the analogous t-install test) asserts on.
+fn bail_if_outside_repo(cwd: &std::path::Path) -> Option<u8> {
+    if git_lfs_git::git_dir(cwd).is_err() {
+        println!("Not in a Git repository.");
+        return Some(128);
+    }
+    None
 }
 
 /// `GIT_LFS_SKIP_SMUDGE=1` (any value other than empty/0/false) tells
@@ -238,16 +280,27 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
         }
         Command::Install {
             local,
+            system,
+            worktree,
+            file,
             force,
             skip_repo,
             skip_smudge,
         } => {
+            let scope = match resolve_install_scope(local, system, worktree, file) {
+                Ok(s) => s,
+                Err(msg) => {
+                    eprintln!("{msg}");
+                    return Ok(2);
+                }
+            };
+            if scope.is_repo_scope()
+                && let Some(code) = bail_if_outside_repo(&cwd)
+            {
+                return Ok(code);
+            }
             let opts = install::InstallOptions {
-                scope: if local {
-                    ConfigScope::Local
-                } else {
-                    ConfigScope::Global
-                },
+                scope,
                 force,
                 skip_repo,
                 skip_smudge,
@@ -255,20 +308,47 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             install::install(&cwd, &opts)?;
             println!("Git LFS initialized.");
         }
-        Command::Uninstall { local, skip_repo } => {
+        Command::Uninstall {
+            mode,
+            local,
+            system,
+            worktree,
+            file,
+            skip_repo,
+        } => {
+            let scope = match resolve_install_scope(local, system, worktree, file) {
+                Ok(s) => s,
+                Err(msg) => {
+                    eprintln!("{msg}");
+                    return Ok(2);
+                }
+            };
+            let hooks_only = match mode.as_deref() {
+                None => false,
+                Some("hooks") => true,
+                Some(other) => {
+                    eprintln!("git-lfs: unknown mode {other:?}");
+                    return Ok(2);
+                }
+            };
+            if scope.is_repo_scope()
+                && let Some(code) = bail_if_outside_repo(&cwd)
+            {
+                return Ok(code);
+            }
             let opts = install::UninstallOptions {
-                scope: if local {
-                    ConfigScope::Local
-                } else {
-                    ConfigScope::Global
-                },
+                scope: scope.clone(),
                 skip_repo,
+                hooks_only,
             };
             install::uninstall(&cwd, &opts)?;
-            if local {
-                println!("Local Git LFS configuration has been removed.");
-            } else {
+            if hooks_only {
+                // No "configuration removed" message: hooks-only mode
+                // leaves the filter config exactly as-is.
+            } else if scope.announces_global() {
                 println!("Global Git LFS configuration has been removed.");
+            } else {
+                println!("Local Git LFS configuration has been removed.");
             }
         }
         Command::Clone { args } => {
