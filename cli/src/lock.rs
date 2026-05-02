@@ -2,8 +2,10 @@
 //! command surface. All three speak the locking API in `api/src/locks.rs`;
 //! this module is mostly path-resolution + flag dispatch + display logic.
 //!
-//! Deferred (see NOTES.md): `--local` / `--cached` for `locks` (require
-//! an on-disk lock cache we don't have).
+//! `git lfs locks --local` reads from a side-effect cache populated by
+//! `git lfs lock` and pruned by `git lfs unlock` (see [`crate::lock_cache`]).
+//! `--cached` (which would persist the last remote query) is still
+//! deferred — see NOTES.md.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -16,6 +18,7 @@ use serde::Serialize;
 use tokio::runtime::Runtime;
 
 use crate::fetcher::build_api_client;
+use crate::lock_cache;
 use crate::lockable;
 
 #[derive(Debug, thiserror::Error)]
@@ -48,6 +51,11 @@ pub struct LocksOptions {
     pub limit: Option<u32>,
     pub verify: bool,
     pub json: bool,
+    /// `--local`: list from the on-disk cache without touching the
+    /// server. Cache is populated as a side effect of `git lfs lock`
+    /// and pruned by `git lfs unlock`. Combined with `--path`/`--id`/
+    /// `--limit` the same way the remote query is.
+    pub local: bool,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -100,6 +108,10 @@ pub fn lock(cwd: &Path, paths: &[String], opts: &LockOptions) -> Result<bool, Lo
                 // chmod'd it), they need it writable. Best-effort —
                 // a chmod failure shouldn't fail the lock op.
                 let _ = lockable::force_writable(&root, &path);
+                // Persist to the on-disk cache so a later
+                // `git lfs locks --local` (or an unlock that needs
+                // path→id lookup) can find it without a round-trip.
+                lock_cache::add(cwd, &lock);
                 locks.push(lock);
             }
             Err(CreateLockError::Conflict { existing, message }) => {
@@ -136,9 +148,39 @@ struct VerifyJsonOutput<'a> {
 }
 
 pub fn locks(cwd: &Path, opts: &LocksOptions) -> Result<(), LockCommandError> {
+    let root = repo_root(cwd).map_err(LockCommandError::Build)?;
+
+    // `--local`: read from the on-disk cache without a server round-
+    // trip (the test deliberately removes `origin` to prove we don't
+    // talk to it). Path/id/limit filters apply, but `--verify` doesn't
+    // make sense locally — upstream rejects that combination too.
+    if opts.local {
+        let path_filter = match opts.path.as_deref() {
+            Some(raw) => Some(resolve_lock_path(cwd, &root, raw).map_err(LockCommandError::Build)?),
+            None => None,
+        };
+        let cached = lock_cache::read(cwd);
+        let mut filtered: Vec<Lock> = cached
+            .into_iter()
+            .filter(|l| match (&path_filter, &opts.id) {
+                (Some(p), _) if &l.path != p => false,
+                (_, Some(id)) if &l.id != id => false,
+                _ => true,
+            })
+            .collect();
+        if let Some(limit) = opts.limit {
+            filtered.truncate(limit as usize);
+        }
+        if opts.json {
+            println!("{}", serde_json::to_string(&filtered)?);
+        } else {
+            print_lock_table(&filtered, None);
+        }
+        return Ok(());
+    }
+
     let api = build_api_client(cwd, opts.remote.as_deref()).map_err(LockCommandError::Build)?;
     let runtime = build_runtime()?;
-    let root = repo_root(cwd).map_err(LockCommandError::Build)?;
     let refspec = resolve_refspec(&root, opts.refspec.as_deref());
 
     if opts.verify {
@@ -281,7 +323,7 @@ pub fn unlock(
                     println!("Unlocked Lock {id}");
                 } else {
                     report.push(UnlockJsonEntry {
-                        id: Some(id),
+                        id: Some(id.clone()),
                         path: None,
                         unlocked: true,
                         reason: None,
@@ -295,6 +337,7 @@ pub fn unlock(
                 if lockable_readonly && let Some(attrs) = attrs.as_ref() {
                     let _ = lockable::enforce_readonly_if_lockable(&root, attrs, &lock.path);
                 }
+                lock_cache::remove_by_id(cwd, &id);
             }
             Err(e) => {
                 eprintln!("Unlocking {id} failed: {}", api_error_reason(&e));
@@ -415,6 +458,8 @@ pub fn unlock(
                     if lockable_readonly && let Some(attrs) = attrs.as_ref() {
                         let _ = lockable::enforce_readonly_if_lockable(&root, attrs, &path);
                     }
+                    lock_cache::remove_by_id(cwd, &id);
+                    lock_cache::remove_by_path(cwd, &path);
                     if opts.json {
                         // Path-based unlocks emit only `path` and
                         // `unlocked` per upstream's JSON schema; the

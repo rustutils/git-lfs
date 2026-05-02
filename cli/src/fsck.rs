@@ -21,7 +21,6 @@
 
 use std::io::Read;
 use std::path::Path;
-use std::process::Command;
 
 use git_lfs_git::{AttrSet, CatFileBatch, scan_pointers, scan_tree_blobs};
 use git_lfs_pointer::{MAX_POINTER_SIZE, Oid, Pointer};
@@ -30,13 +29,16 @@ use sha2::{Digest, Sha256};
 
 use crate::fetch::fetch_filter_set;
 
-fn is_inside_work_tree(cwd: &Path) -> bool {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(cwd)
-        .args(["rev-parse", "--is-inside-work-tree"])
-        .output();
-    matches!(out, Ok(o) if o.status.success() && o.stdout.starts_with(b"true"))
+/// Loosened "inside a repo" check: anything `git rev-parse
+/// --absolute-git-dir` can resolve counts. Earlier we required
+/// `--is-inside-work-tree`, but that rejected the
+/// `GIT_DIR=… GIT_WORK_TREE=… GIT_OBJECT_DIRECTORY=…` invocation in
+/// t-fsck 7 (cwd is the parent of the work tree, not inside it). The
+/// outside-repo case (test 4) still surfaces because `git_dir` fails
+/// when nothing on the cwd path is a git repo and no env vars steer
+/// us at one.
+fn is_in_git_repo(cwd: &Path) -> bool {
+    git_lfs_git::git_dir(cwd).is_ok()
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -75,7 +77,7 @@ pub fn run(cwd: &Path, refspec: Option<&str>, opts: &Options) -> Result<i32, Fsc
     // Outside-a-repo guard. `t-fsck.sh::fsck: outside git repository`
     // greps `Not in a Git repository` on stdout (`2>&1 > fsck.log`
     // captures stdout only) and asserts exit 128.
-    if !is_inside_work_tree(cwd) {
+    if !is_in_git_repo(cwd) {
         println!("Not in a Git repository.");
         return Ok(128);
     }
@@ -141,9 +143,15 @@ pub fn run(cwd: &Path, refspec: Option<&str>, opts: &Options) -> Result<i32, Fsc
 
     let mut unexpected: usize = 0;
     if matches!(opts.mode, Mode::Pointers | Mode::Both) {
-        let attrs = AttrSet::from_workdir(cwd)?;
         let blobs = scan_tree_blobs(cwd, r)?;
         let mut batch = CatFileBatch::spawn(cwd)?;
+        // Build attrs from the *tree*, not the working directory: when
+        // someone runs `git lfs fsck` against a repo populated only by
+        // env vars (`GIT_DIR=… GIT_WORK_TREE=… GIT_OBJECT_DIRECTORY=…`,
+        // see t-fsck 7) the work tree may be empty even though HEAD
+        // has a `.gitattributes`. Read each `.gitattributes` blob from
+        // the tree and feed it to AttrSet at the right directory.
+        let attrs = build_tree_attrs(cwd, &blobs, &mut batch)?;
         for blob in &blobs {
             // Symlinks store their target path as the blob content;
             // they're not LFS pointers regardless of `.gitattributes`
@@ -229,6 +237,41 @@ enum ObjectVerify {
     Ok,
     Missing,
     Corrupt,
+}
+
+/// Walk every `.gitattributes` blob in the tree-blob list and feed its
+/// contents to a fresh [`AttrSet`] at the right per-directory base.
+/// Unlike [`AttrSet::from_workdir`], this reads from the git tree
+/// itself, so an empty / out-of-sync working directory is fine.
+/// Falls back silently when a blob can't be read (the only consumer
+/// is fsck, which would just report nothing extra rather than fail).
+fn build_tree_attrs(
+    cwd: &Path,
+    blobs: &[git_lfs_git::TreeBlob],
+    batch: &mut CatFileBatch,
+) -> std::io::Result<AttrSet> {
+    let mut attrs = AttrSet::empty();
+    let _ = cwd;
+    // Sort by path-component depth so root .gitattributes is added
+    // first, mirroring AttrSet::from_workdir's "shallow → deep" order
+    // (gix-attributes' last-added wins).
+    let mut by_depth: Vec<&git_lfs_git::TreeBlob> = blobs
+        .iter()
+        .filter(|b| b.path.file_name().is_some_and(|n| n == ".gitattributes"))
+        .collect();
+    by_depth.sort_by_key(|b| b.path.components().count());
+    for blob in by_depth {
+        let Some(content) = batch.read(&blob.blob_oid).map_err(std::io::Error::other)? else {
+            continue;
+        };
+        let dir = blob
+            .path
+            .parent()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+        attrs.add_buffer_at(&content.content, &dir);
+    }
+    Ok(attrs)
 }
 
 fn verify_object(store: &Store, oid: Oid, size: u64) -> std::io::Result<ObjectVerify> {

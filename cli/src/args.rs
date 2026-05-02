@@ -594,6 +594,12 @@ pub enum Command {
         /// with `O ` (others get `  `).
         #[arg(long)]
         verify: bool,
+        /// List from the on-disk cache of own locks instead of querying
+        /// the server. Combine with `--path` / `--id` / `--limit` to
+        /// filter; `--verify` is rejected. Useful when offline or to
+        /// confirm what `git lfs lock` recorded locally.
+        #[arg(long)]
+        local: bool,
         /// Stable JSON output for scripts.
         #[arg(short, long)]
         json: bool,

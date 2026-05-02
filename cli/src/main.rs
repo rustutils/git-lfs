@@ -16,6 +16,7 @@ mod hooks;
 mod http_client;
 mod install;
 mod lock;
+mod lock_cache;
 mod lockable;
 mod locks_verify;
 mod ls_files;
@@ -453,6 +454,18 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             let stdout = io::stdout().lock();
             let clean_extensions = collect_clean_extensions(&cwd);
             let smudge_extensions = collect_smudge_extensions(&cwd);
+            // Honor `lfs.fetchinclude`/`lfs.fetchexclude`: paths
+            // outside the include set or inside the exclude set get
+            // pointer-text passthrough at smudge time, matching
+            // upstream's filter-process behavior (test 2 of
+            // t-filter-process). Patterns are pulled via
+            // `build_pattern_set`, the same helper fetch/pull use.
+            let include_set = fetch::build_pattern_set(&cwd, &[], "lfs.fetchinclude")?;
+            let exclude_set = fetch::build_pattern_set(&cwd, &[], "lfs.fetchexclude")?;
+            let path_filter = move |path: &str| -> bool {
+                let p = std::path::Path::new(path);
+                fetch::path_passes_filter(Some(p), &include_set, &exclude_set)
+            };
             filter_process(
                 &store,
                 stdin,
@@ -461,6 +474,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 skip || skip_smudge_env(),
                 &clean_extensions,
                 &smudge_extensions,
+                &path_filter,
             )?;
             fetcher.persist_access_mode();
         }
@@ -901,6 +915,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             limit,
             refspec,
             verify,
+            local,
             json,
         } => {
             let opts = lock::LocksOptions {
@@ -910,6 +925,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 id,
                 limit,
                 verify,
+                local,
                 json,
             };
             lock::locks(&cwd, &opts)?;

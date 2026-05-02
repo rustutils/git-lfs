@@ -141,6 +141,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   against cwd, `..`/`.` segments are collapsed lexically, and a
   bare `.` from the repo root stays `.` so the upstream "can't
   resolve ref `:N:.`" error wording is preserved.
+- `git lfs locks --local` lists the user's own locks from an
+  on-disk JSON cache at `<lfs>/cache/locks.json` instead of
+  contacting the server. Cache is populated as a side effect of
+  every successful `git lfs lock` and pruned by `git lfs unlock`
+  (both id-based and path-based). `--path` / `--id` / `--limit` /
+  `--json` filter the cached records the same way the remote
+  query does.
+- `git lfs install` now expands a leading `~/` in
+  `core.hooksPath` against `$HOME` so a hooks dir like
+  `~/custom_hooks_dir` resolves to `$HOME/custom_hooks_dir`,
+  matching upstream's `tools.ExpandPath`.
+- `git lfs fsck <a>..<b>` now expands the rev-range into the
+  concrete commits it names and unions every blob reachable from
+  any of them (deduped by path + blob OID). Without this, the
+  literal `<a>..<b>` got passed to `git ls-tree`, which errored
+  out because it only takes a tree-ish.
+- `git lfs fsck --pointers` now honors negated macro attributes
+  like `b.dat !lfs`. The fix is in `git/src/attr.rs`: every
+  `.gitattributes` buffer is intake-rewritten so each `!<macro>`
+  reference expands to `!attr1 !attr2 …` (the keys the macro
+  declares). gix-attributes does this for the positive form
+  `<pattern> <macro>` but not for negation, so the rewrite fills
+  the gap. Also covers the parallel `[attr]binary` builtin.
+- `git lfs filter-process` smudge now honors
+  `lfs.fetchinclude` / `lfs.fetchexclude`: paths excluded by the
+  patterns get pointer-text passthrough at smudge time instead
+  of triggering a download. Mirrors upstream's clone-time
+  include/exclude (test 2 of t-filter-process).
+- `git lfs fsck` now works under `GIT_DIR` /
+  `GIT_OBJECT_DIRECTORY` overrides where the working tree is
+  empty. The "outside repo" gate switched from
+  `--is-inside-work-tree` (rejected this case because cwd was
+  the parent of the work tree) to a plain "can we resolve a
+  git dir," and the pointers-mode `.gitattributes` source moved
+  from a workdir walk to the tree itself (so an empty work
+  tree no longer hides the patterns the tree declares).
 
 ### Fixed
 

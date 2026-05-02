@@ -284,6 +284,17 @@ pub struct TreeBlob {
 /// no pointer parsing. Used by `fsck --pointers` for its full-tree sweep
 /// when classifying paths against `.gitattributes`.
 pub fn scan_tree_blobs(cwd: &Path, reference: &str) -> Result<Vec<TreeBlob>, Error> {
+    // `git ls-tree` only takes a tree-ish, not a range. For a `<a>..<b>`
+    // reference (used by `git lfs fsck HEAD^..HEAD`), walk every commit
+    // in the range and union their tree blobs (deduped by path+oid). A
+    // bare ref still takes the cheap one-shot path.
+    if reference.contains("..") {
+        return scan_blobs_in_range(cwd, reference);
+    }
+    scan_tree_blobs_for_ref(cwd, reference)
+}
+
+fn scan_tree_blobs_for_ref(cwd: &Path, reference: &str) -> Result<Vec<TreeBlob>, Error> {
     let out = Command::new("git")
         .arg("-C")
         .arg(cwd)
@@ -326,6 +337,38 @@ pub fn scan_tree_blobs(cwd: &Path, reference: &str) -> Result<Vec<TreeBlob>, Err
         }
     }
     Ok(blobs)
+}
+
+/// Expand a `<a>..<b>` rev-range into the concrete commits it names
+/// and union their tree blobs (deduped by path + blob OID). Mirrors
+/// upstream's behavior for `git lfs fsck HEAD^..HEAD`: every blob
+/// reachable from any commit in the range is checked once.
+fn scan_blobs_in_range(cwd: &Path, range: &str) -> Result<Vec<TreeBlob>, Error> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["rev-list", range])
+        .output()?;
+    if !out.status.success() {
+        return Err(Error::Failed(format!(
+            "git rev-list failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    let mut seen: std::collections::HashSet<(PathBuf, String)> = std::collections::HashSet::new();
+    let mut all = Vec::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let commit = line.trim();
+        if commit.is_empty() {
+            continue;
+        }
+        for blob in scan_tree_blobs_for_ref(cwd, commit)? {
+            if seen.insert((blob.path.clone(), blob.blob_oid.clone())) {
+                all.push(blob);
+            }
+        }
+    }
+    Ok(all)
 }
 
 /// Walk the tree at `reference`, returning one entry per LFS pointer blob.

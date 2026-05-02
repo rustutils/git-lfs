@@ -41,6 +41,7 @@ pub enum FilterProcessError {
 /// — the working-tree file ends up holding pointer text and `git lfs
 /// pull` (or another smudge run) is the recovery path. Clean requests
 /// are unaffected.
+#[allow(clippy::too_many_arguments)]
 pub fn filter_process<R, W, F>(
     store: &Store,
     input: R,
@@ -49,6 +50,7 @@ pub fn filter_process<R, W, F>(
     skip_smudge: bool,
     clean_extensions: &[CleanExtension],
     smudge_extensions: &[SmudgeExtension],
+    smudge_path_filter: &dyn Fn(&str) -> bool,
 ) -> Result<(), FilterProcessError>
 where
     R: Read,
@@ -84,6 +86,14 @@ where
         match command.as_str() {
             "clean" => process_clean(store, &mut writer, &payload, pathname, clean_extensions)?,
             "smudge" if skip_smudge => process_smudge_passthrough(&mut writer, &payload)?,
+            // `lfs.fetchinclude` / `lfs.fetchexclude` excluded the
+            // path: pass the pointer text through unchanged. Mirrors
+            // upstream's clone-time include/exclude (test 2 of
+            // t-filter-process); the user can run `git lfs pull`
+            // later to materialize.
+            "smudge" if !smudge_path_filter(pathname) => {
+                process_smudge_passthrough(&mut writer, &payload)?;
+            }
             "smudge" => {
                 let outcome = process_smudge(
                     store,
@@ -406,6 +416,7 @@ mod tests {
             false,
             &[],
             &[],
+            &|_| true,
         )
         .unwrap();
         output
@@ -542,6 +553,7 @@ mod tests {
             false,
             &[],
             &[],
+            &|_| true,
         )
         .unwrap();
 

@@ -349,7 +349,8 @@ pub fn effective_hooks_dir(cwd: &Path) -> Result<std::path::PathBuf, InstallErro
     if let Ok(Some(hookspath)) = config::get(cwd, ConfigScope::Local, "core.hookspath")
         && !hookspath.is_empty()
     {
-        let hp = Path::new(&hookspath);
+        let expanded = expand_home(&hookspath);
+        let hp = Path::new(&expanded);
         if hp.is_absolute() {
             return Ok(hp.to_path_buf());
         }
@@ -360,6 +361,25 @@ pub fn effective_hooks_dir(cwd: &Path) -> Result<std::path::PathBuf, InstallErro
         return Ok(base.join(hp));
     }
     Ok(git_dir.join("hooks"))
+}
+
+/// Tilde-expand a leading `~/` or bare `~` against `$HOME`. Mirrors
+/// upstream's `tools.ExpandPath` for the same-user case (the `~user`
+/// lookup form is not used by any test today; if a user actually sets
+/// `core.hooksPath = ~someone/hooks` we'll fall through to the
+/// literal value and `git config` itself will surface the failure).
+fn expand_home(raw: &str) -> String {
+    if raw == "~"
+        && let Some(home) = std::env::var_os("HOME")
+    {
+        return home.to_string_lossy().into_owned();
+    }
+    if let Some(rest) = raw.strip_prefix("~/")
+        && let Some(home) = std::env::var_os("HOME")
+    {
+        return Path::new(&home).join(rest).to_string_lossy().into_owned();
+    }
+    raw.to_owned()
 }
 
 /// Best-effort hook installer used by `git lfs track`'s auto-install

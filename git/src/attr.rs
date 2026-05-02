@@ -18,6 +18,7 @@
 //! the LFS-specific helpers [`AttrSet::is_lfs_tracked`] /
 //! [`AttrSet::is_lockable`].
 
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::io;
@@ -34,6 +35,13 @@ use gix_glob::pattern::Case;
 pub struct AttrSet {
     search: Search,
     collection: MetadataCollection,
+    /// Macro name → list of attribute keys that macro expands to.
+    /// Tracked alongside gix-attributes' internal macro state so we
+    /// can work around its lack of `!<macro>` expansion: when we see
+    /// `<pattern> !<macro>` in a buffer, we rewrite it to
+    /// `<pattern> !attr1 !attr2 … !<macro>` before handing the bytes
+    /// off, since gix only honors the `!<macro>` token literally.
+    macros: HashMap<String, Vec<String>>,
 }
 
 impl AttrSet {
@@ -49,14 +57,29 @@ impl AttrSet {
             &mut collection,
             true,
         );
-        Self { search, collection }
+        let mut macros = HashMap::new();
+        macros.insert(
+            "binary".to_string(),
+            vec!["diff".into(), "merge".into(), "text".into()],
+        );
+        Self {
+            search,
+            collection,
+            macros,
+        }
     }
 
     /// Build from a single `.gitattributes`-format buffer.
     pub fn from_buffer(bytes: &[u8]) -> Self {
         let mut me = Self::empty();
-        me.search
-            .add_patterns_buffer(bytes, "<memory>".into(), None, &mut me.collection, true);
+        let rewritten = me.intake_buffer(bytes);
+        me.search.add_patterns_buffer(
+            &rewritten,
+            "<memory>".into(),
+            None,
+            &mut me.collection,
+            true,
+        );
         me
     }
 
@@ -75,8 +98,9 @@ impl AttrSet {
         } else {
             virtual_root.join(dir).join(".gitattributes")
         };
+        let rewritten = self.intake_buffer(bytes);
         self.search.add_patterns_buffer(
-            bytes,
+            &rewritten,
             source,
             Some(&virtual_root),
             &mut self.collection,
@@ -89,12 +113,13 @@ impl AttrSet {
     /// if it exists.
     pub fn from_workdir(repo_root: &Path) -> io::Result<Self> {
         let mut me = Self::empty();
-        let mut buf = Vec::new();
 
         let info = repo_root.join(".git").join("info").join("attributes");
         if info.exists() {
+            let bytes = fs::read(&info)?;
+            let rewritten = me.intake_buffer(&bytes);
             me.search
-                .add_patterns_file(info, true, None, &mut buf, &mut me.collection, true)?;
+                .add_patterns_buffer(&rewritten, info, None, &mut me.collection, true);
         }
 
         let mut found = Vec::new();
@@ -104,21 +129,110 @@ impl AttrSet {
         // "more specific path overrides shallower" semantics.
         found.sort_by_key(|p| p.components().count());
         for path in found {
+            let bytes = fs::read(&path)?;
+            let rewritten = me.intake_buffer(&bytes);
             // `root` is always the repo root. gix-glob computes each file's
             // relative `base` by stripping the repo-root prefix from
             // `source.parent()` — so root.gitattributes ends up with no base
             // (matches paths directly) while sub/.gitattributes ends up with
             // base `sub/` (strips `sub/` before matching).
-            me.search.add_patterns_file(
+            me.search.add_patterns_buffer(
+                &rewritten,
                 path,
-                true,
                 Some(repo_root),
-                &mut buf,
                 &mut me.collection,
                 true,
-            )?;
+            );
         }
         Ok(me)
+    }
+
+    /// Single-pass macro intake: scans `bytes` for `[attr]<name> ...`
+    /// declarations to update [`Self::macros`] and returns a rewritten
+    /// copy with each `<pattern> !<macro>` token expanded to the
+    /// underlying `!attr1 !attr2 … !<macro>` sequence. Lets us work
+    /// around `gix-attributes` not expanding macro negations
+    /// (test 11 of t-fsck: `b.dat !lfs` should leave `filter`
+    /// unspecified, not just unset the literal `lfs` attribute).
+    /// Macros are processed in declaration order — same constraint
+    /// upstream's `MacroProcessor` documents — so a buffer that
+    /// declares and immediately uses a macro is fine.
+    fn intake_buffer(&mut self, bytes: &[u8]) -> Vec<u8> {
+        let Ok(s) = std::str::from_utf8(bytes) else {
+            // Non-UTF-8 buffer: pass through. We'd rather miss the
+            // negation expansion than corrupt the bytes. Real
+            // .gitattributes files are UTF-8 in practice.
+            return bytes.to_vec();
+        };
+        let mut out = Vec::with_capacity(bytes.len());
+        for line in s.split('\n') {
+            let trimmed = line.trim_start();
+            if let Some(rest) = trimmed.strip_prefix("[attr]") {
+                // `[attr]<name> <attr>...` — register macro, pass line
+                // through verbatim so gix-attributes also knows about it.
+                let mut tokens = rest.split_whitespace();
+                if let Some(name) = tokens.next() {
+                    let attrs: Vec<String> = tokens
+                        .map(|t| {
+                            // Strip leading `-`/`!` and any `=value` suffix
+                            // — we only need the bare key for negation
+                            // expansion later.
+                            let key = t.trim_start_matches(['-', '!']);
+                            key.split_once('=')
+                                .map(|(k, _)| k)
+                                .unwrap_or(key)
+                                .to_string()
+                        })
+                        .filter(|k| !k.is_empty())
+                        .collect();
+                    if !attrs.is_empty() {
+                        self.macros.insert(name.to_string(), attrs);
+                    }
+                }
+                out.extend_from_slice(line.as_bytes());
+                out.push(b'\n');
+                continue;
+            }
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                out.extend_from_slice(line.as_bytes());
+                out.push(b'\n');
+                continue;
+            }
+            // Pattern line: tokenize and expand any `!<macro>` references.
+            // First whitespace-separated token is the pattern; remainder
+            // are attribute settings. When we expand `!<macro>`, we
+            // *drop* the literal `!<macro>` token from the rewritten
+            // line — feeding gix-attributes both the expanded
+            // `!filter !diff …` set *and* the literal `!lfs` makes it
+            // re-trigger its own macro expansion at lookup time and
+            // wipe out our `!filter`. The trade-off is that the macro
+            // *name* itself stays Set rather than Unspecified for the
+            // negated path; nothing we ship currently looks the macro
+            // name up directly, so that's acceptable.
+            let leading_ws_len = line.len() - trimmed.len();
+            out.extend_from_slice(&line.as_bytes()[..leading_ws_len]);
+            let mut tokens = trimmed.split_whitespace();
+            if let Some(pattern) = tokens.next() {
+                out.extend_from_slice(pattern.as_bytes());
+                for tok in tokens {
+                    if let Some(name) = tok.strip_prefix('!')
+                        && let Some(macro_attrs) = self.macros.get(name)
+                    {
+                        for k in macro_attrs {
+                            out.push(b' ');
+                            out.push(b'!');
+                            out.extend_from_slice(k.as_bytes());
+                        }
+                        // Drop the literal `!<macro>` (see comment above).
+                        continue;
+                    }
+                    out.push(b' ');
+                    out.extend_from_slice(tok.as_bytes());
+                }
+            }
+            out.push(b'\n');
+        }
+        out
     }
 
     /// Return the resolved value of `attr` for `path` (relative to the
@@ -314,6 +428,25 @@ fn walk_for_gitattributes(dir: &Path, out: &mut Vec<PathBuf>) -> io::Result<()> 
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn negated_macro_unsets_constituent_attrs() {
+        // Regression for t-fsck 11. `[attr]lfs ...` declares a macro,
+        // `*.dat lfs` applies it (so .dat files become filter=lfs),
+        // `b.dat !lfs` unsets it. After our intake-time rewrite
+        // expands `!lfs` into `!filter !diff !merge !text`, gix
+        // reports filter=None for b.dat and is_lfs_tracked returns
+        // false for it.
+        let s = AttrSet::from_buffer(
+            b"[attr]lfs filter=lfs diff=lfs merge=lfs -text\n\
+              *.dat lfs\n\
+              b.dat !lfs\n",
+        );
+        assert_eq!(s.value("a.dat", "filter").as_deref(), Some("lfs"));
+        assert_eq!(s.value("b.dat", "filter"), None);
+        assert!(s.is_lfs_tracked("a.dat"));
+        assert!(!s.is_lfs_tracked("b.dat"));
+    }
 
     #[test]
     fn empty_set_has_no_matches() {

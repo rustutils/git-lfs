@@ -36,6 +36,9 @@ List file locks held on the server
 - `--verify`
     Verify ownership: prefix locks owned by the authenticated user with `O ` (others get `  `)
 
+- `--local`
+    List from the on-disk cache of own locks instead of querying the server. Combine with `--path` / `--id` / `--limit` to filter; `--verify` is rejected. Useful when offline or to confirm what `git lfs lock` recorded locally
+
 - `-j`, `--json`
     Stable JSON output for scripts
 
