@@ -39,6 +39,8 @@ pub struct Cli {
     pub command: Option<Command>,
 }
 
+// note: don't add rustdoc comments here, they will shadow the struct's docs
+// in the clap-generated help output
 #[derive(Subcommand)]
 pub enum Command {
     Clean(CleanArgs),
@@ -72,16 +74,49 @@ pub enum Command {
     LsFiles(LsFilesArgs),
 }
 
-/// Run the clean filter: read content on stdin, write a pointer on stdout.
+/// Git clean filter that converts large files to pointers
+///
+/// Read the contents of a large file from standard input, and write a
+/// Git LFS pointer file for that file to standard output.
+///
+/// Clean is typically run by Git’s clean filter, configured by the
+/// repository’s Git attributes.
+///
+/// Clean is not part of the user-facing Git plumbing commands.
+/// To preview the pointer of a large file as it would be generated,
+/// see the git-lfs-pointer(1) command.
 #[derive(Args)]
 pub struct CleanArgs {
-    /// Working-tree path of the file being cleaned. Substituted for
-    /// `%f` in any configured `lfs.extension.<name>.clean` command.
+    /// Working-tree path of the file being cleaned.
+    ///
+    /// Substituted for `%f` in any configured `lfs.extension.<name>.clean` command.
     pub path: Option<PathBuf>,
 }
 
-/// Run the smudge filter: read a pointer on stdin, write content on stdout.
+/// Git smudge filter that converts pointer in blobs to the actual content
+///
+/// Read a Git LFS pointer file from standard input and write the contents of the
+/// corresponding large file to standard output. If needed, download the file’s
+/// contents from the Git LFS endpoint. The argument, if provided, is only used
+/// for a progress bar.
+///
+/// Smudge is typically run by Git’s smudge filter, configured by the repository’s
+/// Git attributes.
+///
+/// In your Git configuration or in a .lfsconfig file, you may set either or both
+/// of `lfs.fetchinclude` and `lfs.fetchexclude` to comma-separated lists of paths.
+/// If `lfs.fetchinclude` is defined, Git LFS pointer files will only be replaced
+/// with the contents of the corresponding Git LFS object file if their path
+/// matches one in that list, and if `lfs.fetchexclude` is defined, Git LFS pointer
+/// files will only be replaced with the contents of the corresponding Git LFS
+/// object file if their path does not match one in that list. Paths are matched
+/// using wildcard matching as per gitignore(5). Git LFS pointer files that are
+/// not replaced with the contents of their corresponding object files are simply
+/// copied to standard output without change.
 #[derive(Args)]
+#[clap(
+    before_help = "Without any options, git lfs smudge outputs the raw Git LFS content to standard output."
+)]
 pub struct SmudgeArgs {
     /// Working-tree path of the file being smudged (currently unused).
     pub path: Option<PathBuf>,

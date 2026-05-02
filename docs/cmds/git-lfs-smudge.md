@@ -2,7 +2,7 @@
 
 ## Name
 
-`git-lfs-smudge` — Run the smudge filter: read a pointer on stdin, write content on stdout
+`git-lfs-smudge` — Git smudge filter that converts pointer in blobs to the actual content
 
 ## Synopsis
 
@@ -12,7 +12,13 @@ git-lfs-smudge [OPTIONS] [PATH]
 
 ## Description
 
-Run the smudge filter: read a pointer on stdin, write content on stdout
+Git smudge filter that converts pointer in blobs to the actual content
+
+Read a Git LFS pointer file from standard input and write the contents of the corresponding large file to standard output. If needed, download the file’s contents from the Git LFS endpoint. The argument, if provided, is only used for a progress bar.
+
+Smudge is typically run by Git’s smudge filter, configured by the repository’s Git attributes.
+
+In your Git configuration or in a .lfsconfig file, you may set either or both of `lfs.fetchinclude` and `lfs.fetchexclude` to comma-separated lists of paths. If `lfs.fetchinclude` is defined, Git LFS pointer files will only be replaced with the contents of the corresponding Git LFS object file if their path matches one in that list, and if `lfs.fetchexclude` is defined, Git LFS pointer files will only be replaced with the contents of the corresponding Git LFS object file if their path does not match one in that list. Paths are matched using wildcard matching as per gitignore(5). Git LFS pointer files that are not replaced with the contents of their corresponding object files are simply copied to standard output without change.
 
 ## Options
 

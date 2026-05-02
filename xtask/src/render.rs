@@ -19,10 +19,15 @@ use crate::{groff, markdown};
 /// Build a man page as a byte vec. clap_mangen handles NAME / SYNOPSIS /
 /// OPTIONS / VERSION; we splice in the markdown-sourced extras
 /// (description override, post-OPTIONS sections) converted to groff.
+///
+/// `section` is the man-page section number ("1" for commands, "5" for
+/// config-file formats, etc.) — clap_mangen defaults to "1" when not
+/// set, but for synthetic pages like `git-lfs-config(5)` we override.
 pub fn render_man(
     page_name: &str,
     cmd: clap::Command,
     extras: &ManContent,
+    section: &str,
 ) -> std::io::Result<Vec<u8>> {
     use std::io::Write as _;
 
@@ -30,7 +35,7 @@ pub fn render_man(
     // the command (titles come from `cmd.get_name()`) and a version
     // (subcommands don't inherit the parent's, so set crate version).
     let cmd = cmd.name(page_name.to_owned()).version(git_lfs::VERSION);
-    let man = clap_mangen::Man::new(cmd);
+    let man = clap_mangen::Man::new(cmd).section(section);
 
     let mut out = Vec::<u8>::new();
     man.render_title(&mut out)?;

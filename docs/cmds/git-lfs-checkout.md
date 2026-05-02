@@ -2,7 +2,7 @@
 
 ## Name
 
-`git-lfs-checkout` — Replace pointer text in the working tree with actual LFS object content. With no args, materializes every LFS pointer in HEAD's tree. With paths (literal file names or trailing-slash directory prefixes), restricts to matching pointers
+`git-lfs-checkout` — Populate working copy with real content from Git LFS files
 
 ## Synopsis
 
@@ -11,6 +11,8 @@ git-lfs-checkout [OPTIONS] [PATHS]...
 ```
 
 ## Description
+
+Populate working copy with real content from Git LFS files.
 
 Replace pointer text in the working tree with actual LFS object content. With no args, materializes every LFS pointer in HEAD's tree. With paths (literal file names or trailing-slash directory prefixes), restricts to matching pointers.
 

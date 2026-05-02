@@ -6,6 +6,7 @@
 //!   - **bold** and *italic* spans
 //!   - `code` spans and fenced code blocks
 //!   - Bulleted and numbered lists (one level; nesting renders flat)
+//!   - Definition lists (Pandoc-style: `term` / `:   def`) → `.TP`
 //!
 //! Keeping the surface small means [`man.rs`] authors can rely on
 //! predictable groff output without us needing to track every corner of
@@ -20,7 +21,10 @@ use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 pub fn from_markdown(md: &str) -> String {
     let mut out = String::new();
     let mut state = State::default();
-    let parser = Parser::new_ext(md, Options::ENABLE_STRIKETHROUGH);
+    let parser = Parser::new_ext(
+        md,
+        Options::ENABLE_STRIKETHROUGH | Options::ENABLE_DEFINITION_LIST,
+    );
     for event in parser {
         handle(event, &mut state, &mut out);
     }
@@ -90,6 +94,19 @@ fn handle(event: Event<'_>, state: &mut State, out: &mut String) {
             None => out.push_str(".PP\n"),
         },
         Event::End(TagEnd::Item) if !out.ends_with('\n') => {
+            out.push('\n');
+        }
+
+        Event::Start(Tag::DefinitionList) => ensure_blank_separator(out),
+        Event::End(TagEnd::DefinitionList) if !out.ends_with('\n') => {
+            out.push('\n');
+        }
+        Event::Start(Tag::DefinitionListTitle) => out.push_str(".TP\n"),
+        Event::End(TagEnd::DefinitionListTitle) if !out.ends_with('\n') => {
+            out.push('\n');
+        }
+        Event::Start(Tag::DefinitionListDefinition) => {}
+        Event::End(TagEnd::DefinitionListDefinition) if !out.ends_with('\n') => {
             out.push('\n');
         }
 
@@ -211,6 +228,23 @@ mod tests {
         assert!(g.contains(".IP \\(bu 2\n"));
         assert!(g.contains("foo"));
         assert!(g.contains("bar"));
+    }
+
+    #[test]
+    fn definition_list() {
+        let g = from_markdown(
+            "GIT_LFS_SKIP_SMUDGE\n\
+             :   When set, behaves as `--skip`.\n\
+             \n\
+             GIT_LFS_PROGRESS\n\
+             :   Path to a progress log.\n",
+        );
+        // Each title becomes a `.TP` block; body follows on the next line.
+        assert!(g.contains(".TP\nGIT_LFS_SKIP_SMUDGE\n"), "got: {g}");
+        assert!(g.contains(".TP\nGIT_LFS_PROGRESS\n"), "got: {g}");
+        // Body text appears, with inline-code rendered as `\fB...\fR`.
+        assert!(g.contains("When set, behaves as"), "got: {g}");
+        assert!(g.contains("\\fB\\-\\-skip\\fR"), "got: {g}");
     }
 
     #[test]

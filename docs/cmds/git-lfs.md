@@ -23,8 +23,8 @@ Git LFS — large file storage for git
 
 ### Subcommands
 
-- `clean` — Run the clean filter: read content on stdin, write a pointer on stdout
-- `smudge` — Run the smudge filter: read a pointer on stdin, write content on stdout
+- `clean` — Git clean filter that converts large files to pointers
+- `smudge` — Git smudge filter that converts pointer in blobs to the actual content
 - `install` — Configure git to invoke git-lfs as the clean/smudge/process filter, and install the LFS git hooks
 - `uninstall` — Reverse of `install`: clear the `filter.lfs.*` config and remove the LFS git hooks. Hooks that don't match what we'd write are left untouched
 - `track` — Track a file pattern with git-lfs by adding it to .gitattributes. With no patterns, lists currently-tracked patterns
@@ -44,7 +44,7 @@ Git LFS — large file storage for git
 - `ext` — List the configured LFS pointer extensions (`lfs.extension.<name>.*`). Extensions chain external clean/smudge programs around each LFS object; this prints their resolved configuration in priority order
 - `update` — (Re-)install the four LFS git hooks (`pre-push`, `post-checkout`, `post-commit`, `post-merge`) for the current repository
 - `migrate` — Analyze or rewrite history for LFS conversion. Phase 1 ships `info` only; `import` and `export` will land in subsequent phases
-- `checkout` — Replace pointer text in the working tree with actual LFS object content. With no args, materializes every LFS pointer in HEAD's tree. With paths (literal file names or trailing-slash directory prefixes), restricts to matching pointers
+- `checkout` — Populate working copy with real content from Git LFS files
 - `prune` — Delete local LFS objects that aren't reachable from HEAD or any unpushed commit. Reclaims disk for repos whose history has moved past their objects
 - `fsck` — Check the integrity of LFS objects and pointers reachable from `<refspec>` (default: HEAD). Exit 1 if anything is corrupt
 - `status` — Show staged + unstaged changes, classifying each blob as LFS, Git, or working-tree File
