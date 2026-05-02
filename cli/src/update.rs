@@ -18,7 +18,7 @@ use std::path::Path;
 
 use git_lfs_git::git_dir;
 
-use crate::install::{self, HookStatus};
+use crate::install;
 
 /// Hook names installed by `git lfs update`, in the order shown to the
 /// user (matches upstream and the order tests assert on).
@@ -50,27 +50,23 @@ pub fn run(cwd: &Path, force: bool, manual: bool) -> Result<u8, UpdateError> {
         return Ok(0);
     }
 
-    std::fs::create_dir_all(&hooks_dir)?;
-
-    if !force {
-        for hook in HOOKS {
-            let path = hooks_dir.join(hook);
-            if let HookStatus::Conflict { existing } = install::classify_hook(&path, hook)? {
-                print_conflict(hook, &existing);
-                return Ok(2);
-            }
-        }
-    }
-
     let opts = install::InstallOptions {
         scope: install::InstallScope::Local,
         force,
         skip_repo: false,
         skip_smudge: false,
     };
-    install::install_all_hooks(cwd, &opts)?;
-    println!("Updated Git hooks.");
-    Ok(0)
+    match install::install_all_hooks(cwd, &opts) {
+        Ok(()) => {
+            println!("Updated Git hooks.");
+            Ok(0)
+        }
+        Err(install::InstallError::HookConflict { hook, existing }) => {
+            install::print_hook_conflict(&hook, &existing);
+            Ok(2)
+        }
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// Render the hooks directory the way the user types it: relative to
@@ -86,18 +82,6 @@ fn display_hooks_dir(cwd: &Path, git_dir: &Path, hooks_dir: &Path) -> String {
         return rel.display().to_string();
     }
     hooks_dir.display().to_string()
-}
-
-fn print_conflict(hook: &str, existing: &str) {
-    eprintln!("Hook already exists: {hook}");
-    eprintln!();
-    for line in existing.lines() {
-        eprintln!("\t{line}");
-    }
-    eprintln!();
-    eprintln!("To resolve this, either:");
-    eprintln!("  1: run `git lfs update --manual` for instructions on how to merge hooks.");
-    eprintln!("  2: run `git lfs update --force` to overwrite your hook.");
 }
 
 fn print_manual(display_dir: &str) {

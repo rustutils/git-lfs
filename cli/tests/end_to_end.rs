@@ -278,10 +278,18 @@ fn install_errors_on_conflicting_config_without_force() {
 
     let out = run_in(repo.path(), &["install", "--local"], b"");
     assert!(!out.status.success());
-    let stderr = String::from_utf8_lossy(&out.stderr);
+    // The conflict goes on stdout (matches upstream + the t-install
+    // `tee install.log` capture), with the upstream-format
+    // `the "filter.lfs.clean" attribute should be ...` line and a
+    // follow-up `Run \`git lfs install --force\`...` hint.
+    let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stderr.contains("--force"),
-        "stderr should suggest --force: {stderr}"
+        stdout.contains("--force"),
+        "stdout should suggest --force: {stdout}"
+    );
+    assert!(
+        stdout.contains("attribute should be"),
+        "stdout should describe the attribute mismatch: {stdout}"
     );
 }
 

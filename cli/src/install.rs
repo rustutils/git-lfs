@@ -72,6 +72,40 @@ const FILTER_KEYS_SKIP_SMUDGE: &[(&str, &str)] = &[
     ("filter.lfs.required", "true"),
 ];
 
+/// Previously-shipped filter values we silently overwrite without
+/// requiring `--force`. Mirrors upstream's `Upgradeables` map (see
+/// `lfs/attribute.go::filterAttribute`). The key is the full
+/// `filter.lfs.<x>` config name. The list also includes the *other
+/// mode's* current value so toggling between regular and `--skip-smudge`
+/// is silent (test 6 of t-install relies on this).
+fn upgradeables_for(key: &str, skip_smudge: bool) -> &'static [&'static str] {
+    match (key, skip_smudge) {
+        ("filter.lfs.clean", false) => &["git-lfs clean %f"],
+        ("filter.lfs.clean", true) => &["git-lfs clean %f"],
+        ("filter.lfs.smudge", false) => &[
+            "git-lfs smudge %f",
+            "git-lfs smudge --skip %f",
+            "git-lfs smudge --skip -- %f",
+        ],
+        ("filter.lfs.smudge", true) => &[
+            "git-lfs smudge %f",
+            "git-lfs smudge --skip %f",
+            "git-lfs smudge -- %f",
+        ],
+        ("filter.lfs.process", false) => &[
+            "git-lfs filter",
+            "git-lfs filter --skip",
+            "git-lfs filter-process --skip",
+        ],
+        ("filter.lfs.process", true) => &[
+            "git-lfs filter",
+            "git-lfs filter --skip",
+            "git-lfs filter-process",
+        ],
+        _ => &[],
+    }
+}
+
 const HOOKS: &[&str] = &["pre-push", "post-checkout", "post-commit", "post-merge"];
 
 /// Hook script template. `{{Command}}` is replaced with the hook type at
@@ -103,20 +137,23 @@ pub enum InstallError {
     Git(#[from] git_lfs_git::Error),
     #[error(transparent)]
     Io(#[from] io::Error),
-    #[error(
-        "config {key:?} is set to {existing:?} (would set {wanted:?}); \
-         rerun with --force to overwrite"
-    )]
-    ConfigConflict {
+    /// `filter.lfs.<x>` is set to a value we don't recognize as our
+    /// own (current or any historically-shipped variant). Display
+    /// matches upstream's `lfs/attribute.go::Attribute.set` wording so
+    /// the t-install grep `(clean|smudge)" attribute should be` lands
+    /// on the same substring.
+    #[error("the {key:?} attribute should be {wanted:?} but is {existing:?}")]
+    FilterAttribute {
         key: String,
         existing: String,
         wanted: String,
     },
-    #[error(
-        "hook {hook:?} already exists with different contents; \
-         rerun with --force to overwrite"
-    )]
-    HookConflict { hook: String },
+    /// One of our hooks exists with user-edited content. Carries the
+    /// existing text so the dispatcher can render the upstream-format
+    /// "Hook already exists" block (matched verbatim by t-install
+    /// test 4 and t-update tests 6/7).
+    #[error("hook {hook:?} already exists with different contents")]
+    HookConflict { hook: String, existing: String },
     /// `git config <scope> ...` failed (e.g. `--worktree` against a
     /// repo that hasn't enabled `extensions.worktreeConfig`, or
     /// `--local` against a `.git` the user can't write to). The CLI
@@ -148,16 +185,29 @@ fn set_filter_config(cwd: &Path, opts: &InstallOptions) -> Result<(), InstallErr
         FILTER_KEYS
     };
     for (key, wanted) in keys {
-        match scoped_get(cwd, &opts.scope, key)? {
-            Some(v) if v == *wanted => continue,
-            Some(v) if !opts.force => {
-                return Err(InstallError::ConfigConflict {
-                    key: (*key).into(),
-                    existing: v,
-                    wanted: (*wanted).into(),
-                });
+        let current = scoped_get(cwd, &opts.scope, key)?;
+        let needs_set = match current.as_deref() {
+            None | Some("") => true,
+            Some(v) if v == *wanted => false,
+            Some(v) if opts.force => {
+                let _ = v;
+                true
             }
-            _ => scoped_set(cwd, &opts.scope, key, wanted)?,
+            Some(v) => {
+                let upgradeables = upgradeables_for(key, opts.skip_smudge);
+                if upgradeables.contains(&v) {
+                    true
+                } else {
+                    return Err(InstallError::FilterAttribute {
+                        key: (*key).into(),
+                        existing: v.to_owned(),
+                        wanted: (*wanted).into(),
+                    });
+                }
+            }
+        };
+        if needs_set {
+            scoped_set(cwd, &opts.scope, key, wanted)?;
         }
     }
     Ok(())
@@ -181,13 +231,19 @@ fn scoped_get(
         .output()?;
     match out.status.code() {
         Some(0) => Ok(Some(String::from_utf8_lossy(&out.stdout).trim().to_owned())),
-        Some(1) | Some(128) | Some(129) => Ok(None),
+        // 1 = key absent; 2 = multivar (we'll collapse with
+        // `--replace-all` on write); 128/129 = scope unreachable.
+        Some(1) | Some(2) | Some(128) | Some(129) => Ok(None),
         _ => Err(git_lfs_git::Error::Failed(
             String::from_utf8_lossy(&out.stderr).trim().to_owned(),
         )),
     }
 }
 
+/// `git config <scope> --replace-all <key> <value>`. The
+/// `--replace-all` flag matches upstream's `git/config.go::Set*`
+/// helpers and is what lets `git lfs install --force` collapse a
+/// multivar (test 14 of t-install).
 fn scoped_set(
     cwd: &Path,
     scope: &InstallScope,
@@ -195,13 +251,19 @@ fn scoped_set(
     value: &str,
 ) -> Result<(), InstallError> {
     let scope_arg = scope.config_arg();
-    let args = vec!["config".into(), scope_arg.clone(), key.into(), value.into()];
+    let args = vec![
+        "config".into(),
+        scope_arg.clone(),
+        "--replace-all".into(),
+        key.into(),
+        value.into(),
+    ];
     let out = Command::new("git")
         .arg("-C")
         .arg(cwd)
         .arg("config")
         .arg(&scope_arg)
-        .args([key, value])
+        .args(["--replace-all", key, value])
         .output()?;
     if out.status.success() {
         Ok(())
@@ -241,10 +303,41 @@ fn scoped_unset(cwd: &Path, scope: &InstallScope, key: &str) -> Result<(), Insta
 pub(crate) fn install_all_hooks(cwd: &Path, opts: &InstallOptions) -> Result<(), InstallError> {
     let hooks_dir = effective_hooks_dir(cwd)?;
     fs::create_dir_all(&hooks_dir)?;
+    // Pre-flight: classify every hook before writing any of them so a
+    // conflict on hook N doesn't leave hooks 1..N-1 already replaced.
+    // `--force` skips the check and overwrites whatever's there.
+    if !opts.force {
+        for hook in HOOKS {
+            let path = hooks_dir.join(hook);
+            if let HookStatus::Conflict { existing } = classify_hook(&path, hook)? {
+                return Err(InstallError::HookConflict {
+                    hook: (*hook).into(),
+                    existing,
+                });
+            }
+        }
+    }
     for hook in HOOKS {
         install_one_hook(&hooks_dir, hook, opts)?;
     }
     Ok(())
+}
+
+/// Render the `Hook already exists: <hook>` block matched by t-install
+/// test 4 and t-update tests 6/7. Goes to stderr, matching upstream's
+/// `Exit("%s", err)` path. The trailing line break after the third
+/// section is omitted; the calling test captures with `2>&1` and
+/// `$(...)` (which strips trailing newlines anyway).
+pub fn print_hook_conflict(hook: &str, existing: &str) {
+    eprintln!("Hook already exists: {hook}");
+    eprintln!();
+    for line in existing.lines() {
+        eprintln!("\t{line}");
+    }
+    eprintln!();
+    eprintln!("To resolve this, either:");
+    eprintln!("  1: run `git lfs update --manual` for instructions on how to merge hooks.");
+    eprintln!("  2: run `git lfs update --force` to overwrite your hook.");
 }
 
 /// Resolve the hooks directory git would actually invoke. Honors
@@ -404,11 +497,17 @@ fn install_one_hook(
             write_hook(&path, &wanted)?;
             Ok(())
         }
-        HookStatus::Conflict { .. } if opts.force => {
+        // `Conflict` only reaches here when `opts.force` is set —
+        // `install_all_hooks`'s pre-flight rejects unforced conflicts.
+        HookStatus::Conflict { existing } if opts.force => {
+            let _ = existing;
             write_hook(&path, &wanted)?;
             Ok(())
         }
-        HookStatus::Conflict { .. } => Err(InstallError::HookConflict { hook: hook.into() }),
+        HookStatus::Conflict { existing } => Err(InstallError::HookConflict {
+            hook: hook.into(),
+            existing,
+        }),
     }
 }
 

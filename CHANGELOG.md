@@ -100,6 +100,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `uninstall` treats the failure as a stdout warning and exits
   0 — uninstall is idempotent and a missing target shouldn't be
   fatal.
+- `git lfs install` now silently upgrades previously-shipped
+  `filter.lfs.{clean,smudge,process}` values to the current template
+  (e.g. `git-lfs smudge %f` → `git-lfs smudge -- %f`), and treats
+  toggling between the regular and `--skip-smudge` variants as
+  upgradeable in either direction. A genuinely unrecognized value
+  prints `the "filter.lfs.<x>" attribute should be "..." but is
+  "..."` followed by `Run \`git lfs install --force\` to reset Git
+  configuration.` on stdout and exits 2 — matching upstream's
+  `lfs/attribute.go` wording. With `--force`, multivar config keys
+  collapse via `git config --replace-all` so re-running install
+  recovers from a `git config --add`-built config that previously
+  errored out with `cannot overwrite multiple values`.
+- `git lfs install` now prints the same upstream-format
+  `Hook already exists: <hook>` block as `git lfs update` when one
+  of the four LFS hooks has user-edited content. The pre-flight
+  classification also moved into the hook installer itself, so a
+  conflict on hook N no longer leaves hooks 1..N-1 already
+  overwritten. A successful install now prints
+  `Updated Git hooks.\nGit LFS initialized.` (the first line was
+  previously omitted) when hooks are touched.
 
 ### Fixed
 

@@ -320,8 +320,33 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 skip_repo,
                 skip_smudge,
             };
+            // Compute up-front whether hooks would be installed so the
+            // success path can print "Updated Git hooks." in the same
+            // order upstream does. Mirrors the `install_hooks_too`
+            // condition inside `install::install`.
+            let hooks_active = !opts.skip_repo
+                && (opts.scope.is_repo_scope() || git_lfs_git::git_dir(&cwd).is_ok());
             match install::install(&cwd, &opts) {
-                Ok(()) => println!("Git LFS initialized."),
+                Ok(()) => {
+                    if hooks_active {
+                        println!("Updated Git hooks.");
+                    }
+                    println!("Git LFS initialized.");
+                }
+                Err(e @ install::InstallError::FilterAttribute { .. }) => {
+                    // Mirrors upstream's `commands/command_install.go`:
+                    // print `warning: <err>` + the `--force` hint on
+                    // stdout, exit 2. t-install test 2 captures via
+                    // `tee install.log` (stdout only) and greps for
+                    // `(clean|smudge)" attribute should be`.
+                    println!("warning: {e}");
+                    println!("Run `git lfs install --force` to reset Git configuration.");
+                    return Ok(2);
+                }
+                Err(install::InstallError::HookConflict { hook, existing }) => {
+                    install::print_hook_conflict(&hook, &existing);
+                    return Ok(2);
+                }
                 Err(e) if let Some(code) = handle_install_config_failure(&e) => {
                     return Ok(code);
                 }
