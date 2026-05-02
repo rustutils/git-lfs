@@ -75,6 +75,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `git lfs filter-process` now emits the upstream-compatible
+  `Encountered N file(s) that should have been pointer(s), but
+  weren't:` warning to stderr at end-of-session, listing each
+  pathname that smudge passed through unchanged because the blob
+  didn't parse as a pointer. The aggregated message lets shell tests
+  (and humans grepping `clone.log`) see which working-tree files
+  ended up with raw content where a pointer was expected. Empty
+  blobs don't count — those are legitimate empty files.
+- `Store::insert` no longer rewrites the destination file when the
+  resulting OID is already present locally. The store is content-
+  addressed, so a repeat insert of the same bytes is necessarily a
+  no-op; previously the `tmp.persist` rename would atomically swap a
+  fresh inode in for the existing one, breaking any hardlink set up
+  by `Store::with_references` materialization. Matters for
+  `git clone --reference`: after `git lfs pull` hardlinks the
+  reference repo's LFS object into the local store, the post-pull
+  `git update-index --refresh` invokes the clean filter, which would
+  re-insert and clobber the hardlink. The corrupt-recovery path
+  (`insert_verified`, used for downloads) still overwrites
+  unconditionally.
 - `git push` now skips empty files committed to a `filter=lfs` path
   when counting LFS objects to upload. Git stores those as the empty
   blob (not as a pointer text), but our scanner parses empty input as

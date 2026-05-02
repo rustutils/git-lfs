@@ -13,7 +13,7 @@ use git_lfs_git::pktline;
 use git_lfs_pointer::Pointer;
 use git_lfs_store::Store;
 
-use crate::{CleanExtension, FetchError, clean, smudge_with_fetch};
+use crate::{CleanExtension, FetchError, SmudgeOutcome, clean, smudge_with_fetch};
 
 #[derive(Debug, thiserror::Error)]
 pub enum FilterProcessError {
@@ -59,14 +59,16 @@ where
 
     handshake(&mut reader, &mut writer)?;
 
+    let mut malformed: Vec<String> = Vec::new();
+
     loop {
         // A read error here at packet-boundary normally means git closed the
         // pipe — that's the protocol's "we're done" signal, not a real error.
         let headers = match read_headers(&mut reader) {
             Ok(Some(h)) => h,
-            Ok(None) => return Ok(()),
+            Ok(None) => break,
             Err(FilterProcessError::Io(e)) if e.kind() == io::ErrorKind::UnexpectedEof => {
-                return Ok(());
+                break;
             }
             Err(e) => return Err(e),
         };
@@ -81,10 +83,40 @@ where
         match command.as_str() {
             "clean" => process_clean(store, &mut writer, &payload, pathname, extensions)?,
             "smudge" if skip_smudge => process_smudge_passthrough(&mut writer, &payload)?,
-            "smudge" => process_smudge(store, &mut writer, &payload, &mut fetch)?,
+            "smudge" => {
+                let outcome = process_smudge(store, &mut writer, &payload, &mut fetch)?;
+                if matches!(outcome, Some(SmudgeOutcome::Passthrough)) {
+                    malformed.push(pathname.to_owned());
+                }
+            }
             other => return Err(FilterProcessError::UnknownCommand(other.into())),
         }
         writer.flush()?;
+    }
+
+    if !malformed.is_empty() {
+        report_malformed(&malformed);
+    }
+    Ok(())
+}
+
+fn report_malformed(malformed: &[String]) {
+    let stderr = io::stderr();
+    let mut out = stderr.lock();
+    let header = if malformed.len() == 1 {
+        format!(
+            "Encountered {} file that should have been a pointer, but wasn't:\n",
+            malformed.len()
+        )
+    } else {
+        format!(
+            "Encountered {} files that should have been pointers, but weren't:\n",
+            malformed.len()
+        )
+    };
+    let _ = out.write_all(header.as_bytes());
+    for name in malformed {
+        let _ = writeln!(out, "\t{name}");
     }
 }
 
@@ -210,22 +242,27 @@ fn process_smudge<W, F>(
     writer: &mut pktline::Writer<W>,
     payload: &[u8],
     fetch: &mut F,
-) -> Result<(), FilterProcessError>
+) -> Result<Option<SmudgeOutcome>, FilterProcessError>
 where
     W: Write,
     F: FnMut(&Pointer) -> Result<(), FetchError>,
 {
     write_initial_status(writer)?;
+    let mut outcome: Option<SmudgeOutcome> = None;
     let result = run_through_sink(writer, |sink| {
         // The protocol only differentiates success vs. error at this layer;
         // the specific reason (ObjectMissing, Extensions, FetchFailed, …) is
         // logged by the caller's stderr if they care.
-        smudge_with_fetch(store, &mut { payload }, sink, |p| fetch(p))
-            .map(|_| ())
-            .map_err(|e| io::Error::other(e.to_string()))
+        match smudge_with_fetch(store, &mut { payload }, sink, |p| fetch(p)) {
+            Ok(o) => {
+                outcome = Some(o);
+                Ok(())
+            }
+            Err(e) => Err(io::Error::other(e.to_string())),
+        }
     });
     write_final_status(writer, result.is_ok())?;
-    Ok(())
+    Ok(outcome)
 }
 
 fn write_initial_status<W: Write>(writer: &mut pktline::Writer<W>) -> io::Result<()> {

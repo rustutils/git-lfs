@@ -274,8 +274,19 @@ impl Store {
     ///
     /// This is the clean-filter path: we don't know the OID until after the
     /// content is hashed.
+    ///
+    /// If the resulting OID is already present locally, the temp file is
+    /// dropped without persisting. The store is content-addressed, so an
+    /// existing file at that path is necessarily the same bytes; skipping
+    /// `tmp.persist` here preserves any hardlink already at the
+    /// destination (a rename swaps a fresh inode in, which would break
+    /// the link to the alternate-store source).
     pub fn insert(&self, src: &mut impl Read) -> Result<(Oid, u64), StoreError> {
         let (oid, size, tmp) = self.stream_to_tmp(src)?;
+        if oid != Oid::EMPTY && self.object_path(oid).is_file() {
+            drop(tmp);
+            return Ok((oid, size));
+        }
         self.commit(oid, tmp)?;
         Ok((oid, size))
     }
