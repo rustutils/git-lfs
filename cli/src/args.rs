@@ -327,20 +327,34 @@ pub struct FetchArgs {
 
 const FILTER: &str = "Filter options";
 
-/// `fetch` then re-run the smudge filter so the working tree contains
-/// real LFS file contents instead of pointer text. Requires
-/// `git lfs install` to have wired up the smudge filter.
+/// Download all Git LFS files for current ref and checkout
+///
+/// Download Git LFS objects for the currently checked out ref, and
+/// update the working copy with the downloaded content if required.
+///
+/// This is generally equivalent to running `git lfs fetch [options]
+/// [<remote>]` followed by `git lfs checkout`. See git-lfs-checkout(1)
+/// for partial-clone, sparse-checkout, and bare-repository behavior
+/// (governed by the installed Git version and `GIT_ATTR_SOURCE`).
+///
+/// Requires `git lfs install` to have wired up the smudge filter. If
+/// the filter is missing, the fetch step still runs but the
+/// working-tree update is skipped with a hint to install.
 #[derive(Args)]
 pub struct PullArgs {
-    /// Refs to scan for LFS pointers. Defaults to `HEAD`.
-    pub refs: Vec<String>,
-    /// Comma-separated globs; only matching paths are pulled.
-    /// Falls back to `lfs.fetchinclude` when omitted.
-    #[arg(short = 'I', long)]
+    /// Optional remote name followed by refs.
+    ///
+    /// The first positional argument is treated as a remote name when
+    /// it resolves; any following arguments are refs to fetch. With
+    /// no arguments, the default remote is used.
+    pub args: Vec<String>,
+
+    /// Specify `lfs.fetchinclude` just for this invocation.
+    #[arg(short = 'I', long, help_heading = FILTER)]
     pub include: Vec<String>,
-    /// Comma-separated globs; matching paths are skipped. Falls
-    /// back to `lfs.fetchexclude` when omitted.
-    #[arg(short = 'X', long)]
+
+    /// Specify `lfs.fetchexclude` just for this invocation.
+    #[arg(short = 'X', long, help_heading = FILTER)]
     pub exclude: Vec<String>,
 }
 

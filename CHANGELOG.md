@@ -25,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--dry-run`/`--json` to match upstream. The `--recent`
   flag and the `lfs.fetchrecent*` configuration are still
   unimplemented and the docs say so explicitly.
+- `git-lfs-pull(1)` gets the upstream-faithful DESCRIPTION
+  (with a short pointer to git-lfs-checkout(1) for the
+  partial-clone / bare-repo behavior, since the same prose
+  already lives there) plus DEFAULT REMOTE, INCLUDE AND
+  EXCLUDE, and SEE ALSO sections.
 
 ## [0.4.0] - 2026-05-02
 

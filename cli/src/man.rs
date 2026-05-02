@@ -82,6 +82,21 @@ const FETCH: ManContent = ManContent {
     ],
 };
 
+const PULL: ManContent = ManContent {
+    description: None,
+    extra_sections: &[
+        (
+            "DEFAULT REMOTE",
+            include_str!("../man/pull/default_remote.md"),
+        ),
+        (
+            "INCLUDE AND EXCLUDE",
+            include_str!("../man/pull/include_and_exclude.md"),
+        ),
+        ("SEE ALSO", include_str!("../man/pull/see_also.md")),
+    ],
+};
+
 /// Look up the doc extras for `subcommand` (e.g. `"fetch"`,
 /// `"checkout"`). Pass `""` for the top-level `git-lfs` page.
 /// Returns a reference to [`ManContent::empty`] when there's no entry,
@@ -91,6 +106,7 @@ pub fn extras_for(subcommand: &str) -> &'static ManContent {
         "smudge" => &SMUDGE,
         "checkout" => &CHECKOUT,
         "fetch" => &FETCH,
+        "pull" => &PULL,
         _ => &EMPTY,
     }
 }

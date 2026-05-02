@@ -569,11 +569,11 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             }
         }
         Command::Pull(PullArgs {
-            refs,
+            args,
             include,
             exclude,
         }) => {
-            match pull::pull_with_filter(&cwd, &refs, &include, &exclude) {
+            match pull::pull_with_filter(&cwd, &args, &include, &exclude) {
                 Ok(()) => {}
                 Err(pull::PullCommandError::Fetch(fetch::FetchCommandError::Usage(msg)))
                     if msg == "Not in a Git repository." =>

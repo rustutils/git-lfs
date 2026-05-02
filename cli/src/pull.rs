@@ -1,5 +1,5 @@
-//! `git lfs pull [<ref>...]` — `fetch` + materialize LFS files in the
-//! working tree.
+//! `git lfs pull [<remote>] [<ref>...]` — `fetch` + materialize LFS
+//! files in the working tree.
 //!
 //! After `fetch` populates the store, walk HEAD's tree to find every
 //! tracked LFS pointer and rewrite the working-tree file with its
@@ -43,12 +43,12 @@ pub enum PullCommandError {
 
 pub fn pull_with_filter(
     cwd: &Path,
-    refs: &[String],
+    args: &[String],
     include: &[String],
     exclude: &[String],
 ) -> Result<(), PullCommandError> {
     let opts = fetch::FetchOptions {
-        args: refs,
+        args,
         stdin_lines: &[],
         dry_run: false,
         json: false,
