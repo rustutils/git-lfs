@@ -791,8 +791,26 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             if patterns.is_empty() {
                 return Err("git lfs untrack <pattern> [pattern...]".into());
             }
+            // Resolve the work-tree root: a bare repo or being outside
+            // any repo entirely is a "not in a git repository" error
+            // matching git's exit code (128). When cwd is inside the
+            // work tree we prefer it (so `cd a; git lfs untrack foo`
+            // edits `a/.gitattributes`), falling back to the work-tree
+            // root when GIT_WORK_TREE points outside cwd.
+            let work_tree = match git_lfs_git::work_tree_root(&cwd) {
+                Ok(p) => p,
+                Err(_) => {
+                    eprintln!("fatal: not in a git repository");
+                    return Ok(128);
+                }
+            };
+            let attrs_dir = if cwd.starts_with(&work_tree) {
+                cwd.clone()
+            } else {
+                work_tree
+            };
             let _ = install::try_install_hooks(&cwd);
-            let outcome = track::untrack(&cwd, &patterns)?;
+            let outcome = track::untrack(&attrs_dir, &patterns)?;
             for p in &outcome.removed {
                 println!("Untracking \"{p}\"");
             }

@@ -16,6 +16,15 @@ pub fn lfs_dir(cwd: &Path) -> Result<PathBuf, Error> {
     Ok(git_dir(cwd)?.join("lfs"))
 }
 
+/// Path to the working-tree root of the repository containing `cwd`.
+/// Honors `GIT_WORK_TREE`, so this returns the right thing even when
+/// `cwd` is *outside* the work tree (e.g. tests that set both
+/// `GIT_DIR` and `GIT_WORK_TREE` as relative paths from a parent dir).
+/// Errors for bare repos (no work tree) and outside-any-repo callers.
+pub fn work_tree_root(cwd: &Path) -> Result<PathBuf, Error> {
+    run_git(cwd, &["rev-parse", "--show-toplevel"]).map(PathBuf::from)
+}
+
 /// LFS-objects directories belonging to alternate object stores
 /// referenced by this repository. Used to satisfy a `git lfs smudge`
 /// or `git lfs fetch` from a `git clone --shared <source>` checkout

@@ -181,7 +181,14 @@ impl Attributes {
     /// Remove every LFS-tracked line for `pattern`. Returns `true` if at
     /// least one line was removed. Non-LFS lines are preserved even if
     /// their first token matches `pattern`.
+    ///
+    /// Both `pattern` and each line's first token are reduced to a
+    /// canonical form before comparison: leading `./` stripped (legacy
+    /// vs modern `.gitattributes` style), `[[:space:]]` → space,
+    /// `\#` → `#`, and `\\` → `\` (so a user-supplied pathname with
+    /// literal spaces matches an escaped pattern in the file).
     pub fn untrack(&mut self, pattern: &str) -> bool {
+        let want = canonical_attr_pattern(pattern);
         let before = self.lines.len();
         self.lines.retain(|line| {
             let Some(body) = uncommented(line) else {
@@ -192,7 +199,7 @@ impl Attributes {
                 return true;
             };
             let is_lfs = tokens.any(|t| t == "filter=lfs");
-            !(is_lfs && first == pattern)
+            !(is_lfs && canonical_attr_pattern(first) == want)
         });
         self.lines.len() != before
     }
@@ -267,10 +274,15 @@ pub fn escape_attr_pattern(pattern: &str) -> String {
     out
 }
 
-/// Strip a leading `./` prefix and apply `.gitattributes` escaping.
-pub fn normalize_pattern(pattern: &str) -> String {
+/// Reduce a pattern (either user-supplied or read out of
+/// `.gitattributes`) to a canonical form suitable for equality
+/// comparison: drop a leading `./`, then unescape the spaces / `#` /
+/// backslash sequences `.gitattributes` uses. Two patterns canonicalize
+/// to the same string iff git would treat them as referring to the
+/// same path.
+fn canonical_attr_pattern(pattern: &str) -> String {
     let trimmed = pattern.strip_prefix("./").unwrap_or(pattern);
-    escape_attr_pattern(trimmed)
+    unescape_attr_pattern(trimmed)
 }
 
 /// Reverse the spaces / `#` / backslash escaping
@@ -402,8 +414,12 @@ pub fn untrack(cwd: &Path, patterns: &[String]) -> Result<UntrackOutcome, TrackE
     let mut removed = Vec::new();
     let mut missing = Vec::new();
     for pattern in patterns {
-        let normalized = normalize_pattern(pattern);
-        if attrs.untrack(&normalized) {
+        // `Attributes::untrack` canonicalizes both sides, so we hand it
+        // the user's raw input rather than running it through
+        // `normalize_pattern` (which would re-escape spaces / `#` and
+        // mismatch a literal pathname against a `\#` /`[[:space:]]`
+        // entry in the file).
+        if attrs.untrack(pattern) {
             removed.push(pattern.clone());
         } else {
             missing.push(pattern.clone());
@@ -579,11 +595,6 @@ mod tests {
         assert_eq!(escape_attr_pattern("foo bar/*"), "foo[[:space:]]bar/*");
         assert_eq!(escape_attr_pattern("#"), "\\#");
         assert_eq!(escape_attr_pattern("foo#bar"), "foo#bar");
-    }
-
-    #[test]
-    fn normalize_strips_leading_dot_slash() {
-        assert_eq!(normalize_pattern("./a.dat"), "a.dat");
     }
 
     #[test]

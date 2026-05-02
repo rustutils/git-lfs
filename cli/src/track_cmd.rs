@@ -36,10 +36,23 @@ pub fn run(args: Args<'_>) -> Result<u8, Box<dyn std::error::Error>> {
 
     // Both write and listing modes require a real working tree. Match
     // git's exit code (128) for "not a repo" and "must be in a work
-    // tree" failures.
-    if let Some(code) = check_repo_context(args.cwd) {
-        return Ok(code);
-    }
+    // tree" failures. `work_tree` is whatever git would treat as the
+    // top of the work tree from `cwd` — including a `GIT_WORK_TREE`
+    // override that points outside `cwd`. The `attrs_dir` is where we
+    // actually read/write `.gitattributes`: cwd when we're inside the
+    // work tree (so `cd a; git lfs track foo` writes to
+    // `a/.gitattributes`), the work-tree root otherwise (so a
+    // `GIT_WORK_TREE`-from-outside invocation still lands in the
+    // tracked tree).
+    let work_tree = match check_repo_context(args.cwd) {
+        Ok(p) => p,
+        Err(code) => return Ok(code),
+    };
+    let attrs_dir = if git_bool(args.cwd, "--is-inside-work-tree") == Some(true) {
+        args.cwd.to_path_buf()
+    } else {
+        work_tree.clone()
+    };
 
     // Auto-install hooks (mirroring upstream's `installHooks(false)`
     // call from `git lfs track`). Honors `GIT_LFS_TRACK_NO_INSTALL_HOOKS`
@@ -139,7 +152,7 @@ pub fn run(args: Args<'_>) -> Result<u8, Box<dyn std::error::Error>> {
                 .collect(),
         }
     } else {
-        track::track(args.cwd, &to_track, opts)?
+        track::track(&attrs_dir, &to_track, opts)?
     };
 
     // Re-emit messages in the user's input order so ordered scripts
@@ -300,20 +313,25 @@ fn list(cwd: &Path, json: bool, no_excluded: bool) -> Result<u8, Box<dyn std::er
     Ok(0)
 }
 
-/// Detect whether `cwd` is in a working tree but not inside `.git/`.
-/// Returns `Some(128)` (mirroring git's exit code) for both "not a git
-/// repository" and "must be in a work tree" failures.
-fn check_repo_context(cwd: &Path) -> Option<u8> {
-    let inside_work_tree = git_bool(cwd, "--is-inside-work-tree");
-    if inside_work_tree != Some(true) {
-        eprintln!("fatal: not in a git repository");
-        return Some(128);
-    }
+/// Resolve the working-tree root for `cwd`, mirroring git's exit code
+/// (128) for both "not a git repository" and "must be in a work tree"
+/// failures. Returns the work-tree path on success — this honors
+/// `GIT_WORK_TREE`, so it's correct when `cwd` is *outside* the work
+/// tree (e.g. a parent dir with `GIT_WORK_TREE`/`GIT_DIR` set as
+/// relative paths).
+fn check_repo_context(cwd: &Path) -> Result<std::path::PathBuf, u8> {
+    let work_tree = match git_lfs_git::work_tree_root(cwd) {
+        Ok(p) => p,
+        Err(_) => {
+            eprintln!("fatal: not in a git repository");
+            return Err(128);
+        }
+    };
     if git_bool(cwd, "--is-inside-git-dir") == Some(true) {
         eprintln!("fatal: this operation must be run in a work tree");
-        return Some(128);
+        return Err(128);
     }
-    None
+    Ok(work_tree)
 }
 
 /// `git rev-parse <flag>` parsed as `true` / `false`. Returns `None` if

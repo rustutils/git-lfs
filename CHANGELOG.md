@@ -75,6 +75,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `git lfs untrack` now matches `.gitattributes` lines whose first
+  token is escape-encoded (`file[[:space:]]with[[:space:]]spaces.\#`)
+  against the user's literal pathname (`file with spaces.#`), and
+  treats `./<path>` and `<path>` as the same pattern in either
+  direction (file vs argument). Both sides are reduced to a canonical
+  form (leading `./` stripped, `[[:space:]]` → space, `\#` → `#`,
+  `\\` → `\`) before comparison. Outside any git repository, untrack
+  now exits 128 with `fatal: not in a git repository` instead of
+  silently doing nothing.
+- `git lfs track` and `git lfs untrack` now write `.gitattributes`
+  to the working-tree root when invoked with `GIT_WORK_TREE` pointing
+  to a directory outside cwd. The previous "must be inside the work
+  tree" check rejected this setup outright; the new code resolves the
+  work tree via `git rev-parse --show-toplevel` (which honors the env
+  var) and uses cwd only when it's actually inside the resolved tree
+  — so `cd a; git lfs track foo` still writes to `a/.gitattributes`
+  as before.
 - `git lfs update` now recognizes seven previously-shipped hook
   templates (plus their leading-tab indented variants) as ours and
   silently upgrades them to the current template, prints the
