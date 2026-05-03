@@ -134,6 +134,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and merge requests so packaging can be verified without cutting a
   tag.
 
+### Fixed
+
+- `git lfs ls-files --debug` now terminates each pointer block
+  with a trailing blank line, matching upstream's output and the
+  vendored `t-ls-files` test expectations.
+
 ## [0.4.0] - 2026-05-02
 
 ### Added

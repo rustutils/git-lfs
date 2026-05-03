@@ -155,6 +155,7 @@ fn emit_debug_block(p: &PointerEntry, store: &Store, cwd: &Path) {
     println!("download: {}", store.contains_with_size(p.oid, p.size));
     println!("     oid: sha256 {}", p.oid);
     println!(" version: {VERSION_LATEST}");
+    println!();
 }
 
 fn emit_json(pointers: &[PointerEntry], store: &Store, cwd: &Path) -> Result<(), LsFilesError> {
