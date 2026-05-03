@@ -902,8 +902,19 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 Err(e) => return Err(e.into()),
             }
         }
-        Command::Prune(PruneArgs { dry_run, verbose }) => {
-            let opts = prune::Options { dry_run, verbose };
+        Command::Prune(PruneArgs {
+            dry_run,
+            verbose,
+            recent,
+            force,
+            no_verify_remote: _,
+        }) => {
+            let opts = prune::Options {
+                dry_run,
+                verbose,
+                recent,
+                force,
+            };
             prune::run(&cwd, &opts)?;
         }
         Command::Fsck(FsckArgs {

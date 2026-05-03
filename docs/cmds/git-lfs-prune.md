@@ -28,6 +28,15 @@ Note: many of upstream's prune options aren't yet supported — `--force`, `--re
 - `-v`, `--verbose`
     Report the full detail of what is/would be deleted
 
+- `-c`, `--recent`
+    Ignore the recent-refs / recent-commits retention windows when computing what is prunable. Equivalent to setting `lfs.fetchrecentrefsdays` and `lfs.fetchrecentcommitsdays` to 0 for this invocation
+
+- `-f`, `--force`
+    Treat every pushed object as prunable regardless of the recent-refs / recent-commits / unpushed retention rules. Pointers reachable from HEAD's tree are still kept
+
+- `--no-verify-remote`
+    Skip the remote verify pass when pruning. The remote-verify path itself isn't yet implemented, so this flag is currently a no-op accepted for compatibility
+
 ## See also
 
 [git-lfs-fetch(1)](./git-lfs-fetch.md), [gitignore(5)](https://git-scm.com/docs/gitignore).

@@ -2847,7 +2847,7 @@ fn prune_retains_objects_referenced_by_head_tree() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("Nothing to prune"), "{stdout}");
+    assert!(stdout.contains("1 local objects, 1 retained"), "{stdout}");
 
     // Object still on disk.
     let path = repo
@@ -2884,7 +2884,8 @@ fn prune_deletes_object_not_referenced_anywhere() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("Pruning 1 object"), "{stdout}");
+    assert!(stdout.contains("1 local objects, 0 retained"), "{stdout}");
+    assert!(stdout.contains("Deleting objects: 100% (1/1)"), "{stdout}");
     assert!(
         !path.is_file(),
         "orphan object should be deleted at {path:?}"
@@ -2909,7 +2910,7 @@ fn prune_dry_run_does_not_delete() {
     let out = run_in(repo.path(), &["prune", "--dry-run"], b"");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("Would prune 1 object"), "{stdout}");
+    assert!(stdout.contains("1 files would be pruned"), "{stdout}");
     // File still there.
     assert!(path.is_file(), "dry-run should not delete: {path:?}");
 }
@@ -2978,7 +2979,7 @@ fn prune_retains_unpushed_commits() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("Nothing to prune"),
+        stdout.contains("1 local objects, 1 retained"),
         "expected unpushed pointer to be retained, got: {stdout}",
     );
     assert!(path.is_file(), "object must still exist");
@@ -3020,7 +3021,7 @@ fn prune_with_no_remote_falls_back_to_head_tree_only() {
     // (since exclude set is empty), which still references this OID,
     // so it's retained even without a remote.
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("Nothing to prune"), "{stdout}");
+    assert!(stdout.contains("1 local objects, 1 retained"), "{stdout}");
     assert!(path.is_file());
 }
 

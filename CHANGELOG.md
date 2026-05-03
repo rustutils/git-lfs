@@ -18,6 +18,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   participate. The pre-image walk uses a new `git log -G "oid sha256:" -p`
   diff-parsing scanner; the recent-refs walk uses a new
   `git for-each-ref --sort=-committerdate` helper.
+- `git lfs prune` rewrites its retention model around the same
+  config knobs as fetch-recent. It now retains: HEAD's tree, every
+  recent ref's tree (within
+  `lfs.fetchrecentrefsdays + lfs.pruneoffsetdays` of now), every
+  recent pre-image (within
+  `lfs.fetchrecentcommitsdays + lfs.pruneoffsetdays` of each
+  anchor's tip date), and every commit reachable from any local
+  branch or tag but not yet pushed (`git log --branches --tags
+  --not --remotes=<remote>`). Honors `lfs.fetchexclude` and
+  `lfs.fetchinclude` on the HEAD-tree, recent-ref, and pre-image
+  paths; the unpushed walk runs unfiltered to match upstream.
+  Adds `--force` (skip recent + HEAD-tree retention; keep unpushed),
+  `--recent` (skip recent retention; keep HEAD + unpushed), and
+  `--no-verify-remote` (no-op for now). Output strings now match
+  upstream's `<N> local objects, <M> retained, done.` and
+  `Deleting objects: 100% (k/n), done.` formats.
 
 ### Fixed
 

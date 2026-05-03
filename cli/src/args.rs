@@ -1170,6 +1170,25 @@ pub struct PruneArgs {
     /// Report the full detail of what is/would be deleted.
     #[arg(short, long)]
     pub verbose: bool,
+
+    /// Ignore the recent-refs / recent-commits retention windows
+    /// when computing what is prunable. Equivalent to setting
+    /// `lfs.fetchrecentrefsdays` and `lfs.fetchrecentcommitsdays` to
+    /// 0 for this invocation.
+    #[arg(short = 'c', long)]
+    pub recent: bool,
+
+    /// Treat every pushed object as prunable regardless of the
+    /// recent-refs / recent-commits / unpushed retention rules.
+    /// Pointers reachable from HEAD's tree are still kept.
+    #[arg(short, long)]
+    pub force: bool,
+
+    /// Skip the remote verify pass when pruning. The remote-verify
+    /// path itself isn't yet implemented, so this flag is currently
+    /// a no-op accepted for compatibility.
+    #[arg(long = "no-verify-remote", visible_short_alias = 'n')]
+    pub no_verify_remote: bool,
 }
 
 /// Check Git LFS files for consistency

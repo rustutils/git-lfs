@@ -413,6 +413,8 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
         let prune_opts = crate::prune::Options {
             dry_run: false,
             verbose: false,
+            recent: false,
+            force: false,
         };
         let _ = crate::prune::run(cwd, &prune_opts);
     }
