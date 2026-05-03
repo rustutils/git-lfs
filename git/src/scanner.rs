@@ -15,8 +15,10 @@
 //!    not the git blob OID): the same LFS object can appear in many
 //!    blobs/paths, but we only need to fetch it once.
 
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use git_lfs_pointer::{Extension, MAX_POINTER_SIZE, Oid, Pointer};
 
@@ -448,6 +450,196 @@ pub fn scan_tree(cwd: &Path, reference: &str) -> Result<Vec<PointerEntry>, Error
     Ok(entries)
 }
 
+/// Walk `git log -G "oid sha256:" -p <ref>` since `since`, returning
+/// every LFS pointer that appears as the **previous** state of a
+/// modified file (i.e. lives on the `-` side of a unified diff).
+///
+/// Mirrors upstream's `lfs/gitscanner_log.go::logPreviousSHAs`. Used by
+/// fetch-recent (to download pre-images of recently-modified files) and
+/// by prune retention (to keep them on disk).
+///
+/// `-U12` is requested so a small in-place edit still surfaces enough
+/// surrounding context to capture the full pointer body (version, oid,
+/// size, optional ext-N lines).
+pub fn scan_previous_versions(
+    cwd: &Path,
+    reference: &str,
+    since: SystemTime,
+) -> Result<Vec<PointerEntry>, Error> {
+    let since_unix = since
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let since_arg = format!("--since=@{since_unix}");
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args([
+            "log",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--color=never",
+            "-G",
+            "oid sha256:",
+            "-p",
+            "-U12",
+            "--format=lfs-commit-sha: %H %P",
+            &since_arg,
+            reference,
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let stdout = child.stdout.take().expect("piped");
+    let mut parser = LogScanner::new(LogDiffDirection::Deletions);
+    let mut entries = Vec::new();
+    for line in BufReader::new(stdout).lines() {
+        let line = line?;
+        if let Some(entry) = parser.feed(&line) {
+            entries.push(entry);
+        }
+    }
+    if let Some(entry) = parser.flush() {
+        entries.push(entry);
+    }
+    let status = child.wait()?;
+    if !status.success() {
+        return Err(Error::Failed(format!(
+            "git log failed: exit {:?}",
+            status.code()
+        )));
+    }
+    Ok(entries)
+}
+
+/// Which side of a unified diff to capture pointer bodies from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LogDiffDirection {
+    /// `+` lines (new state of the file in this commit).
+    #[allow(dead_code)]
+    Additions,
+    /// `-` lines (previous state, before this commit modified it).
+    Deletions,
+}
+
+/// Line-by-line state machine for `git log -p` output formatted with
+/// `--format=lfs-commit-sha: %H %P`. Mirrors upstream's `logScanner`
+/// (`lfs/gitscanner_log.go`).
+struct LogScanner {
+    direction: LogDiffDirection,
+    /// Path of the file currently being diffed, or `None` between
+    /// commits / before the first `diff --git` header.
+    current_filename: Option<String>,
+    /// Buffered pointer-body lines (with the diff marker stripped).
+    /// Flushed into a [`PointerEntry`] when the next file/commit
+    /// boundary arrives or the stream ends.
+    pointer_data: Vec<u8>,
+}
+
+impl LogScanner {
+    fn new(direction: LogDiffDirection) -> Self {
+        Self {
+            direction,
+            current_filename: None,
+            pointer_data: Vec::new(),
+        }
+    }
+
+    /// Feed one log line. Returns `Some(entry)` when a complete pointer
+    /// body just got flushed (i.e. a file or commit boundary just
+    /// arrived after we'd buffered some pointer data).
+    fn feed(&mut self, line: &str) -> Option<PointerEntry> {
+        if line.starts_with("lfs-commit-sha: ") {
+            return self.flush();
+        }
+        if let Some(rest) = line.strip_prefix("diff --git ") {
+            let entry = self.flush();
+            self.current_filename = parse_diff_git_header(rest, self.direction);
+            return entry;
+        }
+        if let Some(rest) = line.strip_prefix("diff --cc ") {
+            let entry = self.flush();
+            self.current_filename = Some(rest.to_owned());
+            return entry;
+        }
+        if self.current_filename.is_some() && is_pointer_data_line(line, self.direction) {
+            // Strip the leading diff marker (`+`, `-`, or ` `).
+            self.pointer_data.extend_from_slice(&line.as_bytes()[1..]);
+            self.pointer_data.push(b'\n');
+        }
+        None
+    }
+
+    /// Drain the pending pointer buffer into a [`PointerEntry`] if it
+    /// parses as a valid LFS pointer. Resets the buffer either way.
+    fn flush(&mut self) -> Option<PointerEntry> {
+        if self.pointer_data.is_empty() {
+            return None;
+        }
+        let parsed = Pointer::parse(&self.pointer_data);
+        let path = self.current_filename.as_ref().map(PathBuf::from);
+        self.pointer_data.clear();
+        let pointer = parsed.ok()?;
+        Some(PointerEntry {
+            oid: pointer.oid,
+            size: pointer.size,
+            paths: path.iter().cloned().collect(),
+            path,
+            canonical: pointer.canonical,
+            extensions: pointer.extensions,
+        })
+    }
+}
+
+/// Pointer-body lines start with one of the diff markers (`+`, `-`,
+/// ` `) followed by one of the four pointer-keyword prefixes. We
+/// always include unchanged context lines (` `) so the version/size
+/// lines bracket the changed `oid` line — `-U12` makes that reliable
+/// for typical extension chains too.
+fn is_pointer_data_line(line: &str, dir: LogDiffDirection) -> bool {
+    let mut chars = line.chars();
+    let Some(marker) = chars.next() else {
+        return false;
+    };
+    let dir_match = matches!(
+        (marker, dir),
+        ('+', LogDiffDirection::Additions) | ('-', LogDiffDirection::Deletions) | (' ', _)
+    );
+    if !dir_match {
+        return false;
+    }
+    let body = chars.as_str();
+    body.starts_with("version https://git-lfs")
+        || body.starts_with("oid sha256")
+        || body.starts_with("size")
+        || body.starts_with("ext-")
+}
+
+/// Parse a `diff --git a/<path1> b/<path2>` header to the relevant
+/// path. We pick the `b/` path for additions (the "new" name) and
+/// the `a/` path for deletions (the "old" name). Renames are rare in
+/// LFS-tracked binaries; on a rename, additions tracks the new path
+/// and deletions tracks the old, which matches upstream.
+///
+/// Quoted / octal-escaped paths (those with spaces or non-ASCII)
+/// aren't unescaped here — yet. The fetch-recent and prune tests
+/// don't exercise them, so deferring keeps Slice 3 compact.
+fn parse_diff_git_header(rest: &str, dir: LogDiffDirection) -> Option<String> {
+    let trimmed = rest.trim();
+    let a_idx = trimmed.find("a/")?;
+    let after_a = &trimmed[a_idx + 2..];
+    // Find the boundary between path1 and " b/path2". Upstream's regex
+    // uses `\s+`, so any whitespace run terminates path1.
+    let space_idx = after_a.find(|c: char| c.is_whitespace())?;
+    let path_a = &after_a[..space_idx];
+    let after_space = after_a[space_idx..].trim_start();
+    let after_b = after_space.strip_prefix("b/")?;
+    match dir {
+        LogDiffDirection::Additions => Some(after_b.to_owned()),
+        LogDiffDirection::Deletions => Some(path_a.to_owned()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -603,5 +795,111 @@ mod tests {
             ),
             _ => panic!("expected Failed, got {err:?}"),
         }
+    }
+
+    fn feed_log<'a, I: IntoIterator<Item = &'a str>>(
+        dir: LogDiffDirection,
+        lines: I,
+    ) -> Vec<PointerEntry> {
+        let mut s = LogScanner::new(dir);
+        let mut out = Vec::new();
+        for line in lines {
+            if let Some(e) = s.feed(line) {
+                out.push(e);
+            }
+        }
+        if let Some(e) = s.flush() {
+            out.push(e);
+        }
+        out
+    }
+
+    #[test]
+    fn log_scanner_extracts_deleted_pointer_body() {
+        // Two commits: first adds the pointer (its old state at HEAD~1
+        // is empty), second replaces it with a different OID. The
+        // Deletions side captures the second diff's `-` lines = the
+        // pointer at HEAD~1.
+        let lines = [
+            "lfs-commit-sha: cccccccccccccccccccccccccccccccccccccccc bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "diff --git a/foo.bin b/foo.bin",
+            "@@ -1,3 +1,3 @@",
+            " version https://git-lfs.github.com/spec/v1",
+            "-oid sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "-size 100",
+            "+oid sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "+size 200",
+        ];
+        let out = feed_log(LogDiffDirection::Deletions, lines);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].size, 100);
+        assert_eq!(
+            out[0]
+                .path
+                .as_deref()
+                .map(|p| p.to_string_lossy().into_owned()),
+            Some("foo.bin".to_owned())
+        );
+    }
+
+    #[test]
+    fn log_scanner_handles_multi_file_commit() {
+        let lines = [
+            "lfs-commit-sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "diff --git a/a.bin b/a.bin",
+            " version https://git-lfs.github.com/spec/v1",
+            "-oid sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "-size 1",
+            "+oid sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "+size 2",
+            "diff --git a/b.bin b/b.bin",
+            " version https://git-lfs.github.com/spec/v1",
+            "-oid sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            "-size 3",
+            "+oid sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "+size 4",
+        ];
+        let out = feed_log(LogDiffDirection::Deletions, lines);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].size, 1);
+        assert_eq!(out[1].size, 3);
+    }
+
+    #[test]
+    fn log_scanner_skips_non_pointer_diffs() {
+        // The pointer-data regex only matches lines starting with one
+        // of the four LFS keywords — random source-file edits don't
+        // accumulate.
+        let lines = [
+            "lfs-commit-sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "diff --git a/main.c b/main.c",
+            "-int old() { return 1; }",
+            "+int new() { return 2; }",
+        ];
+        let out = feed_log(LogDiffDirection::Deletions, lines);
+        assert!(out.is_empty(), "got {out:?}");
+    }
+
+    #[test]
+    fn parse_diff_git_header_picks_correct_side() {
+        let h = "a/foo.bin b/foo.bin";
+        assert_eq!(
+            parse_diff_git_header(h, LogDiffDirection::Additions).as_deref(),
+            Some("foo.bin")
+        );
+        assert_eq!(
+            parse_diff_git_header(h, LogDiffDirection::Deletions).as_deref(),
+            Some("foo.bin")
+        );
+        // Rename — paths differ; deletions sees the old name.
+        let renamed = "a/old.bin b/new.bin";
+        assert_eq!(
+            parse_diff_git_header(renamed, LogDiffDirection::Additions).as_deref(),
+            Some("new.bin")
+        );
+        assert_eq!(
+            parse_diff_git_header(renamed, LogDiffDirection::Deletions).as_deref(),
+            Some("old.bin")
+        );
     }
 }
