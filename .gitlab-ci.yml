@@ -36,6 +36,12 @@ variables:
   # before_script). No key prefix — common deps (serde, tokio, …) are
   # shared across rustutils projects.
   RUSTC_WRAPPER: sccache
+  # Cargo parallelism. 2x oversubscription on the default 2-vCPU
+  # runners works because sccache hits are I/O-bound; misses are
+  # rare enough (~2-3% with a warm cache) that simultaneous-miss
+  # memory pressure isn't realistic. Package job overrides this
+  # to 8 since it runs on a medium runner with 4 vCPU.
+  CARGO_BUILD_JOBS: "4"
   # Pinned versions of cargo-installed packaging tools. Bump to upgrade;
   # `cargo install --version` is a no-op when the cached install matches.
   CARGO_DEB_VERSION: "3.6.4"
@@ -113,6 +119,17 @@ test:
 package:
   extends: .rust
   stage: package
+  # Medium runner: 4 vCPU / 16GB, billed at 2x rate vs default. The
+  # extra cores absorb the higher CARGO_BUILD_JOBS below; wall-clock
+  # roughly halves at neutral pipeline-minute cost (24 min × 1x →
+  # ~12 min × 2x).
+  tags:
+    - saas-linux-medium-amd64
+  variables:
+    # Bumped from the default 4 → 8 (2x oversubscription on 4 cores).
+    # Package is dominated by 6 sequential cross-target zigbuilds and
+    # benefits most from in-target parallelism.
+    CARGO_BUILD_JOBS: "8"
   # Override the .rust cache list to add the bin cache, which only
   # this job needs (cargo-deb, cargo-generate-rpm). YAML anchors keep
   # the registry entry in sync with the .rust default.
