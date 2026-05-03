@@ -27,39 +27,73 @@ variables:
   RUSTUP_HOME: $CI_PROJECT_DIR/.rustup
   CARGO_INCREMENTAL: "0"
   CARGO_TERM_COLOR: always
+  # sccache caches per-rustc-invocation outputs in the shared
+  # rustutils-cache S3 bucket on Hetzner. SCCACHE_BUCKET, _ENDPOINT,
+  # and _REGION come from the rustutils group's CI variables;
+  # AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are protected, so only
+  # protected refs (master + version tags) can write to the cache.
+  # Unprotected branches fall through to anonymous reads (see .rust
+  # before_script). No key prefix — common deps (serde, tokio, …) are
+  # shared across rustutils projects.
+  RUSTC_WRAPPER: sccache
   # Pinned versions of cargo-installed packaging tools. Bump to upgrade;
   # `cargo install --version` is a no-op when the cached install matches.
   CARGO_DEB_VERSION: "3.6.4"
   CARGO_GENERATE_RPM_VERSION: "0.20.0"
   ALPINE_VERSION: "3.23"
 
-# Shared cache keyed on the lock + toolchain files. Same key across all
-# Rust jobs so they pool the registry/index/built-deps. Last writer wins
-# on cache upload — tolerated here since cargo's own incremental tracking
-# handles the diff cheaply on the next run.
-.cargo-cache:
+# Cache definitions, split by invalidation cadence. Composed per-job
+# via YAML anchors below — extends:cache array merging is finicky in
+# GitLab CI, anchors are unambiguous.
+#
+# - registry: downloaded crate sources + index. Invalidates on
+#   Cargo.lock change. Small (~tens of MB), shared across all Rust jobs.
+# - bin: cargo-installed binaries (cargo-deb, cargo-generate-rpm).
+#   Invalidates on .gitlab-ci.yml change (where versions are pinned).
+#   Only the package job needs these.
+#
+# target/ is deliberately not cached — sccache handles per-rustc cache
+# hits across runs, which makes target/ reconstruction cheap. The 2GB
+# upload was eating a full minute per job.
+#
+# .rustup is also not cached — rustup-init from apk + a fresh download
+# of the stable toolchain is ~30-60s, on par with what cache restore
+# would cost for ~300MB. Not worth the upload churn.
+.cache-defs:
   cache:
-    key:
-      files:
-        - Cargo.lock
-        - rust-toolchain.toml
-    paths:
-      - .cargo/registry/cache
-      - .cargo/registry/index
-      - .cargo/bin
-      - .cargo/.crates.toml
-      - .cargo/.crates2.json
-      - .rustup
-      - target/
+    - &cache-registry
+      key:
+        files: [Cargo.lock]
+      paths:
+        - .cargo/registry/cache
+        - .cargo/registry/index
+    - &cache-bin
+      key:
+        files: [.gitlab-ci.yml]
+      paths:
+        - .cargo/bin
+        - .cargo/.crates.toml
+        - .cargo/.crates2.json
 
 .rust:
   image: alpine:$ALPINE_VERSION
-  extends: .cargo-cache
+  cache:
+    - *cache-registry
   before_script:
-    - apk add --no-cache build-base bash git rustup
+    - apk add --no-cache build-base bash git rustup sccache
     - rustup-init -y --default-toolchain none --no-modify-path
     - export PATH="$CARGO_HOME/bin:$PATH"
+    # Read-only sccache fallback when the protected AWS credentials
+    # are absent (i.e. on unprotected branches). NO_CREDENTIALS forces
+    # anonymous mode — reads work against the public bucket, writes
+    # silently fail. On protected refs, AWS_ACCESS_KEY_ID is set and
+    # we leave it unset so sccache uses the credentials normally.
+    - if [ -z "${AWS_ACCESS_KEY_ID:-}" ]; then export SCCACHE_S3_NO_CREDENTIALS=true; fi
     - rustup show
+  after_script:
+    # End-of-job cache stats. `|| true` so a sccache hiccup doesn't
+    # mask the underlying job's exit code.
+    - sccache --show-stats || true
 
 lint:
   extends: .rust
@@ -79,6 +113,12 @@ test:
 package:
   extends: .rust
   stage: package
+  # Override the .rust cache list to add the bin cache, which only
+  # this job needs (cargo-deb, cargo-generate-rpm). YAML anchors keep
+  # the registry entry in sync with the .rust default.
+  cache:
+    - *cache-registry
+    - *cache-bin
   rules:
     # Auto on tags — feeds the release job.
     - if: $CI_COMMIT_TAG
