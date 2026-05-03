@@ -45,6 +45,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   upstream-faithful DESCRIPTIONs, per-flag wording, and
   EXAMPLES + SEE ALSO sections. Adds `-d` (`--dry-run`)
   and `-j` (`--json`) short aliases on track for parity.
+- `git-lfs-lock(1)`, `git-lfs-locks(1)`, and
+  `git-lfs-unlock(1)` get upstream-faithful DESCRIPTIONs
+  and per-flag wording, plus SEE ALSO sections. Our
+  `--ref` (refspec) flag is documented as an extension
+  over upstream's CLI on each command. `--cached` on
+  `locks` is not yet implemented.
 - Every man page and mdbook page now ends with a REPORTING BUGS
   section pointing at the project issue tracker and clarifying
   that this is the Rust port (so reports don't end up on the

@@ -2,7 +2,7 @@
 
 ## Name
 
-`git-lfs-unlock` — Release a file lock previously acquired with `git lfs lock`. Either provide one or more paths, or `--id <id>` (mutually exclusive)
+`git-lfs-unlock` — Remove "locked" setting for a file on the Git LFS server
 
 ## Synopsis
 
@@ -12,31 +12,41 @@ git-lfs-unlock [OPTIONS] [PATHS]...
 
 ## Description
 
-Release a file lock previously acquired with `git lfs lock`. Either provide one or more paths, or `--id <id>` (mutually exclusive)
+Remove "locked" setting for a file on the Git LFS server
+
+Removes the given file path as "locked" on the Git LFS server. Files must exist and have a clean git status before they can be unlocked. The `--force` flag will skip these checks.
 
 ## Options
 
 ### Arguments
 
 - `<PATHS>`
-    Paths to unlock; mutually exclusive with `--id`
+    Paths to unlock. Upstream's CLI accepts a single path; ours accepts multiple (additive extension). Mutually exclusive with `--id`
 
 ### Flags
 
-- `-i`, `--id` `<ID>`
-    Lock id to release; mutually exclusive with paths
+- `-r`, `--remote` `<REMOTE>`
+    Specify the Git LFS server to use. Ignored if the `lfs.url` config key is set
 
 - `-f`, `--force`
-    Forcibly break another user's lock(s)
+    Tell the server to remove the lock, even if it's owned by another user
 
-- `-r`, `--remote` `<REMOTE>`
-    Specify which remote to use when interacting with locks
-
-- `--ref` `<REFSPEC>`
-    Refspec to send with the unlock request (defaults to current branch / tracked upstream)
+- `-i`, `--id` `<ID>`
+    Specify a lock by its ID instead of path. Mutually exclusive with the positional paths
 
 - `-j`, `--json`
-    Stable JSON output for scripts
+    Write lock info as JSON to standard output if the command exits successfully.
+
+    Intended for interoperation with external tools. If the command returns with a non-zero exit code, plain text messages are sent to standard error.
+
+- `--ref` `<REFSPEC>`
+    Refspec to send with the unlock request (extension over upstream).
+
+    Defaults to the current branch's tracked upstream — same auto-resolution as `git lfs lock`.
+
+## See also
+
+[git-lfs-lock(1)](./git-lfs-lock.md), [git-lfs-locks(1)](./git-lfs-locks.md).
 
 ## Reporting bugs
 

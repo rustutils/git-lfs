@@ -48,9 +48,9 @@ Git LFS — large file storage for git
 - `prune` — Delete local LFS objects that aren't reachable from HEAD or any unpushed commit. Reclaims disk for repos whose history has moved past their objects
 - `fsck` — Check the integrity of LFS objects and pointers reachable from `<refspec>` (default: HEAD). Exit 1 if anything is corrupt
 - `status` — Show staged + unstaged changes, classifying each blob as LFS, Git, or working-tree File
-- `lock` — Acquire an exclusive server-side lock on one or more files. Other users will be unable to push changes to a locked file
-- `locks` — List file locks held on the server
-- `unlock` — Release a file lock previously acquired with `git lfs lock`. Either provide one or more paths, or `--id <id>` (mutually exclusive)
+- `lock` — Set a file as "locked" on the Git LFS server
+- `locks` — Lists currently locked files from the Git LFS server
+- `unlock` — Remove "locked" setting for a file on the Git LFS server
 - `ls-files` — List LFS-tracked files visible at a ref (default: HEAD), or across all reachable history with `--all`
 
 ## Reporting bugs

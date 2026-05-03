@@ -931,63 +931,113 @@ pub struct StatusArgs {
     pub json: bool,
 }
 
-/// Acquire an exclusive server-side lock on one or more files.
-/// Other users will be unable to push changes to a locked file.
+/// Set a file as "locked" on the Git LFS server
+///
+/// Sets the given file path as "locked" against the Git LFS server,
+/// with the intention of blocking attempts by other users to update
+/// the given path. Locking a file requires the file to exist in the
+/// working copy.
+///
+/// Once locked, LFS will verify that Git pushes do not modify files
+/// locked by other users. See the description of the
+/// `lfs.<url>.locksverify` config key in git-lfs-config(5) for
+/// details.
 #[derive(Args)]
 pub struct LockArgs {
-    /// Paths to lock (repo-relative or absolute, must resolve inside
-    /// the working tree).
+    /// Paths to lock. Repo-relative or absolute; must resolve inside
+    /// the working tree. Upstream's CLI accepts a single path; ours
+    /// accepts multiple (additive extension).
     pub paths: Vec<String>,
-    /// Specify which remote to use when interacting with locks.
+
+    /// Specify the Git LFS server to use. Ignored if the `lfs.url`
+    /// config key is set.
     #[arg(short, long)]
     pub remote: Option<String>,
-    /// Refspec to associate the lock with. Defaults to the current
-    /// branch's tracked upstream (`branch.<current>.merge`) or the
-    /// current branch's full ref (`refs/heads/<branch>`).
-    #[arg(long = "ref")]
-    pub refspec: Option<String>,
-    /// Stable JSON output for scripts.
+
+    /// Write lock info as JSON to standard output if the command
+    /// exits successfully.
+    ///
+    /// Intended for interoperation with external tools. If the command
+    /// returns with a non-zero exit code, plain text messages are sent
+    /// to standard error.
     #[arg(short, long)]
     pub json: bool,
+
+    /// Refspec to associate the lock with (extension over upstream).
+    ///
+    /// Defaults to the current branch's tracked upstream
+    /// (`branch.<current>.merge`) or the current branch's full ref
+    /// (`refs/heads/<branch>`).
+    #[arg(long = "ref")]
+    pub refspec: Option<String>,
 }
 
-/// List file locks held on the server.
+/// Lists currently locked files from the Git LFS server
+///
+/// Lists current locks from the Git LFS server. Without filters, all
+/// locks visible to the configured remote are returned.
 #[derive(Args)]
 pub struct LocksArgs {
-    /// Specify which remote to use when interacting with locks.
+    /// Specify the Git LFS server to use. Ignored if the `lfs.url`
+    /// config key is set.
     #[arg(short, long)]
     pub remote: Option<String>,
-    /// Filter results to a particular path.
-    #[arg(short, long)]
-    pub path: Option<String>,
-    /// Filter results to a particular lock id.
+
+    /// Specify a lock by its ID. Returns a single result.
     #[arg(short, long)]
     pub id: Option<String>,
+
+    /// Specify a lock by its path. Returns a single result.
+    #[arg(short, long)]
+    pub path: Option<String>,
+
+    /// List only our own locks which are cached locally. Skips a
+    /// remote call.
+    ///
+    /// Useful when offline or to confirm what `git lfs lock` recorded
+    /// locally. Combine with `--path` / `--id` / `--limit` to filter;
+    /// `--verify` is rejected.
+    #[arg(long)]
+    pub local: bool,
+
+    /// Verify the lock owner on the server and mark our own locks
+    /// with `O`.
+    ///
+    /// Own locks are held by us and the corresponding files can be
+    /// updated for the next push. All other locks are held by someone
+    /// else. Contrary to `--local`, this also detects locks held by us
+    /// despite no local lock information being available (e.g. because
+    /// the file had been locked from a different clone) and detects
+    /// "broken" locks (e.g. someone else forcibly unlocked our files).
+    #[arg(long)]
+    pub verify: bool,
+
     /// Maximum number of results to return.
     #[arg(short, long)]
     pub limit: Option<u32>,
-    /// Refspec to filter locks by (defaults to current branch /
-    /// tracked upstream — same auto-resolution as `git lfs lock`).
-    #[arg(long = "ref")]
-    pub refspec: Option<String>,
-    /// Verify ownership: prefix locks owned by the authenticated user
-    /// with `O ` (others get `  `).
-    #[arg(long)]
-    pub verify: bool,
-    /// List from the on-disk cache of own locks instead of querying
-    /// the server. Combine with `--path` / `--id` / `--limit` to
-    /// filter; `--verify` is rejected. Useful when offline or to
-    /// confirm what `git lfs lock` recorded locally.
-    #[arg(long)]
-    pub local: bool,
-    /// Stable JSON output for scripts.
+
+    /// Write lock info as JSON to standard output if the command
+    /// exits successfully.
+    ///
+    /// Intended for interoperation with external tools. If the command
+    /// returns with a non-zero exit code, plain text messages are sent
+    /// to standard error.
     #[arg(short, long)]
     pub json: bool,
+
+    /// Refspec to filter locks by (extension over upstream).
+    ///
+    /// Defaults to the current branch's tracked upstream — same
+    /// auto-resolution as `git lfs lock`.
+    #[arg(long = "ref")]
+    pub refspec: Option<String>,
 }
 
-/// Release a file lock previously acquired with `git lfs lock`.
-/// Either provide one or more paths, or `--id <id>` (mutually
-/// exclusive).
+/// Remove "locked" setting for a file on the Git LFS server
+///
+/// Removes the given file path as "locked" on the Git LFS server.
+/// Files must exist and have a clean git status before they can be
+/// unlocked. The `--force` flag will skip these checks.
 #[derive(Args)]
 pub struct UnlockArgs {
     // TODO(post-1.0): replace the manual --id-xor-paths check
@@ -997,24 +1047,42 @@ pub struct UnlockArgs {
     // tests/t-unlock.sh:228,431,482 assert upstream's exact wording
     // ("Exactly one of --id or a set of paths must be provided").
     // Worth taking once we're free to update those assertions.
-    /// Paths to unlock; mutually exclusive with `--id`.
+    /// Paths to unlock. Upstream's CLI accepts a single path; ours
+    /// accepts multiple (additive extension). Mutually exclusive
+    /// with `--id`.
     pub paths: Vec<String>,
-    /// Lock id to release; mutually exclusive with paths.
-    #[arg(short, long)]
-    pub id: Option<String>,
-    /// Forcibly break another user's lock(s).
-    #[arg(short, long)]
-    pub force: bool,
-    /// Specify which remote to use when interacting with locks.
+
+    /// Specify the Git LFS server to use. Ignored if the `lfs.url`
+    /// config key is set.
     #[arg(short, long)]
     pub remote: Option<String>,
-    /// Refspec to send with the unlock request (defaults to current
-    /// branch / tracked upstream).
-    #[arg(long = "ref")]
-    pub refspec: Option<String>,
-    /// Stable JSON output for scripts.
+
+    /// Tell the server to remove the lock, even if it's owned by
+    /// another user.
+    #[arg(short, long)]
+    pub force: bool,
+
+    /// Specify a lock by its ID instead of path. Mutually exclusive
+    /// with the positional paths.
+    #[arg(short, long)]
+    pub id: Option<String>,
+
+    /// Write lock info as JSON to standard output if the command
+    /// exits successfully.
+    ///
+    /// Intended for interoperation with external tools. If the command
+    /// returns with a non-zero exit code, plain text messages are sent
+    /// to standard error.
     #[arg(short, long)]
     pub json: bool,
+
+    /// Refspec to send with the unlock request (extension over
+    /// upstream).
+    ///
+    /// Defaults to the current branch's tracked upstream — same
+    /// auto-resolution as `git lfs lock`.
+    #[arg(long = "ref")]
+    pub refspec: Option<String>,
 }
 
 /// List LFS-tracked files visible at a ref (default: HEAD), or across

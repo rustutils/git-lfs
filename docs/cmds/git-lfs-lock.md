@@ -2,7 +2,7 @@
 
 ## Name
 
-`git-lfs-lock` — Acquire an exclusive server-side lock on one or more files. Other users will be unable to push changes to a locked file
+`git-lfs-lock` — Set a file as "locked" on the Git LFS server
 
 ## Synopsis
 
@@ -12,25 +12,37 @@ git-lfs-lock [OPTIONS] [PATHS]...
 
 ## Description
 
-Acquire an exclusive server-side lock on one or more files. Other users will be unable to push changes to a locked file
+Set a file as "locked" on the Git LFS server
+
+Sets the given file path as "locked" against the Git LFS server, with the intention of blocking attempts by other users to update the given path. Locking a file requires the file to exist in the working copy.
+
+Once locked, LFS will verify that Git pushes do not modify files locked by other users. See the description of the `lfs.<url>.locksverify` config key in [git-lfs-config(5)](./git-lfs-config.md) for details.
 
 ## Options
 
 ### Arguments
 
 - `<PATHS>`
-    Paths to lock (repo-relative or absolute, must resolve inside the working tree)
+    Paths to lock. Repo-relative or absolute; must resolve inside the working tree. Upstream's CLI accepts a single path; ours accepts multiple (additive extension)
 
 ### Flags
 
 - `-r`, `--remote` `<REMOTE>`
-    Specify which remote to use when interacting with locks
-
-- `--ref` `<REFSPEC>`
-    Refspec to associate the lock with. Defaults to the current branch's tracked upstream (`branch.<current>.merge`) or the current branch's full ref (`refs/heads/<branch>`)
+    Specify the Git LFS server to use. Ignored if the `lfs.url` config key is set
 
 - `-j`, `--json`
-    Stable JSON output for scripts
+    Write lock info as JSON to standard output if the command exits successfully.
+
+    Intended for interoperation with external tools. If the command returns with a non-zero exit code, plain text messages are sent to standard error.
+
+- `--ref` `<REFSPEC>`
+    Refspec to associate the lock with (extension over upstream).
+
+    Defaults to the current branch's tracked upstream (`branch.<current>.merge`) or the current branch's full ref (`refs/heads/<branch>`).
+
+## See also
+
+[git-lfs-unlock(1)](./git-lfs-unlock.md), [git-lfs-locks(1)](./git-lfs-locks.md).
 
 ## Reporting bugs
 
