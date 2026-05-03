@@ -12,15 +12,10 @@ in the binaries.
 
 ## Status
 
-Work in progress. **About 596 of the 794 vendored upstream shell tests
-currently pass across 104 test files (~75%)**, with 57 suites at a
-full pass — see [`tests/SCOREBOARD.md`](tests/SCOREBOARD.md) for the
-per-suite breakdown. The remaining gaps cluster in commands that
-aren't started yet (`dedup`, custom transfer adapters, SSH
-`git-lfs-authenticate`, `merge-driver`) and in long-tail flag behavior
-on otherwise-shipped commands. Day-to-day flows (clean / smudge,
-`fetch` / `pull` / `push`, `track`, locking, `migrate`) work end to end
-against authenticated LFS endpoints.
+Work in progress. Currently, about 75% of the upstream test suite passes
+against this git-lfs implementation. See [`tests/SCOREBOARD.md`](tests/SCOREBOARD.md)
+for the per-suite breakdown. The majority of functionality is already
+implemented and work end-to-end.
 
 ## Why
 

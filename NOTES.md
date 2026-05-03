@@ -60,46 +60,55 @@ Useful entry points in the upstream tree:
 
 ## Test status snapshot (point in time)
 
-About 360 of 794 vendored shell tests pass (~45%) across 104
-files. Notable since the last snapshot:
-- **t-checkout 4/18 → 13/18** — ported pull's conflict-tolerant
-  materialize (path/symlink/IsADirectory warnings, read-only
-  unlink-and-restore, empty-pointer skip), plus bare-repo "must
-  be run in a work tree" exit and `--git-dir` (instead of
-  `--is-inside-work-tree`) for the outside-a-repo guard so
-  `GIT_WORK_TREE`/`GIT_DIR` redirection works.
-- **t-env 0/17 → 13/17** — full upstream line set: endpoints with
-  `(auth=N)` annotations, all `Local*`/`Temp*`/`LfsStorageDir`
-  paths (relative outside a repo), config-driven `Concurrent*` /
-  `Tus*` / `BasicTransfersOnly` / `SkipDownload*` (with the
-  `GIT_LFS_SKIP_DOWNLOAD_ERRORS` env override), custom transfer
-  enumeration, sorted `GIT_*` env-var dump, canonical filter
-  config defaults outside a repo. Remaining 4 fail on substantive
-  features: `.lfsconfig` "unsafe key" filtering (test 8), SSH
-  endpoint reporting (test 11), URL `insteadOf` alias warnings
-  (test 17), and a subtle `GIT_DIR=`/`GIT_WORK_TREE=` test (9).
-- **t-config 0/10 → 1/10** — only the simplest case picked up; the
-  rest need `.lfsconfig`-from-HEAD-tree, URL alias resolution, and
-  `.lfsconfig` unsafe-key warnings.
-- **t-status 1/17 → 17/17 (full pass)** — blank-line section
-  layout, cwd-relative path display, `repo_root.join` for working-
-  tree reads, unstaged-then-staged ordering with first-seen-wins
-  dedup, `git diff-index -M` for rename detection, "Objects to be
-  pushed" section via `@{u}` resolution, missing-blob `?:
-  <missing>` rendering, IsADirectory→deleted, bare-repo "must be
-  run in a work tree" exit 1, empty-tree fallback before initial
-  commit.
-- **t-pull 1/20 → 16/20** — materialize from HEAD's tree, conflict
-  warnings, `GIT_LFS_SKIP_SMUDGE`, bare-repo support, read-only
-  unlink/recreate, empty-pointer skip.
-- t-clone 0/13 → 8/13 and t-checkout 1/18 → 3/18 from earlier
-  sessions.
+About 588 of 781 vendored shell tests pass (~75%) across 104
+files. Most of the per-command files now pass cleanly; remaining
+failures cluster in features we haven't shipped yet rather than
+edge cases of features we have.
 
-The remaining failures cluster in commands we haven't started
-(`env`, `config`, `ext`, `dedup`, `custom-transfers`, `ssh`,
-retries) or specific feature gaps (fetch-recent windows, prune
-output text, conflict-detection error messages in checkout,
-locking-API edge cases).
+**Fully or near-fully passing** (no failures, or only one):
+t-env (17/17), t-config (10/10), t-checkout (18/18), t-pull
+(20/20), t-status (17/17), t-fsck, t-update, t-track, t-untrack,
+t-install, t-uninstall, t-pre-push, t-clean, t-malformed-pointers,
+t-filter-process, t-happy-path, t-migrate-import (36/38),
+t-migrate-info (45/50), t-migrate-export, t-locks (8/9),
+t-batch-transfer (7/8), t-clone (9/13), t-pointer (20/26),
+t-smudge (7/9), t-push (18/27).
+
+**Largest remaining failure clusters** (failed/total):
+
+- **Credentials family** — t-credentials (17/20 fail),
+  t-credentials-protect (3/3), t-credentials-no-prompt (2/2),
+  t-askpass (5/6), t-extra-header (4/4), t-content-type (3/3),
+  t-expired (6/6). ~40 tests, blocked on the credential-helper
+  ecosystem beyond the basic 401-fill-retry loop.
+- **ls-files long tail** — t-ls-files (21/31 fail). Mostly
+  output-format and flag-coverage gaps; first 5 are a single
+  trailing-newline fix.
+- **Prune + fetch-recent retention** — t-prune (14/18 fail),
+  t-prune-worktree (2/2), t-fetch-recent (6/7). Same root cause:
+  `lfs.fetchrecentcommitsdays` / `lfs.fetchrecentrefsdays` /
+  `lfs.fetchexclude` retention windows aren't implemented.
+- **Custom transfer adapters / SSH / tus** — t-custom-transfers
+  (4/4), t-standalone-file (8/9), t-ssh (2/2),
+  t-batch-storage-upload-tus (2/2), t-multiple-remotes (12/12).
+  Real protocol surface; basic adapter only ships today.
+- **Retry / rate-limit** — t-batch-retries-ratelimit (5/5),
+  t-batch-storage-retries (5/5),
+  t-batch-storage-retries-ratelimit (5/5). Server returns 429
+  with Retry-After header; we don't honor the schedule.
+- **Pointer extensions** — t-pointer (6/26 fail, all in 21-26),
+  t-merge-driver (6/6), t-attributes (4/4), t-ext (1/1). Clean
+  shipped extensions; smudge still bails. Several other files
+  (merge-driver, attributes) depend on extension-aware smudge.
+- **Unshipped commands** — t-completion (5), t-dedup (3),
+  t-logs (1), t-merge-driver (6).
+- **Push edge cases** — t-push (9/27 fail). Deprecated `_links`
+  field, negative-size error message, batch error formatter,
+  pushInsteadof, custom-namespace refs.
+- **Single-file holdouts** — t-batch-error-handling, t-progress,
+  t-repo-format, t-tempfile, t-upload-redirect, t-usage,
+  t-verify (4), t-worktree (2), t-batch-storage-encoding,
+  t-batch-unknown-oids, t-umask (3).
 
 ## Release status
 
@@ -136,59 +145,50 @@ tree in the same hook-installed state upstream produces.
 
 ## Highest-leverage gaps (descending leverage)
 
-1. **t-pull's remaining 3 failures** all need substantive features:
-   test 18 wants `git ls-files attr:filter=lfs` based discovery in
-   bare repos (so an empty index → no fetch); test 19 needs partial-
-   clone + sparse-checkout integration; test 20 needs pointer
-   extensions.
-2. **t-checkout's remaining 5 failures** are all real features:
-   test 13 wants `--to <path> [--ours|--theirs|--base]` for merge
-   conflict resolution (read the conflict pointer, write content
-   to the target path); test 14 is a `GIT_DIR`/`GIT_WORK_TREE`
-   relative-path edge case (the env vars carry over to subprocesses
-   we run with `-C repo_root`, but their relative paths now resolve
-   relative to repo_root rather than the original cwd; canonicalize
-   on entry); test 16 is sparse checkout + partial clone (same
-   `git ls-files attr:filter=lfs` discovery as t-pull 18); tests
-   17 / 18 are pointer extensions.
-2. **Fetch-recent semantics** (`lfs.fetchrecentrefsdays`,
-   `lfs.fetchrecentcommitsdays`, `lfs.fetchrecentremoterefs`).
-   Owns t-fetch-recent (1/7) and parts of t-fetch / t-prune.
-3. **`git lfs env` output format**. Owns t-env (0/17). Command
-   exists; output shape doesn't match what tests grep for.
-4. **`git lfs config` subcommand**. Owns t-config (0/10), entirely
-   unimplemented.
-5. **Prune output text + `--verify-remote`**. Owns most of t-prune
-   (4/18), t-prune-worktree (0/2). Output strings ("N local
-   objects, M retained, done.") don't match upstream wording.
-6. **Checkout conflict-detection messages**. The remaining 15
-   t-checkout failures are mostly file-vs-directory and symlink
-   conflict-error wording, hardlink-breaking, and empty-file mtime
-   preservation.
+Listed by the size of the cluster they unlock. Each entry says
+what's broken and where to start.
 
-## Other large clusters (descending leverage)
-
-- **Custom transfer adapters + tus** — `t-custom-transfers`,
-  `t-batch-storage-upload-tus`, `t-standalone-file`. Real protocol
-  surface, third-party-facing.
-- **Migrate `--fixup` and round-trip** — `t-migrate-fixup` (0/12),
-  `t-migrate-import-no-rewrite` (0/8), and the tail in
-  `t-migrate-import` (6/51) and `t-migrate-info` (7/50). Engine
-  works; lots of edge cases.
-- **Retry / Retry-After / rate-limit handling** —
-  `t-batch-retries-ratelimit`, `t-batch-storage-retries-*` (3
-  files, 0/15). Server returns 429 with Retry-After header; we
-  don't honor the schedule.
-- **Credential helper edge cases** — `t-credentials` (3/20),
-  `t-credentials-protect`, `t-askpass` (1/6), netrc, NTLM. The
-  basic 401-fill-retry loop ships; the rest of the credential
-  ecosystem doesn't.
-- **`status`, `ls-files` long tails** — basic forms work, exotic
-  flags / formatting don't (1/17, 10/31).
-- **Unshipped commands**: `ext`, `logs`, `update`, `dedup`,
-  `standalone-file`, `completion`.
-- **SSH transfer protocol (`git-lfs-authenticate`)** — `t-ssh`,
-  parts of `t-multiple-remotes`, large parts of `t-clone`.
+1. **Credential helper ecosystem** (~40 tests). The basic 401 →
+   `git credential fill` → retry → approve/reject loop ships, but
+   nothing beyond it: no netrc fallback, no askpass, no NTLM /
+   Negotiate, no per-URL `credential.<url>.helper` config, no
+   stateful multi-stage auth (`state[]` / `wwwauth[]` carried
+   between fills). Also covers credential-protect (suspicious-URL
+   refusals), expired credentials, extra HTTP headers, custom
+   content-type. See `creds/` deferral list.
+2. **Prune + fetch-recent retention** (~22 tests). `lfs.fetchrecentcommitsdays`
+   / `lfs.fetchrecentrefsdays` / `lfs.fetchrecentremoterefs` /
+   `lfs.fetchexclude` aren't honored. v0 prune retains only HEAD's
+   tree + unpushed; everything older is fair game. Drives t-prune
+   (14 fail), t-prune-worktree (2), t-fetch-recent (6), and the
+   "X local objects, Y retained" output strings whose numbers
+   depend on the retention windows.
+3. **ls-files long tail** (21 tests). Output-format gaps plus
+   `--include` / `--exclude` / `--deleted` / two-ref range / index
+   scan. First 5 failures are a single trailing-newline fix.
+4. **Custom transfer adapters + tus + SSH** (~28 tests across
+   t-custom-transfers, t-standalone-file, t-ssh,
+   t-batch-storage-upload-tus, t-multiple-remotes). Third-party
+   protocol surface; basic adapter only ships today. SSH
+   `git-lfs-authenticate` flow (server-discovery.md §SSH) also
+   needed for self-hosted servers that don't speak HTTPS.
+5. **Retry / Retry-After / rate-limit** (15 tests). 429 + 503 with
+   Retry-After header. We retry but ignore the server's schedule
+   (no jitter, no honoring of explicit delay). All in
+   t-batch-retries-ratelimit, t-batch-storage-retries,
+   t-batch-storage-retries-ratelimit.
+6. **Pointer extensions on the smudge side** (~12 tests). Clean
+   shipped (chains `lfs.extension.<n>.clean`, emits `ext-N` lines);
+   smudge still bails with `SmudgeError::ExtensionsUnsupported`.
+   Owns t-pointer 21-26, t-merge-driver, t-attributes, t-ext.
+   `pointer --no-extensions` flag also gated on this.
+7. **Unshipped commands** — `merge-driver` (6 tests), `completion`
+   (5), `dedup` (3), `logs` (1), `ext` (1).
+8. **Push edge cases** (9 tests). Deprecated `_links` serde alias
+   (1 line), negative-size error message wording, batch error
+   formatter, push-direction `pushInsteadof` alias, custom
+   reference namespaces (gated on the excluded
+   `lfstest-testutils` paths).
 
 ## Open questions / things to flag before deep diving
 

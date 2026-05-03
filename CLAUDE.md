@@ -54,17 +54,16 @@ endpoints with no explicit `lfs.url` config.
 
 **Milestone 3 territory** — not started or partial. Custom transfer
 adapters + tus, SSH `git-lfs-authenticate`, netrc / askpass / NTLM /
-Kerberos, `merge-driver`, `dedup`, `ext`, `standalone-file`, `logs`,
-`update`, full `env` output format, `git lfs config` subcommand,
-`migrate --fixup`, retry / Retry-After handling, fetch-recent
-semantics. See `NOTES.md` for the ranked gap list and per-command
-deferred polish.
+Kerberos / mTLS, `merge-driver`, `dedup`, `ext`, `standalone-file`,
+`logs`, `completion`, retry / Retry-After / rate-limit handling,
+fetch-recent semantics, full prune retention. See `NOTES.md` for the
+ranked gap list and per-command deferred polish.
 
 **Released as v0.2.0 on crates.io.** All eight workspace members are
 publish-ready (description, keywords, categories, repository, per-crate
 README). Project status remains experimental — for production use,
-upstream Go `git-lfs` is still the answer; ~39% of the vendored shell
-tests pass.
+upstream Go `git-lfs` is still the answer; ~75% of the vendored shell
+tests pass (588/781 across 104 files).
 
 ## Layout
 
