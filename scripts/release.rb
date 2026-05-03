@@ -22,6 +22,7 @@
 require 'json'
 
 CHANGELOG = 'CHANGELOG.md'
+CARGO_TOML = 'Cargo.toml'
 DIST_DIR  = 'target/dist'
 
 print_only = ARGV.include?('--print')
@@ -31,6 +32,35 @@ project_url = ENV.fetch('CI_PROJECT_URL')
 
 version    = tag.sub(/\Av/, '')
 prerelease = version.include?('-')
+
+# Read [workspace.package].version from Cargo.toml. Cheap regex
+# walk — avoids pulling in a TOML gem for one field.
+def cargo_version
+  in_section = false
+  File.foreach(CARGO_TOML) do |line|
+    if line.start_with?('[')
+      in_section = (line.strip == '[workspace.package]')
+      next
+    end
+    if in_section && line =~ /\Aversion\s*=\s*"([^"]+)"/
+      return Regexp.last_match(1)
+    end
+  end
+  nil
+end
+
+# Bail if the tag doesn't match Cargo.toml exactly. We always bump
+# Cargo.toml for crates.io anyway, so prereleases get the suffix in
+# both places (Cargo.toml = "0.4.0-rc1", tag = v0.4.0-rc1).
+crate_version = cargo_version
+if crate_version.nil?
+  warn "ERROR: no [workspace.package] version found in #{CARGO_TOML}"
+  exit 1
+end
+unless crate_version == version
+  warn "ERROR: tag #{tag} does not match Cargo.toml version #{crate_version}"
+  exit 1
+end
 
 # Pull a `## [<heading>]` section out of CHANGELOG.md and return its
 # body (everything until the next `## ` heading), trimmed.
