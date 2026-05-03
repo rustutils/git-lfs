@@ -56,6 +56,7 @@ pub fn pull_with_filter(
         refetch: false,
         stdin: false,
         prune: false,
+        recent: false,
         include,
         exclude,
     };

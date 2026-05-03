@@ -540,6 +540,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             refetch,
             stdin,
             prune,
+            recent,
             include,
             exclude,
         }) => {
@@ -563,6 +564,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 refetch,
                 stdin,
                 prune,
+                recent,
                 include: &include,
                 exclude: &exclude,
             };

@@ -416,6 +416,19 @@ pub struct FetchArgs {
     #[arg(short, long)]
     pub dry_run: bool,
 
+    /// Also fetch recently-touched refs and the recent pre-images on
+    /// each.
+    ///
+    /// Walk every ref under `refs/heads/` (and, by default, every
+    /// remote-tracking ref) whose tip commit lies within
+    /// `lfs.fetchrecentrefsdays` of today, and on each of those refs
+    /// download the pre-image of every LFS file modified within
+    /// `lfs.fetchrecentcommitsdays`. Combine with the named refs'
+    /// HEAD-state fetch. The same behaviour fires automatically if
+    /// `lfs.fetchrecentalways` is set.
+    #[arg(short, long)]
+    pub recent: bool,
+
     /// Write the details of all object transfer requests as JSON to
     /// standard output.
     ///

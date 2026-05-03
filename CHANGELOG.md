@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `git lfs fetch --recent` (and `lfs.fetchrecentalways`) now expands
+  the fetch set with two extras: HEAD-state of every ref whose tip
+  commit lies within `lfs.fetchrecentrefsdays` of today, and the
+  pre-image of every LFS pointer modified within
+  `lfs.fetchrecentcommitsdays` on each anchor ref. Honors
+  `lfs.fetchrecentremoterefs` for whether remote-tracking refs
+  participate. The pre-image walk uses a new `git log -G "oid sha256:" -p`
+  diff-parsing scanner; the recent-refs walk uses a new
+  `git for-each-ref --sort=-committerdate` helper.
+
 ### Fixed
 
 - `git lfs fetch <ref>...` now scans only the HEAD-state of each

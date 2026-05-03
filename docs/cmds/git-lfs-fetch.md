@@ -52,6 +52,11 @@ This does not update the working copy; use [git-lfs-pull(1)](./git-lfs-pull.md) 
 - `-d`, `--dry-run`
     Print what would be fetched, without actually fetching anything
 
+- `-r`, `--recent`
+    Also fetch recently-touched refs and the recent pre-images on each.
+
+    Walk every ref under `refs/heads/` (and, by default, every remote-tracking ref) whose tip commit lies within `lfs.fetchrecentrefsdays` of today, and on each of those refs download the pre-image of every LFS file modified within `lfs.fetchrecentcommitsdays`. Combine with the named refs' HEAD-state fetch. The same behaviour fires automatically if `lfs.fetchrecentalways` is set.
+
 - `-j`, `--json`
     Write the details of all object transfer requests as JSON to standard output.
 

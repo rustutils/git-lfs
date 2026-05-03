@@ -52,6 +52,10 @@ pub struct FetchOptions<'a> {
     pub refetch: bool,
     pub stdin: bool,
     pub prune: bool,
+    /// User passed `--recent`. Combined with `lfs.fetchrecentalways` to
+    /// decide whether to walk recent refs + recent commits in addition
+    /// to the named refs' HEAD-state.
+    pub recent: bool,
     /// Comma-separated globs from `--include` / `-I`. Empty string =
     /// "no override" (config still applies).
     pub include: &'a [String],
@@ -223,6 +227,31 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
                 }
             }
         }
+    }
+
+    // Recent-history walk. `--recent` (or `lfs.fetchrecentalways`)
+    // expands the fetch set with two extras:
+    //   1. HEAD-state of every ref whose tip commit is within
+    //      `lfs.fetchrecentrefsdays` of now.
+    //   2. Pre-images of every LFS pointer modified within
+    //      `lfs.fetchrecentcommitsdays` on each named ref AND on each
+    //      recent ref.
+    // Mirrors upstream's `fetchRecent` (command_fetch.go::fetchRecent).
+    // Skipped on `--all` (already walks full history) and on the
+    // index-only / no-arg path (no refs to anchor the walk).
+    let fp_cfg = git_lfs_git::FetchPruneConfig::from_repo(cwd);
+    let want_recent = (opts.recent || fp_cfg.fetch_recent_always) && !opts.all;
+    if want_recent {
+        // Anchor the scan: when the user passed no positional refs the
+        // implicit anchor is HEAD's current branch (matches upstream's
+        // `refs = [CurrentRef()]` default). The named-refs path uses
+        // walk_refs verbatim.
+        let anchors: Vec<String> = if walk_refs.is_empty() {
+            vec!["HEAD".to_owned()]
+        } else {
+            walk_refs.clone()
+        };
+        recent_walk(cwd, &fp_cfg, remote.as_deref(), &anchors, &mut pointers)?;
     }
 
     // Apply include/exclude path filters. CLI flags take precedence
@@ -676,6 +705,114 @@ pub(crate) fn is_resolvable_ref(cwd: &Path, r: &str) -> bool {
         ])
         .output();
     matches!(out, Ok(o) if o.status.success())
+}
+
+/// Append "recent" pointers — HEAD-state of recent refs, plus
+/// pre-images of LFS files modified within `commits_days` on each
+/// named-and-recent ref — into `pointers`. Dedups by OID against
+/// what's already present.
+///
+/// Mirrors upstream's `command_fetch.go::fetchRecent` (and the
+/// `gitscanner.ScanPreviousVersions` calls it spawns).
+fn recent_walk(
+    cwd: &Path,
+    cfg: &git_lfs_git::FetchPruneConfig,
+    remote: Option<&str>,
+    named_refs: &[String],
+    pointers: &mut Vec<PointerEntry>,
+) -> Result<(), FetchCommandError> {
+    use std::collections::HashSet;
+    use std::time::{Duration, SystemTime};
+
+    let now = SystemTime::now();
+    let day = Duration::from_secs(86_400);
+
+    // Recent refs: tips with committer date within `refs_days` of now.
+    // `refs_days = 0` disables this discovery (only the named refs +
+    // their pre-images contribute).
+    let mut recent_refs: Vec<String> = Vec::new();
+    if cfg.fetch_recent_refs_days > 0 {
+        let since = now - day * cfg.fetch_recent_refs_days as u32;
+        // When include-remotes is on, restrict to *this* fetch's
+        // remote — a recent ref under a different remote isn't going
+        // to come from the same server.
+        let only_remote = if cfg.fetch_recent_refs_include_remotes {
+            remote
+        } else {
+            None
+        };
+        let refs = git_lfs_git::recent_branches(
+            cwd,
+            since,
+            cfg.fetch_recent_refs_include_remotes,
+            only_remote,
+        )?;
+        for r in refs {
+            recent_refs.push(r.full);
+        }
+    }
+
+    let mut have_oids: HashSet<git_lfs_pointer::Oid> = pointers.iter().map(|p| p.oid).collect();
+
+    // 1. HEAD-state of every walk anchor (named or recent) → scan_tree.
+    //    Anchors are added unconditionally — `scan_index_lfs` only
+    //    finds pointers in repos with a committed `.gitattributes`,
+    //    so on partial-clone / no-attrs setups (like the t-fetch-recent
+    //    fixture) we'd otherwise miss the HEAD-state entirely. Dedup
+    //    via `have_oids` keeps us from double-fetching when the index
+    //    scan did surface them.
+    let mut all_anchors: Vec<&str> = named_refs.iter().map(String::as_str).collect();
+    for r in &recent_refs {
+        if !all_anchors.contains(&r.as_str()) {
+            all_anchors.push(r.as_str());
+        }
+    }
+    for r in &all_anchors {
+        for entry in git_lfs_git::scan_tree(cwd, r)? {
+            if have_oids.insert(entry.oid) {
+                pointers.push(entry);
+            }
+        }
+    }
+
+    // 2. Pre-images for the recent commits window. `commits_days = 0`
+    //    means "at-ref only" (no pre-images). Window is measured from
+    //    *each ref's tip commit date* (matching upstream's
+    //    `summ.CommitDate.AddDate(0,0,-N)`), not from now — so a ref
+    //    whose tip is itself old still surfaces its pre-images
+    //    correctly relative to that tip.
+    if cfg.fetch_recent_commits_days > 0 {
+        for r in &all_anchors {
+            let Some(tip_unix) = ref_tip_unix(cwd, r) else {
+                continue;
+            };
+            let commits_since = SystemTime::UNIX_EPOCH + Duration::from_secs(tip_unix as u64)
+                - day * cfg.fetch_recent_commits_days as u32;
+            for entry in git_lfs_git::scan_previous_versions(cwd, r, commits_since)? {
+                if have_oids.insert(entry.oid) {
+                    pointers.push(entry);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Tip commit's Unix timestamp for `reference`, or `None` if the ref
+/// doesn't resolve. Used as the anchor for the per-ref
+/// `commits_days` window in [`recent_walk`].
+fn ref_tip_unix(cwd: &Path, reference: &str) -> Option<i64> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["log", "-1", "--format=%ct", reference])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
 }
 
 fn all_local_refs(cwd: &Path) -> Result<Vec<String>, FetchCommandError> {
