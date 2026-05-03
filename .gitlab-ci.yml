@@ -90,10 +90,6 @@ variables:
     # we leave it unset so sccache uses the credentials normally.
     - if [ -z "${AWS_ACCESS_KEY_ID:-}" ]; then export SCCACHE_S3_NO_CREDENTIALS=true; fi
     - rustup show
-  after_script:
-    # End-of-job cache stats. `|| true` so a sccache hiccup doesn't
-    # mask the underlying job's exit code.
-    - sccache --show-stats || true
 
 lint:
   extends: .rust
@@ -103,12 +99,16 @@ lint:
     - cargo fmt --all --check
     - RUSTDOCFLAGS="-Dwarnings" cargo doc --no-deps --workspace
     - cargo clippy --workspace --all-targets -- -Dwarnings
+    # sccache stats — must run inside script (not after_script) so we
+    # query the same daemon cargo populated, not a freshly-spawned one.
+    - sccache --show-stats || true
 
 test:
   extends: .rust
   stage: test
   script:
     - cargo test --workspace
+    - sccache --show-stats || true
 
 package:
   extends: .rust
@@ -135,6 +135,7 @@ package:
     - cargo install --locked --version "$CARGO_GENERATE_RPM_VERSION" cargo-generate-rpm
   script:
     - just package
+    - sccache --show-stats || true
   artifacts:
     paths:
       - target/dist/
