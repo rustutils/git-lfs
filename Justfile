@@ -99,8 +99,11 @@ package:
         target="$arch-unknown-linux-musl"
         build "$target"
         bundle_unix "$target" "$arch" "linux"
-        cargo deb            -p git-lfs --target "$target" --no-build -o target/dist/
-        cargo generate-rpm   -p cli --target "$target" -o target/dist/
+        # --no-strip: rustc already stripped (profile.release.strip=true);
+        # cargo-deb's strip uses the host binutils which fails on cross-arch.
+        cargo deb -p git-lfs --target "$target" --no-build --no-strip -o target/dist/
+        # cargo-generate-rpm's "-p" flag takes a folder, not a package name.
+        cargo generate-rpm -p cli --target "$target" -o target/dist/
     done
 
     # macOS: tarball only (cargo-deb / generate-rpm don't apply).

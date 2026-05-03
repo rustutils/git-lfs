@@ -121,6 +121,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`git-lfs-X.Y.Z.tar.zst`) ships alongside, combining `git archive
   HEAD` with the generated man pages so downstream packagers can
   build without our xtask.
+- Release binaries are now stripped, ThinLTO-optimized, single-codegen-
+  unit, and `panic = "abort"` (workspace `[profile.release]`). Smaller
+  and faster than the default release profile. Stripping happens during
+  rustc rather than via cargo-deb's host-binutils strip, which was
+  failing on cross-arch musl binaries in CI.
 - GitLab CI pipeline (`lint → test → package → release → deploy`).
   Pushes to master run lint and test; semver-tagged commits
   additionally build all packaging artifacts and publish a GitLab

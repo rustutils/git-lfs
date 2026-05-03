@@ -13,6 +13,13 @@ members = [
     "xtask",
 ]
 
+# Let rustc strip release binaries
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
 [workspace.package]
 version    = "0.4.0"
 edition    = "2024"
