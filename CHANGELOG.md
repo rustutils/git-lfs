@@ -121,6 +121,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`git-lfs-X.Y.Z.tar.zst`) ships alongside, combining `git archive
   HEAD` with the generated man pages so downstream packagers can
   build without our xtask.
+- GitLab CI pipeline (`lint → test → package → release → deploy`).
+  Pushes to master run lint and test; semver-tagged commits
+  additionally build all packaging artifacts and publish a GitLab
+  release with notes pulled from the matching `CHANGELOG.md`
+  section. Package job is also exposed as a manual button on master
+  and merge requests so packaging can be verified without cutting a
+  tag.
 
 ## [0.4.0] - 2026-05-02
 

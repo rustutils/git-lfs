@@ -1,15 +1,168 @@
+# GitLab CI for git-lfs.
+#
+# Pipeline shape:
+#   lint     -> rustfmt + clippy + cargo doc warnings
+#   test     -> cargo test --workspace
+#   package  -> just package (.deb / .rpm / tarballs / zips, 6 targets + source)
+#   release  -> create GitLab release on tag, link package artifacts
+#   deploy   -> mdbook -> GitLab Pages (master only)
+#
+# All Rust jobs run on Alpine + rustup; the toolchain pin in
+# rust-toolchain.toml is picked up automatically on first invocation.
+
 stages:
-    - deploy
+  - lint
+  - test
+  - package
+  - release
+  - deploy
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+variables:
+  CARGO_HOME: $CI_PROJECT_DIR/.cargo
+  RUSTUP_HOME: $CI_PROJECT_DIR/.rustup
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+  # Pinned versions of cargo-installed packaging tools. Bump to upgrade;
+  # `cargo install --version` is a no-op when the cached install matches.
+  CARGO_DEB_VERSION: "3.6.4"
+  CARGO_GENERATE_RPM_VERSION: "0.20.0"
+  CARGO_ZIGBUILD_VERSION: "0.20.1"
+  ALPINE_VERSION: "3.23"
+
+# Shared cache keyed on the lock + toolchain files. Same key across all
+# Rust jobs so they pool the registry/index/built-deps. Last writer wins
+# on cache upload — tolerated here since cargo's own incremental tracking
+# handles the diff cheaply on the next run.
+.cargo-cache:
+  cache:
+    key:
+      files:
+        - Cargo.lock
+        - rust-toolchain.toml
+    paths:
+      - .cargo/registry/cache
+      - .cargo/registry/index
+      - .cargo/bin
+      - .cargo/.crates.toml
+      - .cargo/.crates2.json
+      - .rustup
+      - target/
+
+.rust:
+  image: alpine:$ALPINE_VERSION
+  extends: .cargo-cache
+  before_script:
+    - apk add --no-cache build-base bash git rustup
+    - rustup-init -y --default-toolchain none --no-modify-path
+    - export PATH="$CARGO_HOME/bin:$PATH"
+    - rustup show
+
+lint:
+  extends: .rust
+  stage: lint
+  script:
+    - rustup component add rustfmt clippy
+    - cargo fmt --all --check
+    - RUSTDOCFLAGS="-Dwarnings" cargo doc --no-deps --workspace
+    - cargo clippy --workspace --all-targets -- -Dwarnings
+
+test:
+  extends: .rust
+  stage: test
+  script:
+    - cargo test --workspace
+
+package:
+  extends: .rust
+  stage: package
+  rules:
+    # Auto on tags — feeds the release job.
+    - if: $CI_COMMIT_TAG
+      when: on_success
+    # Manual button everywhere else (master, MRs) so you can verify
+    # packaging without cutting a tag. allow_failure keeps the pipeline
+    # green when nobody clicks.
+    - when: manual
+      allow_failure: true
+  before_script:
+    - !reference [.rust, before_script]
+    - apk add --no-cache zig zstd just zip
+    - cargo install --locked --version "$CARGO_ZIGBUILD_VERSION" cargo-zigbuild
+    - cargo install --locked --version "$CARGO_DEB_VERSION" cargo-deb
+    - cargo install --locked --version "$CARGO_GENERATE_RPM_VERSION" cargo-generate-rpm
+  script:
+    - just package
+  artifacts:
+    paths:
+      - target/dist/
+    # Linked from GitLab releases — keep them around indefinitely so
+    # the release page's download links don't 404 after a month.
+    expire_in: never
+
+# Tag-only. Reads the matching CHANGELOG section, then walks
+# target/dist/ to attach every artifact as a release asset link.
+release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v?\d+\.\d+\.\d+$/
+  needs:
+    - job: package
+      artifacts: true
+  script:
+    - apk add --no-cache bash gawk
+    - |
+      bash -c '
+      set -euo pipefail
+
+      version="${CI_COMMIT_TAG#v}"
+
+      # Pull the [version] section out of CHANGELOG.md. Fail loudly if
+      # missing — the release pipeline should not silently ship a release
+      # with no notes.
+      notes=$(awk -v ver="[$version]" "
+        /^## / && \$2 == ver { found=1; next }
+        /^## / && found { exit }
+        found { print }
+      " CHANGELOG.md)
+
+      if [ -z "$notes" ]; then
+        echo "ERROR: no CHANGELOG entry for $version" >&2
+        exit 1
+      fi
+
+      # Asset URLs use the per-ref artifact endpoint, which resolves to
+      # the latest job artifact for that tag — stable as long as the
+      # package job artifacts do not expire.
+      args=()
+      for f in target/dist/*; do
+        name=$(basename "$f")
+        url="${CI_PROJECT_URL}/-/jobs/artifacts/${CI_COMMIT_TAG}/raw/${f}?job=package"
+        args+=( --assets-link "{\"name\":\"$name\",\"url\":\"$url\"}" )
+      done
+
+      release-cli create \
+        --name "Release $CI_COMMIT_TAG" \
+        --tag-name "$CI_COMMIT_TAG" \
+        --description "$notes" \
+        "${args[@]}"
+      '
 
 pages:
-    image: alpine
-    stage: deploy
-    script:
-        - apk add mdbook
-        - mdbook build
-        - mv target/book public
-    artifacts:
-        paths:
-            - public
-    only:
-        - master
+  image: alpine
+  stage: deploy
+  script:
+    - apk add mdbook
+    - mdbook build
+    - mv target/book public
+  artifacts:
+    paths:
+      - public
+  only:
+    - master
