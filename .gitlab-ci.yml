@@ -31,7 +31,6 @@ variables:
   # `cargo install --version` is a no-op when the cached install matches.
   CARGO_DEB_VERSION: "3.6.4"
   CARGO_GENERATE_RPM_VERSION: "0.20.0"
-  CARGO_ZIGBUILD_VERSION: "0.20.1"
   ALPINE_VERSION: "3.23"
 
 # Shared cache keyed on the lock + toolchain files. Same key across all
@@ -91,8 +90,7 @@ package:
       allow_failure: true
   before_script:
     - !reference [.rust, before_script]
-    - apk add --no-cache zig zstd just zip tar
-    - cargo install --locked --version "$CARGO_ZIGBUILD_VERSION" cargo-zigbuild
+    - apk add --no-cache zig zstd just zip tar cargo-zigbuild
     - cargo install --locked --version "$CARGO_DEB_VERSION" cargo-deb
     - cargo install --locked --version "$CARGO_GENERATE_RPM_VERSION" cargo-generate-rpm
   script:
