@@ -19,8 +19,7 @@ stages:
 
 workflow:
   rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_BRANCH
     - if: $CI_COMMIT_TAG
 
 variables:
@@ -85,9 +84,9 @@ package:
     # Auto on tags — feeds the release job.
     - if: $CI_COMMIT_TAG
       when: on_success
-    # Manual button everywhere else (master, MRs) so you can verify
-    # packaging without cutting a tag. allow_failure keeps the pipeline
-    # green when nobody clicks.
+    # Manual button on branch pushes so you can verify packaging
+    # without cutting a tag. allow_failure keeps the pipeline green
+    # when nobody clicks.
     - when: manual
       allow_failure: true
   before_script:
@@ -157,6 +156,8 @@ release:
 pages:
   image: alpine
   stage: deploy
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
   script:
     - apk add mdbook
     - mdbook build
@@ -164,5 +165,3 @@ pages:
   artifacts:
     paths:
       - public
-  only:
-    - master
