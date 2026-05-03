@@ -190,6 +190,77 @@ what's broken and where to start.
    reference namespaces (gated on the excluded
    `lfstest-testutils` paths).
 
+## Roadmap
+
+Loose ordering for the deferred work. Each milestone is independent
+enough to ship on its own; rough effort is small (1-3 days), medium
+(1-2 weeks), large (multi-week).
+
+### Milestone 4 — Prune + fetch-recent retention (small/medium)
+
+Owns t-prune (14), t-prune-worktree (2), t-fetch-recent (6), parts
+of t-fetch. Implements `lfs.fetchrecentrefsdays`,
+`lfs.fetchrecentcommitsdays`, `lfs.fetchrecentremoterefs`,
+`lfs.pruneoffsetdays`, and `lfs.fetchexclude` honor in fetch /
+prune / fsck. One coherent design pass — picked first because the
+spec is crisp and there's no third-party protocol surface.
+
+### Milestone 5 — Smudge-side pointer extensions (small)
+
+Owns t-pointer 21-26, t-merge-driver, t-attributes, t-ext (~12
+tests). Smudge invokes registered extensions in reverse priority
+order, validates each output OID against the recorded `ext-N` hash,
+surfaces descriptive error on mismatch. Drops
+`SmudgeError::ExtensionsUnsupported`. Removes the clean-vs-smudge
+asymmetry and unblocks merge-driver later.
+
+### Milestone 6 — Credential ecosystem (medium, sliced)
+
+~40 tests across t-credentials, t-credentials-protect,
+t-credentials-no-prompt, t-askpass, t-extra-header, t-content-type,
+t-expired. Best done in independent slices:
+
+- **6a netrc** — `~/.netrc` fallback in `creds/`. Smallest.
+- **6b askpass** — `GIT_ASKPASS` / `core.askpass`. Medium.
+- **6c extra HTTP headers + content-type** — config-driven.
+- **6d per-URL credential config + multi-stage auth** —
+  `credential.<url>.helper`, `state[]` / `wwwauth[]` carrying.
+- **6e NTLM / Negotiate** — heaviest; defer until a real Windows AD
+  user surfaces.
+
+### Milestone 7 — Retry / Retry-After / rate-limit (small/medium)
+
+Owns t-batch-retries-ratelimit, t-batch-storage-retries,
+t-batch-storage-retries-ratelimit (15 tests). Honor server's
+Retry-After header, add backoff jitter, refine `is_retryable`
+classification. Lives in `transfer/`.
+
+### Milestone 8 — Custom transfer / SSH / tus (large)
+
+~28 tests across t-custom-transfers, t-standalone-file, t-ssh,
+t-batch-storage-upload-tus, t-multiple-remotes. Three independent
+adapters in `transfer/`:
+
+- **8a SSH `git-lfs-authenticate`** — server-discovery.md §SSH.
+  Unblocks self-hosted servers without HTTPS.
+- **8b Custom transfer agent protocol** — `docs/custom-transfers.md`.
+  Third-party byte-for-byte contract.
+- **8c Tus resumable uploads** — chunk + resume + finalize.
+
+### Milestone 9 — Unshipped commands (small batch)
+
+`merge-driver` (depends on M5), `completion`, `dedup`, `logs`,
+`ext`. Each is small in isolation — bundle as one focused pass.
+
+### Milestone 10 — Long-tail polish (ongoing)
+
+ls-files (`--include`/`--exclude`/`--deleted`/two-ref range/index
+scan), push (negative size message, batch error formatter,
+`pushInsteadOf`), checkout `--to <path> [--ours|--theirs]`, fetch
+`--recent` integration, install `--manual`, prune `--verify-remote`,
+fsck `<a>..<b>` range. Pluck individual items between bigger
+milestones rather than as a single pass.
+
 ## Open questions / things to flag before deep diving
 
 - Credential helper integration (keychain/wincred/git-credential) — what does
