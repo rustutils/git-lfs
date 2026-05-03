@@ -35,6 +35,7 @@ pub fn render_man(
     // the command (titles come from `cmd.get_name()`) and a version
     // (subcommands don't inherit the parent's, so set crate version).
     let cmd = cmd.name(page_name.to_owned()).version(git_lfs::VERSION);
+    let has_subcommands = cmd.get_subcommands().next().is_some();
     let man = clap_mangen::Man::new(cmd).section(section);
 
     let mut out = Vec::<u8>::new();
@@ -50,6 +51,13 @@ pub fn render_man(
     }
 
     man.render_options_section(&mut out)?;
+    // clap_mangen unconditionally emits a `.SH SUBCOMMANDS` header
+    // even when there are none, leaving an empty section on every
+    // leaf command's page. Only call it when subcommands actually
+    // exist (only `migrate` today).
+    if has_subcommands {
+        man.render_subcommands_section(&mut out)?;
+    }
 
     for (title, body_md) in extras.extra_sections {
         writeln!(out, ".SH {title}")?;

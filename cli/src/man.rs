@@ -207,6 +207,22 @@ const POST_MERGE: ManContent = ManContent {
     extra_sections: &[("SEE ALSO", include_str!("../man/post-merge/see_also.md"))],
 };
 
+const MIGRATE: ManContent = ManContent {
+    description: None,
+    extra_sections: &[
+        (
+            "INCLUDE AND EXCLUDE",
+            include_str!("../man/migrate/include_and_exclude.md"),
+        ),
+        (
+            "INCLUDE AND EXCLUDE REFERENCES",
+            include_str!("../man/migrate/include_and_exclude_references.md"),
+        ),
+        ("EXAMPLES", include_str!("../man/migrate/examples.md")),
+        ("SEE ALSO", include_str!("../man/migrate/see_also.md")),
+    ],
+};
+
 /// Look up the doc extras for `subcommand` (e.g. `"fetch"`,
 /// `"checkout"`). Pass `""` for the top-level `git-lfs` page.
 /// Returns a reference to [`ManContent::empty`] when there's no entry,
@@ -236,6 +252,7 @@ pub fn extras_for(subcommand: &str) -> &'static ManContent {
         "post-checkout" => &POST_CHECKOUT,
         "post-commit" => &POST_COMMIT,
         "post-merge" => &POST_MERGE,
+        "migrate" => &MIGRATE,
         _ => &EMPTY,
     }
 }

@@ -81,6 +81,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now wire into the lockable read-only enforcement
   (the post-commit page notes our gap vs. upstream's
   HEAD-only optimization).
+- `git-lfs-migrate(1)` and its three subcommands
+  (`import`, `export`, `info`) get upstream-faithful
+  descriptions and per-flag wording. The migrate parent
+  page also gets INCLUDE AND EXCLUDE (with the
+  migrate-specific glob semantics that differ from
+  gitignore form), INCLUDE AND EXCLUDE REFERENCES
+  (with the ASCII commit-graph diagram), EXAMPLES (8
+  representative invocations across all three modes),
+  and SEE ALSO sections. Man pages for commands with
+  subcommands now include a SUBCOMMANDS section listing
+  them.
 - Every man page and mdbook page now ends with a REPORTING BUGS
   section pointing at the project issue tracker and clarifying
   that this is the Rust port (so reports don't end up on the

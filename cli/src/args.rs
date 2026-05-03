@@ -700,8 +700,36 @@ pub struct UpdateArgs {
     pub manual: bool,
 }
 
-/// Analyze or rewrite history for LFS conversion. Phase 1 ships
-/// `info` only; `import` and `export` will land in subsequent phases.
+/// Migrate history to or from Git LFS
+///
+/// Convert files in a Git repository to or from Git LFS pointers, or
+/// summarize Git file sizes by file type. The `import` mode converts
+/// Git files (i.e. blobs) to Git LFS, the `export` mode does the
+/// reverse, and the `info` mode provides an informational summary
+/// useful for deciding which files to import or export.
+///
+/// In all modes, by default `git lfs migrate` operates only on the
+/// currently checked-out branch, and only on files added in commits
+/// which do not exist on any remote. Multiple options are available
+/// to override these defaults — see INCLUDE AND EXCLUDE REFERENCES.
+///
+/// When converting files to or from Git LFS, this command only
+/// changes your local repository and working copy, never any remotes.
+/// `import` and `export` are generally DESTRUCTIVE — they rewrite Git
+/// history, changing commits and generating new commit SHAs. (The
+/// exception is the `--no-rewrite` `import` sub-mode.) Always commit
+/// or stash any uncommitted work first, validate the result before
+/// pushing, and force-push the new history once you're satisfied.
+///
+/// For `info` and `import`, all file types are considered by default.
+/// In `import` you'll usually want filename patterns or `--fixup`;
+/// `export` requires at least one `--include` pattern. See INCLUDE
+/// AND EXCLUDE.
+///
+/// `git lfs migrate` will examine, create, and modify `.gitattributes`
+/// files as necessary. They are always assigned the default
+/// read/write permissions mode; symbolic links with that name halt
+/// the migration.
 #[derive(Args)]
 pub struct MigrateArgs {
     #[command(subcommand)]
@@ -715,10 +743,24 @@ pub enum MigrateCmd {
     Info(MigrateInfoArgs),
 }
 
-/// Rewrite history so files matching the include filter become LFS
-/// pointers. With `--no-rewrite`, history is preserved and one
-/// new commit is appended on top of HEAD with the named paths
-/// converted in place.
+/// Convert Git objects to Git LFS pointers
+///
+/// Migrate objects present in the Git history to pointer files
+/// tracked and stored with Git LFS. Adds entries for the converted
+/// file types to `.gitattributes`, creating those files if they
+/// don't exist — as if `git lfs track` had been run at the points
+/// in history where each type first appears.
+///
+/// With `--fixup`, examine existing `.gitattributes` files and
+/// convert only Git objects that should be tracked by Git LFS
+/// according to those rules but aren't yet.
+///
+/// With `--no-rewrite`, migrate objects to pointers in a single new
+/// commit on top of HEAD without rewriting history. The base
+/// `migrate` options (`--include-ref`, `--everything`, etc.) are
+/// ignored in this sub-mode, and the positional argument list
+/// changes from branches to a list of files. Files must be tracked
+/// by patterns already in `.gitattributes`.
 #[derive(Args)]
 pub struct MigrateImportArgs {
     // TODO(post-1.0): replace the manual --no-rewrite/--fixup/--above/
@@ -731,73 +773,112 @@ pub struct MigrateImportArgs {
     // --fixup cannot be combined", "Cannot use --everything with
     // --include-ref or --exclude-ref"). Worth taking once we're free
     // to update those assertions.
-    /// Without `--no-rewrite`: branches/refs to rewrite (empty =
-    /// current branch). With `--no-rewrite`: working-tree paths
-    /// to convert.
+    /// Branches to rewrite (default: the currently checked-out
+    /// branch). With `--no-rewrite`, instead a list of working-tree
+    /// files to convert. References prefixed with `^` are excluded.
     pub args: Vec<String>,
-    /// Walk every local branch and tag.
-    #[arg(long)]
-    pub everything: bool,
-    /// Convert paths matching this glob (repeatable). Required
-    /// unless `--above` is set or `--no-rewrite` is given.
+
+    /// Convert paths matching this glob (repeatable, comma-delimited).
+    /// Required unless `--above` is set or `--no-rewrite` is given.
     #[arg(short = 'I', long = "include")]
     pub include: Vec<String>,
-    /// Exclude paths matching this glob (repeatable).
+
+    /// Exclude paths matching this glob (repeatable, comma-delimited).
     #[arg(short = 'X', long = "exclude")]
     pub exclude: Vec<String>,
+
     /// Restrict the rewrite to commits reachable from these refs.
     /// Repeatable.
     #[arg(long = "include-ref")]
     pub include_ref: Vec<String>,
+
     /// Exclude commits reachable from these refs. Repeatable.
     #[arg(long = "exclude-ref")]
     pub exclude_ref: Vec<String>,
-    /// Only convert files at least this large (e.g. `1mb`,
-    /// `500k`).
+
+    /// Consider all commits reachable from any local or remote ref.
+    ///
+    /// Only local refs are updated even with `--everything`; remote
+    /// refs stay synchronized with their remote.
+    #[arg(long)]
+    pub everything: bool,
+
+    /// Only migrate files whose individual filesize is above the
+    /// given size (e.g. `1b`, `20 MB`, `3 TiB`).
+    ///
+    /// Cannot be used with `--include`, `--exclude`, or `--fixup`.
     #[arg(long, default_value = "")]
     pub above: String,
-    /// Don't rewrite history. Read named paths from the working
-    /// tree, convert in place, append one new commit on top of
-    /// HEAD.
+
+    /// Migrate objects in a new commit on top of HEAD without
+    /// rewriting Git history.
+    ///
+    /// Switches to a different argument list (positional args become
+    /// files, not branches) and ignores the core `migrate` options
+    /// (`--include-ref`, `--everything`, etc.).
     #[arg(long)]
     pub no_rewrite: bool,
+
     /// Commit message for the `--no-rewrite` commit.
+    ///
+    /// If omitted, a message is generated from the file arguments.
     #[arg(short, long)]
     pub message: Option<String>,
-    /// Skip the prompt confirming history rewrite. Currently we
-    /// never prompt, so this is accepted as a no-op for parity
-    /// with upstream's CLI surface.
-    #[arg(long)]
-    pub yes: bool,
-    /// Walk every commit and convert files that *should* be LFS
-    /// pointers (per their commit's `.gitattributes`) but
-    /// currently aren't. Mutually exclusive with `--include`,
-    /// `--exclude`, `--no-rewrite`.
+
+    /// Infer `--include` and `--exclude` filters per-commit from the
+    /// repository's `.gitattributes` files.
+    ///
+    /// Imports filepaths that should be tracked by Git LFS but
+    /// aren't yet pointers. Incompatible with explicitly given
+    /// `--include` / `--exclude` filters.
     #[arg(long)]
     pub fixup: bool,
-    /// Don't fetch missing LFS objects from the remote before the
-    /// rewrite — accepted as a no-op since we never auto-fetch
-    /// today.
-    #[arg(long)]
-    pub skip_fetch: bool,
-    /// Write a comma-separated `<old>,<new>` mapping of every
-    /// rewritten commit OID to the named file.
+
+    /// Write a CSV of `<OLD-SHA>,<NEW-SHA>` for every rewritten
+    /// commit to the named file.
     #[arg(long = "object-map")]
     pub object_map: Option<PathBuf>,
-    /// Print a per-commit progress line as the rewrite walks
-    /// history.
+
+    /// Print the commit OID and filename of migrated files to
+    /// standard output.
     #[arg(long)]
     pub verbose: bool,
+
     /// Remote to consult when fetching missing LFS objects (default
     /// `origin`).
     #[arg(long)]
     pub remote: Option<String>,
+
+    /// Don't refresh the known set of remote references before
+    /// determining the set of "un-pushed" commits to migrate.
+    ///
+    /// Has no effect when combined with `--include-ref` or
+    /// `--exclude-ref`.
+    #[arg(long)]
+    pub skip_fetch: bool,
+
+    /// Assume a yes answer to any prompts, permitting noninteractive
+    /// use.
+    ///
+    /// Currently we don't prompt for any reason, so this is accepted
+    /// as a no-op for upstream parity.
+    #[arg(long)]
+    pub yes: bool,
 }
 
-/// Inverse of import: rewrite history so LFS pointers become the
-/// raw bytes they reference. Requires the LFS objects to already
-/// be in the local store — `git lfs fetch` first if not. Pointers
-/// whose objects are missing are left as-is.
+/// Convert Git LFS pointers to Git objects
+///
+/// Migrate Git LFS pointer files present in the Git history out of
+/// Git LFS, converting them back into their corresponding object
+/// files. Files matching the `--include` patterns are removed from
+/// Git LFS; files matching `--exclude` retain their LFS status.
+/// Modifies `.gitattributes` to set/unset the relevant filepath
+/// patterns.
+///
+/// At least one `--include` pattern is required. Objects not present
+/// in the local LFS store are downloaded from the `--remote`
+/// (defaults to `origin`). Pointers whose objects can't be fetched
+/// are left as-is.
 #[derive(Args)]
 pub struct MigrateExportArgs {
     // TODO(post-1.0): make --include a required clap arg (it is required
@@ -808,51 +889,79 @@ pub struct MigrateExportArgs {
     // not provided: --include <INCLUDE>" would be a strict UX win but
     // a behavioral diff. Also see the shared --everything/positional
     // check in migrate/mod.rs::resolve_refs.
-    /// Branches / refs to rewrite. Empty = current branch.
+    /// Branches to rewrite (default: the currently checked-out
+    /// branch). References prefixed with `^` are excluded.
     pub branches: Vec<String>,
-    /// Walk every local branch and tag.
-    #[arg(long)]
-    pub everything: bool,
-    /// Convert pointers at paths matching this glob (repeatable).
-    /// Required.
+
+    /// Convert pointers at paths matching this glob (repeatable,
+    /// comma-delimited). Required — at least one must be given.
     #[arg(short = 'I', long = "include")]
     pub include: Vec<String>,
-    /// Don't convert pointers at paths matching this glob.
+
+    /// Don't convert pointers at paths matching this glob
+    /// (repeatable, comma-delimited).
     #[arg(short = 'X', long = "exclude")]
     pub exclude: Vec<String>,
+
     /// Restrict the rewrite to commits reachable from these refs.
     /// Repeatable.
     #[arg(long = "include-ref")]
     pub include_ref: Vec<String>,
+
     /// Exclude commits reachable from these refs. Repeatable.
     #[arg(long = "exclude-ref")]
     pub exclude_ref: Vec<String>,
-    /// Don't fetch missing LFS objects from the remote before the
-    /// rewrite — leave their pointers in place.
+
+    /// Consider all commits reachable from any local or remote ref.
+    ///
+    /// Only local refs are updated even with `--everything`; remote
+    /// refs stay synchronized with their remote.
     #[arg(long)]
-    pub skip_fetch: bool,
-    /// Write a comma-separated `<old>,<new>` mapping of every
-    /// rewritten commit OID to the named file. Useful as input to
-    /// `git filter-repo` or other downstream tools.
+    pub everything: bool,
+
+    /// Write a CSV of `<OLD-SHA>,<NEW-SHA>` for every rewritten
+    /// commit to the named file.
+    ///
+    /// Useful as input to `git filter-repo` or other downstream
+    /// tools.
     #[arg(long = "object-map")]
     pub object_map: Option<PathBuf>,
-    /// Print a per-commit progress line as the rewrite walks
-    /// history.
+
+    /// Print the commit OID and filename of migrated files to
+    /// standard output.
     #[arg(long)]
     pub verbose: bool,
-    /// Remote to consult when fetching missing LFS objects (default
-    /// `origin`).
+
+    /// Download LFS objects from this remote during the export.
+    /// Defaults to `origin`.
     #[arg(long)]
     pub remote: Option<String>,
-    /// Skip the prompt confirming history rewrite. Currently we
-    /// never prompt, so this is accepted as a no-op for parity
-    /// with upstream's CLI surface.
+
+    /// Don't refresh the known set of remote references before the
+    /// rewrite.
+    #[arg(long)]
+    pub skip_fetch: bool,
+
+    /// Assume a yes answer to any prompts, permitting noninteractive
+    /// use.
+    ///
+    /// Currently we don't prompt for any reason, so this is accepted
+    /// as a no-op for upstream parity.
     #[arg(long)]
     pub yes: bool,
 }
 
-/// Walk history and report file extensions by total size.
-/// Read-only — no objects or history change.
+/// Show information about repository size
+///
+/// Summarize the sizes of file objects present in the Git history,
+/// grouped by filename extension. Read-only — no objects or history
+/// change.
+///
+/// Existing Git LFS pointers are followed by default (the size of
+/// the referenced objects is totaled in a separate "LFS Objects"
+/// line). Use `--pointers=ignore` to skip pointers entirely, or
+/// `--pointers=no-follow` to count the pointer-text size as if the
+/// pointers were regular files (the older Git LFS behavior).
 #[derive(Args)]
 pub struct MigrateInfoArgs {
     // TODO(post-1.0): replace the manual --everything/--include-ref/
@@ -865,52 +974,84 @@ pub struct MigrateInfoArgs {
     // --pointers=follow"). The value-conditional --pointers checks
     // ("=follow" / "=no-follow") may not all collapse cleanly to
     // declarative clap rules.
-    /// Branches / refs to scan. Empty = current branch.
+    /// Branches to scan (default: the currently checked-out branch).
+    /// References prefixed with `^` are excluded.
     pub branches: Vec<String>,
-    /// Walk every local branch and tag.
-    #[arg(long)]
-    pub everything: bool,
-    /// Only include paths matching this glob (repeatable).
+
+    /// Only include paths matching this glob (repeatable,
+    /// comma-delimited).
     #[arg(short = 'I', long = "include")]
     pub include: Vec<String>,
-    /// Exclude paths matching this glob (repeatable).
+
+    /// Exclude paths matching this glob (repeatable, comma-delimited).
     #[arg(short = 'X', long = "exclude")]
     pub exclude: Vec<String>,
+
     /// Restrict the scan to commits reachable from these refs.
     /// Repeatable.
     #[arg(long = "include-ref")]
     pub include_ref: Vec<String>,
+
     /// Exclude commits reachable from these refs. Repeatable.
     #[arg(long = "exclude-ref")]
     pub exclude_ref: Vec<String>,
-    /// Only count files at least this large (e.g. `1mb`, `500k`).
+
+    /// Consider all commits reachable from any local or remote ref.
+    #[arg(long)]
+    pub everything: bool,
+
+    /// Only count files whose individual filesize is above the given
+    /// size (e.g. `1b`, `20 MB`, `3 TiB`).
+    ///
+    /// File-extension groups whose largest file is below `--above`
+    /// don't appear in the output.
     #[arg(long, default_value = "")]
     pub above: String,
-    /// Maximum extension rows to show.
+
+    /// Display the top N entries, ordered by total file count.
+    ///
+    /// Default 5. When existing Git LFS objects are found, an extra
+    /// "LFS Objects" line is output in addition to the top N
+    /// entries (unless `--pointers` changes this).
     #[arg(long, default_value_t = 5)]
     pub top: usize,
-    /// How to handle existing LFS pointer blobs:
-    /// `follow` (default), `ignore`, or `no-follow`. Defaults
-    /// based on `--fixup`: `ignore` with the flag, `follow`
-    /// without.
+
+    /// How to handle existing LFS pointer blobs.
+    ///
+    /// `follow` (default): summarize referenced objects in a separate
+    /// "LFS Objects" line. `ignore`: skip pointers entirely.
+    /// `no-follow`: count pointer-text size as if pointers were
+    /// regular files (the older Git LFS behavior). When `--fixup` is
+    /// given, defaults to `ignore`.
     #[arg(long)]
     pub pointers: Option<String>,
-    /// Force the size unit for byte counts (`b`, `kb`, `mb`,
-    /// `gb`, `tb`, `pb`). Auto-scaled when omitted.
+
+    /// Format byte quantities in this unit.
+    ///
+    /// Valid units: `b, kib, mib, gib, tib, pib` (IEC) or
+    /// `b, kb, mb, gb, tb, pb` (SI). Auto-scaled when omitted.
     #[arg(long)]
     pub unit: Option<String>,
-    /// Don't fetch missing LFS objects from the remote — accepted
-    /// as a no-op since we don't auto-fetch today.
+
+    /// Infer `--include` and `--exclude` filters per-commit from the
+    /// repository's `.gitattributes` files.
+    ///
+    /// Counts filepaths that should be tracked by Git LFS but aren't
+    /// yet pointers. Incompatible with explicit `--include` /
+    /// `--exclude` filters and with `--pointers` settings other than
+    /// `ignore`. Implies `--pointers=ignore` if not set.
+    #[arg(long)]
+    pub fixup: bool,
+
+    /// Don't refresh the known set of remote references before the
+    /// scan.
     #[arg(long)]
     pub skip_fetch: bool,
-    /// Remote to consult (no-op for now; reserved for the
+
+    /// Remote to consult (currently a no-op; reserved for the
     /// auto-fetch path).
     #[arg(long)]
     pub remote: Option<String>,
-    /// Walk history looking for files that *should* be LFS but
-    /// aren't (per `.gitattributes`). Implies `--pointers=ignore`.
-    #[arg(long)]
-    pub fixup: bool,
 }
 
 /// Populate working copy with real content from Git LFS files.

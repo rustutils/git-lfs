@@ -43,7 +43,7 @@ Git LFS — large file storage for git
 - `env` — Display the Git LFS environment
 - `ext` — List the configured LFS pointer extensions
 - `update` — Update Git hooks
-- `migrate` — Analyze or rewrite history for LFS conversion. Phase 1 ships `info` only; `import` and `export` will land in subsequent phases
+- `migrate` — Migrate history to or from Git LFS
 - `checkout` — Populate working copy with real content from Git LFS files
 - `prune` — Delete old LFS files from local storage
 - `fsck` — Check Git LFS files for consistency
