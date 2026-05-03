@@ -92,6 +92,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and SEE ALSO sections. Man pages for commands with
   subcommands now include a SUBCOMMANDS section listing
   them.
+- xtask now recurses into nested subcommands, generating
+  a man page and mdbook page for each one — the migrate
+  subcommands now have their own pages
+  (`git-lfs-migrate-import(1)` etc.), so the SUBCOMMANDS
+  cross-references on `git-lfs-migrate(1)` resolve to
+  real pages instead of broken ones.
 - Every man page and mdbook page now ends with a REPORTING BUGS
   section pointing at the project issue tracker and clarifying
   that this is the Rust port (so reports don't end up on the

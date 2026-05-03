@@ -60,22 +60,76 @@ fn synthetic_command(page: &SyntheticPage) -> clap::Command {
         .disable_version_flag(true)
 }
 
-/// Generate one `git-lfs-<sub>.1` per subcommand plus a top-level
-/// `git-lfs.1`, written to `out`. Creates `out` if missing.
+/// One generated page from the clap tree: top-level `git-lfs`, a
+/// first-level subcommand like `git-lfs-fetch`, or a nested
+/// subcommand like `git-lfs-migrate-import`.
+struct CommandPage {
+    /// On-disk page name and the value used in the `.TH` title /
+    /// markdown title — e.g. `"git-lfs-migrate-import"`.
+    page_name: String,
+    /// Lookup key handed to [`extras_for`]. Empty for the top-level
+    /// `git-lfs` page; otherwise the dash-joined chain after
+    /// `git-lfs-` (e.g. `"migrate-import"`). Mirrors the on-disk
+    /// layout of `cli/man/<key>/...`.
+    extras_key: String,
+    /// Owned clone of the clap subcommand this page renders.
+    cmd: clap::Command,
+}
+
+/// Walk the clap tree and collect every page we should emit.
+/// Skips the auto-injected `help` subcommand clap appends to any
+/// command that has subcommands — it's an interaction noun, not a
+/// real command, and clap_mangen would render an unhelpful page
+/// for it.
+fn command_pages(root: &clap::Command) -> Vec<CommandPage> {
+    let mut out = Vec::new();
+    out.push(CommandPage {
+        page_name: "git-lfs".to_owned(),
+        extras_key: String::new(),
+        cmd: root.clone(),
+    });
+    collect_subcommands(root, "git-lfs", "", &mut out);
+    out
+}
+
+fn collect_subcommands(
+    cmd: &clap::Command,
+    page_name: &str,
+    extras_key: &str,
+    out: &mut Vec<CommandPage>,
+) {
+    for sub in cmd.get_subcommands() {
+        let sub_name = sub.get_name();
+        if sub_name == "help" {
+            continue;
+        }
+        let child_page = format!("{page_name}-{sub_name}");
+        let child_key = if extras_key.is_empty() {
+            sub_name.to_owned()
+        } else {
+            format!("{extras_key}-{sub_name}")
+        };
+        out.push(CommandPage {
+            page_name: child_page.clone(),
+            extras_key: child_key.clone(),
+            cmd: sub.clone(),
+        });
+        collect_subcommands(sub, &child_page, &child_key, out);
+    }
+}
+
+/// Generate one `git-lfs-<sub>.1` per subcommand (recursing into
+/// nested subcommands like `git-lfs-migrate-import.1`), plus a
+/// top-level `git-lfs.1`, plus the synthetic pages from
+/// `SYNTHETIC_PAGES`. Creates `out` if missing.
 pub fn gen_man(out: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(out)?;
     let root = Cli::command();
 
-    let path = out.join("git-lfs.1");
-    let bytes = render::render_man("git-lfs", root.clone(), extras_for(""), "1")?;
-    std::fs::write(&path, bytes)?;
-    eprintln!("wrote {}", path.display());
-
-    for sub in root.get_subcommands() {
-        let name = sub.get_name().to_owned();
-        let page_name = format!("git-lfs-{name}");
-        let path = out.join(format!("{page_name}.1"));
-        let bytes = render::render_man(&page_name, sub.clone(), extras_for(&name), "1")?;
+    for page in command_pages(&root) {
+        let path = out.join(format!("{}.1", page.page_name));
+        let bytes =
+            render::render_man(&page.page_name, page.cmd, extras_for(&page.extras_key), "1")?;
         std::fs::write(&path, bytes)?;
         eprintln!("wrote {}", path.display());
     }
@@ -94,22 +148,17 @@ pub fn gen_man(out: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Generate one `git-lfs-<sub>.md` per subcommand plus a top-level
-/// `git-lfs.md`, written to `out`. Creates `out` if missing.
+/// Generate one `git-lfs-<sub>.md` per subcommand (recursing into
+/// nested subcommands like `git-lfs-migrate-import.md`), plus a
+/// top-level `git-lfs.md`, plus the synthetic pages from
+/// `SYNTHETIC_PAGES`. Creates `out` if missing.
 pub fn gen_md(out: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(out)?;
     let root = Cli::command();
 
-    let path = out.join("git-lfs.md");
-    let body = render::render_md("git-lfs", &root, extras_for(""));
-    std::fs::write(&path, body)?;
-    eprintln!("wrote {}", path.display());
-
-    for sub in root.get_subcommands() {
-        let name = sub.get_name().to_owned();
-        let page_name = format!("git-lfs-{name}");
-        let path = out.join(format!("{page_name}.md"));
-        let body = render::render_md(&page_name, sub, extras_for(&name));
+    for page in command_pages(&root) {
+        let path = out.join(format!("{}.md", page.page_name));
+        let body = render::render_md(&page.page_name, &page.cmd, extras_for(&page.extras_key));
         std::fs::write(&path, body)?;
         eprintln!("wrote {}", path.display());
     }
