@@ -72,6 +72,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notes that `git lfs clone` no longer offers a
   meaningful speedup over plain `git clone` (which
   parallelizes the smudge filter on modern Git).
+- `git-lfs-pre-push(1)`, `git-lfs-post-checkout(1)`,
+  `git-lfs-post-commit(1)`, and `git-lfs-post-merge(1)`
+  get upstream-faithful descriptions and SEE ALSO
+  sections. Adds `-d` (`--dry-run`) on pre-push for
+  parity. The post-* hook docstrings previously claimed
+  "no-op stub"; corrected to reflect that all three
+  now wire into the lockable read-only enforcement
+  (the post-commit page notes our gap vs. upstream's
+  HEAD-only optimization).
 - Every man page and mdbook page now ends with a REPORTING BUGS
   section pointing at the project issue tracker and clarifying
   that this is the Rust port (so reports don't end up on the

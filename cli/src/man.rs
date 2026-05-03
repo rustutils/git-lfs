@@ -187,6 +187,26 @@ const CLONE: ManContent = ManContent {
     extra_sections: &[("SEE ALSO", include_str!("../man/clone/see_also.md"))],
 };
 
+const PRE_PUSH: ManContent = ManContent {
+    description: None,
+    extra_sections: &[("SEE ALSO", include_str!("../man/pre-push/see_also.md"))],
+};
+
+const POST_CHECKOUT: ManContent = ManContent {
+    description: None,
+    extra_sections: &[("SEE ALSO", include_str!("../man/post-checkout/see_also.md"))],
+};
+
+const POST_COMMIT: ManContent = ManContent {
+    description: None,
+    extra_sections: &[("SEE ALSO", include_str!("../man/post-commit/see_also.md"))],
+};
+
+const POST_MERGE: ManContent = ManContent {
+    description: None,
+    extra_sections: &[("SEE ALSO", include_str!("../man/post-merge/see_also.md"))],
+};
+
 /// Look up the doc extras for `subcommand` (e.g. `"fetch"`,
 /// `"checkout"`). Pass `""` for the top-level `git-lfs` page.
 /// Returns a reference to [`ManContent::empty`] when there's no entry,
@@ -212,6 +232,10 @@ pub fn extras_for(subcommand: &str) -> &'static ManContent {
         "clean" => &CLEAN,
         "filter-process" => &FILTER_PROCESS,
         "clone" => &CLONE,
+        "pre-push" => &PRE_PUSH,
+        "post-checkout" => &POST_CHECKOUT,
+        "post-commit" => &POST_COMMIT,
+        "post-merge" => &POST_MERGE,
         _ => &EMPTY,
     }
 }

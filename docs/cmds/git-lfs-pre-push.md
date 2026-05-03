@@ -2,7 +2,7 @@
 
 ## Name
 
-`git-lfs-pre-push` — Git pre-push hook entry point — not typically invoked by hand. Reads `<local-ref> <local-sha> <remote-ref> <remote-sha>` lines from stdin and uploads the LFS objects newly reachable from each `<local-sha>`
+`git-lfs-pre-push` — Git pre-push hook implementation
 
 ## Synopsis
 
@@ -12,7 +12,11 @@ git-lfs-pre-push [OPTIONS] <REMOTE> [URL]
 
 ## Description
 
-Git pre-push hook entry point — not typically invoked by hand. Reads `<local-ref> <local-sha> <remote-ref> <remote-sha>` lines from stdin and uploads the LFS objects newly reachable from each `<local-sha>`
+Git pre-push hook implementation
+
+Respond to Git pre-push events. Reads the range of commits from stdin in the form `<local-ref> <local-sha1> <remote-ref> <remote-sha1>`, takes the remote name and URL as arguments, and uploads any Git LFS objects associated with those commits to the Git LFS API.
+
+When pushing a new branch, the list of Git objects considered is every object reachable from the new branch. When deleting a branch, no LFS objects are pushed.
 
 ## Options
 
@@ -22,12 +26,16 @@ Git pre-push hook entry point — not typically invoked by hand. Reads `<local-r
     Name of the remote being pushed to
 
 - `<URL>`
-    URL of the remote (informational; we use `lfs.url` config)
+    URL of the remote (informational; we use the `lfs.url` config)
 
 ### Flags
 
-- `--dry-run`
-    List the objects that would be pushed without actually uploading them
+- `-d`, `--dry-run`
+    Print the files that would be pushed, without actually pushing them
+
+## See also
+
+[git-lfs-clean(1)](./git-lfs-clean.md), [git-lfs-push(1)](./git-lfs-push.md).
 
 ## Reporting bugs
 

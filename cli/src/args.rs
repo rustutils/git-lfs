@@ -536,42 +536,73 @@ pub struct CloneArgs {
     pub args: Vec<String>,
 }
 
-/// Git post-checkout hook entry point. Receives `<prev-sha>
-/// <post-sha> <flag>` (flag is "1" if HEAD moved). Currently a
-/// no-op stub — exists so installed hook scripts don't fail. Real
-/// behavior arrives with `track --lockable`.
+/// Git post-checkout hook implementation
+///
+/// Respond to Git post-checkout events. Git invokes this hook with
+/// `<rev-before> <ref-after> <is-branch-checkout>`. We make sure that
+/// any files which are marked as lockable by `git lfs track` are
+/// read-only in the working copy, if not currently locked by the
+/// local user.
 #[derive(Args)]
 pub struct PostCheckoutArgs {
+    /// Positional arguments passed by git. Not normally invoked by
+    /// hand.
     pub args: Vec<String>,
 }
 
-/// Git post-commit hook entry point. No arguments. Currently a
-/// no-op stub.
+/// Git post-commit hook implementation
+///
+/// Respond to Git post-commit events. Like `git lfs post-merge`, we
+/// make sure that any files which are marked as lockable by
+/// `git lfs track` are read-only in the working copy, if not
+/// currently locked by the local user.
+///
+/// Upstream optimizes by only checking files changed in HEAD; we
+/// currently scan the full work tree on every commit. The result is
+/// the same, but slower on large repositories.
 #[derive(Args)]
 pub struct PostCommitArgs {
+    /// Positional arguments passed by git. Not normally invoked by
+    /// hand.
     pub args: Vec<String>,
 }
 
-/// Git post-merge hook entry point. Receives `<squash-flag>`.
-/// Currently a no-op stub.
+/// Git post-merge hook implementation
+///
+/// Respond to Git post-merge events. Git invokes this hook with
+/// `<is-squash>`. We make sure that any files which are marked as
+/// lockable by `git lfs track` are read-only in the working copy, if
+/// not currently locked by the local user.
 #[derive(Args)]
 pub struct PostMergeArgs {
+    /// Positional arguments passed by git. Not normally invoked by
+    /// hand.
     pub args: Vec<String>,
 }
 
-/// Git pre-push hook entry point — not typically invoked by hand.
-/// Reads `<local-ref> <local-sha> <remote-ref> <remote-sha>` lines
-/// from stdin and uploads the LFS objects newly reachable from each
-/// `<local-sha>`.
+/// Git pre-push hook implementation
+///
+/// Respond to Git pre-push events. Reads the range of commits from
+/// stdin in the form `<local-ref> <local-sha1> <remote-ref>
+/// <remote-sha1>`, takes the remote name and URL as arguments, and
+/// uploads any Git LFS objects associated with those commits to the
+/// Git LFS API.
+///
+/// When pushing a new branch, the list of Git objects considered is
+/// every object reachable from the new branch. When deleting a
+/// branch, no LFS objects are pushed.
 #[derive(Args)]
 pub struct PrePushArgs {
     /// Name of the remote being pushed to.
     pub remote: String,
-    /// URL of the remote (informational; we use `lfs.url` config).
+
+    /// URL of the remote (informational; we use the `lfs.url`
+    /// config).
     pub url: Option<String>,
-    /// List the objects that would be pushed without actually
-    /// uploading them.
-    #[arg(long)]
+
+    /// Print the files that would be pushed, without actually
+    /// pushing them.
+    #[arg(short, long)]
     pub dry_run: bool,
 }
 

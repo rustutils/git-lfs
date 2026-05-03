@@ -2,7 +2,7 @@
 
 ## Name
 
-`git-lfs-post-checkout` — Git post-checkout hook entry point. Receives `<prev-sha> <post-sha> <flag>` (flag is "1" if HEAD moved). Currently a no-op stub — exists so installed hook scripts don't fail. Real behavior arrives with `track --lockable`
+`git-lfs-post-checkout` — Git post-checkout hook implementation
 
 ## Synopsis
 
@@ -12,13 +12,20 @@ git-lfs-post-checkout [ARGS]...
 
 ## Description
 
-Git post-checkout hook entry point. Receives `<prev-sha> <post-sha> <flag>` (flag is "1" if HEAD moved). Currently a no-op stub — exists so installed hook scripts don't fail. Real behavior arrives with `track --lockable`
+Git post-checkout hook implementation
+
+Respond to Git post-checkout events. Git invokes this hook with `<rev-before> <ref-after> <is-branch-checkout>`. We make sure that any files which are marked as lockable by `git lfs track` are read-only in the working copy, if not currently locked by the local user.
 
 ## Options
 
 ### Arguments
 
 - `<ARGS>`
+    Positional arguments passed by git. Not normally invoked by hand
+
+## See also
+
+[git-lfs-track(1)](./git-lfs-track.md).
 
 ## Reporting bugs
 
