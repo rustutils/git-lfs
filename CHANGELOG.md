@@ -148,6 +148,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `git lfs ls-files -- --all` now hints at the likely intended
   `git lfs ls-files --all --` instead of silently scanning HEAD
   for a ref named `--all`.
+- `git lfs migrate info --unit=<unit>` now formats every row's
+  byte count as a fractional count of the requested unit
+  (`b`, `kb`, `mb`, `gb`, `tb`, `pb`) instead of being silently
+  ignored. Bare unit suffixes (`--unit=kb`) are accepted as
+  shorthand for `--unit=1kb`.
 
 ## [0.4.0] - 2026-05-02
 

@@ -248,10 +248,16 @@ pub fn parse_size(s: &str) -> Result<u64, MigrateError> {
     } else {
         (lower, 1u64)
     };
-    let num: f64 = num_str
-        .trim()
-        .parse()
-        .map_err(|_| MigrateError::BadSize(s.to_owned()))?;
+    // Bare unit ("kb", "mb", ...) means 1 of that unit. Lets the
+    // `--unit=kb` form work without having to write `--unit=1kb`.
+    let trimmed_num = num_str.trim();
+    let num: f64 = if trimmed_num.is_empty() {
+        1.0
+    } else {
+        trimmed_num
+            .parse()
+            .map_err(|_| MigrateError::BadSize(s.to_owned()))?
+    };
     if num < 0.0 {
         return Err(MigrateError::BadSize(s.to_owned()));
     }
@@ -270,6 +276,16 @@ pub(super) fn humanize(n: u64) -> String {
         i += 1;
     }
     format!("{value:.2} {}", UNITS[i])
+}
+
+/// Format `n` as a fractional count of `unit`-byte chunks. Used when
+/// the user passes `--unit=kb|mb|...` to `migrate info` and wants
+/// every row reported in the same unit instead of per-row auto-scaled.
+/// Unit suffix is omitted — upstream prints the unit once in the table
+/// header, leaving rows as bare numbers.
+pub(super) fn humanize_with_unit(n: u64, unit: u64) -> String {
+    let value = n as f64 / unit.max(1) as f64;
+    format!("{value:.1}")
 }
 
 #[cfg(test)]

@@ -11,7 +11,8 @@ use git_lfs_git::{CatFileBatch, CatFileBatchCheck, CatFileHeader, rev_list};
 use git_lfs_pointer::{MAX_POINTER_SIZE, Pointer};
 
 use super::{
-    MigrateError, RefSelection, build_globset, ext_group, humanize, path_matches, resolve_refs,
+    MigrateError, RefSelection, build_globset, ext_group, humanize, humanize_with_unit,
+    path_matches, resolve_refs,
 };
 
 /// How `migrate info` treats blobs that look like LFS pointers.
@@ -39,9 +40,9 @@ pub struct InfoOptions {
     pub above: u64,
     pub top: usize,
     pub pointers: PointerMode,
-    /// Force the byte-count unit. Parsed from `--unit=kb|mb|...` but
-    /// not yet honored — see `tests/SCOREBOARD.md` t-migrate-info 17.
-    #[allow(dead_code)]
+    /// Force the byte-count unit. When `Some`, every row's size is
+    /// reported as a fractional count of this many bytes (parsed from
+    /// `--unit=kb|mb|...`). When `None`, sizes are auto-scaled per row.
     pub unit: Option<u64>,
     pub fixup: bool,
 }
@@ -219,10 +220,10 @@ fn print_table(by_ext: &HashMap<String, Entry>, lfs: &Entry, opts: &InfoOptions)
 
     let mut formatted: Vec<(String, String, String, String, bool)> = Vec::new();
     for (qual, entry) in &rows {
-        formatted.push(format_row(qual, entry, false));
+        formatted.push(format_row(qual, entry, false, opts.unit));
     }
     if lfs.total > 0 {
-        formatted.push(format_row(LFS_GROUP, lfs, true));
+        formatted.push(format_row(LFS_GROUP, lfs, true, opts.unit));
     }
 
     let max_qual = formatted.iter().map(|r| r.0.len()).max().unwrap_or(0);
@@ -252,20 +253,29 @@ fn print_table(by_ext: &HashMap<String, Entry>, lfs: &Entry, opts: &InfoOptions)
     }
 }
 
-fn format_row(qual: &str, entry: &Entry, separate: bool) -> (String, String, String, String, bool) {
+fn format_row(
+    qual: &str,
+    entry: &Entry,
+    separate: bool,
+    unit: Option<u64>,
+) -> (String, String, String, String, bool) {
     let pct = if entry.total > 0 {
         100.0 * (entry.total_above as f64) / (entry.total as f64)
     } else {
         0.0
     };
+    let size = match unit {
+        Some(u) => humanize_with_unit(entry.bytes_above, u),
+        None => humanize(entry.bytes_above),
+    };
     // `file ` (trailing space) keeps singular and plural tokens at
     // the same character width — upstream right-pads the noun so
     // adjacent rows line up regardless of count.
-    let unit = if entry.total == 1 { "file " } else { "files" };
+    let noun = if entry.total == 1 { "file " } else { "files" };
     (
         qual.to_owned(),
-        humanize(entry.bytes_above),
-        format!("{}/{} {unit}", entry.total_above, entry.total),
+        size,
+        format!("{}/{} {noun}", entry.total_above, entry.total),
         format!("{pct:.0}%"),
         separate,
     )
