@@ -143,8 +143,9 @@ package:
     # the release page's download links don't 404 after a month.
     expire_in: never
 
-# Tag-only. Reads the matching CHANGELOG section, then walks
-# target/dist/ to attach every artifact as a release asset link.
+# Tag-only. scripts/release.rb reads the matching CHANGELOG block,
+# attaches every artifact under target/dist/ as a release asset link,
+# and shells out to release-cli. See the script for details.
 release:
   stage: release
   image: registry.gitlab.com/gitlab-org/release-cli:latest
@@ -154,43 +155,8 @@ release:
     - job: package
       artifacts: true
   script:
-    - apk add --no-cache bash gawk
-    - |
-      bash -c '
-      set -euo pipefail
-
-      version="${CI_COMMIT_TAG#v}"
-
-      # Pull the [version] section out of CHANGELOG.md. Fail loudly if
-      # missing — the release pipeline should not silently ship a release
-      # with no notes.
-      notes=$(awk -v ver="[$version]" "
-        /^## / && \$2 == ver { found=1; next }
-        /^## / && found { exit }
-        found { print }
-      " CHANGELOG.md)
-
-      if [ -z "$notes" ]; then
-        echo "ERROR: no CHANGELOG entry for $version" >&2
-        exit 1
-      fi
-
-      # Asset URLs use the per-ref artifact endpoint, which resolves to
-      # the latest job artifact for that tag — stable as long as the
-      # package job artifacts do not expire.
-      args=()
-      for f in target/dist/*; do
-        name=$(basename "$f")
-        url="${CI_PROJECT_URL}/-/jobs/artifacts/${CI_COMMIT_TAG}/raw/${f}?job=package"
-        args+=( --assets-link "{\"name\":\"$name\",\"url\":\"$url\"}" )
-      done
-
-      release-cli create \
-        --name "Release $CI_COMMIT_TAG" \
-        --tag-name "$CI_COMMIT_TAG" \
-        --description "$notes" \
-        "${args[@]}"
-      '
+    - apk add --no-cache ruby
+    - ruby scripts/release.rb
 
 pages:
   image: alpine
