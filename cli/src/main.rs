@@ -2,7 +2,9 @@ use std::io::{self, BufRead, BufWriter, Read, Write};
 use std::process::ExitCode;
 
 use clap::{Arg, CommandFactory, FromArgMatches};
-use git_lfs_filter::{CleanExtension, SmudgeExtension, clean, filter_process, smudge_with_fetch};
+use git_lfs_filter::{
+    CleanExtension, SmudgeError, SmudgeExtension, clean, filter_process, smudge_with_fetch,
+};
 use git_lfs_store::Store;
 
 mod checkout;
@@ -354,14 +356,27 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                     .as_deref()
                     .map(|p| p.to_string_lossy().into_owned())
                     .unwrap_or_default();
-                smudge_with_fetch(
+                // Buffer stdin so we can pass the original pointer
+                // bytes through on a fetch failure when
+                // `lfs.skipdownloaderrors` is set. Pointers are tiny
+                // (`MAX_POINTER_SIZE`), so the buffer cost is bounded.
+                let mut buf = Vec::new();
+                io::copy(&mut input, &mut buf)?;
+                let result = smudge_with_fetch(
                     &store,
-                    &mut input,
+                    &mut buf.as_slice(),
                     &mut output,
                     &path_str,
                     &smudge_extensions,
                     |p| fetcher.fetch(p),
-                )?;
+                );
+                match result {
+                    Ok(_) => {}
+                    Err(SmudgeError::FetchFailed(_)) if env::skip_download_errors(&cwd) => {
+                        output.write_all(&buf)?;
+                    }
+                    Err(e) => return Err(Box::new(e)),
+                }
                 fetcher.persist_access_mode();
             }
             output.flush()?;

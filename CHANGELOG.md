@@ -153,6 +153,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`b`, `kb`, `mb`, `gb`, `tb`, `pb`) instead of being silently
   ignored. Bare unit suffixes (`--unit=kb`) are accepted as
   shorthand for `--unit=1kb`.
+- `git lfs smudge` honors `lfs.skipdownloaderrors` /
+  `GIT_LFS_SKIP_DOWNLOAD_ERRORS`. When the local store doesn't
+  have an object and the fetch fails, the smudge filter now
+  passes the original pointer text through to the working tree
+  instead of failing the checkout.
 
 ## [0.4.0] - 2026-05-02
 

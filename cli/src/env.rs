@@ -195,12 +195,7 @@ fn emit_static_defaults(cwd: &Path) {
         "BasicTransfersOnly={}",
         bool_config(cwd, "lfs.basictransfersonly")
     );
-    // `GIT_LFS_SKIP_DOWNLOAD_ERRORS=1` is upstream's env-var override
-    // (test 12, second phase). Either it or `lfs.skipdownloaderrors`
-    // flips the line to true.
-    let skip_dl =
-        bool_config(cwd, "lfs.skipdownloaderrors") || bool_env("GIT_LFS_SKIP_DOWNLOAD_ERRORS");
-    println!("SkipDownloadErrors={skip_dl}");
+    println!("SkipDownloadErrors={}", skip_download_errors(cwd));
     println!("FetchRecentAlways=false");
     println!("FetchRecentRefsDays=7");
     println!("FetchRecentCommitsDays=0");
@@ -209,6 +204,15 @@ fn emit_static_defaults(cwd: &Path) {
     println!("PruneVerifyRemoteAlways=false");
     println!("PruneVerifyUnreachableAlways=false");
     println!("PruneRemoteName=origin");
+}
+
+/// `true` if `lfs.skipdownloaderrors` (config) or
+/// `GIT_LFS_SKIP_DOWNLOAD_ERRORS` (env) selects the
+/// download-failure-tolerant smudge path. Used by the smudge filter
+/// to fall back to pointer-passthrough on fetch errors instead of
+/// failing the checkout.
+pub(crate) fn skip_download_errors(cwd: &Path) -> bool {
+    bool_config(cwd, "lfs.skipdownloaderrors") || bool_env("GIT_LFS_SKIP_DOWNLOAD_ERRORS")
 }
 
 /// `true` if the named git config key is set to a truthy value
