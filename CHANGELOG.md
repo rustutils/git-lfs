@@ -142,6 +142,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Batch responses that use the deprecated `_links` field name
   (instead of `actions`) now deserialize correctly. Older LFS
   servers in the wild still emit this form.
+- `git lfs ls-files` outside a git repository now prints `Not in
+  a Git repository.` to stdout and exits 128, matching the other
+  commands.
+- `git lfs ls-files -- --all` now hints at the likely intended
+  `git lfs ls-files --all --` instead of silently scanning HEAD
+  for a ref named `--all`.
 
 ## [0.4.0] - 2026-05-02
 

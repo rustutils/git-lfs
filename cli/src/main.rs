@@ -998,6 +998,16 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             debug,
             json,
         }) => {
+            if let Some(code) = bail_if_outside_repo(&cwd) {
+                return Ok(code);
+            }
+            // `git lfs ls-files -- --all` parks `--all` in `refspec`,
+            // which silently scans HEAD for a (non-existent) ref called
+            // `--all`. Almost always a typo for `git lfs ls-files --all --`.
+            if refspec.as_deref() == Some("--all") {
+                eprintln!("Did you mean `git lfs ls-files --all --` ?");
+                return Ok(1);
+            }
             let format = if json {
                 ls_files::Format::Json
             } else if debug {
