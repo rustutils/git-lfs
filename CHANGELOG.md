@@ -35,6 +35,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `git lfs fetch --all`" warning on `--all`), and a SEE
   ALSO section. Adds `-d`/`-a`/`-o` short aliases for
   `--dry-run`/`--all`/`--object-id` to match upstream.
+- `git-lfs-install(1)` and `git-lfs-uninstall(1)` get
+  upstream-faithful DESCRIPTIONs and per-flag wording,
+  plus SEE ALSO sections. Adds `-w` (`--worktree`) on
+  both and `-s` (`--skip-smudge`) on install for parity.
+  `--manual` is not yet supported on install — use
+  `git lfs update --manual` instead.
 - Every man page and mdbook page now ends with a REPORTING BUGS
   section pointing at the project issue tracker and clarifying
   that this is the Rust port (so reports don't end up on the

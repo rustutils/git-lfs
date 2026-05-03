@@ -60,7 +60,9 @@ fn external_ref_re() -> &'static Regex {
     // Upstream git man pages we cross-reference. Add new names here
     // as we link to them.
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"\b(gitignore|gitattributes|gitconfig)\((\d)\)").unwrap())
+    RE.get_or_init(|| {
+        Regex::new(r"\b(gitignore|gitattributes|gitconfig|git-worktree)\((\d)\)").unwrap()
+    })
 }
 
 fn transform_inline_code_groff(s: &str) -> String {

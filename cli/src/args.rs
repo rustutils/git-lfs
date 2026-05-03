@@ -127,8 +127,17 @@ pub struct SmudgeArgs {
     pub skip: bool,
 }
 
-/// Configure git to invoke git-lfs as the clean/smudge/process filter,
-/// and install the LFS git hooks.
+/// Install Git LFS configuration
+///
+/// Set up the `lfs` smudge and clean filters under the name `lfs` in
+/// the global Git config, and (when run from inside a repository)
+/// install a pre-push hook to run git-lfs-pre-push(1). If
+/// `core.hooksPath` is configured in any Git configuration (supported
+/// on Git v2.9.0 or later), the pre-push hook is installed to that
+/// directory instead.
+///
+/// Without any options, only sets up the `lfs` smudge and clean filters
+/// if they are not already set.
 #[derive(Args)]
 pub struct InstallArgs {
     // TODO(post-1.0): replace the --local/--system/--worktree/--file mutex
@@ -139,57 +148,102 @@ pub struct InstallArgs {
     // ("Only one of the --local, --system, --worktree, and --file
     // options can be specified."). Worth taking once we're free to
     // update those assertions.
-    /// Set config in the local repo only (default: --global).
-    #[arg(short, long)]
-    pub local: bool,
-    /// Operate on `/etc/gitconfig` (`git config --system`).
-    #[arg(long)]
-    pub system: bool,
-    /// Operate on `.git/config.worktree` for the current worktree.
-    #[arg(long)]
-    pub worktree: bool,
-    /// Operate on the given config file directly. Treated as
-    /// "global-like" for the success message.
-    #[arg(long, value_name = "PATH")]
-    pub file: Option<PathBuf>,
-    /// Overwrite existing config and hooks.
+    /// Set the `lfs` smudge and clean filters, overwriting existing
+    /// values.
     #[arg(short, long)]
     pub force: bool,
-    /// Only set the filter config; don't install hooks.
+
+    /// Set the `lfs` smudge and clean filters in the local repository's
+    /// git config, instead of the global git config (`~/.gitconfig`).
+    #[arg(short, long)]
+    pub local: bool,
+
+    /// Set the `lfs` smudge and clean filters in the current working
+    /// tree's git config, instead of the global git config
+    /// (`~/.gitconfig`) or local repository's git config
+    /// (`$GIT_DIR/config`).
+    ///
+    /// If multiple working trees are in use, the Git config extension
+    /// `worktreeConfig` must be enabled to use this option. If only one
+    /// working tree is in use, `--worktree` has the same effect as
+    /// `--local`. Available only on Git v2.20.0 or later.
+    #[arg(short, long)]
+    pub worktree: bool,
+
+    /// Set the `lfs` smudge and clean filters in the system git config,
+    /// e.g. `/etc/gitconfig` instead of the global git config
+    /// (`~/.gitconfig`).
+    #[arg(long)]
+    pub system: bool,
+
+    /// Set the `lfs` smudge and clean filters in the Git configuration
+    /// file specified by `<PATH>`.
+    #[arg(long, value_name = "PATH")]
+    pub file: Option<PathBuf>,
+
+    /// Skip automatic downloading of objects on clone or pull.
+    ///
+    /// Requires a manual `git lfs pull` every time a new commit is
+    /// checked out on the repository.
+    #[arg(short, long)]
+    pub skip_smudge: bool,
+
+    /// Skip installation of hooks into the local repository.
+    ///
+    /// Use if you want to install the LFS filters but not make changes
+    /// to the hooks. Valid alongside `--local`, `--worktree`, `--system`,
+    /// or `--file`.
     #[arg(long)]
     pub skip_repo: bool,
-    /// Configure the smudge filter to pass pointer text through
-    /// unchanged. Use with a follow-up `git lfs pull` to download
-    /// content on demand.
-    #[arg(long)]
-    pub skip_smudge: bool,
 }
 
-/// Reverse of `install`: clear the `filter.lfs.*` config and remove
-/// the LFS git hooks. Hooks that don't match what we'd write are left
+/// Remove Git LFS configuration
+///
+/// Remove the `lfs` clean and smudge filters from the global Git config,
+/// and (when run from inside a Git repository) uninstall the Git LFS
+/// pre-push hook. Hooks that don't match what we would write are left
 /// untouched.
 #[derive(Args)]
 pub struct UninstallArgs {
     // TODO(post-1.0): same --local/--system/--worktree/--file mutex as
     // InstallArgs — share a clap ArgGroup. See InstallArgs's TODO for
     // the rationale and test references.
-    /// Optional mode: `hooks` removes only the LFS git hooks and
+    /// Optional mode. With `hooks`, removes only the LFS git hooks and
     /// leaves the filter config alone (the inverse of `--skip-repo`).
     pub mode: Option<String>,
-    /// Operate on the local repo only (default: --global).
+
+    /// Remove the `lfs` smudge and clean filters from the local
+    /// repository's git config, instead of the global git config
+    /// (`~/.gitconfig`).
     #[arg(short, long)]
     pub local: bool,
-    /// Operate on `/etc/gitconfig` (`git config --system`).
+
+    /// Remove the `lfs` smudge and clean filters from the current
+    /// working tree's git config, instead of the global git config
+    /// (`~/.gitconfig`) or local repository's git config
+    /// (`$GIT_DIR/config`).
+    ///
+    /// If multiple working trees are in use, the Git config extension
+    /// `worktreeConfig` must be enabled to use this option. If only one
+    /// working tree is in use, `--worktree` has the same effect as
+    /// `--local`. Available only on Git v2.20.0 or later.
+    #[arg(short, long)]
+    pub worktree: bool,
+
+    /// Remove the `lfs` smudge and clean filters from the system git
+    /// config, instead of the global git config (`~/.gitconfig`).
     #[arg(long)]
     pub system: bool,
-    /// Operate on `.git/config.worktree` for the current worktree.
-    #[arg(long)]
-    pub worktree: bool,
-    /// Operate on the given config file directly. Treated as
-    /// "global-like" for the success message.
+
+    /// Remove the `lfs` smudge and clean filters from the Git
+    /// configuration file specified by `<PATH>`.
     #[arg(long, value_name = "PATH")]
     pub file: Option<PathBuf>,
-    /// Only unset config; don't touch hooks.
+
+    /// Skip cleanup of the local repo.
+    ///
+    /// Use if you want to uninstall the global LFS filters but not
+    /// make changes to the current repo.
     #[arg(long)]
     pub skip_repo: bool,
 }
