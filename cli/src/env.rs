@@ -37,10 +37,15 @@ pub fn run(cwd: &Path) -> Result<(), EnvError> {
     println!();
 
     let git_dir = git_lfs_git::git_dir(cwd).ok();
+    let common_dir = git_lfs_git::git_common_dir(cwd).ok();
 
     if let Some(git_dir) = git_dir.as_ref() {
         emit_endpoints(cwd);
-        emit_paths_in_repo(cwd, git_dir);
+        // Fall back to the per-worktree git-dir if common-dir lookup
+        // fails for any reason — non-worktree repos give the same
+        // path either way, so the fallback is correct in practice.
+        let common = common_dir.as_deref().unwrap_or(git_dir);
+        emit_paths_in_repo(cwd, git_dir, common);
     } else {
         emit_paths_outside_repo();
     }
@@ -144,8 +149,8 @@ fn print_ssh_line(ssh: &Option<SshInfo>) {
     }
 }
 
-fn emit_paths_in_repo(cwd: &Path, git_dir: &Path) {
-    let lfs_dir = git_dir.join("lfs");
+fn emit_paths_in_repo(cwd: &Path, git_dir: &Path, common_dir: &Path) {
+    let lfs_dir = common_dir.join("lfs");
     let media_dir = lfs_dir.join("objects");
     let tmp_dir = lfs_dir.join("tmp");
     let working_dir = working_dir(cwd);
@@ -157,9 +162,10 @@ fn emit_paths_in_repo(cwd: &Path, git_dir: &Path) {
         println!("LocalWorkingDir=");
     }
     println!("LocalGitDir={}", git_dir.display());
-    // For non-worktree repos these are identical; the distinction
-    // matters once we add worktree support (NOTES.md).
-    println!("LocalGitStorageDir={}", git_dir.display());
+    // The two paths diverge only in linked worktrees: GitDir is
+    // `.git/worktrees/<name>/` (this worktree's HEAD/index/info),
+    // GitStorageDir is the shared `.git/` (objects, packs, LFS cache).
+    println!("LocalGitStorageDir={}", common_dir.display());
     println!("LocalMediaDir={}", media_dir.display());
     println!("LocalReferenceDirs=");
     println!("TempDir={}", tmp_dir.display());

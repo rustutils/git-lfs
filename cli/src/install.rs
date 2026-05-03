@@ -6,7 +6,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use git_lfs_git::{ConfigScope, config, git_dir};
+use git_lfs_git::{ConfigScope, config, git_common_dir, git_dir};
 
 /// Which config file the install/uninstall write goes to. Maps to the
 /// scope flag git config takes; `File(path)` becomes `--file=<path>`,
@@ -345,7 +345,11 @@ pub fn print_hook_conflict(hook: &str, existing: &str) {
 /// root, or the git dir for bare repos), falling back to
 /// `<git-dir>/hooks` when unset.
 pub fn effective_hooks_dir(cwd: &Path) -> Result<std::path::PathBuf, InstallError> {
-    let git_dir = git_dir(cwd)?;
+    // Default hooks live in the **shared** git-dir, even when run from
+    // a linked worktree. The `core.hooksPath` override is itself
+    // worktree-scoped though, so we still consult it via the
+    // per-worktree `git config --local`.
+    let common = git_common_dir(cwd)?;
     if let Ok(Some(hookspath)) = config::get(cwd, ConfigScope::Local, "core.hookspath")
         && !hookspath.is_empty()
     {
@@ -355,12 +359,12 @@ pub fn effective_hooks_dir(cwd: &Path) -> Result<std::path::PathBuf, InstallErro
             return Ok(hp.to_path_buf());
         }
         // Relative paths anchor on the working-tree root for non-bare
-        // repos (where git_dir is `<work>/.git`), or on the git dir
+        // repos (where git-dir is `<work>/.git`), or on the git dir
         // itself for bare repos.
-        let base = git_dir.parent().unwrap_or(&git_dir);
+        let base = common.parent().unwrap_or(&common);
         return Ok(base.join(hp));
     }
-    Ok(git_dir.join("hooks"))
+    Ok(common.join("hooks"))
 }
 
 /// Tilde-expand a leading `~/` or bare `~` against `$HOME`. Mirrors
@@ -388,7 +392,12 @@ fn expand_home(raw: &str) -> String {
 /// user-edited contents. Never errors on conflict — track shouldn't
 /// fail because someone has a custom pre-push hook.
 pub fn try_install_hooks(cwd: &Path) -> Result<(), InstallError> {
-    let hooks_dir = git_dir(cwd)?.join("hooks");
+    // Hooks belong to the **shared** git-dir even when invoked from a
+    // linked worktree — `git lfs install` from inside a worktree must
+    // write to the main repo's `.git/hooks/`, not the per-worktree
+    // `.git/worktrees/<name>/hooks/`. t-worktree test 2 enforces this.
+    // Per-worktree hooks (via `core.hooksPath`) aren't yet supported.
+    let hooks_dir = git_common_dir(cwd)?.join("hooks");
     fs::create_dir_all(&hooks_dir)?;
     for hook in HOOKS {
         let path = hooks_dir.join(hook);

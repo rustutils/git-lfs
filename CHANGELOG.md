@@ -40,9 +40,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   index, and every linked worktree's HEAD-state and index.
   Mirrors upstream's `pruneTaskGetRetainedStashed` /
   `pruneTaskGetRetainedIndex` / `pruneTaskGetRetainedWorktree`.
-  The full multi-worktree case (where the LFS object store lives
-  under `--git-common-dir` rather than `--absolute-git-dir`) still
-  needs the storage-path refactor — tracked separately.
+
+### Changed
+
+- LFS object storage and hook installation now resolve through
+  `git rev-parse --git-common-dir` instead of `--absolute-git-dir`.
+  In a non-worktree repo the two are identical; in a linked
+  worktree the common-dir lookup returns the shared `.git/`
+  rather than the per-worktree `.git/worktrees/<name>/`. This
+  fixes prune from a worktree (which was looking at the wrong
+  store and missing every object), `git lfs install` from a
+  worktree (which was writing hooks to the per-worktree dir
+  instead of the shared one), and the `LocalGitStorageDir` field
+  of `git lfs env`. Mirrors upstream's
+  `Configuration.LocalGitStorageDir`.
 
 ### Fixed
 

@@ -4,16 +4,82 @@ use std::path::{Path, PathBuf};
 
 use crate::{Error, run_git};
 
-/// Path to the `.git` directory of the repository containing `cwd`. Always
-/// returns an absolute path. Errors if `cwd` isn't inside a git repository.
+/// Path to the **per-worktree** `.git` directory of the repository
+/// containing `cwd`. Always returns an absolute path. Errors if `cwd`
+/// isn't inside a git repository.
+///
+/// In a linked worktree this is `.git/worktrees/<name>/`, *not* the
+/// shared main `.git/`. Use this when you want per-worktree state
+/// (HEAD, index, info/, hooks-when-`--worktree`-scoped). For shared
+/// storage (objects, packs, LFS cache, alternates), use
+/// [`git_common_dir`].
 pub fn git_dir(cwd: &Path) -> Result<PathBuf, Error> {
     run_git(cwd, &["rev-parse", "--absolute-git-dir"]).map(PathBuf::from)
 }
 
-/// Path to the LFS storage directory for the repository (`<git-dir>/lfs`).
-/// The directory is not created.
+/// Path to the **shared** `.git` directory of the repository containing
+/// `cwd`. Equivalent to [`git_dir`] in repos without linked worktrees;
+/// in worktree-having repos it always returns the main `.git/` rather
+/// than the per-worktree subtree.
+///
+/// Use this for anything stored once per repo: object database,
+/// `objects/info/alternates`, default hooks, and the LFS object cache
+/// at `.git/lfs/`. Mirrors upstream's `git.GitCommonDir()` /
+/// `Configuration.LocalGitStorageDir()`.
+pub fn git_common_dir(cwd: &Path) -> Result<PathBuf, Error> {
+    let raw = run_git(cwd, &["rev-parse", "--git-common-dir"])?;
+    let p = PathBuf::from(&raw);
+    // `--git-common-dir` can return a relative path (`.git` from the
+    // worktree root, `.` from inside the .git dir, sometimes `.git/.`).
+    // Anchor against `cwd` so the result is absolute (matching
+    // `git_dir`'s behavior), and lexically clean any leftover
+    // `CurDir` components so `LocalGitStorageDir` doesn't end up with
+    // a stray `/.`.
+    let absolute = if p.is_absolute() { p } else { cwd.join(p) };
+    Ok(clean_curdir(&absolute))
+}
+
+/// Lexically clean `p` — drop `CurDir` (`.`) components, collapse
+/// `ParentDir` (`..`) by popping the previous component when one
+/// exists. Pure path-string normalization, no I/O. Mirrors Go's
+/// `path/filepath.Clean` for the cases produced by
+/// `git rev-parse --git-common-dir`: `.git`, `./.git`, `.git/.`,
+/// `a/../.git`, etc.
+fn clean_curdir(p: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out: Vec<Component> = Vec::new();
+    for c in p.components() {
+        match c {
+            Component::CurDir => continue,
+            Component::ParentDir => {
+                // Only collapse when the previous component is a
+                // poppable normal segment. Don't pop a root or
+                // prefix; don't pop another `..` (would change the
+                // meaning when the path *starts* with `..`).
+                let pop_ok = matches!(out.last(), Some(Component::Normal(_)));
+                if pop_ok {
+                    out.pop();
+                } else {
+                    out.push(c);
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    let mut buf = PathBuf::new();
+    for c in &out {
+        buf.push(c.as_os_str());
+    }
+    buf
+}
+
+/// Path to the LFS storage directory (`<common-git-dir>/lfs`). The
+/// directory is not created. Routed through [`git_common_dir`] so a
+/// linked worktree shares the same on-disk LFS object cache as its
+/// main repo — `git lfs prune` from one worktree sees the same 100%
+/// of objects as `git lfs fetch` from another.
 pub fn lfs_dir(cwd: &Path) -> Result<PathBuf, Error> {
-    Ok(git_dir(cwd)?.join("lfs"))
+    Ok(git_common_dir(cwd)?.join("lfs"))
 }
 
 /// Path to the working-tree root of the repository containing `cwd`.
@@ -58,7 +124,9 @@ pub fn lfs_alternate_dirs(cwd: &Path) -> Result<Vec<PathBuf>, Error> {
         }
     }
 
-    let alternates_file = git_dir(cwd)?
+    // `objects/info/alternates` is shared across linked worktrees —
+    // it lives in the common git-dir, not the per-worktree one.
+    let alternates_file = git_common_dir(cwd)?
         .join("objects")
         .join("info")
         .join("alternates");
@@ -149,6 +217,25 @@ mod tests {
         let dir = lfs_dir(tmp.path()).unwrap();
         assert!(dir.ends_with(".git/lfs"));
     }
+
+    #[test]
+    fn git_common_dir_matches_git_dir_for_main_worktree() {
+        let tmp = init_repo();
+        // Outside any linked-worktree setup, the two are identical.
+        assert_eq!(
+            git_dir(tmp.path()).unwrap(),
+            git_common_dir(tmp.path()).unwrap()
+        );
+    }
+
+    // Note: the multi-worktree case (verifying that `lfs_dir` from a
+    // linked worktree resolves to the *main* repo's `.git/lfs/`) is
+    // covered end-to-end by the vendored `t-worktree.sh` and
+    // `t-prune-worktree.sh` shell tests. A unit-test version was tried
+    // but flaked under parallel `cargo test` execution because
+    // `git worktree add` touches HOME / global config in ways that
+    // racing threads can perturb. The shell suite runs serially per
+    // file under prove and is the authoritative coverage.
 
     #[test]
     fn outside_repo_errors() {
