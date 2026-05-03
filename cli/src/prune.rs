@@ -29,7 +29,10 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
-use git_lfs_git::{FetchPruneConfig, scan_pointers, scan_previous_versions, scan_tree};
+use git_lfs_git::{
+    FetchPruneConfig, scan_index_pointers, scan_pointers, scan_previous_versions, scan_stashed,
+    scan_tree,
+};
 use git_lfs_pointer::Oid;
 use git_lfs_store::Store;
 
@@ -154,14 +157,36 @@ fn build_retain_set(cwd: &Path, opts: &Options) -> Result<HashSet<Oid>, PruneErr
         }
     };
 
-    // (a) HEAD's tree. Skipped if HEAD doesn't resolve
-    // (pre-first-commit) or under `--force` (the explicit "purge
-    // everything pushed regardless" mode — HEAD content that's also
-    // pushed is a legitimate target).
+    // (a) HEAD's tree across every worktree (this one + linked).
+    // Each worktree may be on a different ref; retain the tip-state
+    // of all of them so a checkout in another worktree isn't broken
+    // by a prune in this one. Skipped under `--force` (the explicit
+    // "purge everything pushed regardless" mode). Dedup by SHA so
+    // a worktree pointing at the same commit as another one doesn't
+    // re-walk the tree.
     let head_present = head_exists(cwd);
-    if head_present && !opts.force {
-        for entry in scan_tree(cwd, "HEAD")? {
-            keep(entry, &mut retained);
+    let wts = git_lfs_git::worktrees(cwd);
+    let head_sha = head_present.then(|| current_head_sha(cwd)).flatten();
+    if !opts.force {
+        let mut seen_shas: HashSet<String> = HashSet::new();
+        if head_present {
+            for entry in scan_tree(cwd, "HEAD")? {
+                keep(entry, &mut retained);
+            }
+            if let Some(sha) = &head_sha {
+                seen_shas.insert(sha.clone());
+            }
+        }
+        for wt in &wts {
+            let Some(head) = wt.head.as_deref() else {
+                continue;
+            };
+            if !seen_shas.insert(head.to_owned()) {
+                continue;
+            }
+            for entry in scan_tree(cwd, head)? {
+                keep(entry, &mut retained);
+            }
         }
     }
 
@@ -206,6 +231,47 @@ fn build_retain_set(cwd: &Path, opts: &Options) -> Result<HashSet<Oid>, PruneErr
                 keep(entry, &mut retained);
             }
         }
+    }
+
+    // (d') Index of every (non-prunable) worktree. Pointers staged
+    // but not yet committed — including in linked worktrees — won't
+    // appear in any tree-walk; the index is the only producer that
+    // surfaces them. Mirrors upstream's `pruneTaskGetRetainedIndex`
+    // per worktree. A worktree marked `prunable` (its directory was
+    // removed but `git worktree prune` hasn't run) gets its index
+    // walk skipped — the index file may already be inaccessible.
+    // Always runs (even under `--force`): tests 13 + 14 rely on this.
+    if head_present {
+        for entry in scan_index_pointers(cwd, "HEAD")? {
+            keep(entry, &mut retained);
+        }
+    }
+    for wt in &wts {
+        if wt.prunable {
+            continue;
+        }
+        // Skip the current worktree — already scanned above.
+        if wt.dir == cwd {
+            continue;
+        }
+        let Some(head) = wt.head.as_deref() else {
+            continue;
+        };
+        // best-effort — a worktree on an unborn branch has no HEAD
+        // ref to diff against.
+        for entry in scan_index_pointers(&wt.dir, head).unwrap_or_default() {
+            keep(entry, &mut retained);
+        }
+    }
+
+    // (d'') Stash. Stashed working-copy / index / untracked LFS
+    // pointers must survive prune so a future `git stash pop` can
+    // restore them. Mirrors upstream's `pruneTaskGetRetainedStashed`
+    // → `gitscanner_log.go::scanStashed`. Filter is *not* applied —
+    // upstream passes a nil filter through `parseScannerLogOutput`,
+    // matching the unpushed walk.
+    for entry in scan_stashed(cwd)? {
+        retained.insert(entry.oid);
     }
 
     // (d) Unpushed history across every local branch + tag. Mirrors
@@ -263,6 +329,22 @@ fn head_exists(cwd: &Path) -> bool {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+/// HEAD's commit SHA. Returns `None` when HEAD doesn't resolve. Used
+/// to dedup the current worktree against the linked-worktree list.
+fn current_head_sha(cwd: &Path) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    if s.is_empty() { None } else { Some(s) }
 }
 
 /// Tip commit's Unix timestamp for `reference`, or `None` if the ref

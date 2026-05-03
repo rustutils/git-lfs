@@ -450,6 +450,246 @@ pub fn scan_tree(cwd: &Path, reference: &str) -> Result<Vec<PointerEntry>, Error
     Ok(entries)
 }
 
+/// LFS pointers in the index or working tree that *differ* from `ref`
+/// (typically `HEAD`). Mirrors upstream's `lfs/gitscanner_index.go::
+/// scanIndex`: runs `git diff-index <ref>` and `git diff-index --cached
+/// <ref>` to surface staged + working-tree changes, then dedupes by
+/// (sha, path).
+///
+/// Returns only pointers — small blobs that parse as LFS pointer text.
+/// Symlinks and gitlinks (their dst-mode in diff-index output) are
+/// skipped. Used by prune retention so a staged-but-uncommitted
+/// pointer doesn't get pruned out from under the user.
+pub fn scan_index_pointers(cwd: &Path, reference: &str) -> Result<Vec<PointerEntry>, Error> {
+    let scan_cwd = match crate::run_git(cwd, &["rev-parse", "--show-toplevel"]) {
+        Ok(s) if !s.is_empty() => PathBuf::from(s),
+        _ => crate::run_git(cwd, &["rev-parse", "--absolute-git-dir"])
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| cwd.to_path_buf()),
+    };
+
+    let mut candidates: Vec<(String, PathBuf)> = Vec::new();
+    let mut seen: std::collections::HashSet<(String, PathBuf)> = std::collections::HashSet::new();
+    for cached_arg in [&[][..], &["--cached"][..]] {
+        let mut args = vec!["diff-index", "-z"];
+        args.extend_from_slice(cached_arg);
+        args.push(reference);
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(&scan_cwd)
+            .args(&args)
+            .output()?;
+        if !out.status.success() {
+            // diff-index against a missing ref is fine — empty repo,
+            // detached HEAD before first commit, etc. Treat like
+            // "no entries" rather than erroring.
+            continue;
+        }
+        // Format with `-z`:
+        //   `:<src_mode> <dst_mode> <src_sha> <dst_sha> <status>\0<path>\0`
+        // For renames (R*) and copies (C*) two paths follow, but the
+        // dst-sha reflects the new content either way.
+        let bytes = &out.stdout;
+        let mut i = 0;
+        while i < bytes.len() {
+            // Read until next NUL — the meta record.
+            let meta_end = bytes[i..]
+                .iter()
+                .position(|&b| b == 0)
+                .map(|p| i + p)
+                .unwrap_or(bytes.len());
+            let Ok(meta) = std::str::from_utf8(&bytes[i..meta_end]) else {
+                i = meta_end + 1;
+                continue;
+            };
+            i = meta_end + 1;
+            // Then 1-2 NUL-terminated paths depending on status.
+            let parts: Vec<&str> = meta.trim_start_matches(':').split_whitespace().collect();
+            if parts.len() < 5 {
+                continue;
+            }
+            let dst_mode = parts[1];
+            let dst_sha = parts[3];
+            let status = parts[4];
+            // Skip symlinks (120000), gitlinks/submodules (160000),
+            // deletions (D), and entries with all-zero dst sha
+            // (deleted in working tree).
+            if dst_mode == "120000"
+                || dst_mode == "160000"
+                || status.starts_with('D')
+                || dst_sha.bytes().all(|b| b == b'0')
+            {
+                // Still need to consume the path(s).
+                let path_count = if status.starts_with('R') || status.starts_with('C') {
+                    2
+                } else {
+                    1
+                };
+                for _ in 0..path_count {
+                    let end = bytes[i..]
+                        .iter()
+                        .position(|&b| b == 0)
+                        .map(|p| i + p)
+                        .unwrap_or(bytes.len());
+                    i = end + 1;
+                }
+                continue;
+            }
+            // Read the destination path (last NUL-terminated entry).
+            let path_count = if status.starts_with('R') || status.starts_with('C') {
+                2
+            } else {
+                1
+            };
+            let mut path: PathBuf = PathBuf::new();
+            for n in 0..path_count {
+                let end = bytes[i..]
+                    .iter()
+                    .position(|&b| b == 0)
+                    .map(|p| i + p)
+                    .unwrap_or(bytes.len());
+                if n + 1 == path_count {
+                    path = PathBuf::from(String::from_utf8_lossy(&bytes[i..end]).into_owned());
+                }
+                i = end + 1;
+            }
+            let key = (dst_sha.to_owned(), path.clone());
+            if seen.insert(key) {
+                candidates.push((dst_sha.to_owned(), path));
+            }
+        }
+    }
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Header check first to avoid reading non-pointer-sized blobs.
+    let mut bcheck = CatFileBatchCheck::spawn(cwd)?;
+    let mut sized: Vec<(String, PathBuf)> = Vec::new();
+    for (oid, path) in candidates {
+        match bcheck.check(&oid)? {
+            CatFileHeader::Found { kind, size, .. }
+                if kind == "blob" && (size as usize) < MAX_POINTER_SIZE =>
+            {
+                sized.push((oid, path));
+            }
+            _ => {}
+        }
+    }
+    drop(bcheck);
+
+    let mut batch = CatFileBatch::spawn(cwd)?;
+    let mut by_oid: std::collections::HashMap<Oid, usize> = std::collections::HashMap::new();
+    let mut out: Vec<PointerEntry> = Vec::new();
+    for (oid, path) in sized {
+        let Some(blob) = batch.read(&oid)? else {
+            continue;
+        };
+        let Ok(pointer) = Pointer::parse(&blob.content) else {
+            continue;
+        };
+        if let Some(&idx) = by_oid.get(&pointer.oid) {
+            if !out[idx].paths.contains(&path) {
+                out[idx].paths.push(path);
+            }
+            continue;
+        }
+        by_oid.insert(pointer.oid, out.len());
+        out.push(PointerEntry {
+            oid: pointer.oid,
+            size: pointer.size,
+            path: Some(path.clone()),
+            paths: vec![path],
+            canonical: pointer.canonical,
+            extensions: pointer.extensions.clone(),
+        });
+    }
+    Ok(out)
+}
+
+/// LFS pointers reachable from `refs/stash` and its associated WIP /
+/// index / untracked merge parents. Mirrors upstream's
+/// `lfs/gitscanner_log.go::scanStashed`.
+///
+/// Stashes are stored as merge commits whose first parent is the HEAD
+/// at stash time; the other parent(s) are the index commit and (when
+/// `git stash -u` is used) the untracked-files commit. Walking the
+/// reflog for `refs/stash` and reading both sides of each merge diff
+/// is the way to surface every LFS pointer those commits reference.
+///
+/// Returns an empty vec when the repo has no stash entries (the
+/// `git log -g refs/stash` invocation exits non-zero in that case;
+/// upstream silently swallows that error and we do the same).
+pub fn scan_stashed(cwd: &Path) -> Result<Vec<PointerEntry>, Error> {
+    let stash_shas: Vec<String> = match Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["log", "-g", "--format=%h", "refs/stash", "--"])
+        .output()
+    {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|l| l.trim().to_owned())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        _ => return Ok(Vec::new()),
+    };
+    if stash_shas.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Each stash entry is walked twice: first with `-m --first-parent`
+    // to surface the WIP merge's diff against HEAD; then with no
+    // extra args to surface the index merge (and the untracked merge
+    // when present). Both runs hit the same parser; pointers are
+    // deduped at the call site.
+    let mut entries: Vec<PointerEntry> = Vec::new();
+    for extra in [&["-m", "--first-parent"][..], &[][..]] {
+        let mut args: Vec<String> = vec!["log".into()];
+        for a in extra {
+            args.push((*a).to_owned());
+        }
+        for a in [
+            "--no-ext-diff",
+            "--no-textconv",
+            "--color=never",
+            "-G",
+            "oid sha256:",
+            "-p",
+            "-U12",
+            "--format=lfs-commit-sha: %H %P",
+        ] {
+            args.push(a.to_owned());
+        }
+        for sha in &stash_shas {
+            args.push(format!("{sha}^..{sha}"));
+        }
+        let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let mut child = Command::new("git")
+            .arg("-C")
+            .arg(cwd)
+            .args(&arg_refs)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let stdout = child.stdout.take().expect("piped");
+        let mut parser = LogScanner::new(LogDiffDirection::Additions);
+        for line in BufReader::new(stdout).lines() {
+            let line = line?;
+            if let Some(entry) = parser.feed(&line) {
+                entries.push(entry);
+            }
+        }
+        if let Some(entry) = parser.flush() {
+            entries.push(entry);
+        }
+        // Swallow the exit status — `git log -g refs/stash^..refs/stash`
+        // can fail when `refs/stash` doesn't exist; upstream's
+        // `scanStashed` ignores it for the same reason.
+        let _ = child.wait();
+    }
+    Ok(entries)
+}
+
 /// Walk `git log -G "oid sha256:" -p <ref>` since `since`, returning
 /// every LFS pointer that appears as the **previous** state of a
 /// modified file (i.e. lives on the `-` side of a unified diff).
@@ -515,8 +755,9 @@ pub fn scan_previous_versions(
 /// Which side of a unified diff to capture pointer bodies from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LogDiffDirection {
-    /// `+` lines (new state of the file in this commit).
-    #[allow(dead_code)]
+    /// `+` lines (new state of the file in this commit). Used by the
+    /// stash walker — the WIP merge's "added" pointer is the one we
+    /// need to keep around if the user later does `git stash pop`.
     Additions,
     /// `-` lines (previous state, before this commit modified it).
     Deletions,

@@ -34,6 +34,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--no-verify-remote` (no-op for now). Output strings now match
   upstream's `<N> local objects, <M> retained, done.` and
   `Deleting objects: 100% (k/n), done.` formats.
+- Prune now also retains every LFS pointer reachable from
+  `refs/stash` (and its WIP / index / untracked merge parents),
+  every staged-but-uncommitted pointer in the current worktree's
+  index, and every linked worktree's HEAD-state and index.
+  Mirrors upstream's `pruneTaskGetRetainedStashed` /
+  `pruneTaskGetRetainedIndex` / `pruneTaskGetRetainedWorktree`.
+  The full multi-worktree case (where the LFS object store lives
+  under `--git-common-dir` rather than `--absolute-git-dir`) still
+  needs the storage-path refactor — tracked separately.
 
 ### Fixed
 

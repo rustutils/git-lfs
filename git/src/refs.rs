@@ -154,6 +154,88 @@ pub fn recent_branches(
     Ok(result)
 }
 
+/// One entry from `git worktree list --porcelain`. Includes the main
+/// working copy plus every linked worktree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorktreeEntry {
+    /// Absolute path to the worktree's directory.
+    pub dir: std::path::PathBuf,
+    /// Tip commit SHA, or `None` for bare worktrees.
+    pub head: Option<String>,
+    /// `true` when git considers this entry prunable — typically the
+    /// worktree's directory has been deleted but `git worktree prune`
+    /// hasn't run. Mirrors upstream's `Prunable` field; prune retention
+    /// keeps the HEAD-state but skips the index scan for prunable
+    /// entries (the index file may still be inaccessible / removed).
+    pub prunable: bool,
+}
+
+/// Every worktree attached to this repo (`git worktree list
+/// --porcelain -z`). Includes the main working copy. Returns an empty
+/// vec when `git worktree` exits non-zero (older git versions, bare
+/// repos with no linked worktrees, etc.).
+pub fn worktrees(cwd: &Path) -> Vec<WorktreeEntry> {
+    let Ok(out) = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["worktree", "list", "--porcelain", "-z"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    parse_worktree_list(&out.stdout)
+}
+
+fn parse_worktree_list(bytes: &[u8]) -> Vec<WorktreeEntry> {
+    let mut entries = Vec::new();
+    let mut current: Option<WorktreeEntry> = None;
+    // Records are NUL-separated lines; an empty record terminates an
+    // entry. With `-z` git emits `\0` between every field, including
+    // an extra `\0` between entries — easiest to split + match by
+    // line-prefix and treat empty splits as separators.
+    for record in bytes.split(|&b| b == 0) {
+        let Ok(line) = std::str::from_utf8(record) else {
+            continue;
+        };
+        if line.is_empty() {
+            if let Some(entry) = current.take() {
+                entries.push(entry);
+            }
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("worktree ") {
+            // Starting a new entry; flush whatever was being built.
+            if let Some(entry) = current.take() {
+                entries.push(entry);
+            }
+            current = Some(WorktreeEntry {
+                dir: std::path::PathBuf::from(rest),
+                head: None,
+                prunable: false,
+            });
+        } else if let Some(rest) = line.strip_prefix("HEAD ")
+            && let Some(c) = current.as_mut()
+        {
+            c.head = Some(rest.to_owned());
+        } else if line.starts_with("prunable")
+            && let Some(c) = current.as_mut()
+        {
+            c.prunable = true;
+        } else if line == "bare" {
+            // Bare worktree — ignore the entire entry (no index, no
+            // HEAD content to retain).
+            current = None;
+        }
+    }
+    if let Some(entry) = current.take() {
+        entries.push(entry);
+    }
+    entries
+}
+
 fn classify_ref(full: &str) -> RefKind {
     if full.starts_with("refs/heads/") {
         RefKind::LocalBranch
