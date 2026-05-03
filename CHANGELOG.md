@@ -108,6 +108,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   falls back to "issue tracker ⟨URL⟩" everywhere else
   (portable across groff and mandoc).
 
+### Added
+
+- Release packaging via `just package`. Cross-compiles `git-lfs` for
+  linux-musl, darwin, and windows-gnullvm (x86_64 + aarch64 each)
+  using cargo-zigbuild, and produces per-target tarballs (zips on
+  windows) under `target/dist/`. Linux musl targets additionally
+  build `.deb` and `.rpm` packages via cargo-deb / cargo-generate-rpm,
+  named `git-lfs-rs` to avoid colliding with the upstream `git-lfs`
+  package; the binary still installs as `/usr/bin/git-lfs` so
+  `git lfs <command>` works after install. A source tarball
+  (`git-lfs-X.Y.Z.tar.zst`) ships alongside, combining `git archive
+  HEAD` with the generated man pages so downstream packagers can
+  build without our xtask.
+
 ## [0.4.0] - 2026-05-02
 
 ### Added

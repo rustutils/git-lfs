@@ -40,3 +40,51 @@ git-lfs-filter   = { workspace = true }
 [dev-dependencies]
 tokio      = { workspace = true, features = ["macros", "rt-multi-thread"] }
 wiremock   = { workspace = true }
+
+# Distro packaging metadata. The package is named `git-lfs-rs` so it
+# doesn't silently take over the upstream `git-lfs` package on existing
+# systems; the binary still installs as `/usr/bin/git-lfs` so `git lfs`
+# works out of the box. `Conflicts` blocks co-install; we deliberately
+# do NOT declare `Replaces:` (deb) since this impl is still experimental
+# and shouldn't shadow the official package without the user opting in.
+# RPM uses `Obsoletes` to handle the binary collision in its resolver.
+
+[package.metadata.deb]
+name = "git-lfs-rs"
+maintainer = "Patrick Elsen <pelsen@xfbs.net>"
+section = "vcs"
+priority = "optional"
+depends = "git"
+conflicts = "git-lfs"
+provides = "git-lfs"
+extended-description = """
+Git Large File Storage (LFS) replaces large files such as audio samples,
+videos, datasets, and graphics with text pointers inside Git, while
+storing the file contents on a remote server.
+
+This is a Rust reimplementation of the original Go git-lfs. It is still
+experimental.
+"""
+assets = [
+    ["target/release/git-lfs",        "usr/bin/git-lfs",                "0755"],
+    ["target/release/../../man/git-lfs*.1", "usr/share/man/man1/",      "0644"],
+    ["../LICENSE.md",                 "usr/share/doc/git-lfs/LICENSE",  "0644"],
+    ["../README.md",                  "usr/share/doc/git-lfs/README",   "0644"],
+]
+
+[package.metadata.generate-rpm]
+auto-req = "no"
+name = "git-lfs-rs"
+license = "MIT"
+summary = "Git extension for versioning large files (Rust reimplementation)"
+requires = { git = "*" }
+assets = [
+    { source = "target/release/git-lfs",  dest = "/usr/bin/git-lfs",                mode = "755" },
+    { source = "target/man/git-lfs*.1",   dest = "/usr/share/man/man1/",            mode = "644", doc = true },
+    { source = "LICENSE.md",              dest = "/usr/share/doc/git-lfs/LICENSE",  mode = "644", doc = true },
+    { source = "README.md",               dest = "/usr/share/doc/git-lfs/README",   mode = "644", doc = true },
+]
+[package.metadata.generate-rpm.conflicts]
+"git-lfs" = "*"
+[package.metadata.generate-rpm.obsoletes]
+"git-lfs" = "*"

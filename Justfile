@@ -25,6 +25,99 @@ gen:
     cargo xtask gen-man
     cargo xtask gen-md
 
+# Cross-compiles git-lfs for linux-musl (x86_64, aarch64), darwin
+# (x86_64, aarch64), and windows-gnullvm (x86_64, aarch64) using
+# cargo-zigbuild, then bundles per-target tarballs (and zips for
+# windows). Linux musl targets additionally produce .deb and .rpm
+# packages via cargo-deb / cargo-generate-rpm.
+#
+# Each bundle ships the binary plus the generated man pages, LICENSE.md,
+# and README.md, laid out under bin/ and share/ so it untars cleanly
+# into ~/.local or /usr/local.
+#
+# Requires: cargo-zigbuild, zig, zstd, zip, cargo-deb, cargo-generate-rpm.
+
+# Build release artifacts (binaries, .deb, .rpm) into target/dist/.
+package:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rm -rf target/dist
+    mkdir -p target/dist
+
+    # Generate man pages once; same files ship with every per-target bundle.
+    cargo run -p xtask --release --locked -- gen-man target/man
+
+    build() {
+        local target=$1
+        rustup target add "$target"
+        cargo zigbuild -p git-lfs --release --locked --target "$target"
+    }
+
+    bundle_source() {
+        local version=$(cargo pkgid --locked -p git-lfs | awk -F'@' '{print $NF}')
+        local name="git-lfs-$version"
+        local out="target/dist/$name.tar"
+
+        git archive --prefix="$name/" -o "$out" HEAD
+        tar -rf "$out" --transform "s|^target/man|$name/man|" target/man/git-lfs*.1
+        zstd --force --rm "$out"
+    }
+
+    bundle_unix() {
+        local target=$1 arch=$2 os=$3
+        local name="git-lfs-$arch-$os"
+        local stage="target/dist/.stage-$name"
+        rm -rf "$stage"
+        mkdir -p "$stage/$name/bin" \
+                 "$stage/$name/share/man/man1" \
+                 "$stage/$name/share/doc/git-lfs"
+        cp "target/$target/release/git-lfs" "$stage/$name/bin/"
+        cp target/man/git-lfs*.1            "$stage/$name/share/man/man1/"
+        cp LICENSE.md README.md             "$stage/$name/share/doc/git-lfs/"
+        tar -C "$stage" -cf "target/dist/$name.tar" "$name"
+        zstd --rm "target/dist/$name.tar"
+        rm -rf "$stage"
+    }
+
+    bundle_windows() {
+        local target=$1 arch=$2
+        local name="git-lfs-$arch-windows"
+        local stage="target/dist/.stage-$name"
+        rm -rf "$stage"
+        mkdir -p "$stage/$name"
+        cp "target/$target/release/git-lfs.exe" "$stage/$name/"
+        cp target/man/git-lfs*.1                "$stage/$name/"
+        cp LICENSE.md README.md                 "$stage/$name/"
+        (cd "$stage" && zip -qr "../$name.zip" "$name")
+        rm -rf "$stage"
+    }
+
+    bundle_source
+
+    # Linux musl: static binary tarball plus .deb and .rpm.
+    for arch in x86_64 aarch64; do
+        target="$arch-unknown-linux-musl"
+        build "$target"
+        bundle_unix "$target" "$arch" "linux"
+        cargo deb            -p git-lfs --target "$target" --no-build -o target/dist/
+        cargo generate-rpm   -p cli --target "$target" -o target/dist/
+    done
+
+    # macOS: tarball only (cargo-deb / generate-rpm don't apply).
+    for arch in x86_64 aarch64; do
+        target="$arch-apple-darwin"
+        build "$target"
+        bundle_unix "$target" "$arch" "darwin"
+    done
+
+    # Windows: zip with .exe. gnullvm targets pair MinGW headers with
+    # the LLVM linker, which zigbuild produces natively.
+    for arch in x86_64 aarch64; do
+        target="$arch-pc-windows-gnullvm"
+        build "$target"
+        bundle_windows "$target" "$arch"
+    done
+
 # Remove cargo build artifacts and shell-test scratch state.
 clean:
     cargo clean
