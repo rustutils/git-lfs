@@ -14,6 +14,7 @@ pub mod config;
 pub mod diff_index;
 pub mod endpoint;
 pub mod extension;
+pub mod fetch_prune;
 pub mod http_options;
 pub mod path;
 pub mod pktline;
@@ -30,8 +31,10 @@ pub use endpoint::{
     parse_ssh_url, resolve_endpoint,
 };
 pub use extension::{ExtensionConfig, list_extensions};
+pub use fetch_prune::FetchPruneConfig;
 pub use http_options::HttpOptions;
 pub use path::{git_dir, lfs_alternate_dirs, lfs_dir, work_tree_root};
+pub use refs::{RecentRef, RefKind, recent_branches};
 pub use rev_list::{RevListEntry, rev_list, rev_list_with_args};
 pub use scanner::{
     PointerEntry, TreeBlob, scan_index_lfs, scan_pointers, scan_pointers_with_args, scan_tree,

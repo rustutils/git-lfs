@@ -1,15 +1,11 @@
-//! Refspec resolution for the LFS lock APIs.
-//!
-//! LFS lock create/delete/list endpoints all carry a `ref.name` field
-//! that the server can use to enforce per-branch lock scoping. Upstream
-//! resolves this once per command and ships it on every request: the
-//! tracked upstream branch (from `branch.<current>.merge`) takes
-//! precedence, falling back to the current branch's full ref. A
-//! detached HEAD has no resolvable refspec, in which case the field
-//! is omitted from the request.
+//! Refspec resolution for the LFS lock APIs and ref enumeration
+//! helpers used by fetch-recent / prune retention.
 
 use std::path::Path;
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::Error;
 
 /// Resolve the refspec to send with lock-API requests, or `None` if
 /// the working tree is on a detached HEAD.
@@ -55,6 +51,121 @@ fn tracked_upstream(cwd: &Path, branch: &str) -> Option<String> {
     if s.is_empty() { None } else { Some(s) }
 }
 
+/// One ref returned by [`recent_branches`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecentRef {
+    /// Full ref name (`refs/heads/main`, `refs/remotes/origin/feature`,
+    /// `refs/tags/v1`, ...).
+    pub full: String,
+    /// Hex commit OID the ref points at.
+    pub oid: String,
+    pub kind: RefKind,
+    /// Committer date as Unix epoch seconds. Useful for the per-ref
+    /// `commits_days` window calculation in prune.
+    pub committer_unix: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefKind {
+    /// Under `refs/heads/`.
+    LocalBranch,
+    /// Under `refs/remotes/`.
+    RemoteBranch,
+    /// Under `refs/tags/`.
+    Tag,
+    /// Anything else (`refs/notes/`, `refs/stash`, custom namespaces).
+    Other,
+}
+
+/// Refs whose tip commit was authored on or after `since`. Mirrors
+/// upstream's `git.RecentBranches` (`git/git.go::RecentBranches`).
+///
+/// Output is filtered:
+/// - if `include_remote_branches` is false, refs under `refs/remotes/`
+///   are dropped entirely.
+/// - if `only_remote` is `Some(name)`, remote refs not under
+///   `refs/remotes/<name>/` are dropped (local refs and tags pass
+///   through regardless).
+///
+/// `git for-each-ref` is asked to sort newest-first; the iteration
+/// stops at the first ref older than `since` so large repos don't
+/// pay for refs they'd discard anyway.
+pub fn recent_branches(
+    cwd: &Path,
+    since: SystemTime,
+    include_remote_branches: bool,
+    only_remote: Option<&str>,
+) -> Result<Vec<RecentRef>, Error> {
+    let since_unix: i64 = since
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args([
+            "for-each-ref",
+            "--sort=-committerdate",
+            "--format=%(refname) %(objectname) %(committerdate:unix)",
+            "refs",
+        ])
+        .output()?;
+    if !out.status.success() {
+        return Err(Error::Failed(format!(
+            "git for-each-ref failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+
+    let mut result = Vec::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let mut parts = line.splitn(3, ' ');
+        let (Some(full), Some(oid), Some(unix_str)) = (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        let Ok(committer_unix) = unix_str.trim().parse::<i64>() else {
+            continue;
+        };
+        // Sorted newest-first → first ref older than the cutoff means
+        // every remaining one is too.
+        if committer_unix < since_unix {
+            break;
+        }
+        let kind = classify_ref(full);
+        if matches!(kind, RefKind::RemoteBranch) {
+            if !include_remote_branches {
+                continue;
+            }
+            if let Some(remote) = only_remote {
+                let prefix = format!("refs/remotes/{remote}/");
+                if !full.starts_with(&prefix) {
+                    continue;
+                }
+            }
+        }
+        result.push(RecentRef {
+            full: full.to_owned(),
+            oid: oid.to_owned(),
+            kind,
+            committer_unix,
+        });
+    }
+    Ok(result)
+}
+
+fn classify_ref(full: &str) -> RefKind {
+    if full.starts_with("refs/heads/") {
+        RefKind::LocalBranch
+    } else if full.starts_with("refs/remotes/") {
+        RefKind::RemoteBranch
+    } else if full.starts_with("refs/tags/") {
+        RefKind::Tag
+    } else {
+        RefKind::Other
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -85,6 +196,76 @@ mod tests {
             current_refspec(tmp.path()).as_deref(),
             Some("refs/heads/tracked"),
         );
+    }
+
+    #[test]
+    fn recent_branches_returns_main_for_fresh_repo() {
+        let tmp = commit_helper::init_repo();
+        commit_helper::commit_file(&tmp, "a.txt", b"hi");
+        let refs = recent_branches(tmp.path(), UNIX_EPOCH, true, None).unwrap();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].full, "refs/heads/main");
+        assert_eq!(refs[0].kind, RefKind::LocalBranch);
+    }
+
+    #[test]
+    fn recent_branches_drops_remotes_when_excluded() {
+        let tmp = commit_helper::init_repo();
+        commit_helper::commit_file(&tmp, "a.txt", b"hi");
+        // Synthesize a remote-tracking ref by pointing it at HEAD.
+        let head = commit_helper::head_oid(&tmp);
+        Command::new("git")
+            .arg("-C")
+            .arg(tmp.path())
+            .args(["update-ref", "refs/remotes/origin/main", &head])
+            .status()
+            .unwrap();
+        let with_remotes = recent_branches(tmp.path(), UNIX_EPOCH, true, None).unwrap();
+        let without = recent_branches(tmp.path(), UNIX_EPOCH, false, None).unwrap();
+        assert!(
+            with_remotes
+                .iter()
+                .any(|r| r.full == "refs/remotes/origin/main")
+        );
+        assert!(!without.iter().any(|r| r.full == "refs/remotes/origin/main"));
+        // Local branch always survives.
+        assert!(without.iter().any(|r| r.full == "refs/heads/main"));
+    }
+
+    #[test]
+    fn recent_branches_only_remote_filter() {
+        let tmp = commit_helper::init_repo();
+        commit_helper::commit_file(&tmp, "a.txt", b"hi");
+        let head = commit_helper::head_oid(&tmp);
+        for r in ["refs/remotes/origin/main", "refs/remotes/upstream/main"] {
+            Command::new("git")
+                .arg("-C")
+                .arg(tmp.path())
+                .args(["update-ref", r, &head])
+                .status()
+                .unwrap();
+        }
+        let only_origin = recent_branches(tmp.path(), UNIX_EPOCH, true, Some("origin")).unwrap();
+        assert!(
+            only_origin
+                .iter()
+                .any(|r| r.full == "refs/remotes/origin/main")
+        );
+        assert!(
+            !only_origin
+                .iter()
+                .any(|r| r.full == "refs/remotes/upstream/main")
+        );
+    }
+
+    #[test]
+    fn recent_branches_skips_old_refs() {
+        let tmp = commit_helper::init_repo();
+        commit_helper::commit_file(&tmp, "a.txt", b"hi");
+        // Cutoff strictly in the future → no refs qualify.
+        let future = SystemTime::now() + std::time::Duration::from_secs(86400);
+        let refs = recent_branches(tmp.path(), future, true, None).unwrap();
+        assert!(refs.is_empty());
     }
 
     #[test]
