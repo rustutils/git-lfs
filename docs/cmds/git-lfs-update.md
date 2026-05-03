@@ -2,7 +2,7 @@
 
 ## Name
 
-`git-lfs-update` — (Re-)install the four LFS git hooks (`pre-push`, `post-checkout`, `post-commit`, `post-merge`) for the current repository
+`git-lfs-update` — Update Git hooks
 
 ## Synopsis
 
@@ -12,17 +12,23 @@ git-lfs-update [OPTIONS]
 
 ## Description
 
-(Re-)install the four LFS git hooks (`pre-push`, `post-checkout`, `post-commit`, `post-merge`) for the current repository
+Update Git hooks
+
+Update the Git hooks used by Git LFS. Silently upgrades known hook contents. If you have your own custom hooks you may need to use one of the extended options below.
 
 ## Options
 
 ### Flags
 
-- `--force`
-    Overwrite any custom hook contents
+- `-f`, `--force`
+    Forcibly overwrite any existing hooks with git-lfs hooks.
 
-- `--manual`
-    Print install instructions instead of writing the hook files
+    Use this option if `git lfs update` fails because of existing hooks but you don't care about their current contents.
+
+- `-m`, `--manual`
+    Print instructions for manually updating your hooks to include git-lfs functionality.
+
+    Use this option if `git lfs update` fails because of existing hooks and you want to retain their functionality.
 
 ## Reporting bugs
 

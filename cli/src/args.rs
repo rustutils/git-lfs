@@ -326,15 +326,35 @@ pub struct UntrackArgs {
     pub patterns: Vec<String>,
 }
 
-/// Run the long-running filter-process protocol with git over stdin/stdout.
-/// This is what git invokes via filter.lfs.process and is the batched
-/// alternative to per-invocation `clean`/`smudge`.
+/// Git filter process that converts between pointer and actual content
+///
+/// Implement the Git process filter API, exchanging handshake messages
+/// and then accepting and responding to requests to either clean or
+/// smudge a file.
+///
+/// `filter-process` is always run by Git's filter process, and is
+/// configured by the repository's Git attributes.
+///
+/// In your Git configuration or in a `.lfsconfig` file, you may set
+/// either or both of `lfs.fetchinclude` and `lfs.fetchexclude` to
+/// comma-separated lists of paths. If `lfs.fetchinclude` is defined,
+/// Git LFS pointer files will only be replaced with the contents of
+/// the corresponding object file if their path matches one in that
+/// list, and if `lfs.fetchexclude` is defined, pointer files will
+/// only be replaced if their path does not match one in that list.
+/// Paths are matched using wildcard matching as per gitignore(5).
+/// Pointer files that are not replaced are simply copied to standard
+/// output without change.
+///
+/// The filter process uses Git's pkt-line protocol to communicate, and
+/// is documented in detail in gitattributes(5).
 #[derive(Args)]
 pub struct FilterProcessArgs {
-    /// Pass smudge requests' pointer text through unchanged;
-    /// equivalent to `GIT_LFS_SKIP_SMUDGE=1`. Wired up by
-    /// `install --skip-smudge`.
-    #[arg(long)]
+    /// Skip automatic downloading of objects on clone or pull.
+    ///
+    /// Equivalent to `GIT_LFS_SKIP_SMUDGE=1`. Wired up by
+    /// `git lfs install --skip-smudge`.
+    #[arg(short, long)]
     pub skip: bool,
 }
 
@@ -486,14 +506,32 @@ pub struct PushArgs {
     pub stdin: bool,
 }
 
-/// Deprecated. Wraps `git clone` so the working tree is populated
-/// with pointer text first, then runs `git lfs pull` to download
-/// LFS content in batch. Modern `git clone` parallelizes the
-/// smudge filter and is no slower; prefer it.
+/// Efficiently clone a LFS-enabled repository
+///
+/// Clone an LFS-enabled Git repository by disabling LFS during the
+/// `git clone`, then running `git lfs pull` directly afterwards.
+/// Also installs the repo-level hooks (`.git/hooks`) that LFS requires
+/// to operate; if `--separate-git-dir` is given to `git clone`, the
+/// hooks are installed there.
+///
+/// Historically faster than a regular `git clone` because that would
+/// download LFS content via the smudge filter one file at a time.
+/// Modern `git clone` parallelizes the smudge filter, so this command
+/// no longer offers a meaningful speedup over plain `git clone`. You
+/// should prefer plain `git clone`.
+///
+/// In addition to the options accepted by `git clone`, the LFS-only
+/// flags `--include` / `-I <paths>`, `--exclude` / `-X <paths>`, and
+/// `--skip-repo` (skip installing the repo-level hooks) are accepted
+/// — see git-lfs-fetch(1) for the include/exclude semantics. They're
+/// parsed from the trailing argument list rather than declared as
+/// clap flags, so they don't appear in this command's `--help`.
 #[derive(Args)]
 pub struct CloneArgs {
-    /// `git clone` and LFS pass-through args. The repository URL
-    /// is required; an optional target directory follows.
+    /// `git clone` arguments plus the LFS pass-through flags
+    /// (`-I`/`--include`, `-X`/`--exclude`, `--skip-repo`). The
+    /// repository URL is required; an optional target directory
+    /// follows.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub args: Vec<String>,
 }
@@ -537,12 +575,14 @@ pub struct PrePushArgs {
     pub dry_run: bool,
 }
 
-/// Print the git-lfs version and exit.
+/// Print the git-lfs version banner and exit
 #[derive(Args)]
 pub struct VersionArgs;
 
-/// Debug helper: build a pointer from a file, parse one from disk
-/// or stdin, or just check whether some bytes are a valid pointer.
+/// Build, compare, and check pointers
+///
+/// Build and optionally compare generated pointer files to ensure
+/// consistency between different Git LFS implementations.
 #[derive(Args)]
 pub struct PointerArgs {
     // TODO(post-1.0): replace the --strict/--no-strict, --check/--pointer,
@@ -551,47 +591,81 @@ pub struct PointerArgs {
     // No shell test asserts this wording, so the constraint here is
     // softer than for the other commands — the deferral is purely about
     // upstream parity. Worth taking whenever.
-    /// Build a pointer from this file (read content, hash, encode).
+    /// A local file to build the pointer from.
     #[arg(short, long)]
     pub file: Option<PathBuf>,
-    /// Parse and display this existing pointer file.
+
+    /// A local file containing a pointer generated from another
+    /// implementation.
+    ///
+    /// Compared to the pointer generated from `--file`.
     #[arg(short, long)]
     pub pointer: Option<PathBuf>,
-    /// Read a pointer from stdin (mutually exclusive with --pointer).
+
+    /// Read the pointer from standard input to compare with the
+    /// pointer generated from `--file`.
     #[arg(long)]
     pub stdin: bool,
-    /// Validity check mode: exit 0 if input parses, 1 if not, 2 if
-    /// `--strict` and not byte-canonical.
+
+    /// Read the pointer from standard input (with `--stdin`) or the
+    /// filepath (with `--file`).
+    ///
+    /// If neither or both of `--stdin` and `--file` are given, the
+    /// invocation is invalid. Exits 0 if the data read is a valid Git
+    /// LFS pointer, 1 otherwise. With `--strict`, exits 2 if the
+    /// pointer is not byte-canonical.
     #[arg(long)]
     pub check: bool,
-    /// In `--check`, also reject non-canonical pointers.
+
+    /// With `--check`, verify that the pointer is canonical (the one
+    /// Git LFS would create).
+    ///
+    /// If it isn't, exits 2. The default — for backwards compatibility
+    /// — is `--no-strict`.
     #[arg(long)]
     pub strict: bool,
-    /// Explicitly disable strict mode (paired with `--strict`).
+
+    /// Disable strict mode (paired with `--strict`).
     #[arg(long)]
     pub no_strict: bool,
 }
 
-/// Show the LFS environment: version, endpoints, on-disk paths, and
-/// the three `filter.lfs.*` config values.
+/// Display the Git LFS environment
+///
+/// Display the current Git LFS environment: version, endpoints,
+/// on-disk paths, and the three `filter.lfs.*` config values.
 #[derive(Args)]
 pub struct EnvArgs;
 
-/// List the configured LFS pointer extensions (`lfs.extension.<name>.*`).
-/// Extensions chain external clean/smudge programs around each LFS
-/// object; this prints their resolved configuration in priority order.
+/// List the configured LFS pointer extensions
+///
+/// Print each `lfs.extension.<name>.*` entry resolved to its final
+/// configuration in priority order. Extensions chain external
+/// clean / smudge programs around each LFS object — see
+/// git-lfs-config(5) for how to configure them.
 #[derive(Args)]
 pub struct ExtArgs;
 
-/// (Re-)install the four LFS git hooks (`pre-push`, `post-checkout`,
-/// `post-commit`, `post-merge`) for the current repository.
+/// Update Git hooks
+///
+/// Update the Git hooks used by Git LFS. Silently upgrades known hook
+/// contents. If you have your own custom hooks you may need to use
+/// one of the extended options below.
 #[derive(Args)]
 pub struct UpdateArgs {
-    /// Overwrite any custom hook contents.
-    #[arg(long)]
+    /// Forcibly overwrite any existing hooks with git-lfs hooks.
+    ///
+    /// Use this option if `git lfs update` fails because of existing
+    /// hooks but you don't care about their current contents.
+    #[arg(short, long)]
     pub force: bool,
-    /// Print install instructions instead of writing the hook files.
-    #[arg(long)]
+
+    /// Print instructions for manually updating your hooks to
+    /// include git-lfs functionality.
+    ///
+    /// Use this option if `git lfs update` fails because of existing
+    /// hooks and you want to retain their functionality.
+    #[arg(short, long)]
     pub manual: bool,
 }
 

@@ -2,7 +2,7 @@
 
 ## Name
 
-`git-lfs-version` — Print the git-lfs version and exit
+`git-lfs-version` — Print the git-lfs version banner and exit
 
 ## Synopsis
 
@@ -12,7 +12,7 @@ git-lfs-version
 
 ## Description
 
-Print the git-lfs version and exit
+Print the git-lfs version banner and exit
 
 ## Reporting bugs
 

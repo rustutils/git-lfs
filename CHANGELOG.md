@@ -61,6 +61,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--verify-remote` family and the recent-files /
   stash / worktree retention rules; `fsck` skips the
   `<a>..<b>` range form and `lfs.fetchexclude` honor.
+- `git-lfs-clean(1)`, `git-lfs-filter-process(1)`,
+  `git-lfs-clone(1)`, `git-lfs-pointer(1)`,
+  `git-lfs-version(1)`, `git-lfs-env(1)`,
+  `git-lfs-ext(1)`, and `git-lfs-update(1)` get
+  upstream-faithful descriptions and per-flag wording.
+  Adds `-s` (`--skip`) on filter-process and `-m`/`-f`
+  (`--manual`/`--force`) on update for parity with
+  upstream's short aliases. The `git-lfs-clone(1)` page
+  notes that `git lfs clone` no longer offers a
+  meaningful speedup over plain `git clone` (which
+  parallelizes the smudge filter on modern Git).
 - Every man page and mdbook page now ends with a REPORTING BUGS
   section pointing at the project issue tracker and clarifying
   that this is the Rust port (so reports don't end up on the

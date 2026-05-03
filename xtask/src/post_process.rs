@@ -61,7 +61,7 @@ fn external_ref_re() -> &'static Regex {
     // as we link to them.
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"\b(gitignore|gitattributes|gitconfig|git-worktree)\((\d)\)").unwrap()
+        Regex::new(r"\b(gitignore|gitattributes|gitconfig|git-worktree|git-clone)\((\d)\)").unwrap()
     })
 }
 

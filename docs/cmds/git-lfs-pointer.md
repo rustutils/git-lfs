@@ -2,7 +2,7 @@
 
 ## Name
 
-`git-lfs-pointer` — Debug helper: build a pointer from a file, parse one from disk or stdin, or just check whether some bytes are a valid pointer
+`git-lfs-pointer` — Build, compare, and check pointers
 
 ## Synopsis
 
@@ -12,29 +12,37 @@ git-lfs-pointer [OPTIONS]
 
 ## Description
 
-Debug helper: build a pointer from a file, parse one from disk or stdin, or just check whether some bytes are a valid pointer
+Build, compare, and check pointers
+
+Build and optionally compare generated pointer files to ensure consistency between different Git LFS implementations.
 
 ## Options
 
 ### Flags
 
 - `-f`, `--file` `<FILE>`
-    Build a pointer from this file (read content, hash, encode)
+    A local file to build the pointer from
 
 - `-p`, `--pointer` `<POINTER>`
-    Parse and display this existing pointer file
+    A local file containing a pointer generated from another implementation.
+
+    Compared to the pointer generated from `--file`.
 
 - `--stdin`
-    Read a pointer from stdin (mutually exclusive with --pointer)
+    Read the pointer from standard input to compare with the pointer generated from `--file`
 
 - `--check`
-    Validity check mode: exit 0 if input parses, 1 if not, 2 if `--strict` and not byte-canonical
+    Read the pointer from standard input (with `--stdin`) or the filepath (with `--file`).
+
+    If neither or both of `--stdin` and `--file` are given, the invocation is invalid. Exits 0 if the data read is a valid Git LFS pointer, 1 otherwise. With `--strict`, exits 2 if the pointer is not byte-canonical.
 
 - `--strict`
-    In `--check`, also reject non-canonical pointers
+    With `--check`, verify that the pointer is canonical (the one Git LFS would create).
+
+    If it isn't, exits 2. The default — for backwards compatibility — is `--no-strict`.
 
 - `--no-strict`
-    Explicitly disable strict mode (paired with `--strict`)
+    Disable strict mode (paired with `--strict`)
 
 ## Reporting bugs
 

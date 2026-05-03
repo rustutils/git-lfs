@@ -169,6 +169,24 @@ const FSCK: ManContent = ManContent {
     extra_sections: &[("SEE ALSO", include_str!("../man/fsck/see_also.md"))],
 };
 
+const CLEAN: ManContent = ManContent {
+    description: None,
+    extra_sections: &[("SEE ALSO", include_str!("../man/clean/see_also.md"))],
+};
+
+const FILTER_PROCESS: ManContent = ManContent {
+    description: None,
+    extra_sections: &[(
+        "SEE ALSO",
+        include_str!("../man/filter-process/see_also.md"),
+    )],
+};
+
+const CLONE: ManContent = ManContent {
+    description: None,
+    extra_sections: &[("SEE ALSO", include_str!("../man/clone/see_also.md"))],
+};
+
 /// Look up the doc extras for `subcommand` (e.g. `"fetch"`,
 /// `"checkout"`). Pass `""` for the top-level `git-lfs` page.
 /// Returns a reference to [`ManContent::empty`] when there's no entry,
@@ -191,6 +209,9 @@ pub fn extras_for(subcommand: &str) -> &'static ManContent {
         "ls-files" => &LS_FILES,
         "prune" => &PRUNE,
         "fsck" => &FSCK,
+        "clean" => &CLEAN,
+        "filter-process" => &FILTER_PROCESS,
+        "clone" => &CLONE,
         _ => &EMPTY,
     }
 }

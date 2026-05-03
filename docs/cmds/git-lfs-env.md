@@ -2,7 +2,7 @@
 
 ## Name
 
-`git-lfs-env` — Show the LFS environment: version, endpoints, on-disk paths, and the three `filter.lfs.*` config values
+`git-lfs-env` — Display the Git LFS environment
 
 ## Synopsis
 
@@ -12,7 +12,9 @@ git-lfs-env
 
 ## Description
 
-Show the LFS environment: version, endpoints, on-disk paths, and the three `filter.lfs.*` config values
+Display the Git LFS environment
+
+Display the current Git LFS environment: version, endpoints, on-disk paths, and the three `filter.lfs.*` config values.
 
 ## Reporting bugs
 

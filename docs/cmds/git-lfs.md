@@ -29,20 +29,20 @@ Git LFS — large file storage for git
 - `uninstall` — Remove Git LFS configuration
 - `track` — View or add Git LFS paths to Git attributes
 - `untrack` — Remove Git LFS paths from Git attributes
-- `filter-process` — Run the long-running filter-process protocol with git over stdin/stdout. This is what git invokes via filter.lfs.process and is the batched alternative to per-invocation `clean`/`smudge`
+- `filter-process` — Git filter process that converts between pointer and actual content
 - `fetch` — Download all Git LFS files for a given ref
 - `pull` — Download all Git LFS files for current ref and checkout
 - `push` — Push queued large files to the Git LFS endpoint
-- `clone` — Deprecated. Wraps `git clone` so the working tree is populated with pointer text first, then runs `git lfs pull` to download LFS content in batch. Modern `git clone` parallelizes the smudge filter and is no slower; prefer it
+- `clone` — Efficiently clone a LFS-enabled repository
 - `post-checkout` — Git post-checkout hook entry point. Receives `<prev-sha> <post-sha> <flag>` (flag is "1" if HEAD moved). Currently a no-op stub — exists so installed hook scripts don't fail. Real behavior arrives with `track --lockable`
 - `post-commit` — Git post-commit hook entry point. No arguments. Currently a no-op stub
 - `post-merge` — Git post-merge hook entry point. Receives `<squash-flag>`. Currently a no-op stub
 - `pre-push` — Git pre-push hook entry point — not typically invoked by hand. Reads `<local-ref> <local-sha> <remote-ref> <remote-sha>` lines from stdin and uploads the LFS objects newly reachable from each `<local-sha>`
-- `version` — Print the git-lfs version and exit
-- `pointer` — Debug helper: build a pointer from a file, parse one from disk or stdin, or just check whether some bytes are a valid pointer
-- `env` — Show the LFS environment: version, endpoints, on-disk paths, and the three `filter.lfs.*` config values
-- `ext` — List the configured LFS pointer extensions (`lfs.extension.<name>.*`). Extensions chain external clean/smudge programs around each LFS object; this prints their resolved configuration in priority order
-- `update` — (Re-)install the four LFS git hooks (`pre-push`, `post-checkout`, `post-commit`, `post-merge`) for the current repository
+- `version` — Print the git-lfs version banner and exit
+- `pointer` — Build, compare, and check pointers
+- `env` — Display the Git LFS environment
+- `ext` — List the configured LFS pointer extensions
+- `update` — Update Git hooks
 - `migrate` — Analyze or rewrite history for LFS conversion. Phase 1 ships `info` only; `import` and `export` will land in subsequent phases
 - `checkout` — Populate working copy with real content from Git LFS files
 - `prune` — Delete old LFS files from local storage

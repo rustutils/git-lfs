@@ -29,6 +29,10 @@ Clean is not part of the user-facing Git plumbing commands. To preview the point
 
     Substituted for `%f` in any configured `lfs.extension.<name>.clean` command.
 
+## See also
+
+[git-lfs-install(1)](./git-lfs-install.md), [git-lfs-push(1)](./git-lfs-push.md), [git-lfs-pointer(1)](./git-lfs-pointer.md), [gitattributes(5)](https://git-scm.com/docs/gitattributes).
+
 ## Reporting bugs
 
 This command is from the Rust implementation of git-lfs, not the original
