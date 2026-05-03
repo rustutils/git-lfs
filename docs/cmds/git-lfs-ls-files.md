@@ -2,7 +2,7 @@
 
 ## Name
 
-`git-lfs-ls-files` — List LFS-tracked files visible at a ref (default: HEAD), or across all reachable history with `--all`
+`git-lfs-ls-files` — Show information about Git LFS files in the index and working tree
 
 ## Synopsis
 
@@ -12,7 +12,13 @@ git-lfs-ls-files [OPTIONS] [REFSPEC]
 
 ## Description
 
-List LFS-tracked files visible at a ref (default: HEAD), or across all reachable history with `--all`
+Show information about Git LFS files in the index and working tree
+
+Display paths of Git LFS files that are found in the tree at the given reference. If no reference is given, scan the currently checked-out branch.
+
+An asterisk (`*`) after the OID indicates a full object, a minus (`-`) indicates an LFS pointer.
+
+Note: upstream's `--include` / `--exclude` path filters and the `--deleted` flag (which shows the full history of the given reference, including objects that have been deleted) aren't yet supported. The two-references form (`git lfs ls-files <a> <b>`, to show files modified between two refs) is also not yet supported.
 
 ## Options
 
@@ -24,22 +30,32 @@ List LFS-tracked files visible at a ref (default: HEAD), or across all reachable
 ### Flags
 
 - `-l`, `--long`
-    Show full 64-char OID instead of the 10-char prefix
+    Show the entire 64-character OID, instead of just the first 10
 
 - `-s`, `--size`
-    Append humanized size in parens
+    Show the size of the LFS object in parentheses at the end of each line
 
 - `-n`, `--name-only`
-    Print only the path
+    Show only the LFS-tracked file names
 
 - `-a`, `--all`
-    Walk every reachable ref's full history
+    Inspect the full history of the repository, not the current HEAD (or other provided reference).
+
+    Includes previous versions of LFS objects that are no longer found in the current tree.
 
 - `-d`, `--debug`
-    Multi-line per-file block (size, checkout, download, oid, version)
+    Show as much information as possible about an LFS file.
+
+    Intended for manual inspection; the exact format may change at any time.
 
 - `-j`, `--json`
-    Stable JSON output for scripts
+    Write Git LFS file information as JSON to standard output if the command exits successfully.
+
+    Intended for interoperation with external tools. If `--debug` is also provided, that option takes precedence. If any of `--long`, `--size`, or `--name-only` are provided, those options will have no effect.
+
+## See also
+
+[git-lfs-status(1)](./git-lfs-status.md), [git-lfs-config(5)](./git-lfs-config.md).
 
 ## Reporting bugs
 

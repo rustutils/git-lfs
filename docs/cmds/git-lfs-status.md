@@ -2,7 +2,7 @@
 
 ## Name
 
-`git-lfs-status` — Show staged + unstaged changes, classifying each blob as LFS, Git, or working-tree File
+`git-lfs-status` — Show the status of Git LFS files in the working tree
 
 ## Synopsis
 
@@ -12,17 +12,27 @@ git-lfs-status [OPTIONS]
 
 ## Description
 
-Show staged + unstaged changes, classifying each blob as LFS, Git, or working-tree File
+Show the status of Git LFS files in the working tree
+
+Display paths of Git LFS objects that have not been pushed to the Git LFS server (large files that would be uploaded by `git push`), that have differences between the index file and the current HEAD commit (large files that would be committed by `git commit`), or that have differences between the working tree and the index file (files that could be staged with `git add`).
+
+Must be run in a non-bare repository.
 
 ## Options
 
 ### Flags
 
 - `-p`, `--porcelain`
-    Stable one-line-per-change format for scripts
+    Give the output in an easy-to-parse format for scripts
 
 - `-j`, `--json`
-    Stable JSON output for scripts; only LFS entries are reported
+    Write Git LFS file status information as JSON to standard output if the command exits successfully.
+
+    Intended for interoperation with external tools. If `--porcelain` is also provided, that option takes precedence.
+
+## See also
+
+[git-lfs-ls-files(1)](./git-lfs-ls-files.md).
 
 ## Reporting bugs
 

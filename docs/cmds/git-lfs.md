@@ -45,13 +45,13 @@ Git LFS — large file storage for git
 - `update` — (Re-)install the four LFS git hooks (`pre-push`, `post-checkout`, `post-commit`, `post-merge`) for the current repository
 - `migrate` — Analyze or rewrite history for LFS conversion. Phase 1 ships `info` only; `import` and `export` will land in subsequent phases
 - `checkout` — Populate working copy with real content from Git LFS files
-- `prune` — Delete local LFS objects that aren't reachable from HEAD or any unpushed commit. Reclaims disk for repos whose history has moved past their objects
-- `fsck` — Check the integrity of LFS objects and pointers reachable from `<refspec>` (default: HEAD). Exit 1 if anything is corrupt
-- `status` — Show staged + unstaged changes, classifying each blob as LFS, Git, or working-tree File
+- `prune` — Delete old LFS files from local storage
+- `fsck` — Check Git LFS files for consistency
+- `status` — Show the status of Git LFS files in the working tree
 - `lock` — Set a file as "locked" on the Git LFS server
 - `locks` — Lists currently locked files from the Git LFS server
 - `unlock` — Remove "locked" setting for a file on the Git LFS server
-- `ls-files` — List LFS-tracked files visible at a ref (default: HEAD), or across all reachable history with `--all`
+- `ls-files` — Show information about Git LFS files in the index and working tree
 
 ## Reporting bugs
 

@@ -889,44 +889,85 @@ pub struct CheckoutArgs {
     pub paths: Vec<String>,
 }
 
-/// Delete local LFS objects that aren't reachable from HEAD or any
-/// unpushed commit. Reclaims disk for repos whose history has moved
-/// past their objects.
+/// Delete old LFS files from local storage
+///
+/// Delete locally stored LFS objects that aren't reachable from HEAD
+/// or any unpushed commit, freeing up disk space.
+///
+/// Note: many of upstream's prune options aren't yet supported —
+/// `--force`, `--recent`, `--verify-remote` (and the `--no-...`
+/// variants), `--verify-unreachable`, `--when-unverified`, the
+/// recent-refs / recent-commits retention windows, and the
+/// stash / worktree retention rules. The basic
+/// reachable-from-HEAD-or-unpushed walk is implemented and matches
+/// upstream's default semantics.
 #[derive(Args)]
 pub struct PruneArgs {
-    /// Don't delete anything; just report what would go.
+    /// Don't actually delete anything; just report what would have
+    /// been done.
     #[arg(short, long)]
     pub dry_run: bool,
-    /// Print each prunable object's OID and size.
+
+    /// Report the full detail of what is/would be deleted.
     #[arg(short, long)]
     pub verbose: bool,
 }
 
-/// Check the integrity of LFS objects and pointers reachable from
-/// `<refspec>` (default: HEAD). Exit 1 if anything is corrupt.
+/// Check Git LFS files for consistency
+///
+/// Check all Git LFS files in the current HEAD for consistency.
+/// Corrupted files are moved to `.git/lfs/bad`.
+///
+/// A single committish may be given to inspect that commit instead of
+/// HEAD. The `<a>..<b>` range form from upstream is not yet supported
+/// — only a single ref is accepted. With no argument, HEAD is
+/// examined.
+///
+/// The default is to perform all checks. `lfs.fetchexclude` is also
+/// not yet honored on this command; objects whose paths match the
+/// exclude list will still be checked.
 #[derive(Args)]
 pub struct FsckArgs {
     /// Ref to scan. Defaults to HEAD.
     pub refspec: Option<String>,
-    /// Only check objects (verify store contents match pointer OIDs).
+
+    /// Check that each object in HEAD matches its expected hash and
+    /// that each object exists on disk.
     #[arg(long)]
     pub objects: bool,
-    /// Only check pointers (flag non-canonical pointer encodings).
+
+    /// Check that each pointer is canonical and that each file which
+    /// should be stored as a Git LFS file is so stored.
     #[arg(long)]
     pub pointers: bool,
-    /// Report problems but don't move corrupt objects to `<lfs>/bad/`.
+
+    /// Perform checks, but do not move any corrupted files to
+    /// `.git/lfs/bad`.
     #[arg(short, long)]
     pub dry_run: bool,
 }
 
-/// Show staged + unstaged changes, classifying each blob as LFS,
-/// Git, or working-tree File.
+/// Show the status of Git LFS files in the working tree
+///
+/// Display paths of Git LFS objects that have not been pushed to the
+/// Git LFS server (large files that would be uploaded by `git push`),
+/// that have differences between the index file and the current HEAD
+/// commit (large files that would be committed by `git commit`), or
+/// that have differences between the working tree and the index file
+/// (files that could be staged with `git add`).
+///
+/// Must be run in a non-bare repository.
 #[derive(Args)]
 pub struct StatusArgs {
-    /// Stable one-line-per-change format for scripts.
+    /// Give the output in an easy-to-parse format for scripts.
     #[arg(short, long)]
     pub porcelain: bool,
-    /// Stable JSON output for scripts; only LFS entries are reported.
+
+    /// Write Git LFS file status information as JSON to standard
+    /// output if the command exits successfully.
+    ///
+    /// Intended for interoperation with external tools. If
+    /// `--porcelain` is also provided, that option takes precedence.
     #[arg(short, long)]
     pub json: bool,
 }
@@ -1085,28 +1126,62 @@ pub struct UnlockArgs {
     pub refspec: Option<String>,
 }
 
-/// List LFS-tracked files visible at a ref (default: HEAD), or across
-/// all reachable history with `--all`.
+/// Show information about Git LFS files in the index and working tree
+///
+/// Display paths of Git LFS files that are found in the tree at the
+/// given reference. If no reference is given, scan the currently
+/// checked-out branch.
+///
+/// An asterisk (`*`) after the OID indicates a full object, a minus
+/// (`-`) indicates an LFS pointer.
+///
+/// Note: upstream's `--include` / `--exclude` path filters and the
+/// `--deleted` flag (which shows the full history of the given
+/// reference, including objects that have been deleted) aren't yet
+/// supported. The two-references form (`git lfs ls-files <a> <b>`,
+/// to show files modified between two refs) is also not yet
+/// supported.
 #[derive(Args)]
 pub struct LsFilesArgs {
     /// Ref to list. Defaults to HEAD.
     pub refspec: Option<String>,
-    /// Show full 64-char OID instead of the 10-char prefix.
+
+    /// Show the entire 64-character OID, instead of just the first
+    /// 10.
     #[arg(short, long)]
     pub long: bool,
-    /// Append humanized size in parens.
+
+    /// Show the size of the LFS object in parentheses at the end of
+    /// each line.
     #[arg(short, long)]
     pub size: bool,
-    /// Print only the path.
+
+    /// Show only the LFS-tracked file names.
     #[arg(short, long)]
     pub name_only: bool,
-    /// Walk every reachable ref's full history.
+
+    /// Inspect the full history of the repository, not the current
+    /// HEAD (or other provided reference).
+    ///
+    /// Includes previous versions of LFS objects that are no longer
+    /// found in the current tree.
     #[arg(short, long)]
     pub all: bool,
-    /// Multi-line per-file block (size, checkout, download, oid, version).
+
+    /// Show as much information as possible about an LFS file.
+    ///
+    /// Intended for manual inspection; the exact format may change
+    /// at any time.
     #[arg(short, long)]
     pub debug: bool,
-    /// Stable JSON output for scripts.
+
+    /// Write Git LFS file information as JSON to standard output if
+    /// the command exits successfully.
+    ///
+    /// Intended for interoperation with external tools. If `--debug`
+    /// is also provided, that option takes precedence. If any of
+    /// `--long`, `--size`, or `--name-only` are provided, those
+    /// options will have no effect.
     #[arg(short, long)]
     pub json: bool,
 }

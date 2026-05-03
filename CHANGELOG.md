@@ -51,6 +51,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--ref` (refspec) flag is documented as an extension
   over upstream's CLI on each command. `--cached` on
   `locks` is not yet implemented.
+- `git-lfs-status(1)`, `git-lfs-ls-files(1)`,
+  `git-lfs-prune(1)`, and `git-lfs-fsck(1)` get
+  upstream-faithful DESCRIPTIONs and per-flag wording,
+  plus SEE ALSO sections. Each page honestly notes
+  unimplemented upstream features: `ls-files` skips
+  `--include`/`--exclude`/`--deleted` and the two-ref
+  diff form; `prune` skips the `--force`/`--recent`/
+  `--verify-remote` family and the recent-files /
+  stash / worktree retention rules; `fsck` skips the
+  `<a>..<b>` range form and `lfs.fetchexclude` honor.
 - Every man page and mdbook page now ends with a REPORTING BUGS
   section pointing at the project issue tracker and clarifying
   that this is the Rust port (so reports don't end up on the

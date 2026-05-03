@@ -149,6 +149,26 @@ const UNLOCK: ManContent = ManContent {
     extra_sections: &[("SEE ALSO", include_str!("../man/unlock/see_also.md"))],
 };
 
+const STATUS: ManContent = ManContent {
+    description: None,
+    extra_sections: &[("SEE ALSO", include_str!("../man/status/see_also.md"))],
+};
+
+const LS_FILES: ManContent = ManContent {
+    description: None,
+    extra_sections: &[("SEE ALSO", include_str!("../man/ls-files/see_also.md"))],
+};
+
+const PRUNE: ManContent = ManContent {
+    description: None,
+    extra_sections: &[("SEE ALSO", include_str!("../man/prune/see_also.md"))],
+};
+
+const FSCK: ManContent = ManContent {
+    description: None,
+    extra_sections: &[("SEE ALSO", include_str!("../man/fsck/see_also.md"))],
+};
+
 /// Look up the doc extras for `subcommand` (e.g. `"fetch"`,
 /// `"checkout"`). Pass `""` for the top-level `git-lfs` page.
 /// Returns a reference to [`ManContent::empty`] when there's no entry,
@@ -167,6 +187,10 @@ pub fn extras_for(subcommand: &str) -> &'static ManContent {
         "lock" => &LOCK,
         "locks" => &LOCKS,
         "unlock" => &UNLOCK,
+        "status" => &STATUS,
+        "ls-files" => &LS_FILES,
+        "prune" => &PRUNE,
+        "fsck" => &FSCK,
         _ => &EMPTY,
     }
 }
