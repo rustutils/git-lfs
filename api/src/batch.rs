@@ -92,7 +92,7 @@ pub struct ObjectResult {
     pub size: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authenticated: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, alias = "_links", skip_serializing_if = "Option::is_none")]
     pub actions: Option<Actions>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<ObjectError>,

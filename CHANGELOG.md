@@ -139,6 +139,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `git lfs ls-files --debug` now terminates each pointer block
   with a trailing blank line, matching upstream's output and the
   vendored `t-ls-files` test expectations.
+- Batch responses that use the deprecated `_links` field name
+  (instead of `actions`) now deserialize correctly. Older LFS
+  servers in the wild still emit this form.
 
 ## [0.4.0] - 2026-05-02
 
