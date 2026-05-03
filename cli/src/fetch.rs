@@ -158,20 +158,48 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
 
     let mut pointers = if walk_refs.is_empty() {
         git_lfs_git::scan_index_lfs(cwd)?
-    } else {
+    } else if opts.all {
+        // `--all` walks every reachable commit so historical /
+        // deleted-from-HEAD pointers still get fetched. Augmented
+        // below with per-ref tree paths so include/exclude filters
+        // see every working-tree path an OID lives at.
         scan_pointers(cwd, &ref_strs, &[])?
+    } else {
+        // Plain `git lfs fetch <ref>` walks the HEAD-state tree of
+        // each ref only — matches upstream's `fetchRef` behavior
+        // (recent-history walks happen via `--recent` or `--all`).
+        // Dedup by OID across refs so a pointer reachable from two
+        // refs at the same path doesn't double-enqueue.
+        use std::collections::HashMap;
+        let mut by_oid: HashMap<git_lfs_pointer::Oid, PointerEntry> = HashMap::new();
+        for r in &walk_refs {
+            for e in git_lfs_git::scan_tree(cwd, r)? {
+                by_oid
+                    .entry(e.oid)
+                    .and_modify(|existing| {
+                        for p in &e.paths {
+                            if !existing.paths.contains(p) {
+                                existing.paths.push(p.clone());
+                            }
+                        }
+                    })
+                    .or_insert(e);
+            }
+        }
+        by_oid.into_values().collect()
     };
 
-    // Augment each pointer's `paths` with every working-tree path the
-    // same LFS object lives at across the named refs. `git rev-list
-    // --objects` only emits each blob OID once (with one of its
-    // paths), so two `--include` patterns like `big/a` vs `big/b` —
-    // pointing at files that share a blob — would otherwise see one
-    // arbitrary side and reject the OID. `scan_tree` does walk every
-    // path in one ref, so unioning that gives us the full set.
-    // Skipped on the index path — ls-files emits one entry per index
+    // For the `--all` path, augment each pointer's `paths` with every
+    // working-tree path the same LFS object lives at across the named
+    // refs. `git rev-list --objects` only emits each blob OID once
+    // (with one of its paths), so two `--include` patterns like
+    // `big/a` vs `big/b` — pointing at files that share a blob —
+    // would otherwise see one arbitrary side and reject the OID.
+    // `scan_tree` does walk every path in one ref, so unioning that
+    // gives us the full set. The non-all path already aggregates via
+    // scan_tree above, and the index path emits one entry per index
     // path already.
-    if !walk_refs.is_empty() {
+    if !walk_refs.is_empty() && opts.all {
         use std::collections::HashMap;
         let mut extra_paths: HashMap<git_lfs_pointer::Oid, Vec<PathBuf>> = HashMap::new();
         for r in &walk_refs {

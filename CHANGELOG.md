@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `git lfs fetch <ref>...` now scans only the HEAD-state of each
+  named ref instead of walking its full history. Historical /
+  deleted-from-HEAD pointers still get fetched via `--all` or
+  `--recent`. Matches upstream's `fetchRef` vs `fetchRefs` split
+  and is a prerequisite for the upcoming `--recent` semantics.
+
 ## [0.5.0] - 2026-05-03
 
 ### Changed
