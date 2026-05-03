@@ -118,6 +118,22 @@ const UNINSTALL: ManContent = ManContent {
     extra_sections: &[("SEE ALSO", include_str!("../man/uninstall/see_also.md"))],
 };
 
+const TRACK: ManContent = ManContent {
+    description: None,
+    extra_sections: &[
+        ("EXAMPLES", include_str!("../man/track/examples.md")),
+        ("SEE ALSO", include_str!("../man/track/see_also.md")),
+    ],
+};
+
+const UNTRACK: ManContent = ManContent {
+    description: None,
+    extra_sections: &[
+        ("EXAMPLES", include_str!("../man/untrack/examples.md")),
+        ("SEE ALSO", include_str!("../man/untrack/see_also.md")),
+    ],
+};
+
 /// Look up the doc extras for `subcommand` (e.g. `"fetch"`,
 /// `"checkout"`). Pass `""` for the top-level `git-lfs` page.
 /// Returns a reference to [`ManContent::empty`] when there's no entry,
@@ -131,6 +147,8 @@ pub fn extras_for(subcommand: &str) -> &'static ManContent {
         "push" => &PUSH,
         "install" => &INSTALL,
         "uninstall" => &UNINSTALL,
+        "track" => &TRACK,
+        "untrack" => &UNTRACK,
         _ => &EMPTY,
     }
 }

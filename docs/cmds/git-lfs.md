@@ -27,8 +27,8 @@ Git LFS — large file storage for git
 - `smudge` — Git smudge filter that converts pointer in blobs to the actual content
 - `install` — Install Git LFS configuration
 - `uninstall` — Remove Git LFS configuration
-- `track` — Track a file pattern with git-lfs by adding it to .gitattributes. With no patterns, lists currently-tracked patterns
-- `untrack` — Stop tracking a file pattern with git-lfs by removing it from .gitattributes. The matching pointer files in history (and the objects in the local store) are left in place
+- `track` — View or add Git LFS paths to Git attributes
+- `untrack` — Remove Git LFS paths from Git attributes
 - `filter-process` — Run the long-running filter-process protocol with git over stdin/stdout. This is what git invokes via filter.lfs.process and is the batched alternative to per-invocation `clean`/`smudge`
 - `fetch` — Download all Git LFS files for a given ref
 - `pull` — Download all Git LFS files for current ref and checkout

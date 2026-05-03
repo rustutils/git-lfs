@@ -2,7 +2,7 @@
 
 ## Name
 
-`git-lfs-untrack` — Stop tracking a file pattern with git-lfs by removing it from .gitattributes. The matching pointer files in history (and the objects in the local store) are left in place
+`git-lfs-untrack` — Remove Git LFS paths from Git attributes
 
 ## Synopsis
 
@@ -12,14 +12,26 @@ git-lfs-untrack [PATTERNS]...
 
 ## Description
 
-Stop tracking a file pattern with git-lfs by removing it from .gitattributes. The matching pointer files in history (and the objects in the local store) are left in place
+Remove Git LFS paths from Git attributes
+
+Stop tracking the given path(s) through Git LFS. The argument can be a glob pattern or a file path. The matching pointer files in history (and the objects in the local store) are left in place.
 
 ## Options
 
 ### Arguments
 
 - `<PATTERNS>`
-    File patterns to untrack
+    Paths or glob patterns to stop tracking
+
+## Examples
+
+Configure Git LFS to stop tracking GIF files:
+
+    git lfs untrack "*.gif"
+
+## See also
+
+[git-lfs-track(1)](./git-lfs-track.md), [git-lfs-install(1)](./git-lfs-install.md), [gitattributes(5)](https://git-scm.com/docs/gitattributes).
 
 ## Reporting bugs
 

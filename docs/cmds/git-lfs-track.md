@@ -2,7 +2,7 @@
 
 ## Name
 
-`git-lfs-track` — Track a file pattern with git-lfs by adding it to .gitattributes. With no patterns, lists currently-tracked patterns
+`git-lfs-track` — View or add Git LFS paths to Git attributes
 
 ## Synopsis
 
@@ -12,40 +12,75 @@ git-lfs-track [OPTIONS] [PATTERNS]...
 
 ## Description
 
-Track a file pattern with git-lfs by adding it to .gitattributes. With no patterns, lists currently-tracked patterns
+View or add Git LFS paths to Git attributes
+
+Start tracking the given pattern(s) through Git LFS. The argument is written to `.gitattributes`. If no paths are provided, list the currently-tracked paths.
+
+Per [gitattributes(5)](https://git-scm.com/docs/gitattributes), patterns use the [gitignore(5)](https://git-scm.com/docs/gitignore) pattern rules to match paths. This means that patterns containing asterisk (`*`), question mark (`?`), and the bracket characters (`[` and `]`) are treated specially; to disable this behavior and treat them literally instead, use `--filename` or escape the character with a backslash.
 
 ## Options
 
 ### Arguments
 
 - `<PATTERNS>`
-    File patterns to track (e.g. "*.jpg", "data/*.bin")
+    File patterns to track (e.g. `*.jpg`, `data/*.bin`)
 
 ### Flags
 
-- `-l`, `--lockable`
-    Mark the tracked pattern as `lockable` (`*.psd lockable`)
-
-- `--not-lockable`
-    Re-track an existing pattern, removing its `lockable` flag
-
-- `--dry-run`
-    Print what would happen without modifying `.gitattributes` or re-staging files
-
 - `-v`, `--verbose`
-    Extra logging: print "Found N files previously added to Git matching pattern" lines
+    Log files which `git lfs track` will touch. Disabled by default
 
-- `--json`
-    Listing mode only: emit JSON instead of the human-readable listing
+- `-d`, `--dry-run`
+    Log all actions that would normally take place (adding entries to `.gitattributes`, touching files on disk, etc.) without performing any mutative operations.
 
-- `--no-excluded`
-    Listing mode only: suppress the "Listing excluded patterns" section
+    Implicitly mocks the behavior of `--verbose`, logging in greater detail what it is doing. Disabled by default.
+
+- `-j`, `--json`
+    Write the currently tracked patterns as JSON to standard output.
+
+    Intended for interoperation with external tools. Cannot be combined with any pattern arguments. If `--no-excluded` is also provided, that option will have no effect.
 
 - `--filename`
-    Treat each pattern as a literal filename — escape glob metacharacters (`*`, `?`, `[`, `]`, backslash, space) so the entry in `.gitattributes` matches that exact name even when it contains shell-glob characters
+    Treat the arguments as literal filenames, not as patterns.
+
+    Any special glob characters in the filename will be escaped when writing the `.gitattributes` file.
+
+- `-l`, `--lockable`
+    Make the paths "lockable" — they should be locked to edit them, and will be made read-only in the working copy when not locked
+
+- `--not-lockable`
+    Remove the lockable flag from the paths so they are no longer read-only unless locked
+
+- `--no-excluded`
+    Don't list patterns that are excluded in the output; only list patterns that are tracked
 
 - `--no-modify-attrs`
-    Don't modify `.gitattributes` — the user has already added the LFS filter line themselves. Still walks the index and touches matching files' mtime so they show as modified on the next `git status`
+    Make matched entries stat-dirty so that Git can re-index files you wish to convert to LFS.
+
+    Does not modify any `.gitattributes` file.
+
+## Examples
+
+List the patterns that Git LFS is currently tracking:
+
+    git lfs track
+
+Configure Git LFS to track GIF files:
+
+    git lfs track "*.gif"
+
+Configure Git LFS to track PSD files and make them read-only unless
+locked:
+
+    git lfs track --lockable "*.psd"
+
+Configure Git LFS to track the file named `project [1].psd`:
+
+    git lfs track --filename "project [1].psd"
+
+## See also
+
+[git-lfs-untrack(1)](./git-lfs-untrack.md), [git-lfs-install(1)](./git-lfs-install.md), [gitattributes(5)](https://git-scm.com/docs/gitattributes), [gitignore(5)](https://git-scm.com/docs/gitignore).
 
 ## Reporting bugs
 

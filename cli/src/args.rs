@@ -248,54 +248,81 @@ pub struct UninstallArgs {
     pub skip_repo: bool,
 }
 
-/// Track a file pattern with git-lfs by adding it to .gitattributes.
-/// With no patterns, lists currently-tracked patterns.
+/// View or add Git LFS paths to Git attributes
+///
+/// Start tracking the given pattern(s) through Git LFS. The argument is
+/// written to `.gitattributes`. If no paths are provided, list the
+/// currently-tracked paths.
+///
+/// Per gitattributes(5), patterns use the gitignore(5) pattern rules to
+/// match paths. This means that patterns containing asterisk (`*`),
+/// question mark (`?`), and the bracket characters (`[` and `]`) are
+/// treated specially; to disable this behavior and treat them literally
+/// instead, use `--filename` or escape the character with a backslash.
 #[derive(Args)]
 pub struct TrackArgs {
-    /// File patterns to track (e.g. "*.jpg", "data/*.bin").
+    /// File patterns to track (e.g. `*.jpg`, `data/*.bin`).
     pub patterns: Vec<String>,
-    /// Mark the tracked pattern as `lockable` (`*.psd lockable`).
-    #[arg(short = 'l', long)]
-    pub lockable: bool,
-    /// Re-track an existing pattern, removing its `lockable` flag.
-    #[arg(long)]
-    pub not_lockable: bool,
-    /// Print what would happen without modifying `.gitattributes` or
-    /// re-staging files.
-    #[arg(long)]
-    pub dry_run: bool,
-    /// Extra logging: print "Found N files previously added to Git
-    /// matching pattern" lines.
+
+    /// Log files which `git lfs track` will touch. Disabled by default.
     #[arg(short, long)]
     pub verbose: bool,
-    /// Listing mode only: emit JSON instead of the human-readable
-    /// listing.
-    #[arg(long)]
+
+    /// Log all actions that would normally take place (adding entries
+    /// to `.gitattributes`, touching files on disk, etc.) without
+    /// performing any mutative operations.
+    ///
+    /// Implicitly mocks the behavior of `--verbose`, logging in greater
+    /// detail what it is doing. Disabled by default.
+    #[arg(short, long)]
+    pub dry_run: bool,
+
+    /// Write the currently tracked patterns as JSON to standard output.
+    ///
+    /// Intended for interoperation with external tools. Cannot be
+    /// combined with any pattern arguments. If `--no-excluded` is also
+    /// provided, that option will have no effect.
+    #[arg(short, long)]
     pub json: bool,
-    /// Listing mode only: suppress the "Listing excluded patterns"
-    /// section.
-    #[arg(long)]
-    pub no_excluded: bool,
-    /// Treat each pattern as a literal filename — escape glob
-    /// metacharacters (`*`, `?`, `[`, `]`, backslash, space) so
-    /// the entry in `.gitattributes` matches that exact name even
-    /// when it contains shell-glob characters.
+
+    /// Treat the arguments as literal filenames, not as patterns.
+    ///
+    /// Any special glob characters in the filename will be escaped
+    /// when writing the `.gitattributes` file.
     #[arg(long)]
     pub filename: bool,
-    /// Don't modify `.gitattributes` — the user has already added
-    /// the LFS filter line themselves. Still walks the index and
-    /// touches matching files' mtime so they show as modified on
-    /// the next `git status`.
+
+    /// Make the paths "lockable" — they should be locked to edit them,
+    /// and will be made read-only in the working copy when not locked.
+    #[arg(short, long)]
+    pub lockable: bool,
+
+    /// Remove the lockable flag from the paths so they are no longer
+    /// read-only unless locked.
+    #[arg(long)]
+    pub not_lockable: bool,
+
+    /// Don't list patterns that are excluded in the output; only list
+    /// patterns that are tracked.
+    #[arg(long)]
+    pub no_excluded: bool,
+
+    /// Make matched entries stat-dirty so that Git can re-index files
+    /// you wish to convert to LFS.
+    ///
+    /// Does not modify any `.gitattributes` file.
     #[arg(long)]
     pub no_modify_attrs: bool,
 }
 
-/// Stop tracking a file pattern with git-lfs by removing it from
-/// .gitattributes. The matching pointer files in history (and the
-/// objects in the local store) are left in place.
+/// Remove Git LFS paths from Git attributes
+///
+/// Stop tracking the given path(s) through Git LFS. The argument can
+/// be a glob pattern or a file path. The matching pointer files in
+/// history (and the objects in the local store) are left in place.
 #[derive(Args)]
 pub struct UntrackArgs {
-    /// File patterns to untrack.
+    /// Paths or glob patterns to stop tracking.
     pub patterns: Vec<String>,
 }
 

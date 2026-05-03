@@ -41,6 +41,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   both and `-s` (`--skip-smudge`) on install for parity.
   `--manual` is not yet supported on install — use
   `git lfs update --manual` instead.
+- `git-lfs-track(1)` and `git-lfs-untrack(1)` get
+  upstream-faithful DESCRIPTIONs, per-flag wording, and
+  EXAMPLES + SEE ALSO sections. Adds `-d` (`--dry-run`)
+  and `-j` (`--json`) short aliases on track for parity.
 - Every man page and mdbook page now ends with a REPORTING BUGS
   section pointing at the project issue tracker and clarifying
   that this is the Rust port (so reports don't end up on the
