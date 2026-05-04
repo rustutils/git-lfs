@@ -28,7 +28,7 @@ pub use config::ConfigScope;
 pub use diff_index::{DiffEntry, diff_index};
 pub use endpoint::{
     EndpointError, EndpointInfo, SshInfo, derive_lfs_url, endpoint_for_remote, looks_like_url,
-    parse_ssh_url, resolve_endpoint,
+    parse_ssh_url, remote_url, resolve_endpoint,
 };
 pub use extension::{ExtensionConfig, list_extensions};
 pub use fetch_prune::FetchPruneConfig;

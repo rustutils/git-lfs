@@ -231,7 +231,7 @@ pub fn looks_like_url(s: &str) -> bool {
 /// We don't currently honor `remote.<name>.pushurl` separately — that's a
 /// minor accuracy issue for `git push`-driven LFS uploads, captured in
 /// NOTES.md.
-fn remote_url(cwd: &Path, remote: &str) -> Result<Option<String>, Error> {
+pub fn remote_url(cwd: &Path, remote: &str) -> Result<Option<String>, Error> {
     config::get_effective(cwd, &format!("remote.{remote}.url"))
 }
 

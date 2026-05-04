@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use git_lfs_api::{Auth, BatchRequest, Client as ApiClient, ObjectSpec, Operation, Ref};
-use git_lfs_creds::{CachingHelper, GitCredentialHelper, Helper, HelperChain};
+use git_lfs_creds::{AskpassHelper, CachingHelper, GitCredentialHelper, Helper, HelperChain};
 use git_lfs_filter::FetchError;
 use git_lfs_git::ConfigScope;
 use git_lfs_pointer::Pointer;
@@ -263,11 +263,53 @@ fn build_api_client_with(
 ) -> Result<ApiClient, String> {
     let endpoint = git_lfs_git::endpoint_for_remote(cwd, remote)
         .map_err(|e| format!("resolving LFS endpoint: {e}"))?;
-    let url = url::Url::parse(&endpoint).map_err(|e| format!("invalid LFS endpoint: {e}"))?;
+    let mut url = url::Url::parse(&endpoint).map_err(|e| format!("invalid LFS endpoint: {e}"))?;
+    // Extract `user:pass@` from the endpoint and use it as the initial
+    // auth so we don't have to round-trip through 401 → fill on every
+    // first request. Mirrors upstream's `setRequestAuthWithCreds` for
+    // URL-embedded credentials. Strip the user info from the URL we
+    // pass to reqwest so it doesn't double-apply.
+    let initial_auth = take_url_basic_auth(&mut url);
     let use_http_path = read_bool_default(cwd, "credential.useHttpPath", false);
-    Ok(ApiClient::with_http_client(url, Auth::None, http)
-        .with_credential_helper(default_helper_chain(cwd))
-        .with_use_http_path(use_http_path))
+    // Resolve the credential URL up front (git remote URL when it
+    // shares scheme+host with the LFS endpoint, else the LFS endpoint
+    // itself). The helper chain consults it for URL-specific
+    // `credential.<url>.helper` lookup, and the API client uses it for
+    // prompts and "Git credentials for X not found" wording.
+    let resolved_cred_url = remote
+        .and_then(|r| git_lfs_git::remote_url(cwd, r).ok().flatten())
+        .and_then(|raw| url::Url::parse(&raw).ok())
+        .filter(|gu| {
+            gu.scheme() == url.scheme()
+                && gu.host_str() == url.host_str()
+                && gu.port() == url.port()
+        });
+    let cred_url_for_helper = resolved_cred_url.clone().unwrap_or_else(|| url.clone());
+    let mut client = ApiClient::with_http_client(url.clone(), initial_auth, http)
+        .with_credential_helper(default_helper_chain(cwd, &cred_url_for_helper))
+        .with_use_http_path(use_http_path);
+    if let Some(git_url) = resolved_cred_url {
+        client = client.with_cred_url(git_url);
+    }
+    Ok(client)
+}
+
+/// Pull `user:pass@` (or `user@`, with empty password) out of `url` and
+/// turn it into an [`Auth::Basic`]. Strips both fields from the URL so
+/// downstream callers see the bare endpoint. Returns [`Auth::None`]
+/// when there's no user info to extract.
+fn take_url_basic_auth(url: &mut url::Url) -> Auth {
+    let user = url.username().to_owned();
+    let pass = url.password().map(str::to_owned).unwrap_or_default();
+    if user.is_empty() && pass.is_empty() {
+        return Auth::None;
+    }
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    Auth::Basic {
+        username: user,
+        password: pass,
+    }
 }
 
 /// Build a [`TransferConfig`] for `cwd`, plumbing
@@ -307,18 +349,91 @@ fn href_rewrite_enabled(cwd: &Path) -> bool {
     )
 }
 
-/// Default credential resolution chain: in-process cache → `git credential`.
-/// Cache is consulted first so a single CLI invocation only shells out to
-/// `git credential fill` once per host. Reads `credential.protectProtocol`
-/// (default `true`) and threads it into the git-credential helper so
-/// CR-bearing URLs can be opted into when the user explicitly does so.
-fn default_helper_chain(cwd: &Path) -> Arc<dyn Helper> {
+/// Default credential resolution chain: in-process cache → optional
+/// askpass → `git credential`. Cache is consulted first so a single CLI
+/// invocation only shells out once per host. Reads
+/// `credential.protectProtocol` (default `true`) and threads it into
+/// the git-credential helper so CR-bearing URLs can be opted into when
+/// the user explicitly does so.
+///
+/// Askpass is only inserted when:
+/// - `GIT_ASKPASS` / `core.askpass` / `SSH_ASKPASS` resolves to a
+///   non-empty program (priority in that order, matching upstream's
+///   `creds.NewCredentialHelperContext`), AND
+/// - `credential.helper` is unset — a configured helper takes
+///   precedence over interactive prompting.
+fn default_helper_chain(cwd: &Path, cred_url: &url::Url) -> Arc<dyn Helper> {
     let protect_protocol = read_bool_default(cwd, "credential.protectProtocol", true);
-    let helpers: Vec<Box<dyn Helper>> = vec![
-        Box::new(CachingHelper::new()),
-        Box::new(GitCredentialHelper::new().with_protect_protocol(protect_protocol)),
-    ];
+    let mut helpers: Vec<Box<dyn Helper>> = vec![Box::new(CachingHelper::new())];
+    if let Some(askpass) = resolve_askpass_program(cwd)
+        && !has_credential_helper(cwd, cred_url)
+    {
+        helpers.push(Box::new(AskpassHelper::new(askpass)));
+    }
+    helpers.push(Box::new(
+        GitCredentialHelper::new().with_protect_protocol(protect_protocol),
+    ));
     Arc::new(HelperChain::new(helpers))
+}
+
+/// Resolve the askpass program per upstream's selection order:
+/// `GIT_ASKPASS` env > `core.askpass` config > `SSH_ASKPASS` env. First
+/// non-empty value wins. Returns `None` when none is configured (which
+/// is the typical headless / CI case).
+fn resolve_askpass_program(cwd: &Path) -> Option<String> {
+    if let Some(v) = std::env::var_os("GIT_ASKPASS")
+        && !v.is_empty()
+    {
+        return Some(v.to_string_lossy().into_owned());
+    }
+    if let Ok(Some(v)) = git_lfs_git::config::get_effective(cwd, "core.askpass")
+        && !v.trim().is_empty()
+    {
+        return Some(v.trim().to_owned());
+    }
+    if let Some(v) = std::env::var_os("SSH_ASKPASS")
+        && !v.is_empty()
+    {
+        return Some(v.to_string_lossy().into_owned());
+    }
+    None
+}
+
+/// True if a non-empty `credential.helper` is configured for `cred_url`.
+/// Checks the URL-prefix variants in upstream's precedence order
+/// (`credential.<scheme>://<host>[:port]/<path>.helper` →
+/// `credential.<scheme>://<host>[:port].helper` →
+/// `credential.helper`) and returns true on the first non-empty match.
+/// When `true`, we skip askpass so a configured helper isn't shadowed
+/// by a pop-up prompt. Mirrors upstream's
+/// `urlConfig.Get("credential", rawurl, "helper")` lookup.
+fn has_credential_helper(cwd: &Path, cred_url: &url::Url) -> bool {
+    let mut keys = Vec::with_capacity(3);
+    let host_authority = match (cred_url.host_str(), cred_url.port()) {
+        (Some(h), Some(p)) => Some(format!("{}://{h}:{p}", cred_url.scheme())),
+        (Some(h), None) => Some(format!("{}://{h}", cred_url.scheme())),
+        _ => None,
+    };
+    if let Some(h) = &host_authority {
+        // Most-specific: include path component if present.
+        if !cred_url.path().is_empty() && cred_url.path() != "/" {
+            keys.push(format!(
+                "credential.{}{}.helper",
+                h,
+                cred_url.path().trim_end_matches('/')
+            ));
+        }
+        keys.push(format!("credential.{h}.helper"));
+    }
+    keys.push("credential.helper".to_string());
+    for key in &keys {
+        if let Ok(Some(v)) = git_lfs_git::config::get_effective(cwd, key)
+            && !v.trim().is_empty()
+        {
+            return true;
+        }
+    }
+    false
 }
 
 /// Read a git-bool config value, returning `default` when the key is

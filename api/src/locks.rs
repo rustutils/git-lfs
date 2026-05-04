@@ -178,6 +178,7 @@ impl Client {
             .map_err(CreateLockError::Api)?;
 
         let status = resp.status();
+        let request_url = resp.url().to_string();
         let bytes = resp
             .bytes()
             .await
@@ -200,6 +201,7 @@ impl Client {
             let body: Option<crate::error::ServerError> = serde_json::from_slice(&bytes).ok();
             return Err(CreateLockError::Api(ApiError::Status {
                 status: status.as_u16(),
+                url: Some(request_url),
                 lfs_authenticate: None,
                 body,
             }));

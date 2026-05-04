@@ -9,6 +9,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `creds`: new `AskpassHelper` runs `GIT_ASKPASS` /
+  `core.askpass` / `SSH_ASKPASS` (in that priority order) to prompt
+  for username + password, matching upstream's
+  `AskPassCredentialHelper`. Trace lines (`creds: filling with
+  GIT_ASKPASS: <argv>`) and prompt strings (`Username for "<url>"`,
+  `Password for "<scheme>://<user>@<host>"`) are byte-compatible with
+  upstream so existing test grep patterns line up.
+- `cli/fetcher`: extracts `user:pass@` from the LFS endpoint URL into
+  an initial `Auth::Basic` so URL-embedded credentials skip the
+  401 → fill round-trip. Builds the credential helper chain with
+  askpass slotted between cache and `git credential`, and skips
+  askpass when a `credential.helper` is configured (URL-prefix
+  lookup matches upstream's `urlConfig.Get`). Inherits the git
+  remote URL as the credential URL when it shares scheme+host with
+  the LFS endpoint, so prompts read like `Username for
+  "https://host/repo"` instead of `.../repo.git/info/lfs`.
+- `api`: `Client` gains `with_cred_url()` to override the URL used
+  for credential prompts independently of the LFS endpoint;
+  `cred_query` and `CredentialsNotFound` wording derive from it.
+  `ApiError::Status` carries the request URL and renders 401/403 as
+  upstream's `Authorization error: <url>` instead of
+  `server returned status …`. Auth-retry now resets cached
+  credentials on **403** as well as 401 so the next request fills
+  fresh creds (matches upstream's per-request `getCreds` semantics).
+
+### Changed
+
+- `cli/locks_verify`: 401/403 from the lock-verify endpoint now
+  prints upstream's full message — `(error|warning): Authentication
+  error: Authorization error: <url>` — instead of the truncated
+  `Authentication error: lock verification failed` we used before.
+  Pre-push tests still match the outer `Authentication error`
+  prefix; askpass tests pick up the inner URL-bearing
+  `Authorization error: <url>`.
+
 - Credential-helper plumbing for Milestone 6:
   - `creds`: `git credential` input is now validated before each
     `fill` / `approve` / `reject`. Newlines and null bytes are rejected

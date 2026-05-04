@@ -121,14 +121,22 @@ pub fn run(
                 Ok(Outcome::Skipped)
             }
         }
-        Err(ApiError::Status { status: 403, .. }) => {
-            // 403 — user authenticated but isn't allowed to read locks.
-            // Hard error if verify=true; warning otherwise.
+        Err(
+            e @ ApiError::Status {
+                status: 401 | 403, ..
+            },
+        ) => {
+            // Upstream's `lockverifier.go` prefixes auth-class lock
+            // errors with `(error|warning): Authentication error: <e>`,
+            // where `<e>` carries the underlying `Authorization error:
+            // <url>` wording from `defaultError`. Two layers of grep:
+            // pre-push tests look at the outer prefix, askpass tests
+            // look at the URL-bearing inner.
             if matches!(setting, Setting::Enabled) {
-                eprintln!("error: Authentication error: lock verification failed");
+                eprintln!("error: Authentication error: {e}");
                 Ok(Outcome::Aborted)
             } else {
-                eprintln!("warning: Authentication error: lock verification failed");
+                eprintln!("warning: Authentication error: {e}");
                 Ok(Outcome::Skipped)
             }
         }

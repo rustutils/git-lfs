@@ -48,6 +48,13 @@ pub struct Client {
     /// helpers can scope per-repo. Off by default to match git's host-only
     /// scoping.
     pub(crate) use_http_path: bool,
+    /// URL used for credential-fill prompts and "Git credentials for X
+    /// not found" wording. When the LFS endpoint and the git remote URL
+    /// share scheme+host, upstream uses the **git** URL here so prompts
+    /// read like `Username for "https://host/repo"` instead of
+    /// `https://host/repo.git/info/lfs`. `None` falls back to
+    /// [`Self::endpoint`].
+    pub(crate) cred_url: Option<Url>,
 }
 
 impl std::fmt::Debug for Client {
@@ -80,7 +87,18 @@ impl Client {
             credentials: None,
             filled: Arc::new(Mutex::new(None)),
             use_http_path: false,
+            cred_url: None,
         }
+    }
+
+    /// Override the URL used for credential prompts and the
+    /// `Git credentials for <url> not found` wording. Pass the git
+    /// remote URL when it shares scheme+host with the LFS endpoint;
+    /// otherwise leave unset and credentials key on the LFS endpoint.
+    #[must_use]
+    pub fn with_cred_url(mut self, url: Url) -> Self {
+        self.cred_url = Some(url);
+        self
     }
 
     /// Attach a credential helper. On 401, the client will call
@@ -140,17 +158,26 @@ impl Client {
         auth.apply(req)
     }
 
-    /// Default credential query for this client — derived from the
-    /// endpoint URL. Path is cleared unless `use_http_path` is set
-    /// (matches `git credential`'s host-only default and the
+    /// Default credential query for this client — derived from
+    /// [`Self::cred_url`] when set (the git remote URL), otherwise from
+    /// [`Self::endpoint`]. Path is cleared unless `use_http_path` is
+    /// set (matches `git credential`'s host-only default and the
     /// `credential.useHttpPath` knob).
     fn cred_query(&self) -> Query {
-        let q = Query::from_url(&self.endpoint);
+        let url = self.cred_url.as_ref().unwrap_or(&self.endpoint);
+        let q = Query::from_url(url);
         if self.use_http_path {
             q
         } else {
             q.without_path()
         }
+    }
+
+    /// Render the credential URL as a string. Used when constructing
+    /// upstream-compatible error messages like
+    /// `Git credentials for <url> not found`.
+    fn cred_url_string(&self) -> String {
+        self.cred_url.as_ref().unwrap_or(&self.endpoint).to_string()
     }
 
     /// POST a JSON body and decode a JSON response, with LFS error handling
@@ -244,7 +271,8 @@ impl Client {
         };
         let query = self.cred_query();
         self.reject_filled().await;
-        let creds = match fill_for_endpoint(helper.clone(), query.clone(), &self.endpoint).await? {
+        let cred_url_str = self.cred_url_string();
+        let creds = match fill_for_endpoint(helper.clone(), query.clone(), &cred_url_str).await? {
             Some(c) => c,
             // No helper had anything for this URL. Surface the upstream
             // "Git credentials for X not found" wording so callers (and
@@ -252,7 +280,7 @@ impl Client {
             // a generic 401 the server returned for non-auth reasons.
             None => {
                 return Err(ApiError::CredentialsNotFound {
-                    url: self.endpoint.to_string(),
+                    url: cred_url_str,
                     detail: None,
                 });
             }
@@ -271,7 +299,13 @@ impl Client {
         let resp2 = build().send().await?;
         if resp2.status().is_success() {
             approve_blocking(helper, query, creds).await?;
-        } else if resp2.status().as_u16() == 401 {
+        } else if matches!(resp2.status().as_u16(), 401 | 403) {
+            // Both 401 (unauthorized) and 403 (forbidden after auth)
+            // mean the just-filled creds are wrong. Drop them so the
+            // *next* request triggers another 401 → fill → retry
+            // dance — without this reset, every subsequent request
+            // would silently reuse the bad credentials and skip the
+            // helper. Matches upstream's per-request `getCreds` flow.
             reject_blocking(helper, query, creds).await?;
             *self.filled.lock().unwrap() = None;
             *self.auth.lock().unwrap() = Auth::None;
@@ -321,10 +355,12 @@ pub(crate) async fn decode<R: DeserializeOwned>(resp: Response) -> Result<R, Api
         .get("LFS-Authenticate")
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
+    let request_url = resp.url().to_string();
     let bytes = resp.bytes().await.unwrap_or_default();
 
     Err(ApiError::Status {
         status: status.as_u16(),
+        url: Some(request_url),
         lfs_authenticate,
         body: serde_json::from_slice(&bytes).ok(),
     })
@@ -341,9 +377,9 @@ pub(crate) async fn decode<R: DeserializeOwned>(resp: Response) -> Result<R, Api
 async fn fill_for_endpoint(
     helper: Arc<dyn Helper>,
     query: Query,
-    endpoint: &Url,
+    endpoint: &str,
 ) -> Result<Option<Credentials>, ApiError> {
-    let endpoint_str = endpoint.to_string();
+    let endpoint_str = endpoint.to_owned();
     tokio::task::spawn_blocking(move || helper.fill(&query))
         .await
         .map_err(|e| ApiError::Decode(format!("credential helper join: {e}")))?

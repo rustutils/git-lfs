@@ -60,7 +60,7 @@ Useful entry points in the upstream tree:
 
 ## Test status snapshot (point in time)
 
-About 635 of 794 vendored shell tests pass (~80%) across 104
+About 638 of 794 vendored shell tests pass (~80%) across 104
 files. Most of the per-command files now pass cleanly; remaining
 failures cluster in features we haven't shipped yet rather than
 edge cases of features we have.
@@ -68,8 +68,8 @@ edge cases of features we have.
 **Fully or near-fully passing** (no failures, or only one):
 t-env (17/17), t-config (10/10), t-checkout (18/18), t-pull
 (20/20), t-status (17/17), t-pointer (26/26), t-ext (1/1),
-t-credentials-protect (3/3), t-fsck, t-update, t-track, t-untrack,
-t-install, t-uninstall, t-pre-push, t-clean,
+t-credentials-protect (3/3), t-askpass (5/6), t-fsck, t-update,
+t-track, t-untrack, t-install, t-uninstall, t-pre-push, t-clean,
 t-malformed-pointers, t-filter-process, t-happy-path,
 t-migrate-import (36/38), t-migrate-info (45/50),
 t-migrate-export, t-locks (8/9), t-batch-transfer (7/8),
@@ -234,8 +234,15 @@ t-expired. Best done in independent slices:
   wrapping, `credential.{useHttpPath,protectProtocol}` plumb through
   the API client. Lands t-credentials-protect (3 tests). The error
   wrapping is shared infrastructure for every later slice.
+- **6b askpass** ✓ shipped (5 of 6 tests) — `AskpassHelper` spawns
+  `GIT_ASKPASS` / `core.askpass` / `SSH_ASKPASS`; `cli/fetcher`
+  inserts it ahead of git-credential when configured and skips it
+  when a (URL-scoped) `credential.helper` is set. URL-embedded
+  `user:pass@` becomes initial `Auth::Basic`. Auth-retry now
+  resets on 403 too. `Authorization error: <url>` formatting from
+  401/403 unblocks the locks-verify wording. Test 4 (multi-attempt
+  loop) still failing — bundled with 6d wwwauth/state.
 - **6a netrc** — `~/.netrc` fallback in `creds/`. Smallest.
-- **6b askpass** — `GIT_ASKPASS` / `core.askpass`. Medium.
 - **6c extra HTTP headers + content-type** — config-driven.
 - **6d per-URL credential config + multi-stage auth** —
   `credential.<url>.helper`, `state[]` / `wwwauth[]` carrying.
@@ -409,15 +416,22 @@ missing** and **why it was OK to skip for v0**.
 ### `creds`
 - **netrc.** Upstream `creds/netrc.go` reads `~/.netrc` as a fallback.
   Skipped — `git credential` already shells through to it on most setups.
-- **askpass.** `GIT_ASKPASS` / `core.askpass` for interactive password
-  prompts. Niche; wire after we hear someone need it.
 - **NTLM / Negotiate (Kerberos).** Upstream supports both via separate
   access modes. Out of scope until a real user hits a Windows AD
   deployment.
 - **URL-pattern config.** `credential.<url>.helper` /
-  `credential.<url>.useHttpPath` per-host overrides — git-credential does
-  half of this for us already, but the full URL pattern matching upstream
-  does is not yet wired.
+  `credential.<url>.useHttpPath` per-host overrides — git-credential
+  does half of this for us already, and our `has_credential_helper`
+  honors the host-prefix form (`credential.<scheme>://<host>.helper`)
+  for askpass selection. The full URL pattern matching upstream does
+  (longest-prefix wins, including path) is not yet wired into
+  `useHttpPath` or general per-key lookup.
+- **Multi-attempt auth retry.** `Client::send_with_auth_retry_response`
+  does one fill+retry per request. Upstream's `DoWithAuth` loops up
+  to 3-4 times and emits `api: too many authentication attempts` when
+  the budget is exhausted. Owns t-askpass test 4 plus several
+  t-credentials tests. Bundle with 6d (wwwauth/state) — they share
+  the loop machinery.
 - **Path-scoped queries.** [`Query::from_url`] populates path; the
   `Client::with_use_http_path` builder now wires the global
   `credential.useHttpPath` config through. URL-scoped

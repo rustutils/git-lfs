@@ -63,7 +63,7 @@ ranked gap list and per-command deferred polish.
 publish-ready (description, keywords, categories, repository, per-crate
 README). Project status remains experimental — for production use,
 upstream Go `git-lfs` is still the answer; ~80% of the vendored shell
-tests pass (635/794 across 104 files).
+tests pass (638/794 across 104 files).
 
 ## Layout
 

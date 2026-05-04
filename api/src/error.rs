@@ -22,10 +22,14 @@ pub enum ApiError {
 
     /// Server returned a non-success HTTP status. `body` is `Some` if the
     /// response had a parseable LFS error body. `lfs_authenticate` mirrors
-    /// the `LFS-Authenticate` response header (only present on 401).
-    #[error("server returned status {status}{}", body.as_ref().map(|b| format!(": {}", b.message)).unwrap_or_default())]
+    /// the `LFS-Authenticate` response header (only present on 401). `url`
+    /// is the request URL — used by the `Display` impl to format
+    /// `Authorization error: <url>` for 401/403, mirroring upstream's
+    /// `lfshttp.defaultError` strings.
+    #[error("{}", format_status(*status, url.as_deref(), body.as_ref()))]
     Status {
         status: u16,
+        url: Option<String>,
         lfs_authenticate: Option<String>,
         body: Option<ServerError>,
     },
@@ -45,6 +49,21 @@ pub enum ApiError {
     /// Format mirrors upstream's `creds.FillCreds`.
     #[error("Git credentials for {url} not found{}", detail.as_deref().map(|d| format!(":\n{d}")).unwrap_or_else(|| ".".into()))]
     CredentialsNotFound { url: String, detail: Option<String> },
+}
+
+/// Render an [`ApiError::Status`] for the user. Auth-class statuses
+/// (401/403) format as `Authorization error: <url>` to match upstream's
+/// `lfshttp.defaultError` shape — `t-credentials` and `t-askpass` grep
+/// the wording verbatim. All other statuses keep the
+/// `server returned status N: <body-message>` format we use elsewhere.
+fn format_status(status: u16, url: Option<&str>, body: Option<&ServerError>) -> String {
+    if matches!(status, 401 | 403)
+        && let Some(u) = url
+    {
+        return format!("Authorization error: {u}");
+    }
+    let suffix = body.map(|b| format!(": {}", b.message)).unwrap_or_default();
+    format!("server returned status {status}{suffix}")
 }
 
 impl ApiError {
