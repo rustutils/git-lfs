@@ -44,6 +44,9 @@ Build and optionally compare generated pointer files to ensure consistency betwe
 - `--no-strict`
     Disable strict mode (paired with `--strict`)
 
+- `--no-extensions`
+    Build a plain pointer without running configured `lfs.extension.*` clean commands. Default behavior is to chain through any extensions (and emit a `warning:` line on stderr); pass this to suppress both the chain and the warning
+
 ## Reporting bugs
 
 This command is from the Rust implementation of git-lfs, not the original

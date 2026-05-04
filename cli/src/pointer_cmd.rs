@@ -19,6 +19,7 @@
 use std::io::{IsTerminal, Read, Write};
 use std::path::PathBuf;
 
+use git_lfs_filter::{CleanError, CleanExtension, build_pointer_with_extensions};
 use git_lfs_pointer::{Oid, Pointer};
 use sha1::{Digest, Sha1};
 use sha2::Sha256;
@@ -27,6 +28,8 @@ use sha2::Sha256;
 pub enum PointerError {
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Clean(#[from] CleanError),
     #[error("{0}")]
     Usage(String),
 }
@@ -39,6 +42,11 @@ pub struct Options {
     pub check: bool,
     pub strict: bool,
     pub no_strict: bool,
+    /// Suppress the configured extension chain when building from `--file`.
+    pub no_extensions: bool,
+    /// Configured `lfs.extension.<name>.clean` chain. Empty when there
+    /// are no configured extensions OR when invoked outside a repo.
+    pub extensions: Vec<CleanExtension>,
 }
 
 /// Run the command. Returns the intended process exit code (0 = success,
@@ -61,29 +69,61 @@ pub fn run(opts: &Options) -> Result<i32, PointerError> {
     let stdout = std::io::stdout();
     let stderr = std::io::stderr();
 
+    // True iff we're in a repo with `lfs.extension.<n>.*` configured AND
+    // the user didn't pass `--no-extensions`. When set, the file's content
+    // is run through the chain to produce a pointer with `ext-N-<name>`
+    // lines (and we print the "Using LFS extensions" warning); otherwise
+    // we hash the bytes directly.
+    let use_extensions = !opts.no_extensions && !opts.extensions.is_empty();
+
     if let Some(path) = &opts.file {
         something = true;
-        let bytes = match std::fs::read(path) {
-            Ok(b) => b,
-            Err(e) => {
-                // Match upstream's `os.Open(...)` error format:
-                // `open <path>: <reason>` (Go's stdlib formats it
-                // that way). Print verbatim — no `git-lfs:` prefix.
-                eprintln!("open {}: {}", path.display(), e);
-                return Ok(1);
-            }
+        let pointer = if use_extensions {
+            let mut file = match std::fs::File::open(path) {
+                Ok(f) => f,
+                Err(e) => {
+                    eprintln!("open {}: {}", path.display(), e);
+                    return Ok(1);
+                }
+            };
+            let leaf = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            build_pointer_with_extensions(
+                &mut file,
+                &leaf,
+                &opts.extensions,
+                &std::env::temp_dir(),
+            )?
+        } else {
+            let bytes = match std::fs::read(path) {
+                Ok(b) => b,
+                Err(e) => {
+                    // Match upstream's `os.Open(...)` error format:
+                    // `open <path>: <reason>` (Go's stdlib formats it
+                    // that way). Print verbatim — no `git-lfs:` prefix.
+                    eprintln!("open {}: {}", path.display(), e);
+                    return Ok(1);
+                }
+            };
+            let oid_bytes: [u8; 32] = Sha256::digest(&bytes).into();
+            Pointer::new(Oid::from_bytes(oid_bytes), bytes.len() as u64)
         };
-        let oid_bytes: [u8; 32] = Sha256::digest(&bytes).into();
-        let oid = Oid::from_bytes(oid_bytes);
-        let pointer = Pointer::new(oid, bytes.len() as u64);
         let encoded = pointer.encode();
 
-        // stderr: header + blank line, then stdout: pointer text.
-        // Flush each before crossing streams so a `2>&1`-merged
-        // capture sees the lines in the order we wrote them.
+        // stderr: header (+ optional warning) + blank line, then stdout:
+        // pointer text. Flush each before crossing streams so a `2>&1`-
+        // merged capture sees the lines in the order we wrote them.
         let mut e = stderr.lock();
         let mut o = stdout.lock();
         writeln!(e, "Git LFS pointer for {}", path.display())?;
+        if use_extensions {
+            writeln!(
+                e,
+                "warning: Using LFS extensions, use --no-extensions for a plain pointer."
+            )?;
+        }
         writeln!(e)?;
         e.flush()?;
         write!(o, "{encoded}")?;
@@ -103,6 +143,7 @@ pub fn run(opts: &Options) -> Result<i32, PointerError> {
     }
 
     let mut compared_oid: Option<String> = None;
+    let mut compared_has_extensions = false;
     if let Some(path) = &opts.pointer {
         if opts.stdin {
             return Err(PointerError::Usage(
@@ -123,6 +164,7 @@ pub fn run(opts: &Options) -> Result<i32, PointerError> {
             &bytes,
             comparing,
             &mut compared_oid,
+            &mut compared_has_extensions,
         )?;
         if Pointer::parse(&bytes).is_err() {
             return Ok(1);
@@ -139,7 +181,14 @@ pub fn run(opts: &Options) -> Result<i32, PointerError> {
         something = true;
         let mut bytes = Vec::new();
         std::io::stdin().read_to_end(&mut bytes)?;
-        emit_compared_section(&stderr, "STDIN", &bytes, comparing, &mut compared_oid)?;
+        emit_compared_section(
+            &stderr,
+            "STDIN",
+            &bytes,
+            comparing,
+            &mut compared_oid,
+            &mut compared_has_extensions,
+        )?;
         if Pointer::parse(&bytes).is_err() {
             return Ok(1);
         }
@@ -152,6 +201,9 @@ pub fn run(opts: &Options) -> Result<i32, PointerError> {
         let mut e = stderr.lock();
         writeln!(e)?;
         writeln!(e, "Pointers do not match")?;
+        if use_extensions || compared_has_extensions {
+            writeln!(e, "note: Mismatch may be due to differing LFS extensions.")?;
+        }
         e.flush()?;
         return Ok(1);
     }
@@ -168,24 +220,32 @@ pub fn run(opts: &Options) -> Result<i32, PointerError> {
 
 /// Emit the `Pointer from <name>\n\n[…]` block to stderr. On a parse
 /// failure we print the error *without* echoing the input — matching
-/// upstream's order (parse first, then echo iff successful).
+/// upstream's order (parse first, then echo iff successful). On
+/// success, also reports whether the parsed pointer carried any
+/// `ext-N-<name>` lines so the caller can phrase the mismatch note
+/// accordingly.
 fn emit_compared_section(
     stderr: &std::io::Stderr,
     name: &str,
     bytes: &[u8],
     comparing: bool,
     compared_oid: &mut Option<String>,
+    has_extensions: &mut bool,
 ) -> std::io::Result<()> {
     let mut e = stderr.lock();
     writeln!(e, "Pointer from {name}")?;
     writeln!(e)?;
-    if Pointer::parse(bytes).is_err() {
-        // No `git-lfs:` prefix and no trailing newline — tests
-        // compare with `printf %s` which doesn't add one.
-        write!(e, "Pointer file error: invalid header")?;
-        e.flush()?;
-        return Ok(());
-    }
+    let parsed = match Pointer::parse(bytes) {
+        Ok(p) => p,
+        Err(_) => {
+            // No `git-lfs:` prefix and no trailing newline — tests
+            // compare with `printf %s` which doesn't add one.
+            write!(e, "Pointer file error: invalid header")?;
+            e.flush()?;
+            return Ok(());
+        }
+    };
+    *has_extensions = !parsed.extensions.is_empty();
     // Successful parse: echo the input verbatim so a user diffing
     // two `git lfs pointer` invocations sees both texts.
     e.write_all(bytes)?;

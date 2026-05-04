@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `git lfs pointer --file=<path>` now runs the configured
+  `lfs.extension.<name>.clean` chain in priority order when invoked
+  from inside a repo, producing a pointer with `ext-N-<name>
+  sha256:<input-oid>` lines and emitting
+  `warning: Using LFS extensions, use --no-extensions for a plain
+  pointer.` on stderr. Pass `--no-extensions` to suppress both the
+  chain and the warning. When `--file` is compared against
+  `--pointer` / `--stdin` and the pointers don't match, prints
+  `note: Mismatch may be due to differing LFS extensions.` if either
+  side has extension lines. Closes the clean-vs-pointer-CLI
+  asymmetry; smudge-side extensions already shipped.
+- `git lfs ext list [<name>...]` lists configured extensions, optionally
+  filtered to a specific set of names. Bare `git lfs ext` and
+  `git lfs ext list` (no names) keep their existing behavior of
+  printing every configured extension.
 - `git lfs fetch --recent` (and `lfs.fetchrecentalways`) now expands
   the fetch set with two extras: HEAD-state of every ref whose tip
   commit lies within `lfs.fetchrecentrefsdays` of today, and the

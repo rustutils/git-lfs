@@ -36,9 +36,9 @@ mod update;
 use fetcher::LfsFetcher;
 
 use git_lfs::args::{
-    CheckoutArgs, CleanArgs, Cli, CloneArgs, Command, EnvArgs, ExtArgs, FetchArgs,
-    FilterProcessArgs, FsckArgs, InstallArgs, LockArgs, LocksArgs, LsFilesArgs, MigrateArgs,
-    MigrateCmd, MigrateExportArgs, MigrateImportArgs, MigrateInfoArgs, PointerArgs,
+    CheckoutArgs, CleanArgs, Cli, CloneArgs, Command, EnvArgs, ExtArgs, ExtCmd, ExtListArgs,
+    FetchArgs, FilterProcessArgs, FsckArgs, InstallArgs, LockArgs, LocksArgs, LsFilesArgs,
+    MigrateArgs, MigrateCmd, MigrateExportArgs, MigrateImportArgs, MigrateInfoArgs, PointerArgs,
     PostCheckoutArgs, PostCommitArgs, PostMergeArgs, PrePushArgs, PruneArgs, PullArgs, PushArgs,
     SmudgeArgs, StatusArgs, TrackArgs, UninstallArgs, UnlockArgs, UntrackArgs, UpdateArgs,
     VersionArgs,
@@ -704,6 +704,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             check,
             strict,
             no_strict,
+            no_extensions,
         }) => {
             let opts = pointer_cmd::Options {
                 file,
@@ -712,6 +713,8 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 check,
                 strict,
                 no_strict,
+                no_extensions,
+                extensions: collect_clean_extensions(&cwd),
             };
             // Pointer's exit codes are semantic: 1 = mismatch / parse
             // failure, 2 = `--strict` non-canonical. Propagate verbatim.
@@ -721,9 +724,10 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
         Command::Env(EnvArgs) => {
             env::run(&cwd)?;
         }
-        Command::Ext(ExtArgs) => {
-            ext::run(&cwd)?;
-        }
+        Command::Ext(ExtArgs { cmd }) => match cmd {
+            None => ext::run(&cwd)?,
+            Some(ExtCmd::List(ExtListArgs { names })) => ext::run_list(&cwd, &names)?,
+        },
         Command::Update(UpdateArgs { force, manual }) => match update::run(&cwd, force, manual) {
             Ok(code) => return Ok(code),
             Err(update::UpdateError::NotInRepo) => {

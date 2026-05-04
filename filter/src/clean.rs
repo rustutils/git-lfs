@@ -1,6 +1,7 @@
 //! The clean filter: stdin → store + pointer-on-stdout.
 
 use std::io::{self, Read, Write};
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 use git_lfs_pointer::{Extension, Oid, Pointer};
@@ -191,6 +192,121 @@ pub fn clean<R: Read, W: Write>(
     // The loop returns on the last extension; if `extensions` is empty
     // we took the early return above. So this is unreachable.
     unreachable!("clean loop exited without storing")
+}
+
+/// Run `input` through the configured `extensions` chain in priority
+/// order and return the resulting [`Pointer`] **without** inserting the
+/// final stage's output anywhere. Used by `git lfs pointer --file=X` to
+/// preview what `clean` would emit, including the `ext-N-<name>` lines,
+/// without polluting the on-disk store.
+///
+/// Mirrors [`clean`]'s extension chain except for the final stage:
+/// instead of `Store::insert`, the post-extension stream is hashed and
+/// counted in-memory and discarded. `tmp_dir` holds the per-stage
+/// scratch files (use `std::env::temp_dir()` if no store is in scope).
+pub fn build_pointer_with_extensions<R: Read>(
+    input: &mut R,
+    path: &str,
+    extensions: &[CleanExtension],
+    tmp_dir: &Path,
+) -> Result<Pointer, CleanError> {
+    if extensions.is_empty() {
+        let mut hasher = Sha256::new();
+        let mut buf = vec![0u8; COPY_BUFFER];
+        let mut size: u64 = 0;
+        loop {
+            let n = input.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+            size += n as u64;
+        }
+        let bytes: [u8; 32] = hasher.finalize().into();
+        return Ok(Pointer::new(Oid::from_bytes(bytes), size));
+    }
+
+    for ext in extensions {
+        if ext.command.trim().is_empty() {
+            return Err(CleanError::ExtensionMissingCommand {
+                name: ext.name.clone(),
+            });
+        }
+    }
+
+    std::fs::create_dir_all(tmp_dir)?;
+
+    let mut current_tmp = NamedTempFile::new_in(tmp_dir)?;
+    let orig_oid = hash_and_write(input, current_tmp.as_file_mut())?;
+    let mut input_oids: Vec<Oid> = Vec::with_capacity(extensions.len());
+    input_oids.push(orig_oid);
+
+    for (i, ext) in extensions.iter().enumerate() {
+        let cmd_str = ext.command.replace("%f", path);
+        let mut parts = cmd_str.split_whitespace();
+        let prog = parts
+            .next()
+            .ok_or_else(|| CleanError::ExtensionMissingCommand {
+                name: ext.name.clone(),
+            })?;
+        let args: Vec<&str> = parts.collect();
+
+        let stdin_file = std::fs::File::open(current_tmp.path())?;
+        let mut child = Command::new(prog)
+            .args(&args)
+            .stdin(stdin_file)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(|e| CleanError::ExtensionSpawnFailed {
+                name: ext.name.clone(),
+                source: e,
+            })?;
+        let mut stdout = child.stdout.take().expect("piped stdout");
+
+        let is_last = i + 1 == extensions.len();
+        if is_last {
+            let mut hasher = Sha256::new();
+            let mut buf = vec![0u8; COPY_BUFFER];
+            let mut size: u64 = 0;
+            loop {
+                let n = stdout.read(&mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                hasher.update(&buf[..n]);
+                size += n as u64;
+            }
+            let status = child.wait()?;
+            if !status.success() {
+                return Err(CleanError::ExtensionFailed {
+                    name: ext.name.clone(),
+                    status: status.code(),
+                });
+            }
+            let bytes: [u8; 32] = hasher.finalize().into();
+            return Ok(Pointer {
+                oid: Oid::from_bytes(bytes),
+                size,
+                extensions: build_pointer_extensions(extensions, &input_oids),
+                canonical: true,
+            });
+        }
+
+        let mut next_tmp = NamedTempFile::new_in(tmp_dir)?;
+        let next_oid = hash_and_write(&mut stdout, next_tmp.as_file_mut())?;
+        let status = child.wait()?;
+        if !status.success() {
+            return Err(CleanError::ExtensionFailed {
+                name: ext.name.clone(),
+                status: status.code(),
+            });
+        }
+        current_tmp = next_tmp;
+        input_oids.push(next_oid);
+    }
+
+    unreachable!("extension chain exited without producing a pointer")
 }
 
 fn build_pointer_extensions(extensions: &[CleanExtension], input_oids: &[Oid]) -> Vec<Extension> {

@@ -62,8 +62,8 @@ ranked gap list and per-command deferred polish.
 **Released as v0.2.0 on crates.io.** All eight workspace members are
 publish-ready (description, keywords, categories, repository, per-crate
 README). Project status remains experimental — for production use,
-upstream Go `git-lfs` is still the answer; ~75% of the vendored shell
-tests pass (588/781 across 104 files).
+upstream Go `git-lfs` is still the answer; ~80% of the vendored shell
+tests pass (632/794 across 104 files).
 
 ## Layout
 

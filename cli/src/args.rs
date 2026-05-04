@@ -672,6 +672,13 @@ pub struct PointerArgs {
     /// Disable strict mode (paired with `--strict`).
     #[arg(long)]
     pub no_strict: bool,
+
+    /// Build a plain pointer without running configured `lfs.extension.*`
+    /// clean commands. Default behavior is to chain through any
+    /// extensions (and emit a `warning:` line on stderr); pass this to
+    /// suppress both the chain and the warning.
+    #[arg(long)]
+    pub no_extensions: bool,
 }
 
 /// Display the Git LFS environment
@@ -687,8 +694,28 @@ pub struct EnvArgs;
 /// configuration in priority order. Extensions chain external
 /// clean / smudge programs around each LFS object — see
 /// git-lfs-config(5) for how to configure them.
+///
+/// With no arguments, prints every configured extension. With
+/// `list <name>...`, prints only the named extensions (one block
+/// per name, in argument order).
 #[derive(Args)]
-pub struct ExtArgs;
+pub struct ExtArgs {
+    #[command(subcommand)]
+    pub cmd: Option<ExtCmd>,
+}
+
+#[derive(Subcommand)]
+pub enum ExtCmd {
+    List(ExtListArgs),
+}
+
+/// List configured LFS pointer extensions, optionally filtered by name.
+#[derive(Args)]
+pub struct ExtListArgs {
+    /// Extension names to print. With no names, prints all configured
+    /// extensions (same as bare `git lfs ext`).
+    pub names: Vec<String>,
+}
 
 /// Update Git hooks
 ///

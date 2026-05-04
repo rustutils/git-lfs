@@ -60,19 +60,19 @@ Useful entry points in the upstream tree:
 
 ## Test status snapshot (point in time)
 
-About 588 of 781 vendored shell tests pass (~75%) across 104
+About 632 of 794 vendored shell tests pass (~80%) across 104
 files. Most of the per-command files now pass cleanly; remaining
 failures cluster in features we haven't shipped yet rather than
 edge cases of features we have.
 
 **Fully or near-fully passing** (no failures, or only one):
 t-env (17/17), t-config (10/10), t-checkout (18/18), t-pull
-(20/20), t-status (17/17), t-fsck, t-update, t-track, t-untrack,
-t-install, t-uninstall, t-pre-push, t-clean, t-malformed-pointers,
-t-filter-process, t-happy-path, t-migrate-import (36/38),
-t-migrate-info (45/50), t-migrate-export, t-locks (8/9),
-t-batch-transfer (7/8), t-clone (9/13), t-pointer (20/26),
-t-smudge (7/9), t-push (18/27).
+(20/20), t-status (17/17), t-pointer (26/26), t-ext (1/1),
+t-fsck, t-update, t-track, t-untrack, t-install, t-uninstall,
+t-pre-push, t-clean, t-malformed-pointers, t-filter-process,
+t-happy-path, t-migrate-import (36/38), t-migrate-info (45/50),
+t-migrate-export, t-locks (8/9), t-batch-transfer (7/8),
+t-clone (9/13), t-smudge (8/9), t-push (18/27).
 
 **Largest remaining failure clusters** (failed/total):
 
@@ -96,10 +96,12 @@ t-smudge (7/9), t-push (18/27).
   t-batch-storage-retries (5/5),
   t-batch-storage-retries-ratelimit (5/5). Server returns 429
   with Retry-After header; we don't honor the schedule.
-- **Pointer extensions** — t-pointer (6/26 fail, all in 21-26),
-  t-merge-driver (6/6), t-attributes (4/4), t-ext (1/1). Clean
-  shipped extensions; smudge still bails. Several other files
-  (merge-driver, attributes) depend on extension-aware smudge.
+- **Pointer extensions / unshipped commands** — t-merge-driver
+  (6/6), t-attributes (4/4). Clean and smudge filters both run
+  extensions; the pointer CLI now does too (closes t-pointer 21-26
+  and t-ext 1). t-merge-driver needs the `merge-driver` subcommand;
+  t-attributes needs `[attr]NAME` macro expansion in `git lfs track`'s
+  pattern listing.
 - **Unshipped commands** — t-completion (5), t-dedup (3),
   t-logs (1), t-merge-driver (6).
 - **Push edge cases** — t-push (9/27 fail). Deprecated `_links`
@@ -177,11 +179,13 @@ what's broken and where to start.
    (no jitter, no honoring of explicit delay). All in
    t-batch-retries-ratelimit, t-batch-storage-retries,
    t-batch-storage-retries-ratelimit.
-6. **Pointer extensions on the smudge side** (~12 tests). Clean
-   shipped (chains `lfs.extension.<n>.clean`, emits `ext-N` lines);
-   smudge still bails with `SmudgeError::ExtensionsUnsupported`.
-   Owns t-pointer 21-26, t-merge-driver, t-attributes, t-ext.
-   `pointer --no-extensions` flag also gated on this.
+6. **`merge-driver` subcommand + track macro expansion** (~10
+   tests). Smudge-side and pointer-CLI extensions now ship; the
+   remaining cluster splits in two: t-merge-driver (6) needs the
+   LFS-aware merge driver implemented, and t-attributes (4) needs
+   `git lfs track`'s pattern listing to expand `[attr]NAME` macros
+   from `.gitattributes` (the underlying `AttrSet` already does;
+   only `list_lfs_patterns` is macro-blind).
 7. **Unshipped commands** — `merge-driver` (6 tests), `completion`
    (5), `dedup` (3), `logs` (1), `ext` (1).
 8. **Push edge cases** (9 tests). Deprecated `_links` serde alias
@@ -205,14 +209,17 @@ of t-fetch. Implements `lfs.fetchrecentrefsdays`,
 prune / fsck. One coherent design pass — picked first because the
 spec is crisp and there's no third-party protocol surface.
 
-### Milestone 5 — Smudge-side pointer extensions (small)
+### Milestone 5 — Pointer CLI clean-extensions + ext list ✓ shipped
 
-Owns t-pointer 21-26, t-merge-driver, t-attributes, t-ext (~12
-tests). Smudge invokes registered extensions in reverse priority
-order, validates each output OID against the recorded `ext-N` hash,
-surfaces descriptive error on mismatch. Drops
-`SmudgeError::ExtensionsUnsupported`. Removes the clean-vs-smudge
-asymmetry and unblocks merge-driver later.
+`git lfs pointer --file=X` now runs the configured clean chain (and
+honors `--no-extensions`); `git lfs ext list [<name>...]` filters
+the bare extension listing. Owns t-pointer 21-26 and t-ext 1.
+Smudge-side and clean-side filter extensions had already shipped
+in earlier milestones.
+
+Original M5 spec described smudge-extension implementation; that
+work was discovered already complete during planning, so the
+milestone was retargeted to the adjacent CLI gaps.
 
 ### Milestone 6 — Credential ecosystem (medium, sliced)
 
@@ -288,13 +295,6 @@ missing** and **why it was OK to skip for v0**.
   tree path layer.
 
 ### `filter`
-- **Smudge-side pointer extensions.** Clean shipped (chains the configured
-  `lfs.extension.<name>.clean` programs and emits `ext-N-<name>` lines per
-  `docs/extensions.md`); smudge still bails with
-  `SmudgeError::ExtensionsUnsupported`. Smudge needs to invoke the
-  extensions in *reverse* priority order, validate each output OID against
-  the recorded ext-N hash, and surface the descriptive error on mismatch.
-  Needed by `t-smudge.sh` and the smudge half of `t-filter-process.sh`.
 - **Size-mismatch cleanup.** When smudge sees an object on disk with the
   right OID but wrong size, it treats it as missing and re-fetches; we
   should also remove the corrupt local file before fetching.
@@ -763,9 +763,6 @@ import and export share it.
   instead of writing the hook files.
 
 ### `cli pointer`
-- **`--no-extensions`.** Build a non-extension-aware pointer when this
-  flag is set, even with `lfs.extension.<n>.*` configured. Clean now
-  honors extensions by default, so this flag is a real toggle.
 - **Compare via `git hash-object`.** Upstream computes git blob OIDs
   for both pointer texts and compares those. We compare raw byte
   equality of our canonical encoding against the supplied bytes —
