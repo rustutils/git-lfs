@@ -37,6 +37,14 @@ pub enum ApiError {
     /// Failed to construct the request URL from the endpoint.
     #[error("url error: {0}")]
     Url(#[from] url::ParseError),
+
+    /// `git credential` couldn't supply usable credentials for the
+    /// endpoint. `detail` carries the underlying helper-side reason
+    /// (e.g. `credential value for path contains newline: …`) when
+    /// available; absent when every helper just returned "I don't know".
+    /// Format mirrors upstream's `creds.FillCreds`.
+    #[error("Git credentials for {url} not found{}", detail.as_deref().map(|d| format!(":\n{d}")).unwrap_or_else(|| ".".into()))]
+    CredentialsNotFound { url: String, detail: Option<String> },
 }
 
 impl ApiError {

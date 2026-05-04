@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use git_lfs_api::{
-    Auth, BatchRequest, Client, CreateLockError, CreateLockRequest, DeleteLockRequest,
+    ApiError, Auth, BatchRequest, Client, CreateLockError, CreateLockRequest, DeleteLockRequest,
     ListLocksFilter, ObjectSpec, Operation, Ref, VerifyLocksRequest,
 };
 use git_lfs_creds::{Credentials, Helper, HelperError, Query};
@@ -575,7 +575,7 @@ async fn batch_unauthorized_triggers_helper_fill_and_retry() {
 }
 
 #[tokio::test]
-async fn batch_unauthorized_with_no_creds_returns_original_error() {
+async fn batch_unauthorized_with_no_creds_returns_credentials_not_found() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/objects/batch"))
@@ -595,7 +595,14 @@ async fn batch_unauthorized_with_no_creds_returns_original_error() {
         }],
     );
     let err = client.batch(&req).await.unwrap_err();
-    assert!(err.is_unauthorized());
+    // Helper returned nothing for a 401 → surface upstream's
+    // "Git credentials for X not found" wording so callers don't see
+    // a bare 401 (which would render as "server returned status 401"
+    // and lose the "no helper had anything" signal).
+    assert!(
+        matches!(err, ApiError::CredentialsNotFound { detail: None, .. }),
+        "expected CredentialsNotFound, got {err:?}"
+    );
     // Helper had nothing to give → no approve, no reject.
     assert_eq!(helper.approve_count(), 0);
     assert_eq!(helper.reject_count(), 0);

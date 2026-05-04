@@ -22,12 +22,17 @@ pub struct Query {
 impl Query {
     /// Build a query from a URL. `path` is included by default — callers
     /// that want host-only matching (the upstream default) should clear
-    /// it via [`Self::without_path`].
+    /// it via [`Self::without_path`]. The path is **percent-decoded**
+    /// to match what upstream LFS sends to `git credential` (Go's
+    /// `url.URL.Path` field is the decoded form). `git credential`'s
+    /// `protectProtocol` check then sees real newlines / NULs / CRs in
+    /// hostile URLs rather than their `%0a` / `%00` / `%0d` forms.
     pub fn from_url(url: &Url) -> Self {
+        let raw_path = url.path().trim_start_matches('/');
         Self {
             protocol: url.scheme().to_owned(),
             host: host_with_port(url),
-            path: url.path().trim_start_matches('/').to_owned(),
+            path: percent_decode(raw_path),
         }
     }
 
@@ -37,6 +42,30 @@ impl Query {
         self.path.clear();
         self
     }
+}
+
+/// Decode `%xx` byte triples in `s`, leaving everything else verbatim.
+/// Lossy on invalid UTF-8 (replaces with `U+FFFD`) — matches Go's
+/// `url.URL.Path`, which always returns a string. Real-world LFS paths
+/// are ASCII, so the lossy edge case is academic.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hi = (bytes[i + 1] as char).to_digit(16);
+            let lo = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(h), Some(l)) = (hi, lo) {
+                out.push(((h << 4) | l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn host_with_port(url: &Url) -> String {
@@ -72,5 +101,23 @@ mod tests {
     fn without_path_clears_path() {
         let q = Query::from_url(&Url::parse("https://h.example/a/b").unwrap()).without_path();
         assert!(q.path.is_empty());
+    }
+
+    #[test]
+    fn from_url_decodes_percent_escapes_in_path() {
+        // `%0a` (newline) in the URL must reach the credential helper as a
+        // literal `\n` so git's `protectProtocol` can reject it. Mirrors
+        // upstream's `url.URL.Path` behavior in Go.
+        let q =
+            Query::from_url(&Url::parse("https://h.example/test%0aprotect-linefeed.git").unwrap());
+        assert_eq!(q.path, "test\nprotect-linefeed.git");
+    }
+
+    #[test]
+    fn from_url_preserves_invalid_percent_sequences() {
+        // A bare `%` with non-hex following stays as-is rather than
+        // crashing or eating bytes.
+        let q = Query::from_url(&Url::parse("https://h.example/100%25done").unwrap());
+        assert_eq!(q.path, "100%done");
     }
 }

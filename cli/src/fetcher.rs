@@ -264,8 +264,10 @@ fn build_api_client_with(
     let endpoint = git_lfs_git::endpoint_for_remote(cwd, remote)
         .map_err(|e| format!("resolving LFS endpoint: {e}"))?;
     let url = url::Url::parse(&endpoint).map_err(|e| format!("invalid LFS endpoint: {e}"))?;
+    let use_http_path = read_bool_default(cwd, "credential.useHttpPath", false);
     Ok(ApiClient::with_http_client(url, Auth::None, http)
-        .with_credential_helper(default_helper_chain()))
+        .with_credential_helper(default_helper_chain(cwd))
+        .with_use_http_path(use_http_path))
 }
 
 /// Build a [`TransferConfig`] for `cwd`, plumbing
@@ -307,11 +309,28 @@ fn href_rewrite_enabled(cwd: &Path) -> bool {
 
 /// Default credential resolution chain: in-process cache → `git credential`.
 /// Cache is consulted first so a single CLI invocation only shells out to
-/// `git credential fill` once per host.
-fn default_helper_chain() -> Arc<dyn Helper> {
+/// `git credential fill` once per host. Reads `credential.protectProtocol`
+/// (default `true`) and threads it into the git-credential helper so
+/// CR-bearing URLs can be opted into when the user explicitly does so.
+fn default_helper_chain(cwd: &Path) -> Arc<dyn Helper> {
+    let protect_protocol = read_bool_default(cwd, "credential.protectProtocol", true);
     let helpers: Vec<Box<dyn Helper>> = vec![
         Box::new(CachingHelper::new()),
-        Box::new(GitCredentialHelper::new()),
+        Box::new(GitCredentialHelper::new().with_protect_protocol(protect_protocol)),
     ];
     Arc::new(HelperChain::new(helpers))
+}
+
+/// Read a git-bool config value, returning `default` when the key is
+/// unset or unparseable. Matches git's accepted spellings (true/false,
+/// yes/no, on/off, 1/0).
+fn read_bool_default(cwd: &Path, key: &str, default: bool) -> bool {
+    let Ok(Some(raw)) = git_lfs_git::config::get_effective(cwd, key) else {
+        return default;
+    };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => true,
+        "false" | "0" | "no" | "off" => false,
+        _ => default,
+    }
 }

@@ -60,7 +60,7 @@ Useful entry points in the upstream tree:
 
 ## Test status snapshot (point in time)
 
-About 632 of 794 vendored shell tests pass (~80%) across 104
+About 635 of 794 vendored shell tests pass (~80%) across 104
 files. Most of the per-command files now pass cleanly; remaining
 failures cluster in features we haven't shipped yet rather than
 edge cases of features we have.
@@ -68,11 +68,12 @@ edge cases of features we have.
 **Fully or near-fully passing** (no failures, or only one):
 t-env (17/17), t-config (10/10), t-checkout (18/18), t-pull
 (20/20), t-status (17/17), t-pointer (26/26), t-ext (1/1),
-t-fsck, t-update, t-track, t-untrack, t-install, t-uninstall,
-t-pre-push, t-clean, t-malformed-pointers, t-filter-process,
-t-happy-path, t-migrate-import (36/38), t-migrate-info (45/50),
+t-credentials-protect (3/3), t-fsck, t-update, t-track, t-untrack,
+t-install, t-uninstall, t-pre-push, t-clean,
+t-malformed-pointers, t-filter-process, t-happy-path,
+t-migrate-import (36/38), t-migrate-info (45/50),
 t-migrate-export, t-locks (8/9), t-batch-transfer (7/8),
-t-clone (9/13), t-smudge (8/9), t-push (18/27).
+t-clone (9/13), t-smudge (8/9), t-push (19/27).
 
 **Largest remaining failure clusters** (failed/total):
 
@@ -227,6 +228,12 @@ milestone was retargeted to the adjacent CLI gaps.
 t-credentials-no-prompt, t-askpass, t-extra-header, t-content-type,
 t-expired. Best done in independent slices:
 
+- **6 prelude + protect** ✓ shipped — `creds` validates input bytes,
+  `api::ApiError::CredentialsNotFound` and
+  `transfer::TransferError::BatchResponse` carry upstream's error
+  wrapping, `credential.{useHttpPath,protectProtocol}` plumb through
+  the API client. Lands t-credentials-protect (3 tests). The error
+  wrapping is shared infrastructure for every later slice.
 - **6a netrc** — `~/.netrc` fallback in `creds/`. Smallest.
 - **6b askpass** — `GIT_ASKPASS` / `core.askpass`. Medium.
 - **6c extra HTTP headers + content-type** — config-driven.
@@ -411,9 +418,19 @@ missing** and **why it was OK to skip for v0**.
   `credential.<url>.useHttpPath` per-host overrides — git-credential does
   half of this for us already, but the full URL pattern matching upstream
   does is not yet wired.
-- **Path-scoped queries.** [`Query::from_url`] populates path; we strip
-  it via `without_path()` before querying so we match git-credential's
-  default. Once URL-pattern config lands, honor `useHttpPath`.
+- **Path-scoped queries.** [`Query::from_url`] populates path; the
+  `Client::with_use_http_path` builder now wires the global
+  `credential.useHttpPath` config through. URL-scoped
+  `credential.<url>.useHttpPath` overrides land with the URL-pattern
+  matching above.
+- **Path bytes vs UTF-8.** `Query.path` is `String`, so our percent-
+  decoder maps invalid UTF-8 byte sequences to `U+FFFD`. Upstream Go
+  passes raw bytes through (Go strings hold arbitrary bytes). Real-
+  world LFS paths are ASCII so no current test trips this, but the
+  divergence is real. Fix: change `Query.path: String` →
+  `Query.path: Vec<u8>` (or `bstr::BString`) and propagate through the
+  `Helper` trait + `git_helper::write_input`. Defer until the
+  whole-codebase audit shakes out other non-UTF-8 path handling.
 - **Approve/reject async safety.** A `git credential approve` failure is
   swallowed (best-effort). If we ever target a flaky keystore that needs
   retry, surface it.

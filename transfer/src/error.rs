@@ -54,6 +54,13 @@ pub enum TransferError {
     /// digest before we could trust the server's actions.
     #[error("unsupported hash algorithm: {0}")]
     UnsupportedHashAlgo(String),
+
+    /// The batch endpoint itself failed (network, auth, or decode).
+    /// Wraps the underlying [`ApiError`] with upstream's `batch
+    /// response:` prefix so a `Display` of this error matches what
+    /// users see in `GIT_TRACE` logs and shell-test grep patterns.
+    #[error("batch response: {0}")]
+    BatchResponse(Box<ApiError>),
 }
 
 /// Format the action-URL error message to match upstream's
@@ -97,6 +104,9 @@ impl TransferError {
             | TransferError::Store(_)
             | TransferError::InvalidOid(_)
             | TransferError::UnsupportedHashAlgo(_) => false,
+            // Defer to the wrapped ApiError. A 5xx batch response is
+            // worth retrying; a credential-not-found is not.
+            TransferError::BatchResponse(e) => e.is_retryable(),
         }
     }
 }

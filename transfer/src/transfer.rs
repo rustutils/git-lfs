@@ -140,7 +140,11 @@ impl Transfer {
         if std::env::var_os("GIT_TRACE").is_some_and(|v| !v.is_empty() && v != "0") {
             eprintln!("tq: sending batch of size {}", req.objects.len());
         }
-        let resp: BatchResponse = self.api.batch(&req).await?;
+        let resp: BatchResponse = self
+            .api
+            .batch(&req)
+            .await
+            .map_err(|e| TransferError::BatchResponse(Box::new(e)))?;
 
         // The spec requires `sha256` and treats an absent/empty
         // `hash_algo` as that default. Anything else means the server

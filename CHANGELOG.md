@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Credential-helper plumbing for Milestone 6:
+  - `creds`: `git credential` input is now validated before each
+    `fill` / `approve` / `reject`. Newlines and null bytes are rejected
+    unconditionally; carriage returns are rejected when
+    `credential.protectProtocol` is on (the default). Error wording
+    matches upstream's `creds.buffer` so existing test grep patterns
+    pass.
+  - `creds`: `Query::from_url` now percent-decodes the path so URLs
+    with `%0a` / `%0d` / `%00` reach the helper as the literal byte —
+    `protectProtocol` then catches them at the validation layer.
+  - `api`: new `ApiError::CredentialsNotFound { url, detail }` variant
+    surfaces upstream's `Git credentials for <url> not found:\n<detail>`
+    wording when `git credential fill` returns no usable creds (or
+    fails). `Client` honors `credential.useHttpPath` (default `false`)
+    via the new `with_use_http_path()` builder.
+  - `transfer`: new `TransferError::BatchResponse(Box<ApiError>)`
+    variant prepends `batch response:` to API failures from the
+    upload/download batch call so downstream error rendering matches
+    upstream's `tq` wrapping. Retryability defers to the wrapped
+    `ApiError`.
+  - `cli/fetcher`: reads `credential.useHttpPath` and
+    `credential.protectProtocol` from the effective config and
+    threads both into the API client / `GitCredentialHelper`.
 - `git lfs pointer --file=<path>` now runs the configured
   `lfs.extension.<name>.clean` chain in priority order when invoked
   from inside a repo, producing a pointer with `ext-N-<name>

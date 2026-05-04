@@ -43,6 +43,11 @@ pub struct Client {
     /// Cached creds + query they were filled for. `None` means we haven't
     /// successfully filled yet (but may have an initial `Auth`).
     pub(crate) filled: Arc<Mutex<Option<(Query, Credentials)>>>,
+    /// Mirrors `credential.useHttpPath` (default `false`). When set, the
+    /// endpoint URL's path is included in the credential-fill query, so
+    /// helpers can scope per-repo. Off by default to match git's host-only
+    /// scoping.
+    pub(crate) use_http_path: bool,
 }
 
 impl std::fmt::Debug for Client {
@@ -74,6 +79,7 @@ impl Client {
             auth: Arc::new(Mutex::new(auth)),
             credentials: None,
             filled: Arc::new(Mutex::new(None)),
+            use_http_path: false,
         }
     }
 
@@ -83,6 +89,16 @@ impl Client {
     #[must_use]
     pub fn with_credential_helper(mut self, helper: Arc<dyn Helper>) -> Self {
         self.credentials = Some(helper);
+        self
+    }
+
+    /// Toggle `credential.useHttpPath`. When `true`, the endpoint URL's
+    /// path is included in the credential-fill query (so a helper can
+    /// scope per-repo); when `false` (the default, matching git), only
+    /// protocol+host are sent.
+    #[must_use]
+    pub fn with_use_http_path(mut self, on: bool) -> Self {
+        self.use_http_path = on;
         self
     }
 
@@ -125,10 +141,16 @@ impl Client {
     }
 
     /// Default credential query for this client — derived from the
-    /// endpoint URL, with the path cleared (matches `git credential`'s
-    /// host-only default).
+    /// endpoint URL. Path is cleared unless `use_http_path` is set
+    /// (matches `git credential`'s host-only default and the
+    /// `credential.useHttpPath` knob).
     fn cred_query(&self) -> Query {
-        Query::from_url(&self.endpoint).without_path()
+        let q = Query::from_url(&self.endpoint);
+        if self.use_http_path {
+            q
+        } else {
+            q.without_path()
+        }
     }
 
     /// POST a JSON body and decode a JSON response, with LFS error handling
@@ -222,9 +244,18 @@ impl Client {
         };
         let query = self.cred_query();
         self.reject_filled().await;
-        let creds = match fill_blocking(helper.clone(), query.clone()).await? {
+        let creds = match fill_for_endpoint(helper.clone(), query.clone(), &self.endpoint).await? {
             Some(c) => c,
-            None => return Ok(resp),
+            // No helper had anything for this URL. Surface the upstream
+            // "Git credentials for X not found" wording so callers (and
+            // batch-error formatters) can distinguish "auth missing" from
+            // a generic 401 the server returned for non-auth reasons.
+            None => {
+                return Err(ApiError::CredentialsNotFound {
+                    url: self.endpoint.to_string(),
+                    detail: None,
+                });
+            }
         };
         {
             let mut auth = self.auth.lock().unwrap();
@@ -301,14 +332,25 @@ pub(crate) async fn decode<R: DeserializeOwned>(resp: Response) -> Result<R, Api
 
 /// `Helper` is a sync trait — wrap each call in `spawn_blocking` so we don't
 /// stall the executor while git-credential's subprocess runs.
-async fn fill_blocking(
+///
+/// On a helper-side error (e.g. `protectProtocol` rejected a malformed
+/// URL), surface it as [`ApiError::CredentialsNotFound`] keyed on
+/// `endpoint`. Matches upstream's `FillCreds` wrapping so the underlying
+/// "credential value for path contains newline" message reaches the user
+/// alongside the "Git credentials for X not found" header.
+async fn fill_for_endpoint(
     helper: Arc<dyn Helper>,
     query: Query,
+    endpoint: &Url,
 ) -> Result<Option<Credentials>, ApiError> {
+    let endpoint_str = endpoint.to_string();
     tokio::task::spawn_blocking(move || helper.fill(&query))
         .await
         .map_err(|e| ApiError::Decode(format!("credential helper join: {e}")))?
-        .map_err(|e| ApiError::Decode(format!("credential helper: {e}")))
+        .map_err(|e| ApiError::CredentialsNotFound {
+            url: endpoint_str,
+            detail: Some(e.to_string()),
+        })
 }
 
 async fn approve_blocking(
