@@ -415,6 +415,11 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
             verbose: false,
             recent: false,
             force: false,
+            verify_remote: false,
+            no_verify_remote: false,
+            verify_unreachable: false,
+            no_verify_unreachable: false,
+            continue_when_unverified: false,
         };
         let _ = crate::prune::run(cwd, &prune_opts);
     }

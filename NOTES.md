@@ -60,7 +60,7 @@ Useful entry points in the upstream tree:
 
 ## Test status snapshot (point in time)
 
-About 643 of 794 vendored shell tests pass (~81%) across 104
+About 645 of 794 vendored shell tests pass (~81%) across 104
 files. Most of the per-command files now pass cleanly; remaining
 failures cluster in features we haven't shipped yet rather than
 edge cases of features we have.
@@ -73,6 +73,7 @@ t-track, t-untrack, t-install, t-uninstall, t-pre-push, t-clean,
 t-malformed-pointers, t-filter-process, t-happy-path,
 t-migrate-import (36/38), t-migrate-info (45/50),
 t-migrate-export, t-locks (9/9), t-batch-transfer (8/8),
+t-prune (18/18), t-prune-worktree (2/2), t-fetch-recent (7/7),
 t-clone (9/13), t-smudge (8/9), t-push (19/27).
 
 **Largest remaining failure clusters** (failed/total):
@@ -201,14 +202,19 @@ Loose ordering for the deferred work. Each milestone is independent
 enough to ship on its own; rough effort is small (1-3 days), medium
 (1-2 weeks), large (multi-week).
 
-### Milestone 4 — Prune + fetch-recent retention (small/medium)
+### Milestone 4 — Prune + fetch-recent retention ✓ shipped
 
-Owns t-prune (14), t-prune-worktree (2), t-fetch-recent (6), parts
-of t-fetch. Implements `lfs.fetchrecentrefsdays`,
-`lfs.fetchrecentcommitsdays`, `lfs.fetchrecentremoterefs`,
-`lfs.pruneoffsetdays`, and `lfs.fetchexclude` honor in fetch /
-prune / fsck. One coherent design pass — picked first because the
-spec is crisp and there's no third-party protocol surface.
+`lfs.fetchrecentrefsdays`, `lfs.fetchrecentcommitsdays`,
+`lfs.fetchrecentremoterefs`, `lfs.pruneoffsetdays`, and
+`lfs.fetchexclude` honor in fetch / prune. The retention pieces
+landed across earlier commits (per-anchor commit windows, stash /
+index / multi-worktree retention, `--recent` + `lfs.fetchrecentalways`).
+The `--verify-remote` / `--verify-unreachable` /
+`--when-unverified` slice (with `lfs.pruneverify*always`) closes
+out the milestone — `t-prune` 18/18, `t-prune-worktree` 2/2,
+`t-fetch-recent` 7/7. The three remaining `t-expired.sh` failures
+(non-SSH) are about action-URL expiry on batch responses, tracked
+separately under `api`.
 
 ### Milestone 5 — Pointer CLI clean-extensions + ext list ✓ shipped
 

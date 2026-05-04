@@ -252,6 +252,44 @@ impl LfsFetcher {
             .collect())
     }
 
+    /// Ask the server which of the given OIDs it can serve back. Used
+    /// by `prune --verify-remote` to confirm a candidate-for-deletion
+    /// is actually safe to delete (the remote still has it). Returns
+    /// the subset that the server replied to with usable `actions` —
+    /// objects whose response carried an `error`, or no `actions`
+    /// (a no-op signal that doesn't make sense in download mode), are
+    /// **not** in the returned set.
+    ///
+    /// Sends one download-direction batch. Pre-signed action URLs are
+    /// not consumed — we just look at which objects the server
+    /// admits to having.
+    pub fn check_server_can_download(
+        &self,
+        specs: Vec<ObjectSpec>,
+    ) -> Result<HashSet<String>, FetchError> {
+        if specs.is_empty() {
+            return Ok(HashSet::new());
+        }
+        let api = self
+            .api
+            .as_ref()
+            .map_err(|m| -> FetchError { m.clone().into() })?;
+        let mut req = BatchRequest::new(Operation::Download, specs);
+        if let Some(r) = self.refspec.clone() {
+            req = req.with_ref(r);
+        }
+        let resp = self
+            .runtime
+            .block_on(api.batch(&req))
+            .map_err(|e| -> FetchError { e.to_string().into() })?;
+        Ok(resp
+            .objects
+            .into_iter()
+            .filter(|o| o.actions.is_some() && o.error.is_none())
+            .map(|o| o.oid)
+            .collect())
+    }
+
     fn transfer(&self) -> Result<&Transfer, FetchError> {
         self.transfer
             .as_ref()

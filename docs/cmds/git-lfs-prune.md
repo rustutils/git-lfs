@@ -16,8 +16,6 @@ Delete old LFS files from local storage
 
 Delete locally stored LFS objects that aren't reachable from HEAD or any unpushed commit, freeing up disk space.
 
-Note: many of upstream's prune options aren't yet supported — `--force`, `--recent`, `--verify-remote` (and the `--no-...` variants), `--verify-unreachable`, `--when-unverified`, the recent-refs / recent-commits retention windows, and the stash / worktree retention rules. The basic reachable-from-HEAD-or-unpushed walk is implemented and matches upstream's default semantics.
-
 ## Options
 
 ### Flags
@@ -28,14 +26,26 @@ Note: many of upstream's prune options aren't yet supported — `--force`, `--re
 - `-v`, `--verbose`
     Report the full detail of what is/would be deleted
 
-- `-c`, `--recent`
+- `--recent`
     Ignore the recent-refs / recent-commits retention windows when computing what is prunable. Equivalent to setting `lfs.fetchrecentrefsdays` and `lfs.fetchrecentcommitsdays` to 0 for this invocation
 
 - `-f`, `--force`
     Treat every pushed object as prunable regardless of the recent-refs / recent-commits / unpushed retention rules. Pointers reachable from HEAD's tree are still kept
 
+- `-c`, `--verify-remote`
+    Verify with the remote that prunable objects exist there before deleting them locally. With this on, an object that can't be served by the remote either halts the prune (default) or is dropped from the delete set (`--when-unverified=continue`). Reachable-but-unverified objects are reported as `missing on remote:`; unreachable objects (orphans not in any commit) are silently passed through unless `--verify-unreachable` is also set. Overrides `lfs.pruneverifyremotealways`
+
 - `--no-verify-remote`
-    Skip the remote verify pass when pruning. The remote-verify path itself isn't yet implemented, so this flag is currently a no-op accepted for compatibility
+    Override `lfs.pruneverifyremotealways=true` and skip the remote verify pass for this invocation
+
+- `--verify-unreachable`
+    When `--verify-remote` is in effect, verify orphan objects (not reachable from any commit) too. Without this, orphans pass through verification silently and are still pruned. Overrides `lfs.pruneverifyunreachablealways`
+
+- `--no-verify-unreachable`
+    Override `lfs.pruneverifyunreachablealways=true` and skip orphan verification for this invocation
+
+- `--when-unverified` `<MODE>`
+    What to do when `--verify-remote` finds objects missing on the remote. `halt` (the default) refuses the prune and lists the missing OIDs; `continue` drops them from the delete set and prunes the verified ones
 
 ## See also
 

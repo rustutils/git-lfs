@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `cli/prune`: `--verify-remote` (`-c`) sends every prunable OID
+  through a download-direction batch and refuses to delete anything
+  the server can't serve back — protects against accidentally
+  pruning the only remaining copy of a not-yet-replicated object.
+  `--verify-unreachable` extends the check to orphan objects (those
+  not reachable from any commit) too; without it, orphans pass
+  through silently and are still pruned, matching upstream's
+  `pruneGetVerifiedPrunableObjects` decision matrix.
+  `--when-unverified={halt|continue}` controls what happens when
+  some are missing — `halt` (default) refuses the prune and lists
+  the OIDs; `continue` drops them from the delete set and prunes
+  the rest. `--no-verify-remote` / `--no-verify-unreachable`
+  override the corresponding `lfs.pruneverifyremotealways` /
+  `lfs.pruneverifyunreachablealways` config keys for one
+  invocation. Status line now reads `X local objects, Y retained,
+  Z verified with remote, W not on remote, done.` Closes
+  `t-prune.sh` tests 6 (`prune verify`) and 8 (`prune unreachable`)
+  — `t-prune.sh` is now 18/18.
+- `cli/fetcher`: `check_server_can_download(specs)` companion to
+  the existing `check_server_has` — sends a download-direction
+  batch and returns the OIDs the server admits to having. Used by
+  `prune --verify-remote`; the existing upload-direction helper
+  still serves push's "skip not-on-remote" gate.
+
 - `creds`/`api`/`cli`: SSH-mediated auth via the `git-lfs-authenticate`
   command, the missing piece for SSH-only forge deployments. New
   `creds::SshAuthClient` spawns

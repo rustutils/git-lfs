@@ -911,13 +911,22 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             verbose,
             recent,
             force,
-            no_verify_remote: _,
+            verify_remote,
+            no_verify_remote,
+            verify_unreachable,
+            no_verify_unreachable,
+            when_unverified,
         }) => {
             let opts = prune::Options {
                 dry_run,
                 verbose,
                 recent,
                 force,
+                verify_remote,
+                no_verify_remote,
+                verify_unreachable,
+                no_verify_unreachable,
+                continue_when_unverified: when_unverified == "continue",
             };
             prune::run(&cwd, &opts)?;
         }

@@ -22,21 +22,28 @@
 //! `lfs.fetchinclude` filter every retain producer's pointer paths
 //! (matches upstream's `gitscanner.Filter` argument).
 //!
-//! Out of scope (NOTES.md / future slices): worktree + index + stash
-//! walks (Slice 6); `--verify-remote` (later); `--when-unverified`.
+//! `--verify-remote` (alias `-c`) sends prunable OIDs through a
+//! download-direction batch and refuses to delete anything the server
+//! can't serve back — protects against accidentally pruning the only
+//! remaining copy of a not-yet-replicated object. With
+//! `--verify-unreachable`, orphan objects (in the local store but not
+//! reachable from any commit) get the same check; without it, orphans
+//! pass through silently. `--when-unverified=continue` drops
+//! unverified objects from the delete set instead of halting.
 
 use std::collections::HashSet;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use git_lfs_git::{
-    FetchPruneConfig, scan_index_pointers, scan_pointers, scan_previous_versions, scan_stashed,
-    scan_tree,
+    FetchPruneConfig, scan_index_pointers, scan_pointers, scan_pointers_with_args,
+    scan_previous_versions, scan_stashed, scan_tree,
 };
 use git_lfs_pointer::Oid;
 use git_lfs_store::Store;
 
 use crate::fetch::{fetch_filter_set, paths_pass_filter};
+use crate::fetcher::LfsFetcher;
 use crate::push::remote_tracking_refs;
 
 #[derive(Debug, thiserror::Error)]
@@ -49,6 +56,17 @@ pub enum PruneError {
     Fetch(#[from] crate::fetch::FetchCommandError),
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    /// Verify-remote turned up unverified OIDs that the user didn't
+    /// authorize to be silently dropped — refuse the delete.
+    /// Wording is generic; the OID list is printed before the error
+    /// surfaces so the user knows what's at stake.
+    #[error(
+        "prune halted: objects missing on remote (re-run with --when-unverified=continue to drop them from the delete set)"
+    )]
+    UnverifiedHalt,
+    /// Wraps fetcher errors that hit the verify pass.
+    #[error("prune verify failed: {0}")]
+    Verify(String),
 }
 
 #[derive(Debug, Clone)]
@@ -62,6 +80,20 @@ pub struct Options {
     /// unpushed retention (`--force` flag). HEAD-tree retention still
     /// applies.
     pub force: bool,
+    /// `--verify-remote`: check each prunable OID against the remote
+    /// before deleting. Combined with `lfs.pruneverifyremotealways`
+    /// and `--no-verify-remote` to compute the effective decision.
+    pub verify_remote: bool,
+    pub no_verify_remote: bool,
+    /// `--verify-unreachable`: also verify orphan objects (those not
+    /// reachable from any commit). Combined with
+    /// `lfs.pruneverifyunreachablealways` and `--no-verify-unreachable`.
+    pub verify_unreachable: bool,
+    pub no_verify_unreachable: bool,
+    /// `--when-unverified=continue` (default `halt`). When `true`,
+    /// drop unverified objects from the delete set instead of
+    /// refusing the prune.
+    pub continue_when_unverified: bool,
 }
 
 pub fn run(cwd: &Path, opts: &Options) -> Result<(), PruneError> {
@@ -76,32 +108,85 @@ pub fn run(cwd: &Path, opts: &Options) -> Result<(), PruneError> {
 
     // Partition: what stays, what goes.
     let mut prunable: Vec<(Oid, u64)> = Vec::new();
-    let mut total_size: u64 = 0;
     for (oid, size) in &local_objects {
         if !retained.contains(oid) {
             prunable.push((*oid, *size));
-            total_size += size;
         }
     }
 
     let local_count = local_objects.len();
     let retained_count = local_count - prunable.len();
-    let summary = format!("{local_count} local objects, {retained_count} retained, done.");
 
     if prunable.is_empty() {
-        println!("{summary}");
+        println!("{local_count} local objects, {retained_count} retained, done.");
         return Ok(());
     }
 
+    // Resolve the effective verify flags. Args win over config; the
+    // explicit `--no-...` form is the override knob for users who
+    // turned the corresponding `lfs.pruneverify*always` config on
+    // globally and want to opt out for this invocation.
+    let cfg = FetchPruneConfig::from_repo(cwd);
+    let verify_remote =
+        !opts.no_verify_remote && (opts.verify_remote || cfg.prune_verify_remote_always);
+    let verify_unreachable = !opts.no_verify_unreachable
+        && (opts.verify_unreachable || cfg.prune_verify_unreachable_always);
+
+    // Verify-remote pass: classify each prunable OID into "verified"
+    // (server can serve it back) or "not verified" (missing). With
+    // `verify_unreachable=false`, orphan OIDs (not reachable from any
+    // commit) are NOT considered failures even if the server doesn't
+    // have them — we don't care about pruning bytes nothing in history
+    // references. Without `verify_remote`, every prunable is treated as
+    // verified.
+    let (mut delete_list, missing_on_remote, verify_count) = if verify_remote {
+        verify_prunable(cwd, &prunable, verify_unreachable)?
+    } else {
+        (prunable.clone(), Vec::new(), 0usize)
+    };
+
+    let mut summary = format!("{local_count} local objects, {retained_count} retained");
+    if verify_count > 0 {
+        summary.push_str(&format!(", {verify_count} verified with remote"));
+    }
+    if !missing_on_remote.is_empty() {
+        summary.push_str(&format!(", {} not on remote", missing_on_remote.len()));
+    }
+    summary.push_str(", done.");
+    println!("{summary}");
+
+    if !missing_on_remote.is_empty() {
+        // List the unverified objects so a halt or a continue both
+        // give the user the OIDs they need to re-push or delete
+        // by hand. Wording matches upstream's
+        // `These objects to be pruned are missing on remote:`.
+        println!("These objects to be pruned are missing on remote:");
+        for oid in &missing_on_remote {
+            println!(" * {oid}");
+        }
+        if !opts.continue_when_unverified {
+            // Halt: refuse the delete entirely. No bytes removed.
+            return Err(PruneError::UnverifiedHalt);
+        }
+        // Continue: drop the missing ones from the delete set.
+        let missing: HashSet<&Oid> = missing_on_remote.iter().collect();
+        delete_list.retain(|(oid, _)| !missing.contains(oid));
+    }
+
+    if delete_list.is_empty() {
+        return Ok(());
+    }
+
+    let delete_total_size: u64 = delete_list.iter().map(|(_, s)| *s).sum();
+
     if opts.dry_run {
-        println!("{summary}");
         println!(
             "{} files would be pruned ({})",
-            prunable.len(),
-            humanize(total_size),
+            delete_list.len(),
+            humanize(delete_total_size),
         );
         if opts.verbose {
-            for (oid, size) in &prunable {
+            for (oid, size) in &delete_list {
                 println!(" * {oid} ({})", humanize(*size));
             }
         }
@@ -109,17 +194,15 @@ pub fn run(cwd: &Path, opts: &Options) -> Result<(), PruneError> {
     }
 
     if opts.verbose {
-        for (oid, size) in &prunable {
+        for (oid, size) in &delete_list {
             println!(" * {oid} ({})", humanize(*size));
         }
     }
 
-    println!("{summary}");
-
-    let total = prunable.len();
+    let total = delete_list.len();
     let mut deleted = 0usize;
     let mut failed: Vec<(Oid, std::io::Error)> = Vec::new();
-    for (oid, _) in &prunable {
+    for (oid, _) in &delete_list {
         let path = store.object_path(*oid);
         match std::fs::remove_file(&path) {
             Ok(()) => deleted += 1,
@@ -137,6 +220,81 @@ pub fn run(cwd: &Path, opts: &Options) -> Result<(), PruneError> {
     println!("Deleting objects: 100% ({deleted}/{total}), done.");
 
     Ok(())
+}
+
+/// `(delete_list, missing_on_remote, verify_count)` returned by
+/// [`verify_prunable`]. Named because the tuple is wide enough that
+/// clippy flags the bare `Result<...>` as a complex type.
+type VerifyOutcome = (Vec<(Oid, u64)>, Vec<Oid>, usize);
+
+/// Run a download-direction batch over `prunable` and apply the
+/// decision matrix from upstream's `pruneGetVerifiedPrunableObjects`.
+///
+/// - `delete_list` — verified objects, plus orphan-and-unverified
+///   objects when `verify_unreachable=false` (nothing to protect).
+/// - `missing_on_remote` — reachable-but-unverified OIDs, or every
+///   unverified OID when `verify_unreachable=true`. Caller either
+///   halts or strips these from the delete list.
+/// - `verify_count` — OIDs the server confirmed it can serve back.
+fn verify_prunable(
+    cwd: &Path,
+    prunable: &[(Oid, u64)],
+    verify_unreachable: bool,
+) -> Result<VerifyOutcome, PruneError> {
+    use git_lfs_api::ObjectSpec;
+
+    let fetcher = LfsFetcher::from_repo(cwd, &Store::new(git_lfs_git::lfs_dir(cwd)?))?;
+    let specs: Vec<ObjectSpec> = prunable
+        .iter()
+        .map(|(oid, size)| ObjectSpec {
+            oid: oid.to_string(),
+            size: *size,
+        })
+        .collect();
+    let verified: HashSet<Oid> = fetcher
+        .check_server_can_download(specs)
+        .map_err(|e| PruneError::Verify(e.to_string()))?
+        .iter()
+        .filter_map(|s| s.parse().ok())
+        .collect();
+    let verify_count = verified.len();
+
+    // Reachable scan only matters when `verify_unreachable=false`:
+    // an unverified-but-orphan OID is silently passed through (no
+    // value), so we need to know who's an orphan. With
+    // `verify_unreachable=true`, every unverified OID counts as
+    // missing regardless of reachability — the scan is wasted work.
+    let reachable: HashSet<Oid> = if verify_unreachable {
+        HashSet::new()
+    } else {
+        scan_reachable_pointers(cwd)?
+    };
+
+    let mut delete_list: Vec<(Oid, u64)> = Vec::new();
+    let mut missing: Vec<Oid> = Vec::new();
+    for (oid, size) in prunable {
+        if verified.contains(oid) {
+            delete_list.push((*oid, *size));
+        } else if verify_unreachable || reachable.contains(oid) {
+            // Reachable + missing OR orphan-with-verify-unreachable:
+            // we care about this one. Caller halts or strips.
+            missing.push(*oid);
+        } else {
+            // Orphan + missing on remote and we weren't asked to
+            // care about orphans: just prune.
+            delete_list.push((*oid, *size));
+        }
+    }
+    Ok((delete_list, missing, verify_count))
+}
+
+/// Every LFS pointer reachable from any ref. Mirrors upstream's
+/// `gitscanner.ScanAll` — used by `--verify-remote` (without
+/// `--verify-unreachable`) to distinguish "missing-on-remote object
+/// I care about" from "orphan in the local store".
+fn scan_reachable_pointers(cwd: &Path) -> Result<HashSet<Oid>, PruneError> {
+    let entries = scan_pointers_with_args(cwd, &[], &[], &["--all"])?;
+    Ok(entries.into_iter().map(|e| e.oid).collect())
 }
 
 /// Build the union of retention sources. Pointers whose paths are all
