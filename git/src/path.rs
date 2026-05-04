@@ -193,6 +193,20 @@ mod tests {
     use tempfile::TempDir;
 
     fn init_repo() -> TempDir {
+        // Fail loudly if the test process inherits GIT_DIR / GIT_WORK_TREE.
+        // With those set, `git init <tempdir>` ignores the path arg and
+        // operates on the inherited git-dir instead — so the tempdir
+        // never becomes a real repo and the test silently exercises the
+        // wrong state. The `Justfile` pre-commit recipe strips these
+        // for us; this assertion is the canary if anything else slips.
+        for var in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"] {
+            assert!(
+                std::env::var_os(var).is_none(),
+                "{var} is set in the test process — git subprocesses will \
+                 ignore the per-test tempdir. Run via `just pre-commit` (which \
+                 strips it) or `env -u {var} cargo test`."
+            );
+        }
         let tmp = TempDir::new().unwrap();
         let status = Command::new("git")
             .args(["init", "--quiet"])

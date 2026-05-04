@@ -77,6 +77,22 @@ pub(crate) mod tests {
         /// Initialize a fresh repo with a deterministic identity + branch
         /// so tests don't depend on the developer's git config.
         pub fn init_repo() -> TempDir {
+            // Fail loudly if the test process inherits GIT_DIR /
+            // GIT_WORK_TREE. With those set, `git init <tempdir>`
+            // ignores the path and operates on the inherited git-dir
+            // instead — every subsequent assertion would silently
+            // exercise the wrong repo. The `Justfile` pre-commit
+            // recipe strips these; this is the canary if anything
+            // else slips through.
+            for var in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"] {
+                assert!(
+                    std::env::var_os(var).is_none(),
+                    "{var} is set in the test process — git subprocesses \
+                     will ignore the per-test tempdir. Run via \
+                     `just pre-commit` (which strips it) or \
+                     `env -u {var} cargo test`."
+                );
+            }
             let tmp = TempDir::new().unwrap();
             run(tmp.path(), &["init", "--quiet", "--initial-branch=main"]);
             run(tmp.path(), &["config", "user.email", "test@example.com"]);

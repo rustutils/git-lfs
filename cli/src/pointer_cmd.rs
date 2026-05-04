@@ -326,7 +326,8 @@ mod tests {
             file: Some(PathBuf::from("/dev/null")),
             ..Default::default()
         };
-        assert!(run_check(&opts).is_err());
+        let err = run_check(&opts).unwrap_err();
+        assert!(matches!(err, PointerError::Usage(_)), "got {err:?}");
     }
 
     #[test]
@@ -335,7 +336,8 @@ mod tests {
             check: true,
             ..Default::default()
         };
-        assert!(run_check(&opts).is_err());
+        let err = run_check(&opts).unwrap_err();
+        assert!(matches!(err, PointerError::Usage(_)), "got {err:?}");
     }
 
     #[test]

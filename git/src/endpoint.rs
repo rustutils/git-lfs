@@ -518,13 +518,22 @@ mod tests {
     fn windows_path_is_not_misread_as_ssh() {
         // `C:\repos\foo` would otherwise look like `host:path`, but a
         // single drive letter is not a valid hostname.
-        assert!(derive_lfs_url("C:\\repos\\foo").is_err());
+        let err = derive_lfs_url("C:\\repos\\foo").unwrap_err();
+        assert!(
+            matches!(err, EndpointError::InvalidUrl { .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]
     fn relative_path_is_rejected_not_treated_as_ssh() {
-        assert!(derive_lfs_url("./relative/path").is_err());
-        assert!(derive_lfs_url("/abs/path").is_err());
+        for input in ["./relative/path", "/abs/path"] {
+            let err = derive_lfs_url(input).unwrap_err();
+            assert!(
+                matches!(err, EndpointError::InvalidUrl { .. }),
+                "input {input:?} got {err:?}"
+            );
+        }
     }
 
     // ---- parse_ssh_url ----------------------------------------------------

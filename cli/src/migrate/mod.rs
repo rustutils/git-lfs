@@ -332,9 +332,13 @@ mod tests {
 
     #[test]
     fn parse_size_rejects_garbage() {
-        assert!(parse_size("nonsense").is_err());
-        assert!(parse_size("-1").is_err());
-        assert!(parse_size("12xx").is_err());
+        for input in ["nonsense", "-1", "12xx"] {
+            let err = parse_size(input).unwrap_err();
+            assert!(
+                matches!(&err, MigrateError::BadSize(s) if s == input),
+                "input {input:?} got {err:?}"
+            );
+        }
     }
 
     #[test]
