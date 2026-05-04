@@ -337,4 +337,41 @@ mod tests {
         let dirs = lfs_alternate_dirs(target.path()).unwrap();
         assert!(dirs.is_empty());
     }
+
+    #[test]
+    fn lfs_dir_resolves_to_main_repo_from_linked_worktree() {
+        let main = init_repo();
+        let run = |args: &[&str]| {
+            let st = Command::new("git")
+                .arg("-C")
+                .arg(main.path())
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(st.success(), "git {args:?} failed");
+        };
+        run(&["config", "user.email", "t@e"]);
+        run(&["config", "user.name", "t"]);
+        run(&["config", "commit.gpgsign", "false"]);
+        run(&["commit", "--allow-empty", "-q", "-m", "init"]);
+        run(&["branch", "feature"]);
+
+        let wt_holder = TempDir::new().unwrap();
+        let wt_dir = wt_holder.path().join("wt");
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(main.path())
+            .args(["worktree", "add"])
+            .arg(&wt_dir)
+            .arg("feature")
+            .status()
+            .unwrap();
+        assert!(status.success(), "git worktree add failed");
+
+        let main_lfs = lfs_dir(main.path()).unwrap();
+        let wt_lfs = lfs_dir(&wt_dir).unwrap();
+        std::fs::create_dir_all(&main_lfs).unwrap();
+        let canon = |p: PathBuf| std::fs::canonicalize(p).unwrap_or_else(|_| PathBuf::new());
+        assert_eq!(canon(main_lfs), canon(wt_lfs));
+    }
 }
