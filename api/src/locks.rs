@@ -162,7 +162,12 @@ impl Client {
     /// lock responses and the reference test server's "200 with `message`
     /// but no `lock`" in-band-conflict pattern.
     pub async fn create_lock(&self, req: &CreateLockRequest) -> Result<Lock, CreateLockError> {
-        let url = self.url("locks").map_err(CreateLockError::Api)?;
+        // SSH resolution defaults to "upload" for POST-style mutations,
+        // matching upstream's `endpointOperation` (POST → upload).
+        let (base, ssh) = self
+            .resolve_ssh(crate::ssh::SshOperation::Upload)
+            .map_err(CreateLockError::Api)?;
+        let url = Client::join(&base, "locks").map_err(CreateLockError::Api)?;
         // Serialize once so the closure (which may run twice — once
         // with current auth, once after a 401 → fill) doesn't re-encode
         // the body each time.
@@ -170,7 +175,7 @@ impl Client {
             .map_err(|e| CreateLockError::Api(ApiError::Decode(e.to_string())))?;
         let resp = self
             .send_with_auth_retry_response(|| {
-                self.request(reqwest::Method::POST, url.clone())
+                self.request_with_headers(reqwest::Method::POST, url.clone(), &ssh)
                     .header(reqwest::header::CONTENT_TYPE, crate::client::LFS_MEDIA_TYPE)
                     .body(body_bytes.clone())
             })
@@ -225,9 +230,11 @@ impl Client {
         )))
     }
 
-    /// GET `/locks` with optional filters.
+    /// GET `/locks` with optional filters. SSH-resolved as a download
+    /// operation (read-only listing).
     pub async fn list_locks(&self, filter: &ListLocksFilter) -> Result<LockList, ApiError> {
-        self.get_json("locks", filter).await
+        self.get_json("locks", filter, crate::ssh::SshOperation::Download)
+            .await
     }
 
     /// POST `/locks/verify` to list locks partitioned into ours/theirs.
@@ -240,7 +247,11 @@ impl Client {
         &self,
         req: &VerifyLocksRequest,
     ) -> Result<VerifyLocksResponse, ApiError> {
-        self.post_json("locks/verify", req).await
+        // POST default = upload, matching upstream's `endpointOperation`.
+        // verify_locks is called pre-push (upload context), so this also
+        // matches the caller's intent.
+        self.post_json("locks/verify", req, crate::ssh::SshOperation::Upload)
+            .await
     }
 
     /// POST `/locks/{id}/unlock` to delete a lock.
@@ -248,11 +259,13 @@ impl Client {
         // Percent-encode the id to keep nested path segments safe.
         let encoded = url_path_segment(id);
         let path = format!("locks/{encoded}/unlock");
-        let url = self.url(&path)?;
+        // POST → upload SSH operation (matches `endpointOperation`).
+        let (base, ssh) = self.resolve_ssh(crate::ssh::SshOperation::Upload)?;
+        let url = Client::join(&base, &path)?;
         let body_bytes = serde_json::to_vec(req).map_err(|e| ApiError::Decode(e.to_string()))?;
         let resp = self
             .send_with_auth_retry_response(|| {
-                self.request(reqwest::Method::POST, url.clone())
+                self.request_with_headers(reqwest::Method::POST, url.clone(), &ssh)
                     .header(reqwest::header::CONTENT_TYPE, crate::client::LFS_MEDIA_TYPE)
                     .body(body_bytes.clone())
             })

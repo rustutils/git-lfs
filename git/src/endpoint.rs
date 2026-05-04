@@ -50,6 +50,10 @@ pub struct SshInfo {
     /// upstream's exact form: leading `/` preserved for `ssh://`,
     /// stripped for bare SSH).
     pub path: String,
+    /// Port specified in the URL (e.g. `ssh://host:22/path`). `None` for
+    /// bare SSH (`git@host:path`) and for `ssh://` URLs without a port.
+    /// Threaded into `git-lfs-authenticate` invocations as `-p <port>`.
+    pub port: Option<String>,
 }
 
 /// LFS endpoint resolution result with the optional SSH metadata
@@ -321,17 +325,18 @@ pub fn parse_ssh_url(rawurl: &str) -> Option<SshInfo> {
         if authority.is_empty() {
             return None;
         }
-        // Drop the port component for the user_and_host string —
-        // upstream's `EndpointFromSshUrl` keeps user@host but stores
-        // the port separately.
-        let user_and_host = authority
-            .rsplit_once(':')
-            .map(|(host, _port)| host)
-            .unwrap_or(authority);
+        // Split port from user_and_host — upstream's `EndpointFromSshUrl`
+        // keeps user@host but stores the port separately so it can pass
+        // `-p <port>` to ssh.
+        let (user_and_host, port) = match authority.rsplit_once(':') {
+            Some((host, p)) => (host.to_owned(), Some(p.to_owned())),
+            None => (authority.to_owned(), None),
+        };
         return Some(SshInfo {
-            user_and_host: user_and_host.to_owned(),
+            user_and_host,
             // Leading `/` preserved for ssh:// to match upstream.
             path: format!("/{}", path.trim_start_matches('/')),
+            port,
         });
     }
     // HTTP/HTTPS/git/file aren't SSH.
@@ -343,11 +348,13 @@ pub fn parse_ssh_url(rawurl: &str) -> Option<SshInfo> {
         return None;
     }
     // Bare-SSH form: `[user@]host:path`. Strip leading `/` from path
-    // (upstream's `EndpointFromBareSshUrl` does this explicitly).
+    // (upstream's `EndpointFromBareSshUrl` does this explicitly). Bare
+    // SSH has no port — that's an `ssh://` form thing.
     let (host, path) = bare_ssh_split(trimmed)?;
     Some(SshInfo {
         user_and_host: host.to_owned(),
         path: path.trim_start_matches('/').to_owned(),
+        port: None,
     })
 }
 

@@ -2,7 +2,7 @@ use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 use git_lfs_creds::{Credentials, Helper, Query};
-use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderValue};
+use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 use reqwest::{Method, RequestBuilder, Response};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -10,6 +10,7 @@ use url::Url;
 
 use crate::auth::Auth;
 use crate::error::ApiError;
+use crate::ssh::{SharedSshResolver, SshAuth, SshOperation};
 
 /// `Content-Type` and `Accept` value mandated by the LFS API.
 ///
@@ -55,6 +56,11 @@ pub struct Client {
     /// `https://host/repo.git/info/lfs`. `None` falls back to
     /// [`Self::endpoint`].
     pub(crate) cred_url: Option<Url>,
+    /// SSH-mediated auth resolver (`git-lfs-authenticate`). Called once
+    /// per request; a non-empty `href` overrides the endpoint URL for
+    /// that call, and headers are merged into the outgoing request.
+    /// `None` means "not an SSH endpoint" — request flow is unchanged.
+    pub(crate) ssh_resolver: Option<SharedSshResolver>,
 }
 
 impl std::fmt::Debug for Client {
@@ -88,7 +94,20 @@ impl Client {
             filled: Arc::new(Mutex::new(None)),
             use_http_path: false,
             cred_url: None,
+            ssh_resolver: None,
         }
+    }
+
+    /// Attach an SSH auth resolver. Called once per request to resolve
+    /// `git-lfs-authenticate` output; a non-empty returned `href`
+    /// overrides the endpoint URL for that request and the returned
+    /// headers are merged in. Pass when the LFS endpoint is reached via
+    /// SSH (`ssh://...` URL or bare `git@host:repo`); leave unset for
+    /// pure-HTTPS endpoints.
+    #[must_use]
+    pub fn with_ssh_resolver(mut self, resolver: SharedSshResolver) -> Self {
+        self.ssh_resolver = Some(resolver);
+        self
     }
 
     /// Override the URL used for credential prompts and the
@@ -135,13 +154,11 @@ impl Client {
         matches!(*self.auth.lock().unwrap(), Auth::Basic { .. })
     }
 
-    /// Build a URL by joining `path` onto the endpoint.
-    ///
-    /// `path` should be a relative path like `objects/batch` or `locks`.
-    /// A trailing slash on the endpoint is added if missing so the join
-    /// preserves the endpoint's full path.
-    pub(crate) fn url(&self, path: &str) -> Result<Url, ApiError> {
-        let mut base = self.endpoint.clone();
+    /// Join `path` onto an explicit base URL. Used both for the
+    /// configured endpoint and for SSH-resolved `href` overrides — the
+    /// latter replaces the endpoint for a single request.
+    pub(crate) fn join(base: &Url, path: &str) -> Result<Url, ApiError> {
+        let mut base = base.clone();
         if !base.path().ends_with('/') {
             let p = format!("{}/", base.path());
             base.set_path(&p);
@@ -149,13 +166,62 @@ impl Client {
         Ok(base.join(path)?)
     }
 
-    /// Build a request, applying the current auth.
-    pub(crate) fn request(&self, method: Method, url: Url) -> RequestBuilder {
+    /// Resolve SSH auth (if a resolver is attached) for `operation`.
+    /// Returns the effective base URL (`href` override or the configured
+    /// endpoint) plus headers to merge into the request. With no
+    /// resolver, returns `(self.endpoint.clone(), {})`.
+    pub(crate) fn resolve_ssh(&self, operation: SshOperation) -> Result<(Url, SshAuth), ApiError> {
+        let Some(resolver) = self.ssh_resolver.as_ref() else {
+            return Ok((self.endpoint.clone(), SshAuth::default()));
+        };
+        let auth = resolver.resolve(operation)?;
+        let base = if auth.href.is_empty() {
+            self.endpoint.clone()
+        } else {
+            let mut u = Url::parse(&auth.href)
+                .map_err(|e| ApiError::Decode(format!("ssh href {:?}: {e}", auth.href)))?;
+            // Collapse consecutive slashes in the path. The reference
+            // `lfs-ssh-echo` test server produces hrefs like
+            // `http://host:port//repo.git/info/lfs` because the path
+            // argument we pass to `git-lfs-authenticate` already starts
+            // with `/`. Go's `http.ServeMux` 301-redirects double-slash
+            // paths to the cleaned form, and reqwest converts POST→GET
+            // on 301. Upstream Go's HTTP client preserves the method,
+            // so it never trips on this; we have to normalize ourselves.
+            let path = u.path().to_owned();
+            let cleaned = collapse_slashes(&path);
+            if cleaned != path {
+                u.set_path(&cleaned);
+            }
+            u
+        };
+        Ok((base, auth))
+    }
+
+    /// Build a request with the configured auth applied, then merge
+    /// `ssh.headers` on top — letting SSH-issued `Authorization` headers
+    /// override what we'd otherwise apply from the credential helper.
+    /// Pass `&SshAuth::default()` for non-SSH calls.
+    pub(crate) fn request_with_headers(
+        &self,
+        method: Method,
+        url: Url,
+        ssh: &SshAuth,
+    ) -> RequestBuilder {
         let auth = self.auth.lock().unwrap().clone();
         let mut headers = HeaderMap::new();
         headers.insert(ACCEPT, HeaderValue::from_static(LFS_MEDIA_TYPE));
         let req = self.http.request(method, url).headers(headers);
-        auth.apply(req)
+        let mut req = auth.apply(req);
+        for (k, v) in &ssh.headers {
+            if let (Ok(name), Ok(value)) = (
+                HeaderName::try_from(k.as_str()),
+                HeaderValue::try_from(v.as_str()),
+            ) {
+                req = req.header(name, value);
+            }
+        }
+        req
     }
 
     /// Default credential query for this client — derived from
@@ -181,13 +247,20 @@ impl Client {
     }
 
     /// POST a JSON body and decode a JSON response, with LFS error handling
-    /// and the auth-retry loop.
-    pub(crate) async fn post_json<B, R>(&self, path: &str, body: &B) -> Result<R, ApiError>
+    /// and the auth-retry loop. `op` selects the `git-lfs-authenticate`
+    /// operation when an SSH resolver is attached.
+    pub(crate) async fn post_json<B, R>(
+        &self,
+        path: &str,
+        body: &B,
+        op: SshOperation,
+    ) -> Result<R, ApiError>
     where
         B: Serialize + ?Sized,
         R: DeserializeOwned,
     {
-        let url = self.url(path)?;
+        let (base, ssh) = self.resolve_ssh(op)?;
+        let url = Self::join(&base, path)?;
         let body_bytes = serde_json::to_vec(body)
             .map_err(|e| ApiError::Decode(format!("serializing request body: {e}")))?;
         // GIT_CURL_VERBOSE mimics upstream's libcurl-backed dump: shell
@@ -204,7 +277,7 @@ impl Client {
             let _ = writeln!(err);
         }
         self.send_with_auth_retry(|| {
-            self.request(Method::POST, url.clone())
+            self.request_with_headers(Method::POST, url.clone(), &ssh)
                 .header(CONTENT_TYPE, LFS_MEDIA_TYPE)
                 .body(body_bytes.clone())
         })
@@ -212,13 +285,20 @@ impl Client {
     }
 
     /// GET a JSON response, with LFS error handling and the auth-retry loop.
-    /// `query` is appended as URL query parameters.
-    pub(crate) async fn get_json<Q, R>(&self, path: &str, query: &Q) -> Result<R, ApiError>
+    /// `query` is appended as URL query parameters. `op` selects the
+    /// `git-lfs-authenticate` operation when an SSH resolver is attached.
+    pub(crate) async fn get_json<Q, R>(
+        &self,
+        path: &str,
+        query: &Q,
+        op: SshOperation,
+    ) -> Result<R, ApiError>
     where
         Q: Serialize + ?Sized,
         R: DeserializeOwned,
     {
-        let url = self.url(path)?;
+        let (base, ssh) = self.resolve_ssh(op)?;
+        let url = Self::join(&base, path)?;
         // serde_urlencoded is what reqwest uses internally; serializing
         // to a String once means the closure can rebuild the request
         // cheaply on retry without re-running the serializer.
@@ -229,7 +309,7 @@ impl Client {
             if !qs.is_empty() {
                 u.set_query(Some(&qs));
             }
-            self.request(Method::GET, u)
+            self.request_with_headers(Method::GET, u, &ssh)
         })
         .await
     }
@@ -340,6 +420,25 @@ impl Client {
             *self.auth.lock().unwrap() = Auth::None;
         }
     }
+}
+
+/// Collapse consecutive `/` runs in a URL path to a single `/`.
+/// Preserves a single leading slash if the input was rooted.
+fn collapse_slashes(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    let mut last_was_slash = false;
+    for c in path.chars() {
+        if c == '/' {
+            if !last_was_slash {
+                out.push('/');
+            }
+            last_was_slash = true;
+        } else {
+            out.push(c);
+            last_was_slash = false;
+        }
+    }
+    out
 }
 
 /// Convert an HTTP response into either a typed body or an [`ApiError`].

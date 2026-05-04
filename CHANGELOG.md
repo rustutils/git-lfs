@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `creds`/`api`/`cli`: SSH-mediated auth via the `git-lfs-authenticate`
+  command, the missing piece for SSH-only forge deployments. New
+  `creds::SshAuthClient` spawns
+  `ssh [-p <port>] <user>@<host> git-lfs-authenticate <path> <op>`,
+  parses the JSON response (`href`, `header`, `expires_at`,
+  `expires_in`), and caches per `(host, port, path, operation)` with a
+  5s expiry buffer. `api::SshResolver` is the trait the API client
+  calls before each request; a non-empty `href` overrides the LFS
+  endpoint and `header` entries merge into the request. Trace lines
+  (`exec: <argv>`, `ssh cache: …`, `ssh cache expired: …`) match
+  upstream so the shell test greps line up. `lfs.<url>.sshtransfer`
+  is partially honored: `never` emits the `skipping pure SSH
+  protocol` trace upstream prints; `always` fails with `git-lfs-
+  authenticate has been disabled by request` (we don't implement the
+  pure-SSH transfer protocol yet). `SshInfo` now carries the SSH
+  port so `ssh -p <port>` is threaded through to the command. URL
+  paths returned by `git-lfs-authenticate` are normalized to collapse
+  consecutive slashes, sidestepping a 301-redirect / POST→GET
+  conversion that the reference test server (`lfs-ssh-echo`) would
+  otherwise trip. Closes the `t-batch-transfer.sh` SSH test, the
+  `t-locks.sh` SSH test (all three sub-cases), and three of six
+  `t-expired.sh` tests (the SSH expiry trio).
+
 - `creds`: new `AskpassHelper` runs `GIT_ASKPASS` /
   `core.askpass` / `SSH_ASKPASS` (in that priority order) to prompt
   for username + password, matching upstream's

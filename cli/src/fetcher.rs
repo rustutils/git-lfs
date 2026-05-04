@@ -17,10 +17,17 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use git_lfs_api::{Auth, BatchRequest, Client as ApiClient, ObjectSpec, Operation, Ref};
-use git_lfs_creds::{AskpassHelper, CachingHelper, GitCredentialHelper, Helper, HelperChain};
+use git_lfs_api::{
+    Auth, BatchRequest, Client as ApiClient, ObjectSpec, Operation, Ref, SharedSshResolver,
+    SshAuth as ApiSshAuth, SshOperation as ApiSshOperation, SshResolver,
+};
+use git_lfs_creds::{
+    AskpassHelper, CachingHelper, GitCredentialHelper, Helper, HelperChain, SshAuthClient,
+    SshOperation as CredsSshOperation,
+};
 use git_lfs_filter::FetchError;
 use git_lfs_git::ConfigScope;
+use git_lfs_git::SshInfo;
 use git_lfs_pointer::Pointer;
 use git_lfs_store::Store;
 use git_lfs_transfer::{Report, Transfer, TransferConfig};
@@ -72,6 +79,12 @@ impl LfsFetcher {
             .enable_all()
             .build()?;
         let endpoint_url = git_lfs_git::endpoint_for_remote(cwd, remote);
+        // Even for SSH endpoints we want the http client configured for
+        // the *eventual* HTTPS host — proxy/CA settings index by URL.
+        // For SSH-shaped endpoints, the resolver will replace the URL
+        // per request via `href`; the endpoint string we pass here is
+        // just the bootstrap. Pass the raw value — `http_client::build`
+        // tolerates non-HTTP schemes.
         let http = endpoint_url
             .as_ref()
             .map(|u| crate::http_client::build(cwd, u))
@@ -261,8 +274,14 @@ fn build_api_client_with(
     remote: Option<&str>,
     http: reqwest::Client,
 ) -> Result<ApiClient, String> {
-    let endpoint = git_lfs_git::endpoint_for_remote(cwd, remote)
+    let info = git_lfs_git::resolve_endpoint(cwd, remote)
         .map_err(|e| format!("resolving LFS endpoint: {e}"))?;
+    // For SSH-shaped endpoints, the configured URL might be `ssh://...`
+    // (e.g. `lfs.url = ssh://git@host/repo`). reqwest needs an http(s)
+    // base URL; the SSH resolver's `href` will replace it on each
+    // request, but we still need a parseable bootstrap value here.
+    let endpoint =
+        http_compatible_endpoint(&info.url).map_err(|e| format!("invalid LFS endpoint: {e}"))?;
     let mut url = url::Url::parse(&endpoint).map_err(|e| format!("invalid LFS endpoint: {e}"))?;
     // Extract `user:pass@` from the endpoint and use it as the initial
     // auth so we don't have to round-trip through 401 → fill on every
@@ -291,7 +310,161 @@ fn build_api_client_with(
     if let Some(git_url) = resolved_cred_url {
         client = client.with_cred_url(git_url);
     }
+    if let Some(ssh_info) = info.ssh {
+        // `lfs.<url>.sshtransfer` (with `lfs.sshtransfer` fallback) gates
+        // the pure-SSH transfer protocol (`git-lfs-transfer`). We don't
+        // implement that yet, so:
+        //   - `always`: the user explicitly asked for the unimplemented
+        //     path → fail loudly with upstream's exact wording so
+        //     scripts that opted in get a clear signal (and the shell
+        //     test grep matches).
+        //   - `never`: the user wants pure-SSH off; we honor that
+        //     trivially (we already only do `git-lfs-authenticate`),
+        //     and emit the trace line upstream prints for parity.
+        //   - unset / other: default behavior — just use
+        //     `git-lfs-authenticate`.
+        let sshtransfer = read_sshtransfer_for(cwd, &info.url);
+        match sshtransfer.as_deref() {
+            Some("always") => {
+                ssh_trace(format_args!(
+                    "git-lfs-authenticate has been disabled by request"
+                ));
+                client = client.with_ssh_resolver(Arc::new(DisabledSshResolver));
+            }
+            Some("never") => {
+                ssh_trace(format_args!("skipping pure SSH protocol"));
+                client = client.with_ssh_resolver(build_ssh_resolver(ssh_info));
+            }
+            _ => {
+                client = client.with_ssh_resolver(build_ssh_resolver(ssh_info));
+            }
+        }
+    }
     Ok(client)
+}
+
+/// Read `lfs.<endpoint>.sshtransfer` falling back to `lfs.sshtransfer`.
+/// Lowercased so callers can pattern-match on `"always" / "never"`.
+fn read_sshtransfer_for(cwd: &Path, endpoint: &str) -> Option<String> {
+    let endpoint_key = format!("lfs.{endpoint}.sshtransfer");
+    if let Ok(Some(v)) = git_lfs_git::config::get_effective(cwd, &endpoint_key) {
+        return Some(v.trim().to_ascii_lowercase());
+    }
+    if let Ok(Some(v)) = git_lfs_git::config::get_effective(cwd, "lfs.sshtransfer") {
+        return Some(v.trim().to_ascii_lowercase());
+    }
+    None
+}
+
+/// Emit one stderr trace line, gated on `GIT_TRACE` (matches the
+/// `creds/src/ssh.rs` trace gate). Used for the `sshtransfer=always` /
+/// `sshtransfer=never` notes the upstream test suite greps for.
+fn ssh_trace(args: std::fmt::Arguments) {
+    if !ssh_trace_enabled() {
+        return;
+    }
+    use std::io::Write as _;
+    let mut e = std::io::stderr().lock();
+    let _ = writeln!(e, "{args}");
+}
+
+fn ssh_trace_enabled() -> bool {
+    match std::env::var_os("GIT_TRACE") {
+        None => false,
+        Some(v) => {
+            let s = v.to_string_lossy().trim().to_lowercase();
+            !matches!(s.as_str(), "" | "0" | "false" | "no" | "off")
+        }
+    }
+}
+
+/// Resolver installed when `lfs.<url>.sshtransfer=always` and we don't
+/// implement pure-SSH transfer: refuses every request with upstream's
+/// "git-lfs-authenticate has been disabled by request" wording so the
+/// failure surfaces consistently regardless of which API method the
+/// caller hit.
+struct DisabledSshResolver;
+
+impl SshResolver for DisabledSshResolver {
+    fn resolve(&self, _op: ApiSshOperation) -> Result<ApiSshAuth, git_lfs_api::ApiError> {
+        Err(git_lfs_api::ApiError::Decode(
+            "git-lfs-authenticate has been disabled by request".into(),
+        ))
+    }
+}
+
+/// Convert an LFS endpoint string into something reqwest can use as a
+/// base URL. SSH-style schemes (`ssh://...`, bare `git@host:repo`, …)
+/// are run through [`derive_lfs_url`] to get the matching HTTPS form;
+/// HTTP/HTTPS pass through verbatim. The SSH resolver overrides this
+/// per-request when it returns a non-empty `href`.
+fn http_compatible_endpoint(url_str: &str) -> Result<String, git_lfs_git::EndpointError> {
+    if url_str.starts_with("http://") || url_str.starts_with("https://") {
+        return Ok(url_str.to_owned());
+    }
+    git_lfs_git::derive_lfs_url(url_str)
+}
+
+/// Construct an [`SshResolver`] for the given SSH endpoint metadata,
+/// using `GIT_SSH_COMMAND` / `GIT_SSH` / `ssh` for the executable in
+/// upstream's selection order.
+fn build_ssh_resolver(info: SshInfo) -> SharedSshResolver {
+    let program = resolve_ssh_program();
+    Arc::new(SshAuthAdapter {
+        client: Arc::new(SshAuthClient::new(program)),
+        ssh: info,
+    })
+}
+
+/// Pick the SSH executable per upstream's order:
+/// `GIT_SSH_COMMAND` (full command line, parsed by SshAuthClient) >
+/// `GIT_SSH` (single program path) > literal `ssh` on `$PATH`.
+/// `core.sshCommand` is upstream's fallback before `GIT_SSH`; we don't
+/// honor it yet — see NOTES.md.
+fn resolve_ssh_program() -> String {
+    if let Some(v) = std::env::var_os("GIT_SSH_COMMAND")
+        && !v.is_empty()
+    {
+        return v.to_string_lossy().into_owned();
+    }
+    if let Some(v) = std::env::var_os("GIT_SSH")
+        && !v.is_empty()
+    {
+        return v.to_string_lossy().into_owned();
+    }
+    "ssh".to_owned()
+}
+
+/// Bridge between `git_lfs_creds::SshAuthClient` (which knows how to
+/// spawn ssh and parse responses) and `git_lfs_api::SshResolver` (the
+/// trait the API client calls into). Holds the per-endpoint metadata
+/// the SSH command needs (`user@host`, port, path) and the operation
+/// translation between the two crates' enums.
+struct SshAuthAdapter {
+    client: Arc<SshAuthClient>,
+    ssh: SshInfo,
+}
+
+impl SshResolver for SshAuthAdapter {
+    fn resolve(&self, op: ApiSshOperation) -> Result<ApiSshAuth, git_lfs_api::ApiError> {
+        let creds_op = match op {
+            ApiSshOperation::Upload => CredsSshOperation::Upload,
+            ApiSshOperation::Download => CredsSshOperation::Download,
+        };
+        let resolved = self
+            .client
+            .resolve(
+                &self.ssh.user_and_host,
+                self.ssh.port.as_deref(),
+                &self.ssh.path,
+                creds_op,
+            )
+            .map_err(|e| git_lfs_api::ApiError::Decode(format!("ssh git-lfs-authenticate: {e}")))?;
+        Ok(ApiSshAuth {
+            href: resolved.href,
+            headers: resolved.header,
+        })
+    }
 }
 
 /// Pull `user:pass@` (or `user@`, with empty password) out of `url` and

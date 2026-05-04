@@ -14,6 +14,7 @@ mod client;
 mod error;
 mod locks;
 mod models;
+mod ssh;
 
 pub use auth::Auth;
 pub use batch::{
@@ -26,3 +27,4 @@ pub use locks::{
     VerifyLocksRequest, VerifyLocksResponse,
 };
 pub use models::{Lock, Owner, Ref};
+pub use ssh::{SharedSshResolver, SshAuth, SshOperation, SshResolver};

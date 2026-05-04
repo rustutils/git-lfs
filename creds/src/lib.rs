@@ -27,6 +27,7 @@ mod git_helper;
 mod helper;
 mod memory;
 mod query;
+mod ssh;
 
 pub use askpass::AskpassHelper;
 pub use chain::HelperChain;
@@ -34,3 +35,4 @@ pub use git_helper::GitCredentialHelper;
 pub use helper::{Credentials, Helper, HelperError};
 pub use memory::CachingHelper;
 pub use query::Query;
+pub use ssh::{SshAuth, SshAuthClient, SshAuthError, SshOperation};

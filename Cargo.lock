@@ -509,6 +509,8 @@ name = "git-lfs-creds"
 version = "0.5.0"
 dependencies = [
  "git-lfs-git",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
  "url",

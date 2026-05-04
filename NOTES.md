@@ -60,7 +60,7 @@ Useful entry points in the upstream tree:
 
 ## Test status snapshot (point in time)
 
-About 638 of 794 vendored shell tests pass (~80%) across 104
+About 643 of 794 vendored shell tests pass (~81%) across 104
 files. Most of the per-command files now pass cleanly; remaining
 failures cluster in features we haven't shipped yet rather than
 edge cases of features we have.
@@ -72,7 +72,7 @@ t-credentials-protect (3/3), t-askpass (5/6), t-fsck, t-update,
 t-track, t-untrack, t-install, t-uninstall, t-pre-push, t-clean,
 t-malformed-pointers, t-filter-process, t-happy-path,
 t-migrate-import (36/38), t-migrate-info (45/50),
-t-migrate-export, t-locks (8/9), t-batch-transfer (7/8),
+t-migrate-export, t-locks (9/9), t-batch-transfer (8/8),
 t-clone (9/13), t-smudge (8/9), t-push (19/27).
 
 **Largest remaining failure clusters** (failed/total):
@@ -262,11 +262,32 @@ classification. Lives in `transfer/`.
 t-batch-storage-upload-tus, t-multiple-remotes. Three independent
 adapters in `transfer/`:
 
-- **8a SSH `git-lfs-authenticate`** — server-discovery.md §SSH.
-  Unblocks self-hosted servers without HTTPS.
+- **8a SSH `git-lfs-authenticate`** ✓ shipped — `creds::SshAuthClient`
+  spawns `ssh ... git-lfs-authenticate <path> <op>`, parses the JSON
+  response, caches per `(host, port, path, operation)`. Auth client
+  consults `api::SshResolver` once per request; non-empty `href`
+  overrides the endpoint and `header` map merges into the outgoing
+  request. Lands t-batch-transfer SSH test, t-locks SSH test,
+  t-expired SSH trio. Deferred surface tracked below: SSH connection
+  multiplexing (`-oControlMaster`, `lfs.ssh.automultiplex`); retry
+  count (`lfs.ssh.retries`, default 5 in upstream — we fail on first
+  error); HTTP Basic fallback when SSH command fails; `core.sshCommand`
+  (we honor `GIT_SSH_COMMAND` / `GIT_SSH` only); `lfs.activitytimeout`;
+  `lfs.defaulttokenttl` fallback when server omits expiry; and
+  per-OS path-quoting nuances on Windows. The pure-SSH transfer
+  protocol (8c-equivalent, `git-lfs-transfer`) is also deferred —
+  `lfs.<url>.sshtransfer=always` errors with upstream's exact
+  wording; `=never` is honored trivially.
 - **8b Custom transfer agent protocol** — `docs/custom-transfers.md`.
   Third-party byte-for-byte contract.
 - **8c Tus resumable uploads** — chunk + resume + finalize.
+- **8d Pure-SSH transfer (`git-lfs-transfer`)** — extends 8a with
+  byte transfer over SSH instead of HTTPS. Currently we error on
+  `lfs.<url>.sshtransfer=always`; `t-batch-transfer.sh` tests 6-8
+  and `t-locks.sh` test 4 already pass via the basic SSH auth flow,
+  but they don't actually exercise the pure-SSH protocol path —
+  they happen to work because we fall through to HTTPS via
+  `git-lfs-authenticate`.
 
 ### Milestone 9 — Unshipped commands (small batch)
 
@@ -393,12 +414,6 @@ missing** and **why it was OK to skip for v0**.
   only models the batch negotiation). Adapters live in `transfer/`.
 
 ### `git::endpoint`
-- **SSH `git-lfs-authenticate`.** `docs/api/server-discovery.md` §SSH
-  says LFS clients should run `ssh user@host git-lfs-authenticate <path>
-  <op>` to get a pre-authenticated endpoint (JSON with `href` + `header`
-  + `expires_in`). We currently rewrite SSH remotes to HTTPS and rely on
-  the credential helper — works for GitHub/GitLab, misses self-hosted
-  servers that speak only the SSH flow.
 - **`remote.<name>.pushurl`.** Upstream honors a separate push URL for
   the same remote; we only read `remote.<name>.url`. Minor accuracy gap
   for users with split read/write URLs.
@@ -414,6 +429,22 @@ missing** and **why it was OK to skip for v0**.
   matters given our `origin` default.
 
 ### `creds`
+- **SSH connection multiplexing / retries.** `creds::SshAuthClient`
+  ships the basic spawn + cache flow but doesn't honor
+  `lfs.ssh.automultiplex` (`-oControlMaster=yes -oControlPath=...` to
+  re-use a single SSH connection across calls), `lfs.ssh.retries`
+  (upstream retries the SSH command up to 5 times by default), or
+  `lfs.activitytimeout`. We also don't fall back to HTTP Basic when
+  `git-lfs-authenticate` fails — upstream does, after the retry
+  budget is exhausted. `core.sshCommand` git config is also not
+  honored (we read `GIT_SSH_COMMAND` / `GIT_SSH` env vars only).
+  Owns t-batch-transfer tests beyond the basic auth flow once we
+  start exercising connection reuse.
+- **`lfs.defaulttokenttl` fallback.** Upstream falls back to this
+  config value when `git-lfs-authenticate` returns no `expires_at`
+  / `expires_in`. We treat "no expiry" as "never expires until
+  process exit", which is fine for the MVP test but loose for
+  long-running daemons.
 - **netrc.** Upstream `creds/netrc.go` reads `~/.netrc` as a fallback.
   Skipped — `git credential` already shells through to it on most setups.
 - **NTLM / Negotiate (Kerberos).** Upstream supports both via separate

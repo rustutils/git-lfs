@@ -142,7 +142,14 @@ pub struct Action {
 impl Client {
     /// POST `/objects/batch` to negotiate transfer URLs.
     pub async fn batch(&self, req: &BatchRequest) -> Result<BatchResponse, ApiError> {
-        self.post_json("objects/batch", req).await
+        // Match the SSH `git-lfs-authenticate` operation to the batch
+        // operation: an upload batch needs upload-scoped auth, a
+        // download batch needs download-scoped auth.
+        let op = match req.operation {
+            Operation::Upload => crate::ssh::SshOperation::Upload,
+            Operation::Download => crate::ssh::SshOperation::Download,
+        };
+        self.post_json("objects/batch", req, op).await
     }
 }
 
