@@ -76,6 +76,100 @@ URL-specific overrides are written as `lfs.<url>.<key>`, where `<url>` is the LF
 
   Whether to use SSH (`git-lfs-authenticate`) for the LFS endpoint at `<url>`. Values: `negotiate` (try SSH first, fall back to HTTPS — the default for `ssh://` and `git@` remotes), `always`, or `never`.
 
+## Push settings
+
+- `lfs.allowincompletepush`
+
+  When `true`, allow a push to complete even if some LFS objects are missing from the local cache. By default (false), pre-push aborts and the user has to resolve the gap before pushing.
+
+- `lfs.<url>.locksverify` (or unscoped `lfs.locksverify`)
+
+  Controls whether the pre-push hook calls the lock API on the LFS endpoint to refuse pushes over files locked by someone else.
+
+  - `true`: verify locks; halt the push if any are violated or the server is unreachable.
+  - `false`: skip the lock check entirely. Set this if you don't use file locking, or your server enforces it server-side.
+  - Unset: attempt the call; if it succeeds, persist `true` for next time. If the server returns 501 Not Implemented, persist `false`. If it fails for another reason, warn and continue. (Matches upstream's first-call probe.)
+
+## Fetch settings
+
+- `lfs.fetchinclude`
+
+  Comma-separated list of `gitignore(5)`-style patterns. When set, fetch only downloads objects whose path matches one of them. Empty string disables the filter.
+
+- `lfs.fetchexclude`
+
+  Inverse of `fetchinclude` — fetch skips objects whose path matches.
+
+- `lfs.fetchrecentrefsdays`
+
+  Branches whose tip commit lies within this many days of now are included by `fetch --recent`. Only local refs are scanned unless `lfs.fetchrecentremoterefs` is also set. Default 7. A value of 0 disables ref-window retention entirely.
+
+- `lfs.fetchrecentremoterefs`
+
+  When `true`, `fetch --recent` also scans the remote-tracking refs of the remote being fetched (useful for picking up branches you might check out later without first creating a tracking local ref). Default `true`.
+
+- `lfs.fetchrecentcommitsdays`
+
+  In addition to fetching the tip state of each recent ref, also fetch LFS objects referenced by commits within this many days of that ref's tip. Default 0 (tip only).
+
+- `lfs.fetchrecentalways`
+
+  When `true`, always behave as if `--recent` was passed. Default `false`.
+
+## Prune settings
+
+- `lfs.pruneoffsetdays`
+
+  Extra days added to the `lfs.fetchrecent*days` windows when deciding what prune can delete. A ref or commit has to be at least this many days older than the oldest one `fetch --recent` would download for prune to treat it as old enough to delete. Default 3. Only takes effect when the underlying fetch-recent setting is non-zero.
+
+- `lfs.pruneremotetocheck`
+
+  Remote to consult for UNPUSHED LFS FILES detection and `--verify-remote`. Default `origin`. See [git-lfs-prune(1)](./git-lfs-prune.md) for the full retention rules.
+
+- `lfs.pruneverifyremotealways`
+
+  When `true`, always run prune as if `--verify-remote` was passed. The pre-delete remote-presence check applies on every invocation. Use `--no-verify-remote` to opt out for a single run.
+
+- `lfs.pruneverifyunreachablealways`
+
+  When `true`, always run prune as if `--verify-unreachable` was passed — also verify objects not reachable from any commit. Only meaningful when remote verification is on. Use `--no-verify-unreachable` to opt out for a single run.
+
+## Extensions
+
+Git LFS extensions wrap each object's bytes through an external program on the clean (commit) and smudge (checkout) paths — useful for repository-wide transforms like compression or encryption that should happen alongside pointerization.
+
+- `lfs.extension.<name>.clean`
+
+  Command run when files are added to the index. Receives the raw bytes on stdin and is expected to emit transformed bytes on stdout.
+
+- `lfs.extension.<name>.smudge`
+
+  Command run when files are written into the working copy. Reverses what `clean` produced.
+
+- `lfs.extension.<name>.priority`
+
+  Sort order across extensions. Lower priorities run first on the clean side, last on the smudge side (so a chain `compress -> encrypt` reverses to `decrypt -> decompress`). Required when more than one extension is configured.
+
+See `git-lfs-ext(1)` for inspecting the resolved chain.
+
+## Other settings
+
+- `lfs.setlockablereadonly` / `GIT_LFS_SET_LOCKABLE_READONLY`
+
+  Whether files tracked as `lockable` in `.gitattributes` are made read-only in the working copy unless the current user holds the lock. Default `true`. Set either to `0` / `false` / `no` to keep them writeable.
+
+- `lfs.skipdownloaderrors` / `GIT_LFS_SKIP_DOWNLOAD_ERRORS`
+
+  Don't abort the smudge filter when an LFS download fails. The pointer is left in the working tree as-is, and the surrounding `git checkout` (or whatever invoked smudge) reports success. Useful when you need to operate on a repository whose remote is temporarily unavailable, but be aware that scripts checking smudge exit status won't see the failure.
+
+- `GIT_LFS_SKIP_SMUDGE`
+
+  Skip pointer-to-content conversion in `git lfs smudge` and `git lfs filter-process`. Equivalent to running `git lfs install --skip-smudge` (which sets it via `filter.lfs.process`). Any value other than empty / `0` / `false` enables it.
+
+- `GIT_LFS_SKIP_PUSH`
+
+  Make the pre-push hook a no-op. New LFS objects are not uploaded for the duration of the command. Same value semantics as `GIT_LFS_SKIP_SMUDGE`.
+
 ## Lfsconfig
 
 `.lfsconfig` at the repository root uses the same format as `.git/config`. Only a restricted set of keys is honored here (the others are silently ignored), for security: a `.lfsconfig` from an untrusted clone shouldn't be able to override credential helpers or arbitrary Git config.
