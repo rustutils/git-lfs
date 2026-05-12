@@ -2,6 +2,11 @@ Fetch the LFS objects for the current ref from the default remote:
 
     git lfs fetch
 
+Fetch the LFS objects for the current ref AND recent changes from
+the default remote (see RECENT CHANGES):
+
+    git lfs fetch --recent
+
 Fetch the LFS objects for the current ref from a secondary remote
 `upstream`:
 

@@ -81,13 +81,17 @@ const FETCH: ManContent = ManContent {
     description: None,
     extra_sections: &[
         (
+            "INCLUDE AND EXCLUDE",
+            include_str!("../man/fetch/include_and_exclude.md"),
+        ),
+        (
             "DEFAULT REMOTE",
             include_str!("../man/fetch/default_remote.md"),
         ),
         ("DEFAULT REFS", include_str!("../man/fetch/default_refs.md")),
         (
-            "INCLUDE AND EXCLUDE",
-            include_str!("../man/fetch/include_and_exclude.md"),
+            "RECENT CHANGES",
+            include_str!("../man/fetch/recent_changes.md"),
         ),
         ("EXAMPLES", include_str!("../man/fetch/examples.md")),
         ("SEE ALSO", include_str!("../man/fetch/see_also.md")),

@@ -62,22 +62,6 @@ This does not update the working copy; use [git-lfs-pull(1)](./git-lfs-pull.md) 
 
     Intended for interoperation with external tools. When `--dry-run` is also specified, writes the details of the transfers that would occur if the objects were fetched.
 
-## Default remote
-
-Without arguments, fetch downloads from the default remote. The default
-remote is the same as for `git fetch`, i.e. based on the remote branch
-you're tracking first, or `origin` otherwise.
-
-## Default refs
-
-If no refs are given as arguments, the currently checked out ref is
-used.
-
-Pass `--recent` (or set `lfs.fetchrecentalways=true`) to also fetch
-recently-touched refs and the recent pre-images on each. The window
-is controlled by `lfs.fetchrecentrefsdays`, `lfs.fetchrecentremoterefs`,
-and `lfs.fetchrecentcommitsdays`. See [git-lfs-config(5)](./git-lfs-config.md).
-
 ## Include and exclude
 
 You can configure Git LFS to only fetch objects to satisfy references
@@ -114,11 +98,39 @@ Examples:
 :   Only fetch LFS objects in the `media` folder, but exclude those
     in one of its subfolders.
 
+## Default remote
+
+Without arguments, fetch downloads from the default remote. The default
+remote is the same as for `git fetch`, i.e. based on the remote branch
+you're tracking first, or `origin` otherwise.
+
+## Default refs
+
+If no refs are given as arguments, the currently checked out ref is
+used. With `--recent` (or `lfs.fetchrecentalways=true`), recently-touched
+refs and commits are also fetched — see RECENT CHANGES.
+
+## Recent changes
+
+With `--recent` (or `lfs.fetchrecentalways=true`), fetch downloads objects from recently-active refs and commits in addition to the ones the named refs ask for. The idea is to pre-populate the cache so a later checkout or diff of "what we were working on last week" doesn't trigger another download round-trip.
+
+What counts as 'recent' is controlled by these gitconfig keys:
+
+- `lfs.fetchrecentrefsdays`: include branches whose tip commit is within this many days of now. Only local refs are scanned unless `lfs.fetchrecentremoterefs` is also set. Default 7.
+- `lfs.fetchrecentremoterefs`: also scan the remote-tracking refs of the remote being fetched. Useful for picking up branches you might check out later without first creating a tracking local ref. Default true.
+- `lfs.fetchrecentcommitsdays`: in addition to fetching the tip state of each recent ref, also fetch any LFS object referenced by commits within this many days of that ref's tip. Default 0 (tip only).
+- `lfs.fetchrecentalways`: when true, always behave as if `--recent` was passed. Default false.
+
 ## Examples
 
 Fetch the LFS objects for the current ref from the default remote:
 
     git lfs fetch
+
+Fetch the LFS objects for the current ref AND recent changes from
+the default remote (see RECENT CHANGES):
+
+    git lfs fetch --recent
 
 Fetch the LFS objects for the current ref from a secondary remote
 `upstream`:
