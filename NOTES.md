@@ -60,7 +60,7 @@ Useful entry points in the upstream tree:
 
 ## Test status snapshot (point in time)
 
-About 662 of 794 vendored shell tests pass (~83%) across 104
+About 667 of 794 vendored shell tests pass (~84%) across 104
 files. Most of the per-command files now pass cleanly; remaining
 failures cluster in features we haven't shipped yet rather than
 edge cases of features we have.
@@ -283,10 +283,13 @@ t-batch-storage-retries-ratelimit (15 tests). Lives in `transfer/`.
   Default `max_attempts` bumped 3 → 9 to outlast the 10s rate-limit
   window in the test server. Lands `t-batch-storage-retries-ratelimit`
   (5) + `t-batch-storage-retries` tests 1-2 = 7 tests.
-- **7b Batch Retry-After / delayed retry** — batch endpoint 429
-  with Retry-After should defer the next batch attempt; emit
-  `tq: enqueue retry` at the batch layer. Owns `t-batch-retries-ratelimit`
-  (5 tests).
+- **7b Batch Retry-After / delayed retry** ✓ shipped — batch
+  endpoint 429 with Retry-After (or 5xx) routes through a
+  `batch_with_retry` helper that sleeps for the server-supplied
+  delay (exponential fallback when absent) and emits `tq: enqueue
+  retry #N` per object in the batch per retry. The `Retry-After`
+  header now surfaces on `ApiError::Status` via `retry_after()`.
+  Lands `t-batch-retries-ratelimit` (5 tests).
 - **7c Range-resume on interrupted downloads** — `Range: bytes=…`
   retry, 206 / 416 handling, `Attempting to resume` /
   `xfer: server accepted|rejected resume` trace. Owns

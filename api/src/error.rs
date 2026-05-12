@@ -34,6 +34,12 @@ pub enum ApiError {
         url: Option<String>,
         lfs_authenticate: Option<String>,
         body: Option<ServerError>,
+        /// Parsed `Retry-After` response header (delta-seconds today;
+        /// RFC 1123 deferred). `Some` when the server pinned a wait
+        /// time the caller should honor instead of falling back to
+        /// exponential backoff. Used by the transfer queue's batch
+        /// retry loop.
+        retry_after: Option<Duration>,
     },
 
     /// JSON body did not match the expected schema.
@@ -94,6 +100,17 @@ impl ApiError {
                     ..
                 }
         )
+    }
+
+    /// Server-supplied retry delay, if any. Pulled from the
+    /// `Retry-After` response header at decode time. Mirrors upstream's
+    /// `errors.NewRetriableLaterError` gate; falls back to exponential
+    /// backoff at the call site when `None`.
+    pub fn retry_after(&self) -> Option<Duration> {
+        match self {
+            ApiError::Status { retry_after, .. } => *retry_after,
+            _ => None,
+        }
     }
 }
 

@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `transfer`: batch endpoint retries on 429 / 5xx, honoring
+  `Retry-After` when the server pinned a wait time. `Transfer::run`
+  now routes through a `batch_with_retry` helper that retries the
+  batch the same way per-object transfers retry, emitting
+  `tq: sending batch of size N` on every attempt and one
+  `tq: enqueue retry #N after <secs>s for "<oid>" (size: M): <err>`
+  per object in the batch on each retry — that's what
+  `t-batch-retries-ratelimit.sh` greps for, since upstream's
+  transfer queue routes each object through `enqueueRetry` at the
+  batch layer. The `Retry-After` header now also surfaces on
+  `ApiError::Status` via the new `retry_after()` accessor. Lands
+  `t-batch-retries-ratelimit` (5 tests).
 - `transfer`: `Retry-After` header parsing on storage-action 429 / 5xx
   responses. When the server pins a wait time we sleep for exactly
   that long instead of falling back to exponential backoff, mirroring

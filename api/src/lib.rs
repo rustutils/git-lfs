@@ -8,6 +8,13 @@
 //! resolution lives in `git-lfs-creds`. Server URL discovery from a git
 //! remote lives in `git-lfs-git`.
 
+// ApiError::Status carries enough context (URL, body, LFS-Authenticate,
+// Retry-After) that it crosses clippy's default 128-byte threshold for
+// the Err arm. Boxing the variant would cascade through every match
+// site; for an error type used only on failure paths the size is not
+// worth chasing.
+#![allow(clippy::result_large_err)]
+
 mod auth;
 mod batch;
 mod client;

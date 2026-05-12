@@ -209,6 +209,7 @@ impl Client {
                 url: Some(request_url),
                 lfs_authenticate: None,
                 body,
+                retry_after: None,
             }));
         }
 

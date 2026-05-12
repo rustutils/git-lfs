@@ -134,18 +134,7 @@ impl Transfer {
         if let Some(r) = r#ref {
             req = req.with_ref(r);
         }
-        // GIT_TRACE breadcrumb mirroring upstream's `tq:` line in
-        // `tq/transfer_queue.go`. t-alternates greps for it to verify
-        // the queue *did* (or didn't) reach the server when the local
-        // alternates store should have satisfied the lookup.
-        if std::env::var_os("GIT_TRACE").is_some_and(|v| !v.is_empty() && v != "0") {
-            eprintln!("tq: sending batch of size {}", req.objects.len());
-        }
-        let resp: BatchResponse = self
-            .api
-            .batch(&req)
-            .await
-            .map_err(|e| TransferError::BatchResponse(Box::new(e)))?;
+        let resp: BatchResponse = self.batch_with_retry(&req).await?;
 
         // The spec requires `sha256` and treats an absent/empty
         // `hash_algo` as that default. Anything else means the server
@@ -219,6 +208,66 @@ impl Transfer {
         }
         Ok(report)
     }
+
+    /// Call the batch endpoint with retry. Wraps `api.batch()` in the
+    /// same retry shape as per-object transfers: honor `Retry-After`
+    /// when the server pinned a delay, exponential backoff otherwise.
+    /// Emits `tq: sending batch of size N` on every attempt (so
+    /// t-alternates can still grep it) and, on each retry, one
+    /// `tq: enqueue retry #N after <secs>s for "<oid>" (size: N): <err>`
+    /// per object in the batch — that's the per-object format
+    /// `t-batch-retries-ratelimit.sh` greps for, since upstream's
+    /// transfer queue routes each object through `enqueueRetry` even
+    /// though the failure is at the batch layer.
+    async fn batch_with_retry(&self, req: &BatchRequest) -> Result<BatchResponse, TransferError> {
+        let mut backoff = self.config.initial_backoff;
+        let mut retry_count: u32 = 0;
+        let mut last_err: Option<git_lfs_api::ApiError> = None;
+        for attempt in 0..self.config.max_attempts {
+            if trace_enabled() {
+                eprintln!("tq: sending batch of size {}", req.objects.len());
+            }
+            match self.api.batch(req).await {
+                Ok(resp) => return Ok(resp),
+                Err(e) => {
+                    let retry = e.is_retryable() && attempt + 1 < self.config.max_attempts;
+                    if !retry {
+                        return Err(TransferError::BatchResponse(Box::new(e)));
+                    }
+                    let server_delay = e.retry_after();
+                    let delay = server_delay.unwrap_or(backoff);
+                    retry_count += 1;
+                    if trace_enabled() {
+                        let secs = delay.as_secs_f64();
+                        for obj in &req.objects {
+                            // Upstream's `%q` Go-quotes the oid (adds
+                            // quotes + Go escapes); a pure hex OID
+                            // round-trips through Rust's {:?} the same
+                            // way.
+                            eprintln!(
+                                "tq: enqueue retry #{retry_count} after {secs:.2}s for {:?} (size: {}): {e}",
+                                obj.oid, obj.size
+                            );
+                        }
+                    }
+                    last_err = Some(e);
+                    tokio::time::sleep(delay).await;
+                    if server_delay.is_none() {
+                        backoff = (backoff * 2).min(self.config.backoff_max);
+                    }
+                }
+            }
+        }
+        Err(TransferError::BatchResponse(Box::new(
+            last_err.expect("loop ran at least once"),
+        )))
+    }
+}
+
+/// Returns true when the user asked for `GIT_TRACE`. Cheap gate around
+/// the per-retry `eprintln!` calls.
+fn trace_enabled() -> bool {
+    std::env::var_os("GIT_TRACE").is_some_and(|v| !v.is_empty() && v != "0")
 }
 
 /// Handle one [`ObjectResult`]: emit Started, run with retry, return final
@@ -346,7 +395,7 @@ where
 /// independent grep targets even though they fire on the same retry
 /// in our (simpler, inline) retry model.
 fn emit_retry_trace(oid: &str, size: u64, count: u32, delay: Duration, err: &TransferError) {
-    if !std::env::var_os("GIT_TRACE").is_some_and(|v| !v.is_empty() && v != "0") {
+    if !trace_enabled() {
         return;
     }
     let secs = delay.as_secs_f64();

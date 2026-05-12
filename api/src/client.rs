@@ -510,6 +510,11 @@ pub(crate) async fn decode<R: DeserializeOwned>(resp: Response) -> Result<R, Api
         .get("LFS-Authenticate")
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
+    let retry_after = resp
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(crate::error::parse_retry_after);
     let request_url = resp.url().to_string();
     let bytes = resp.bytes().await.unwrap_or_default();
 
@@ -518,6 +523,7 @@ pub(crate) async fn decode<R: DeserializeOwned>(resp: Response) -> Result<R, Api
         url: Some(request_url),
         lfs_authenticate,
         body: serde_json::from_slice(&bytes).ok(),
+        retry_after,
     })
 }
 
