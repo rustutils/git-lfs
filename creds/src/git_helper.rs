@@ -68,6 +68,20 @@ impl GitCredentialHelper {
     }
 
     fn run(&self, subcommand: &str, query: &Query) -> Result<String, HelperError> {
+        // Upstream's `creds: git credential <sub> (%q, %q, %q)` trace
+        // at `creds/creds.go:328`. Go's %q quotes the string with the
+        // double-quote form Rust's {:?} produces, so a hex-clean
+        // protocol/host/path round-trips byte-for-byte.
+        // `t-credentials-no-prompt.sh::askpass: push with bad askpass`
+        // greps for `creds: git credential fill`.
+        {
+            let mut e = std::io::stderr().lock();
+            let _ = writeln!(
+                e,
+                "creds: git credential {subcommand} ({:?}, {:?}, {:?})",
+                query.protocol, query.host, query.path,
+            );
+        }
         let mut child = Command::new(&self.git_program)
             .args(["credential", subcommand])
             .stdin(Stdio::piped())

@@ -64,12 +64,26 @@ impl AskpassHelper {
         let _ = writeln!(e);
         drop(e);
 
-        let out = Command::new(prog)
+        let out = match Command::new(prog)
             .args(&args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .output()?;
+            .output()
+        {
+            Ok(o) => o,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // Mirrors upstream's `creds: failed to find GIT_ASKPASS
+                // command: <prog>` trace at `creds/creds.go:284`.
+                // `t-credentials-no-prompt.sh::askpass: push with bad
+                // askpass` greps for this line when the configured
+                // askpass program isn't on PATH.
+                let mut e2 = std::io::stderr().lock();
+                let _ = writeln!(e2, "creds: failed to find GIT_ASKPASS command: {prog}");
+                return Err(e.into());
+            }
+            Err(e) => return Err(e.into()),
+        };
         if !out.status.success() {
             return Err(HelperError::Failed(format!(
                 "askpass {prog:?} exited {}: {}",

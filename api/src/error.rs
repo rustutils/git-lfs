@@ -59,19 +59,29 @@ pub enum ApiError {
     CredentialsNotFound { url: String, detail: Option<String> },
 }
 
-/// Render an [`ApiError::Status`] for the user. Auth-class statuses
-/// (401/403) format as `Authorization error: <url>` to match upstream's
-/// `lfshttp.defaultError` shape — `t-credentials` and `t-askpass` grep
-/// the wording verbatim. All other statuses keep the
-/// `server returned status N: <body-message>` format we use elsewhere.
+/// Render an [`ApiError::Status`] for the user.
+///
+/// When the response carried a parseable error body, surface its
+/// `message` verbatim — that's what upstream's `lfshttp.ClientError.Error()`
+/// does, and what tests like `t-pre-push` / `t-fetch-refspec` "with
+/// bad ref" grep for ("`Expected ref \"refs/heads/other\", got …`").
+///
+/// Falling back: 401/403 format as `Authorization error: <url>` to
+/// match upstream's `lfshttp.defaultError`, which `t-credentials` and
+/// `t-askpass` grep for verbatim. Everything else gets a plain
+/// `server returned status N` line.
 fn format_status(status: u16, url: Option<&str>, body: Option<&ServerError>) -> String {
+    if let Some(b) = body
+        && !b.message.is_empty()
+    {
+        return b.message.clone();
+    }
     if matches!(status, 401 | 403)
         && let Some(u) = url
     {
         return format!("Authorization error: {u}");
     }
-    let suffix = body.map(|b| format!(": {}", b.message)).unwrap_or_default();
-    format!("server returned status {status}{suffix}")
+    format!("server returned status {status}")
 }
 
 impl ApiError {

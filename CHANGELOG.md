@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `api`: `ApiError::Status` Display now surfaces the server's body
+  `message` verbatim when present, falling back to
+  `Authorization error: <url>` (401/403) only when the body is empty.
+  Previously the body was dropped for 401/403, hiding messages like
+  `Expected ref "refs/heads/other", got "refs/heads/main"` that
+  `t-pre-push` / `t-fetch-refspec` / `t-push` / `t-credentials` all
+  grep for. Lands 5 tests (3 near-misses across 3 suites, plus 2
+  bonus from suites that shared the same root cause).
+- `creds`: `HelperChain::fill` now skips helpers that error and
+  continues to the next, matching upstream's `CredentialHelpers.Fill`
+  (`creds/creds.go:502`). Previously a failed askpass program
+  short-circuited the chain before `git credential` got a turn,
+  so a missing `GIT_ASKPASS` would lock the user out instead of
+  falling through to the configured credential helper.
+- `creds`: emit `creds: failed to find GIT_ASKPASS command: <prog>`
+  when the askpass executable isn't on `PATH`, and
+  `creds: git credential <sub> (<proto>, <host>, <path>)` on every
+  `git credential` invocation. Both match upstream's `tracerx.Printf`
+  format at `creds/creds.go:284` / `:328`. Lands
+  `t-credentials-no-prompt::askpass: push with bad askpass`.
+
 ### Added
 
 - `transfer`: Range-resume on interrupted downloads. The basic

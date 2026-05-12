@@ -5,6 +5,8 @@
 //! helper so caches stay in sync with the upstream source of truth
 //! (`git credential`).
 
+use std::io::Write as _;
+
 use crate::helper::{Credentials, Helper, HelperError};
 use crate::query::Query;
 
@@ -31,13 +33,35 @@ impl HelperChain {
 }
 
 impl Helper for HelperChain {
+    /// Walk helpers in order. The first to return creds wins; helpers
+    /// that error out are logged and skipped so a busted askpass program
+    /// can't lock the user out of `git credential` further down the
+    /// chain. Mirrors upstream's `CredentialHelpers.Fill` at
+    /// `creds/creds.go:502`. If nothing returned creds and at least one
+    /// helper errored, surface the last error so callers see *why*
+    /// nothing worked rather than a bare "credentials not found".
     fn fill(&self, query: &Query) -> Result<Option<Credentials>, HelperError> {
+        let mut last_err: Option<HelperError> = None;
         for h in &self.helpers {
-            if let Some(c) = h.fill(query)? {
-                return Ok(Some(c));
+            match h.fill(query) {
+                Ok(Some(c)) => return Ok(Some(c)),
+                Ok(None) => continue,
+                Err(e) => {
+                    // Upstream's `credential fill error: <err>` trace
+                    // at `creds/creds.go:513`. Always-on; `GIT_TRACE`
+                    // gating isn't worth the extra branch for a path
+                    // that already only fires when something failed.
+                    let mut err = std::io::stderr().lock();
+                    let _ = writeln!(err, "credential fill error: {e}");
+                    last_err = Some(e);
+                    continue;
+                }
             }
         }
-        Ok(None)
+        match last_err {
+            Some(e) => Err(e),
+            None => Ok(None),
+        }
     }
 
     /// Broadcast to every helper. Errors from individual helpers are
