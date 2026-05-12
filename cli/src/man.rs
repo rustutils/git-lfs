@@ -290,6 +290,24 @@ const EXT: ManContent = ManContent {
     extra_sections: &[("EXAMPLES", include_str!("../man/ext/examples.md"))],
 };
 
+/// git-lfs-config(5) is a synthetic page — no clap-derived OPTIONS or
+/// DESCRIPTION. Everything lives in the extras. The OPTIONS section
+/// is built up across several commits; the framing sections
+/// (CONFIGURATION FILES / LFSCONFIG / EXAMPLES / SEE ALSO) bracket
+/// whatever lands in between.
+const CONFIG: ManContent = ManContent {
+    description: None,
+    extra_sections: &[
+        (
+            "CONFIGURATION FILES",
+            include_str!("../man/config/configuration_files.md"),
+        ),
+        ("LFSCONFIG", include_str!("../man/config/lfsconfig.md")),
+        ("EXAMPLES", include_str!("../man/config/examples.md")),
+        ("SEE ALSO", include_str!("../man/config/see_also.md")),
+    ],
+};
+
 /// Look up the doc extras for `subcommand` (e.g. `"fetch"`,
 /// `"checkout"`). Pass `""` for the top-level `git-lfs` page.
 /// Returns a reference to [`ManContent::empty`] when there's no entry,
@@ -298,6 +316,7 @@ pub fn extras_for(subcommand: &str) -> &'static ManContent {
     match subcommand {
         "smudge" => &SMUDGE,
         "ext" => &EXT,
+        "config" => &CONFIG,
         "checkout" => &CHECKOUT,
         "fetch" => &FETCH,
         "pull" => &PULL,
