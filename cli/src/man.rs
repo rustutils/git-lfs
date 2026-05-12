@@ -302,6 +302,14 @@ const CONFIG: ManContent = ManContent {
             "CONFIGURATION FILES",
             include_str!("../man/config/configuration_files.md"),
         ),
+        (
+            "GENERAL SETTINGS",
+            include_str!("../man/config/general_settings.md"),
+        ),
+        (
+            "UPLOAD AND DOWNLOAD TRANSFER SETTINGS",
+            include_str!("../man/config/transfer_settings.md"),
+        ),
         ("LFSCONFIG", include_str!("../man/config/lfsconfig.md")),
         ("EXAMPLES", include_str!("../man/config/examples.md")),
         ("SEE ALSO", include_str!("../man/config/see_also.md")),
