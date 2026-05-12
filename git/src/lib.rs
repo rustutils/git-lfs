@@ -32,7 +32,7 @@ pub use endpoint::{
 };
 pub use extension::{ExtensionConfig, list_extensions};
 pub use fetch_prune::FetchPruneConfig;
-pub use http_options::HttpOptions;
+pub use http_options::{HttpOptions, extra_headers_for, lfs_url_bool};
 pub use path::{git_common_dir, git_dir, lfs_alternate_dirs, lfs_dir, work_tree_root};
 pub use refs::{RecentRef, RefKind, WorktreeEntry, recent_branches, worktrees};
 pub use rev_list::{RevListEntry, rev_list, rev_list_with_args};

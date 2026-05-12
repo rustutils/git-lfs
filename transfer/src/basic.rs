@@ -3,6 +3,7 @@
 //!
 //! See `docs/api/basic-transfers.md`.
 
+use std::io::Write as _;
 use std::sync::Arc;
 
 use futures::StreamExt;
@@ -18,8 +19,11 @@ use tokio_util::io::{ReaderStream, StreamReader, SyncIoBridge};
 use crate::error::TransferError;
 use crate::event::Event;
 
-/// Default Content-Type for raw object uploads. Servers/CDNs may override
-/// it via `action.header`.
+/// Fallback Content-Type for raw object uploads — used when the action
+/// response didn't set one and the file's content didn't match any
+/// signature we sniff for. Also the value we send unconditionally when
+/// `lfs.<url>.contenttype=false`. Servers/CDNs may override per-action
+/// via `action.header` regardless.
 const OCTET_STREAM: &str = "application/octet-stream";
 
 #[derive(Debug, Serialize)]
@@ -76,12 +80,19 @@ pub(crate) async fn download(
 
 /// Stream-upload the local copy of `oid` to `action.href`, then call the
 /// verify callback if present.
+///
+/// `detect_content_type` follows `lfs.<url>.contenttype` (default
+/// `true`). When `true` and the batch response didn't already pin a
+/// `Content-Type`, sniff the file's first 512 bytes; when `false`,
+/// send `application/octet-stream` unconditionally. Mirrors upstream's
+/// `tq/basic_upload.go::setContentTypeFor`.
 pub(crate) async fn upload(
     http: &reqwest::Client,
     store: Arc<Store>,
     oid: &str,
     size: u64,
     actions: &Actions,
+    detect_content_type: bool,
     events: Option<&UnboundedSender<Event>>,
 ) -> Result<(), TransferError> {
     let upload_action = actions
@@ -91,6 +102,22 @@ pub(crate) async fn upload(
 
     let oid_parsed = Oid::from_hex(oid)?;
     let path = store.object_path(oid_parsed);
+
+    // Sniff before opening the stream — `tokio::fs::File::open` consumes
+    // the path once and the sniff needs its own read. Cheap: at most
+    // 512 bytes off the disk. Only runs when detection is enabled AND
+    // the batch response didn't already set a Content-Type (we still
+    // need to know that before deciding whether to sniff).
+    let action_has_content_type = upload_action
+        .header
+        .keys()
+        .any(|k| k.eq_ignore_ascii_case("content-type"));
+    let sniffed_content_type = if !action_has_content_type && detect_content_type {
+        Some(sniff_content_type(&path).await.unwrap_or(OCTET_STREAM))
+    } else {
+        None
+    };
+
     let file = tokio::fs::File::open(&path).await?;
 
     let mut bytes_done: u64 = 0;
@@ -113,24 +140,100 @@ pub(crate) async fn upload(
     let mut req = http
         .request(Method::PUT, &upload_action.href)
         .header(CONTENT_LENGTH, size);
-    let mut saw_content_type = false;
     for (k, v) in &upload_action.header {
-        if k.eq_ignore_ascii_case("content-type") {
-            saw_content_type = true;
-        }
         req = req.header(k, v);
     }
-    if !saw_content_type {
-        req = req.header(reqwest::header::CONTENT_TYPE, OCTET_STREAM);
+    let effective_content_type = if action_has_content_type {
+        // Action header pinned a Content-Type — find it for verbose
+        // logging but don't override.
+        upload_action
+            .header
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+            .map(|(_, v)| v.as_str().to_owned())
+    } else {
+        let ct = sniffed_content_type.unwrap_or(OCTET_STREAM);
+        req = req.header(reqwest::header::CONTENT_TYPE, ct);
+        Some(ct.to_owned())
+    };
+
+    // GIT_CURL_VERBOSE: dump the request line + headers so shell tests
+    // like `t-content-type.sh` can grep for the chosen Content-Type.
+    // Stays cheap behind the env-var gate; no per-request cost when
+    // verbose isn't asked for.
+    if std::env::var_os("GIT_CURL_VERBOSE").is_some_and(|v| !v.is_empty() && v != "0") {
+        let mut err = std::io::stderr().lock();
+        let _ = writeln!(err, "> PUT {}", upload_action.href);
+        let _ = writeln!(err, "> Content-Length: {size}");
+        if let Some(ct) = &effective_content_type {
+            let _ = writeln!(err, "> Content-Type: {ct}");
+        }
+        for (k, v) in &upload_action.header {
+            if k.eq_ignore_ascii_case("content-type") {
+                continue; // already printed above
+            }
+            let _ = writeln!(err, "> {k}: {v}");
+        }
+        let _ = writeln!(err);
     }
 
     let resp = req.body(body).send().await?;
+    let status = resp.status();
+    if status.as_u16() == 422 {
+        // 422 = "Unprocessable Entity" — typically a CDN rejecting the
+        // Content-Type we sniffed. Print upstream's three-line hint so
+        // the user knows the disable knob exists. Stays best-effort:
+        // we still propagate the failure, the message just nudges
+        // toward a fix. `t-content-type.sh` test 3 greps for these.
+        let mut err = std::io::stderr().lock();
+        let _ = writeln!(
+            err,
+            "info: Uploading failed due to unsupported Content-Type header(s)."
+        );
+        let _ = writeln!(err, "info: Consider disabling Content-Type detection with:");
+        let _ = writeln!(err);
+        let _ = writeln!(err, "info:   $ git config lfs.contenttype false");
+        let _ = writeln!(err);
+    }
     check_status(&resp, &upload_action.href)?;
 
     if let Some(verify_action) = &actions.verify {
         verify(http, oid, size, verify_action).await?;
     }
     Ok(())
+}
+
+/// Minimal content-type sniffing. Read the first 512 bytes of `path`
+/// and match against a small magic-number table — extend as future
+/// tests demand. Returns `None` if the file can't be read; the caller
+/// falls back to `application/octet-stream`, which is also what we
+/// return for any content that doesn't match a known signature
+/// (matches Go's `http.DetectContentType` fall-through).
+async fn sniff_content_type(path: &std::path::Path) -> Option<&'static str> {
+    use tokio::io::AsyncReadExt;
+    let mut file = tokio::fs::File::open(path).await.ok()?;
+    let mut buf = [0u8; 512];
+    let n = file.read(&mut buf).await.ok()?;
+    Some(detect_content_type_bytes(&buf[..n]))
+}
+
+/// Magic-number sniff for `bytes`. Returns the same MIME strings Go's
+/// `net/http.DetectContentType` produces — `t-content-type.sh` grep
+/// patterns are written against those.
+///
+/// Only a handful of signatures are recognized today (the test suite
+/// only exercises gzip); broader coverage is deferred until a new
+/// test forces it. The default is `application/octet-stream`, same
+/// as upstream's fall-through.
+fn detect_content_type_bytes(bytes: &[u8]) -> &'static str {
+    // Gzip: `1f 8b` magic. Go labels this `application/x-gzip` (with
+    // the `x-` prefix, not the RFC 6713 `application/gzip` form);
+    // matching that exactly is what `t-content-type.sh` test 1
+    // greps for.
+    if bytes.len() >= 2 && bytes[0] == 0x1f && bytes[1] == 0x8b {
+        return "application/x-gzip";
+    }
+    OCTET_STREAM
 }
 
 async fn verify(

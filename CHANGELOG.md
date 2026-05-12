@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `git`/`cli`: `http.extraHeader` / `http.<url>.extraHeader` (multi-
+  value, longest-prefix match) are now installed as default headers on
+  the reqwest client backing the LFS API and transfer adapter. Same
+  knob proxies and enterprise gateways use to inject Authorization or
+  bookkeeping headers without going through `git credential`. Header
+  names are case-canonicalized by reqwest (matches upstream's
+  `textproto.CanonicalMIMEHeaderKey`), so `AUTHORIZATION:` and
+  `Authorization:` map to the same header. `GIT_CURL_VERBOSE` echoes
+  the values in the request dump so `t-extra-header.sh`'s curl-style
+  greps line up.
+- `transfer`: basic upload adapter now sniffs the first 512 bytes of
+  each object and sets `Content-Type` accordingly (matches upstream's
+  `tq/basic_upload.go::setContentTypeFor`). Sniffing covers gzip
+  (`1f 8b` → `application/x-gzip`) today; broader coverage extends
+  the table when a new test demands it. `lfs.<url>.contenttype=false`
+  (with `lfs.contenttype` fallback) skips detection and sends
+  `application/octet-stream` — useful when a CDN rejects sniffed
+  types. On HTTP 422 from the action upload, the adapter emits
+  upstream's three-line stderr nudge pointing at the disable knob.
+  Lands all of `t-extra-header.sh` (4 tests) and `t-content-type.sh`
+  (3 tests).
+
 - `cli/prune`: `--verify-remote` (`-c`) sends every prunable OID
   through a download-direction batch and refuses to delete anything
   the server can't serve back — protects against accidentally

@@ -90,7 +90,7 @@ impl LfsFetcher {
             .map(|u| crate::http_client::build(cwd, u))
             .unwrap_or_default();
         let api = build_api_client_with(cwd, remote, http.clone());
-        let config = transfer_config_for(cwd);
+        let config = transfer_config_for(cwd, endpoint_url.as_deref().ok());
         let transfer = api
             .clone()
             .map(|c| Transfer::with_http_client(c, store.clone(), config, http));
@@ -342,9 +342,16 @@ fn build_api_client_with(
                 && gu.port() == url.port()
         });
     let cred_url_for_helper = resolved_cred_url.clone().unwrap_or_else(|| url.clone());
+    // Snapshot the configured `http.<url>.extraHeader` values so the
+    // GIT_CURL_VERBOSE dump can echo them. They're already on the wire
+    // via the reqwest client's `default_headers` (set up in
+    // `cli/src/http_client.rs`); the snapshot is purely so the
+    // verbose dump can name them.
+    let extras = git_lfs_git::extra_headers_for(cwd, url.as_str());
     let mut client = ApiClient::with_http_client(url.clone(), initial_auth, http)
         .with_credential_helper(default_helper_chain(cwd, &cred_url_for_helper))
-        .with_use_http_path(use_http_path);
+        .with_use_http_path(use_http_path)
+        .with_extra_headers_for_verbose(extras);
     if let Some(git_url) = resolved_cred_url {
         client = client.with_cred_url(git_url);
     }
@@ -527,8 +534,10 @@ fn take_url_basic_auth(url: &mut url::Url) -> Auth {
 /// `lfs.transfer.enablehrefrewrite` + `url.<base>.insteadOf` into
 /// `url_rewriter` when the flag is enabled. The rewrite map is captured
 /// at construction so the queue's hot path doesn't shell out to git for
-/// every action URL.
-fn transfer_config_for(cwd: &Path) -> TransferConfig {
+/// every action URL. `endpoint_url` (when known) is also used to
+/// resolve URL-scoped `lfs.<url>.contenttype` — passed in rather than
+/// re-resolved because the caller already paid for endpoint resolution.
+fn transfer_config_for(cwd: &Path, endpoint_url: Option<&str>) -> TransferConfig {
     let mut config = TransferConfig::default();
     if href_rewrite_enabled(cwd)
         && let Ok(aliases) = git_lfs_git::aliases::load_aliases(cwd)
@@ -544,6 +553,19 @@ fn transfer_config_for(cwd: &Path) -> TransferConfig {
     {
         config.batch_size = n;
     }
+    // `lfs.<url>.contenttype` falls back to global `lfs.contenttype`,
+    // default `true`. Without an endpoint we can't apply URL scoping
+    // — fall back to the global key directly.
+    config.detect_content_type = match endpoint_url {
+        Some(u) => git_lfs_git::lfs_url_bool(cwd, u, "contenttype", true),
+        None => match git_lfs_git::config::get_effective(cwd, "lfs.contenttype") {
+            Ok(Some(v)) => !matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "false" | "0" | "no" | "off"
+            ),
+            _ => true,
+        },
+    };
     config
 }
 

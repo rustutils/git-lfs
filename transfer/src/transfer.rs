@@ -258,7 +258,16 @@ async fn process_object(
         (Dir::Download, None) => Err(TransferError::NoDownloadAction),
         (Dir::Upload, Some(actions)) => {
             with_retry(config, || async {
-                basic::upload(http, store.clone(), &obj.oid, obj.size, actions, events).await
+                basic::upload(
+                    http,
+                    store.clone(),
+                    &obj.oid,
+                    obj.size,
+                    actions,
+                    config.detect_content_type,
+                    events,
+                )
+                .await
             })
             .await
         }

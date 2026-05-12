@@ -60,7 +60,7 @@ Useful entry points in the upstream tree:
 
 ## Test status snapshot (point in time)
 
-About 645 of 794 vendored shell tests pass (~81%) across 104
+About 652 of 794 vendored shell tests pass (~82%) across 104
 files. Most of the per-command files now pass cleanly; remaining
 failures cluster in features we haven't shipped yet rather than
 edge cases of features we have.
@@ -68,13 +68,14 @@ edge cases of features we have.
 **Fully or near-fully passing** (no failures, or only one):
 t-env (17/17), t-config (10/10), t-checkout (18/18), t-pull
 (20/20), t-status (17/17), t-pointer (26/26), t-ext (1/1),
-t-credentials-protect (3/3), t-askpass (5/6), t-fsck, t-update,
-t-track, t-untrack, t-install, t-uninstall, t-pre-push, t-clean,
-t-malformed-pointers, t-filter-process, t-happy-path,
-t-migrate-import (36/38), t-migrate-info (45/50),
-t-migrate-export, t-locks (9/9), t-batch-transfer (8/8),
-t-prune (18/18), t-prune-worktree (2/2), t-fetch-recent (7/7),
-t-clone (9/13), t-smudge (8/9), t-push (19/27).
+t-credentials-protect (3/3), t-askpass (5/6), t-extra-header (4/4),
+t-content-type (3/3), t-fsck, t-update, t-track, t-untrack,
+t-install, t-uninstall, t-pre-push, t-clean, t-malformed-pointers,
+t-filter-process, t-happy-path, t-migrate-import (36/38),
+t-migrate-info (45/50), t-migrate-export, t-locks (9/9),
+t-batch-transfer (8/8), t-prune (18/18), t-prune-worktree (2/2),
+t-fetch-recent (7/7), t-clone (9/13), t-smudge (8/9),
+t-push (19/27).
 
 **Largest remaining failure clusters** (failed/total):
 
@@ -249,7 +250,13 @@ t-expired. Best done in independent slices:
   401/403 unblocks the locks-verify wording. Test 4 (multi-attempt
   loop) still failing — bundled with 6d wwwauth/state.
 - **6a netrc** — `~/.netrc` fallback in `creds/`. Smallest.
-- **6c extra HTTP headers + content-type** — config-driven.
+- **6c extra HTTP headers + content-type** ✓ shipped —
+  `http.extraHeader` / `http.<url>.extraHeader` ride along on every
+  request via reqwest's `default_headers`; multi-value preserved.
+  Basic upload adapter sniffs gzip / falls back to octet-stream,
+  honors `lfs.<url>.contenttype`, and emits upstream's 422 hint when
+  a CDN rejects the sniffed type. Lands t-extra-header (4 tests) and
+  t-content-type (3 tests).
 - **6d per-URL credential config + multi-stage auth** —
   `credential.<url>.helper`, `state[]` / `wwwauth[]` carrying.
 - **6e NTLM / Negotiate** — heaviest; defer until a real Windows AD

@@ -5,10 +5,11 @@
 //! resolved by longest prefix match against the request URL, the same
 //! way git itself routes them.
 //!
-//! Only a few keys are surfaced for now (CA bundle, verify toggle, and
-//! the client-cert pair for mTLS); the rest of the surface
-//! (`sslCertPasswordProtected`, `cookieFile`, …) is on the deferred
-//! list.
+//! TLS surface is intentionally narrow (CA bundle, verify toggle, the
+//! client-cert pair for mTLS). The same URL-prefix machinery is reused
+//! for `http.extraHeader` (multi-value, applied to every request) and
+//! for the LFS-namespace boolean `lfs.<url>.contenttype`. Remaining
+//! surface (`sslCertPasswordProtected`, `cookieFile`, …) is deferred.
 
 use std::path::Path;
 use std::process::Command;
@@ -129,6 +130,130 @@ fn get_global(cwd: &Path, key: &str) -> Result<Option<String>, Error> {
             String::from_utf8_lossy(&out.stderr).trim().to_owned(),
         )),
     }
+}
+
+/// Read every value of `key` from the merged config view, preserving
+/// config-file order. Used for multi-value keys like `http.extraHeader`
+/// where `git config --add` accumulates values.
+fn get_all_global(cwd: &Path, key: &str) -> Vec<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["config", "--includes", "--get-all", key])
+        .output();
+    match out {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .map(str::to_owned)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Every `http.<...>.extraHeader` and global `http.extraHeader` value
+/// whose URL part matches `url`, parsed into `(Name, Value)` pairs.
+///
+/// Ordering is "longest URL prefix first, then global" — same
+/// semantics as upstream's `lfshttp/client.go::extraHeaders()`. Lines
+/// without a `:` separator are silently dropped (we can't form a
+/// header from them).
+///
+/// Both the URL portion of the config key and the header name are
+/// case-insensitive; reqwest's `HeaderName::try_from` canonicalizes
+/// the name when the value is set, so `AUTHORIZATION:` and
+/// `Authorization:` end up as the same header.
+pub fn extra_headers_for(cwd: &Path, url: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    if let Ok(scoped) = scoped_keys(cwd, url) {
+        for (_prefix, subkey, value) in &scoped.0 {
+            if !subkey.eq_ignore_ascii_case("extraheader") {
+                continue;
+            }
+            if let Some(pair) = parse_header_line(value) {
+                out.push(pair);
+            }
+        }
+    }
+    for value in get_all_global(cwd, "http.extraHeader") {
+        if let Some(pair) = parse_header_line(&value) {
+            out.push(pair);
+        }
+    }
+    out
+}
+
+/// Split `Name: Value` on the first `:`. Both halves are trimmed. The
+/// name must be non-empty; the value may be empty (some servers expect
+/// a bare `X-Foo:` to clear a previously set header). Returns `None`
+/// for unparseable lines.
+fn parse_header_line(s: &str) -> Option<(String, String)> {
+    let (name, value) = s.split_once(':')?;
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    Some((name.to_owned(), value.trim().to_owned()))
+}
+
+/// Resolve `lfs.<url>.<subkey>` with longest URL-prefix match,
+/// falling back to global `lfs.<subkey>`. Same machinery as
+/// [`HttpOptions::for_url`] but for the `lfs` namespace. `default` is
+/// returned when neither scope has the key set.
+///
+/// Only used today for `lfs.<url>.contenttype` — keep this scoped to
+/// boolean config keys until a non-bool URL-scoped lfs key shows up.
+pub fn lfs_url_bool(cwd: &Path, url: &str, subkey: &str, default: bool) -> bool {
+    let scoped = lfs_scoped_keys(cwd, url).unwrap_or(Scoped(Vec::new()));
+    if let Some(v) = scoped.lookup(subkey) {
+        return parse_bool(&v);
+    }
+    let global_key = format!("lfs.{subkey}");
+    match get_global(cwd, &global_key) {
+        Ok(Some(v)) => parse_bool(&v),
+        _ => default,
+    }
+}
+
+/// Twin of [`scoped_keys`] that walks the `lfs.*` namespace instead
+/// of `http.*`. Same URL-prefix matching + longest-prefix-first sort.
+fn lfs_scoped_keys(cwd: &Path, url: &str) -> Result<Scoped, Error> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args([
+            "config",
+            "--includes",
+            "--null",
+            "--get-regexp",
+            r"^lfs\..+\..+$",
+        ])
+        .output()?;
+    if !out.status.success() {
+        return Ok(Scoped(Vec::new()));
+    }
+    let raw = String::from_utf8_lossy(&out.stdout);
+    let mut entries: Vec<(String, String, String)> = Vec::new();
+    for record in raw.split('\0').filter(|s| !s.is_empty()) {
+        let (key_full, value) = match record.split_once('\n') {
+            Some((k, v)) => (k, v),
+            None => (record, ""),
+        };
+        let parts: Vec<&str> = key_full.splitn(2, '.').collect();
+        if parts.len() != 2 || parts[0] != "lfs" {
+            continue;
+        }
+        let rest = parts[1];
+        let Some(last_dot) = rest.rfind('.') else {
+            continue;
+        };
+        let prefix = &rest[..last_dot];
+        let subkey = &rest[last_dot + 1..];
+        if url_matches(prefix, url) {
+            entries.push((prefix.to_owned(), subkey.to_owned(), value.to_owned()));
+        }
+    }
+    entries.sort_by_key(|e| std::cmp::Reverse(e.0.len()));
+    Ok(Scoped(entries))
 }
 
 /// Whether `prefix` (the URL fragment in `http.<url>.*`) matches the

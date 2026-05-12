@@ -61,6 +61,14 @@ pub struct Client {
     /// that call, and headers are merged into the outgoing request.
     /// `None` means "not an SSH endpoint" — request flow is unchanged.
     pub(crate) ssh_resolver: Option<SharedSshResolver>,
+    /// Snapshot of `http.<url>.extraHeader` values for `GIT_CURL_VERBOSE`
+    /// logging. The headers themselves are already installed on the
+    /// underlying `reqwest::Client` via `default_headers`, so they ride
+    /// along on every request — we just don't have a way to read them
+    /// back out for the verbose dump. Keeping a parallel copy here is
+    /// cheap and lets the dump match upstream's `> Name: Value` form
+    /// (which the `t-extra-header.sh` greps look for).
+    pub(crate) extra_headers: Vec<(String, String)>,
 }
 
 impl std::fmt::Debug for Client {
@@ -95,7 +103,18 @@ impl Client {
             use_http_path: false,
             cred_url: None,
             ssh_resolver: None,
+            extra_headers: Vec::new(),
         }
+    }
+
+    /// Tell the client which `http.<url>.extraHeader` values are
+    /// installed on the underlying `reqwest::Client`, so we can echo
+    /// them under `GIT_CURL_VERBOSE`. Doesn't change what's sent — the
+    /// reqwest client's `default_headers` already carries them.
+    #[must_use]
+    pub fn with_extra_headers_for_verbose(mut self, headers: Vec<(String, String)>) -> Self {
+        self.extra_headers = headers;
+        self
     }
 
     /// Attach an SSH auth resolver. Called once per request to resolve
@@ -272,6 +291,14 @@ impl Client {
             let mut err = std::io::stderr().lock();
             let _ = writeln!(err, "> POST {url}");
             let _ = writeln!(err, "> Content-Type: {LFS_MEDIA_TYPE}");
+            // Mirror upstream's curl-style dump of `http.extraHeader`
+            // values — `t-extra-header.sh` greps for `> X-Foo: bar`
+            // and similar. Reqwest's `default_headers` carries these
+            // bytes on the wire; the parallel snapshot here exists
+            // purely so we can name them in the dump.
+            for (name, value) in &self.extra_headers {
+                let _ = writeln!(err, "> {name}: {value}");
+            }
             let _ = writeln!(err);
             let _ = err.write_all(&body_bytes);
             let _ = writeln!(err);

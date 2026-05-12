@@ -17,13 +17,19 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use git_lfs_git::HttpOptions;
+use git_lfs_git::{HttpOptions, extra_headers_for};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::{DigitallySignedStruct, SignatureScheme};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 
 /// Construct a `reqwest::Client` for `endpoint_url`. URL-specific
 /// `http.<url>.<key>` overrides win over global `http.<key>`.
+///
+/// `http.<url>.extraHeader` values (multi-value, longest-prefix
+/// match) are merged with global `http.extraHeader` and installed as
+/// the client's default headers — so they ride along on every
+/// request, including transfer-adapter PUT/GET against action URLs.
 pub fn build(cwd: &Path, endpoint_url: &str) -> reqwest::Client {
     let opts = HttpOptions::for_url(cwd, endpoint_url).unwrap_or_default();
     let mut builder = reqwest::ClientBuilder::new();
@@ -36,6 +42,27 @@ pub fn build(cwd: &Path, endpoint_url: &str) -> reqwest::Client {
     {
         builder = builder.use_preconfigured_tls(config);
     }
+
+    let extras = extra_headers_for(cwd, endpoint_url);
+    if !extras.is_empty() {
+        let mut headers = HeaderMap::new();
+        for (name, value) in extras {
+            // `append` (not `insert`) keeps multi-value headers like
+            // two `X-Foo: ...` entries — git config allows accumulating
+            // values per key, and some servers (or proxies) genuinely
+            // care about both.
+            if let (Ok(n), Ok(v)) = (
+                HeaderName::try_from(name.as_str()),
+                HeaderValue::try_from(value.as_str()),
+            ) {
+                headers.append(n, v);
+            }
+        }
+        if !headers.is_empty() {
+            builder = builder.default_headers(headers);
+        }
+    }
+
     builder.build().unwrap_or_else(|_| reqwest::Client::new())
 }
 

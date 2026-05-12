@@ -33,6 +33,15 @@ pub struct TransferConfig {
     /// batch API call per chunk. Default: 100 (matches upstream's
     /// `lfs.transfer.batchSize` default). Values < 1 are clamped to 1.
     pub batch_size: usize,
+    /// `lfs.<url>.contenttype` — when `true` (default), the basic
+    /// upload adapter sniffs the first 512 bytes of each object and
+    /// sets the `Content-Type` header on the action PUT to the
+    /// detected MIME type. When `false`, the adapter sends
+    /// `application/octet-stream` so a misconfigured CDN can't reject
+    /// the upload based on its content sniffing. Honored only when
+    /// the batch response didn't already set a `Content-Type` in
+    /// `action.header`.
+    pub detect_content_type: bool,
 }
 
 impl Default for TransferConfig {
@@ -44,6 +53,7 @@ impl Default for TransferConfig {
             backoff_max: Duration::from_secs(30),
             url_rewriter: None,
             batch_size: 100,
+            detect_content_type: true,
         }
     }
 }
@@ -57,6 +67,7 @@ impl std::fmt::Debug for TransferConfig {
             .field("backoff_max", &self.backoff_max)
             .field("url_rewriter", &self.url_rewriter.as_ref().map(|_| "<fn>"))
             .field("batch_size", &self.batch_size)
+            .field("detect_content_type", &self.detect_content_type)
             .finish()
     }
 }
