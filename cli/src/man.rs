@@ -249,6 +249,42 @@ const MIGRATE: ManContent = ManContent {
     ],
 };
 
+const MIGRATE_INFO: ManContent = ManContent {
+    description: None,
+    extra_sections: &[
+        ("EXAMPLES", include_str!("../man/migrate-info/examples.md")),
+        ("SEE ALSO", include_str!("../man/migrate-info/see_also.md")),
+    ],
+};
+
+const MIGRATE_IMPORT: ManContent = ManContent {
+    description: None,
+    extra_sections: &[
+        (
+            "EXAMPLES",
+            include_str!("../man/migrate-import/examples.md"),
+        ),
+        (
+            "SEE ALSO",
+            include_str!("../man/migrate-import/see_also.md"),
+        ),
+    ],
+};
+
+const MIGRATE_EXPORT: ManContent = ManContent {
+    description: None,
+    extra_sections: &[
+        (
+            "EXAMPLES",
+            include_str!("../man/migrate-export/examples.md"),
+        ),
+        (
+            "SEE ALSO",
+            include_str!("../man/migrate-export/see_also.md"),
+        ),
+    ],
+};
+
 const EXT: ManContent = ManContent {
     description: None,
     extra_sections: &[("EXAMPLES", include_str!("../man/ext/examples.md"))],
@@ -285,6 +321,9 @@ pub fn extras_for(subcommand: &str) -> &'static ManContent {
         "post-commit" => &POST_COMMIT,
         "post-merge" => &POST_MERGE,
         "migrate" => &MIGRATE,
+        "migrate-info" => &MIGRATE_INFO,
+        "migrate-import" => &MIGRATE_IMPORT,
+        "migrate-export" => &MIGRATE_EXPORT,
         "" => &ROOT,
         _ => &EMPTY,
     }

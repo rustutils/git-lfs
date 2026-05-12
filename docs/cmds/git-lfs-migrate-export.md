@@ -63,6 +63,20 @@ At least one `--include` pattern is required. Objects not present in the local L
 
     Currently we don't prompt for any reason, so this is accepted as a no-op for upstream parity.
 
+## Examples
+
+Convert all zip Git LFS pointers on `main` back to regular Git blobs:
+
+    git lfs migrate export --include-ref=main --include="*.zip"
+
+Pointers whose objects aren't in the local store are downloaded from the `--remote` (defaults to `origin`); pointers that can't be downloaded are left as-is.
+
+After exporting, the rewritten branches need to be force-pushed — this rewrites history on the remote.
+
+## See also
+
+[git-lfs-migrate(1)](./git-lfs-migrate.md), [git-lfs-migrate-import(1)](./git-lfs-migrate-import.md), [git-lfs-migrate-info(1)](./git-lfs-migrate-info.md).
+
 ## Reporting bugs
 
 This command is from the Rust implementation of git-lfs, not the original

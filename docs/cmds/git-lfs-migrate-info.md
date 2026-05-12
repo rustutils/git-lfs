@@ -73,6 +73,24 @@ Existing Git LFS pointers are followed by default (the size of the referenced ob
 - `--remote` `<REMOTE>`
     Remote to consult (currently a no-op; reserved for the auto-fetch path)
 
+## Examples
+
+List the file types taking up the most space in unpushed commits:
+
+    git lfs migrate info
+
+Check large files and existing LFS objects across every branch (local + remote):
+
+    git lfs migrate info --everything
+
+Report files that should be tracked by Git LFS according to the repository's `.gitattributes` but aren't yet pointers — the candidate set for `git lfs migrate import --fixup`:
+
+    git lfs migrate info --fixup
+
+## See also
+
+[git-lfs-migrate(1)](./git-lfs-migrate.md), [git-lfs-migrate-import(1)](./git-lfs-migrate-import.md), [git-lfs-migrate-export(1)](./git-lfs-migrate-export.md).
+
 ## Reporting bugs
 
 This command is from the Rust implementation of git-lfs, not the original
