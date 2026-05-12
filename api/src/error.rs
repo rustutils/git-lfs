@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
 
 /// The standard error body returned by the LFS server for non-2xx responses.
@@ -93,4 +95,21 @@ impl ApiError {
                 }
         )
     }
+}
+
+/// Parse a `Retry-After` header value. Upstream's
+/// `errors.NewRetriableLaterError` accepts two forms; we accept only
+/// the first today:
+///
+/// 1. Integer seconds (delta-seconds), e.g. `Retry-After: 5`.
+/// 2. RFC 1123 datetime (deferred — the test server only emits
+///    integer seconds, and HTTP-date support adds a date-parsing
+///    dependency we don't otherwise need).
+///
+/// Returns `None` for missing or unparseable values. `None` means "fall
+/// back to exponential backoff" — same semantic upstream uses when the
+/// helper returns nil.
+pub fn parse_retry_after(value: &str) -> Option<Duration> {
+    let trimmed = value.trim();
+    trimmed.parse::<u64>().ok().map(Duration::from_secs)
 }

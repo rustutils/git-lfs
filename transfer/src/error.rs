@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use git_lfs_api::{ApiError, ObjectError};
 use git_lfs_pointer::OidParseError;
 use git_lfs_store::StoreError;
@@ -25,8 +27,15 @@ pub enum TransferError {
     /// see *which* endpoint failed (in particular, what `insteadOf`
     /// rewriting did to the original batch URL — see t-pull's
     /// `pull with invalid insteadof`).
+    ///
+    /// `retry_after` carries the parsed `Retry-After` response header
+    /// when present — see [`retry_after`](Self::retry_after).
     #[error("{}", format_action_status(*.status, .url))]
-    ActionStatus { status: u16, url: String },
+    ActionStatus {
+        status: u16,
+        url: String,
+        retry_after: Option<Duration>,
+    },
 
     /// HTTP transport failure (connection reset, TLS error, …).
     /// Retryable.
@@ -66,22 +75,31 @@ pub enum TransferError {
 /// Format the action-URL error message to match upstream's
 /// `lfshttp.defaultError` strings — the test suite greps these
 /// verbatim (e.g. t-pull's `pull with invalid insteadof`).
+///
+/// Statuses that upstream wraps with `NewFatalError` (5xx except 501,
+/// 507, 509) format with the `Fatal error:` prefix that
+/// `t-batch-storage-retries.sh` greps for. Everything else uses the
+/// `LFS:` prefix that upstream's wrap-with-empty-message default emits.
 fn format_action_status(status: u16, url: &str) -> String {
-    let prefix = match status {
-        400 => "Client error:",
-        401 | 403 => "Authorization error:",
-        404 => "Repository or object not found:",
-        422 => "Unprocessable entity:",
-        429 => "Rate limit exceeded:",
-        500 => "Server error:",
-        501 => "Not Implemented:",
-        503 => "LFS is temporarily unavailable:",
-        507 => "Insufficient server storage:",
-        509 => "Bandwidth limit exceeded:",
+    let (fatal, prefix) = match status {
+        400 => (false, "Client error:"),
+        401 | 403 => (false, "Authorization error:"),
+        404 => (false, "Repository or object not found:"),
+        422 => (false, "Unprocessable entity:"),
+        429 => (false, "Rate limit exceeded:"),
+        500 => (true, "Server error:"),
+        501 => (false, "Not Implemented:"),
+        503 => (true, "LFS is temporarily unavailable:"),
+        507 => (false, "Insufficient server storage:"),
+        509 => (false, "Bandwidth limit exceeded:"),
         _ if status < 500 => return format!("LFS: Client error {url} from HTTP {status}"),
-        _ => return format!("LFS: Server error {url} from HTTP {status}"),
+        _ => return format!("Fatal error: Server error {url} from HTTP {status}"),
     };
-    format!("LFS: {prefix} {url}")
+    if fatal {
+        format!("Fatal error: {prefix} {url}")
+    } else {
+        format!("LFS: {prefix} {url}")
+    }
 }
 
 impl TransferError {
@@ -107,6 +125,19 @@ impl TransferError {
             // Defer to the wrapped ApiError. A 5xx batch response is
             // worth retrying; a credential-not-found is not.
             TransferError::BatchResponse(e) => e.is_retryable(),
+        }
+    }
+
+    /// Server-supplied retry delay, if any. Pulled from the
+    /// `Retry-After` response header at error-construction time. The
+    /// retry loop uses this in place of exponential backoff when
+    /// `Some`. Mirrors upstream's `errors.IsRetriableLaterError` gate.
+    /// Batch-level Retry-After (slice 3) isn't surfaced through
+    /// `BatchResponse` yet.
+    pub fn retry_after(&self) -> Option<Duration> {
+        match self {
+            TransferError::ActionStatus { retry_after, .. } => *retry_after,
+            _ => None,
         }
     }
 }

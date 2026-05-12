@@ -261,9 +261,15 @@ fn check_status(resp: &Response, url: &str) -> Result<(), TransferError> {
     if resp.status().is_success() {
         Ok(())
     } else {
+        let retry_after = resp
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(git_lfs_api::parse_retry_after);
         Err(TransferError::ActionStatus {
             status: resp.status().as_u16(),
             url: strip_query(url).to_owned(),
+            retry_after,
         })
     }
 }

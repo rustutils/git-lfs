@@ -60,7 +60,7 @@ Useful entry points in the upstream tree:
 
 ## Test status snapshot (point in time)
 
-About 655 of 794 vendored shell tests pass (~82%) across 104
+About 662 of 794 vendored shell tests pass (~83%) across 104
 files. Most of the per-command files now pass cleanly; remaining
 failures cluster in features we haven't shipped yet rather than
 edge cases of features we have.
@@ -273,9 +273,24 @@ t-expired. Best done in independent slices:
 ### Milestone 7 — Retry / Retry-After / rate-limit (small/medium)
 
 Owns t-batch-retries-ratelimit, t-batch-storage-retries,
-t-batch-storage-retries-ratelimit (15 tests). Honor server's
-Retry-After header, add backoff jitter, refine `is_retryable`
-classification. Lives in `transfer/`.
+t-batch-storage-retries-ratelimit (15 tests). Lives in `transfer/`.
+
+- **7a Storage Retry-After + retry breadcrumbs** ✓ shipped —
+  `git_lfs_api::parse_retry_after` parses the header on action-URL
+  responses; `with_retry` sleeps for the server-supplied delay
+  when present, exponential backoff otherwise. Trace lines match
+  upstream's `tq: retrying object` / `tq: enqueue retry #N` formats.
+  Default `max_attempts` bumped 3 → 9 to outlast the 10s rate-limit
+  window in the test server. Lands `t-batch-storage-retries-ratelimit`
+  (5) + `t-batch-storage-retries` tests 1-2 = 7 tests.
+- **7b Batch Retry-After / delayed retry** — batch endpoint 429
+  with Retry-After should defer the next batch attempt; emit
+  `tq: enqueue retry` at the batch layer. Owns `t-batch-retries-ratelimit`
+  (5 tests).
+- **7c Range-resume on interrupted downloads** — `Range: bytes=…`
+  retry, 206 / 416 handling, `Attempting to resume` /
+  `xfer: server accepted|rejected resume` trace. Owns
+  `t-batch-storage-retries` tests 3-5.
 
 ### Milestone 8 — Custom transfer / SSH / tus (large)
 

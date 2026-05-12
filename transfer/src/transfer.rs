@@ -1,6 +1,7 @@
 //! Top-level transfer orchestrator: batch + concurrent per-object transfer.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use git_lfs_api::{
     BatchRequest, BatchResponse, Client as ApiClient, ObjectResult, ObjectSpec, Operation, Ref,
@@ -248,7 +249,7 @@ async fn process_object(
                 .download
                 .as_ref()
                 .ok_or(TransferError::NoDownloadAction)?;
-            with_retry(config, || async {
+            with_retry(config, &obj.oid, obj.size, || async {
                 basic::download(http, store.clone(), &obj.oid, action, events)
                     .await
                     .map(|_| ())
@@ -257,7 +258,7 @@ async fn process_object(
         }
         (Dir::Download, None) => Err(TransferError::NoDownloadAction),
         (Dir::Upload, Some(actions)) => {
-            with_retry(config, || async {
+            with_retry(config, &obj.oid, obj.size, || async {
                 basic::upload(
                     http,
                     store.clone(),
@@ -278,28 +279,83 @@ async fn process_object(
     }
 }
 
-/// Run `op` with exponential-backoff retry. Stops on non-retryable errors
-/// or when `max_attempts` is reached.
-async fn with_retry<F, Fut>(config: &TransferConfig, mut op: F) -> Result<(), TransferError>
+/// Run `op` with retry. Two paths: when the server sent a `Retry-After`
+/// header, sleep for that long (the "delayed re-queue" path in
+/// upstream); otherwise fall back to exponential backoff with the
+/// configured initial / cap. Trace breadcrumbs match upstream's
+/// `tq/transfer_queue.go` formats so `t-batch-storage-retries*` greps
+/// keep matching:
+///
+/// - `tq: retrying object <oid> after <secs>s` (Retry-After path), or
+/// - `tq: retrying object <oid>: <err>` (exponential path); plus
+/// - `tq: enqueue retry #<n> after <secs>s for "<oid>" (size: <n>): <err>`
+///
+/// Stops on non-retryable errors or when `max_attempts` is reached.
+async fn with_retry<F, Fut>(
+    config: &TransferConfig,
+    oid: &str,
+    size: u64,
+    mut op: F,
+) -> Result<(), TransferError>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<(), TransferError>>,
 {
     let mut backoff = config.initial_backoff;
+    let mut retry_count: u32 = 0;
     let mut last_err: Option<TransferError> = None;
     for attempt in 0..config.max_attempts {
         match op().await {
             Ok(()) => return Ok(()),
             Err(e) => {
                 let retry = e.is_retryable() && attempt + 1 < config.max_attempts;
-                last_err = Some(e);
                 if !retry {
+                    last_err = Some(e);
                     break;
                 }
-                tokio::time::sleep(backoff).await;
-                backoff = (backoff * 2).min(config.backoff_max);
+                let delay = e.retry_after().unwrap_or(backoff);
+                retry_count += 1;
+                emit_retry_trace(oid, size, retry_count, delay, &e);
+                last_err = Some(e);
+                tokio::time::sleep(delay).await;
+                // Only grow the exponential window when we're falling back
+                // to it. A server-supplied Retry-After resets the clock —
+                // upstream uses an independent timer per retry batch.
+                if last_err
+                    .as_ref()
+                    .and_then(TransferError::retry_after)
+                    .is_none()
+                {
+                    backoff = (backoff * 2).min(config.backoff_max);
+                }
             }
         }
     }
     Err(last_err.expect("loop ran at least once"))
+}
+
+/// Emit upstream-format trace lines for a single retry. Two lines per
+/// retry, both gated on `GIT_TRACE` so we don't pay the format cost
+/// when nobody's watching:
+///
+/// - `tq: retrying object …` — what handleTransferResult logs in
+///   `tq/transfer_queue.go:819` / `:835`.
+/// - `tq: enqueue retry #N …` — what enqueueRetry logs at `:564`.
+///
+/// We emit both per retry because the upstream tests treat them as
+/// independent grep targets even though they fire on the same retry
+/// in our (simpler, inline) retry model.
+fn emit_retry_trace(oid: &str, size: u64, count: u32, delay: Duration, err: &TransferError) {
+    if !std::env::var_os("GIT_TRACE").is_some_and(|v| !v.is_empty() && v != "0") {
+        return;
+    }
+    let secs = delay.as_secs_f64();
+    if err.retry_after().is_some() {
+        eprintln!("tq: retrying object {oid} after {secs:.2}s");
+    } else {
+        eprintln!("tq: retrying object {oid}: {err}");
+    }
+    // Upstream uses Go's `%q` for the oid (adds quotes + Go escapes); a
+    // pure hex OID round-trips through Rust's {:?} the same way.
+    eprintln!("tq: enqueue retry #{count} after {secs:.2}s for {oid:?} (size: {size}): {err}");
 }

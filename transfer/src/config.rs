@@ -17,8 +17,10 @@ pub type UrlRewriter = Arc<dyn Fn(&str) -> String + Send + Sync>;
 pub struct TransferConfig {
     /// Max number of concurrent in-flight transfers.
     pub concurrency: usize,
-    /// Total attempts per object — including the first. So 3 means "try
-    /// once, then up to 2 retries".
+    /// Total attempts per object — including the first. So 9 means "try
+    /// once, then up to 8 retries". Matches upstream's
+    /// `defaultMaxRetries = 8` in `tq/manifest.go` (upstream counts
+    /// retries; we count attempts, hence +1).
     pub max_attempts: u32,
     /// Sleep before the first retry. Doubled before each subsequent retry,
     /// capped at [`backoff_max`](Self::backoff_max).
@@ -48,7 +50,7 @@ impl Default for TransferConfig {
     fn default() -> Self {
         Self {
             concurrency: 8,
-            max_attempts: 3,
+            max_attempts: 9,
             initial_backoff: Duration::from_millis(100),
             backoff_max: Duration::from_secs(30),
             url_rewriter: None,

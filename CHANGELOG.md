@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `transfer`: `Retry-After` header parsing on storage-action 429 / 5xx
+  responses. When the server pins a wait time we sleep for exactly
+  that long instead of falling back to exponential backoff, mirroring
+  upstream's `errors.NewRetriableLaterError` gate.
+  `git_lfs_api::parse_retry_after` is the shared helper (delta-seconds
+  only today; RFC 1123 deferred until a test forces it). Lands
+  `t-batch-storage-retries-ratelimit` (5 tests).
+- `transfer`: `with_retry` emits upstream-matching GIT_TRACE
+  breadcrumbs per retry — `tq: retrying object <oid> after <secs>s`
+  (Retry-After path) or `tq: retrying object <oid>: <err>` (exponential
+  path), plus `tq: enqueue retry #N after <secs>s for "<oid>" (size: N): <err>`.
+  Lands `t-batch-storage-retries` tests 1-2 (storage 5xx exponential
+  retries).
+- `transfer`: action-URL error format for fatal 5xx now prefixes
+  `Fatal error:` to match upstream's `NewFatalError` wrap — the
+  `t-batch-storage-retries` greps for the exact string. 4xx and the
+  non-fatal 5xx (501/507/509) keep the existing `LFS:` prefix that
+  `t-pull` / `t-push` grep on.
+- `transfer`: default `max_attempts` bumped from 3 to 9 (= 8 retries),
+  matching upstream's `defaultMaxRetries = 8`. Rate-limit windows
+  (the test server uses 10s) outlast our previous 2-retry budget;
+  the new budget covers ~25s of cumulative exponential backoff.
+
 - `creds`: `NetrcCredentialHelper` reads `$HOME/.netrc` (or `_netrc`
   on Windows) at construction and slots into the helper chain ahead
   of the cache. Hosts covered by netrc don't have to round-trip
