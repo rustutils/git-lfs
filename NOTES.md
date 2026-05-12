@@ -60,7 +60,7 @@ Useful entry points in the upstream tree:
 
 ## Test status snapshot (point in time)
 
-About 652 of 794 vendored shell tests pass (~82%) across 104
+About 655 of 794 vendored shell tests pass (~82%) across 104
 files. Most of the per-command files now pass cleanly; remaining
 failures cluster in features we haven't shipped yet rather than
 edge cases of features we have.
@@ -249,7 +249,15 @@ t-expired. Best done in independent slices:
   resets on 403 too. `Authorization error: <url>` formatting from
   401/403 unblocks the locks-verify wording. Test 4 (multi-attempt
   loop) still failing — bundled with 6d wwwauth/state.
-- **6a netrc** — `~/.netrc` fallback in `creds/`. Smallest.
+- **6a netrc** ✓ shipped — `creds::NetrcCredentialHelper` reads
+  `$HOME/.netrc` (Windows: `_netrc` fallback) at construction,
+  slots ahead of the cache in the chain, and traces matching
+  upstream's `tracerx` lines. Preemptive-fill in `api::Client`
+  lands the per-request trace count the test suite expects.
+  Lands `t-credentials.sh::credentials from netrc` (+ unknown
+  keyword variant) and one of `t-credentials-no-prompt.sh`.
+  Test 18 (`bad netrc creds will retry`) still requires
+  askpass-fallback after netrc rejection — bundled with M6d.
 - **6c extra HTTP headers + content-type** ✓ shipped —
   `http.extraHeader` / `http.<url>.extraHeader` ride along on every
   request via reqwest's `default_headers`; multi-value preserved.

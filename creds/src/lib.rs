@@ -26,6 +26,7 @@ mod chain;
 mod git_helper;
 mod helper;
 mod memory;
+mod netrc;
 mod query;
 mod ssh;
 
@@ -34,5 +35,6 @@ pub use chain::HelperChain;
 pub use git_helper::GitCredentialHelper;
 pub use helper::{Credentials, Helper, HelperError};
 pub use memory::CachingHelper;
+pub use netrc::NetrcCredentialHelper;
 pub use query::Query;
 pub use ssh::{SshAuth, SshAuthClient, SshAuthError, SshOperation};

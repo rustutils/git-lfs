@@ -22,8 +22,8 @@ use git_lfs_api::{
     SshAuth as ApiSshAuth, SshOperation as ApiSshOperation, SshResolver,
 };
 use git_lfs_creds::{
-    AskpassHelper, CachingHelper, GitCredentialHelper, Helper, HelperChain, SshAuthClient,
-    SshOperation as CredsSshOperation,
+    AskpassHelper, CachingHelper, GitCredentialHelper, Helper, HelperChain, NetrcCredentialHelper,
+    SshAuthClient, SshOperation as CredsSshOperation,
 };
 use git_lfs_filter::FetchError;
 use git_lfs_git::ConfigScope;
@@ -582,12 +582,17 @@ fn href_rewrite_enabled(cwd: &Path) -> bool {
     )
 }
 
-/// Default credential resolution chain: in-process cache → optional
-/// askpass → `git credential`. Cache is consulted first so a single CLI
-/// invocation only shells out once per host. Reads
-/// `credential.protectProtocol` (default `true`) and threads it into
-/// the git-credential helper so CR-bearing URLs can be opted into when
-/// the user explicitly does so.
+/// Default credential resolution chain: in-process cache → netrc
+/// (when `~/.netrc` is present) → optional askpass → `git credential`.
+/// Cache is consulted first so a single CLI invocation only shells out
+/// once per host. Reads `credential.protectProtocol` (default `true`)
+/// and threads it into the git-credential helper so CR-bearing URLs
+/// can be opted into when the user explicitly does so.
+///
+/// Netrc lookup is inserted ahead of askpass + git-credential when
+/// `$HOME/.netrc` (or `_netrc` on Windows) exists, matching upstream's
+/// `creds.NewCredentialHelperContext` order. Hosts not covered by
+/// netrc fall through to the rest of the chain.
 ///
 /// Askpass is only inserted when:
 /// - `GIT_ASKPASS` / `core.askpass` / `SSH_ASKPASS` resolves to a
@@ -597,7 +602,16 @@ fn href_rewrite_enabled(cwd: &Path) -> bool {
 ///   precedence over interactive prompting.
 fn default_helper_chain(cwd: &Path, cred_url: &url::Url) -> Arc<dyn Helper> {
     let protect_protocol = read_bool_default(cwd, "credential.protectProtocol", true);
-    let mut helpers: Vec<Box<dyn Helper>> = vec![Box::new(CachingHelper::new())];
+    // Netrc goes ahead of the cache so the `netrc: git credential fill`
+    // trace fires on every authenticated request, not just the first.
+    // For an actually-cached host, netrc's lookup is in-memory and
+    // cheap (file is read once at construction). Hosts not in netrc
+    // fall through to cache + askpass + git-credential as before.
+    let mut helpers: Vec<Box<dyn Helper>> = Vec::new();
+    if let Some(netrc) = NetrcCredentialHelper::from_default_location() {
+        helpers.push(Box::new(netrc));
+    }
+    helpers.push(Box::new(CachingHelper::new()));
     if let Some(askpass) = resolve_askpass_program(cwd)
         && !has_credential_helper(cwd, cred_url)
     {

@@ -364,6 +364,35 @@ impl Client {
     where
         F: Fn() -> RequestBuilder,
     {
+        // Preemptive fill: once we've successfully resolved credentials
+        // for this endpoint, re-walk the helper chain on every
+        // subsequent request. The chain returns the same creds from
+        // cache (no extra cost), but helpers that trace their fill
+        // (notably netrc) get to log a line — matching upstream's
+        // `lfshttp/auth.go::setRequestAuth` behavior, which fires
+        // helper.Fill every time an endpoint is in access=basic
+        // mode. `t-credentials.sh`'s netrc tests count these traces
+        // (2 fill + 2 approve per push); without this, we'd log 1
+        // fill + 2 approves and miss the count.
+        let filled_already = self.filled.lock().unwrap().is_some();
+        if filled_already && let Some(helper) = self.credentials.clone() {
+            let query = self.cred_query();
+            if let Ok(Some(c)) = tokio::task::spawn_blocking(move || helper.fill(&query))
+                .await
+                .unwrap_or(Ok(None))
+            {
+                // Replace cached creds with the freshly-resolved set
+                // so on success approve_filled() lands on the right
+                // pair. Same query as the initial fill, so the cache
+                // entry doesn't churn.
+                *self.auth.lock().unwrap() = Auth::Basic {
+                    username: c.username.clone(),
+                    password: c.password.clone(),
+                };
+                *self.filled.lock().unwrap() = Some((self.cred_query(), c));
+            }
+        }
+
         let resp = build().send().await?;
         if resp.status().is_success() {
             self.approve_filled().await;

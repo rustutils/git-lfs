@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `creds`: `NetrcCredentialHelper` reads `$HOME/.netrc` (or `_netrc`
+  on Windows) at construction and slots into the helper chain ahead
+  of the cache. Hosts covered by netrc don't have to round-trip
+  through `git credential fill`. Parser is permissive — recognized
+  keywords are `machine` / `default` / `login` / `password`;
+  unknown tokens are silently skipped so other tools' annotations
+  don't break the parse. Matches upstream's
+  `creds/netrc.go::netrcCredentialHelper`, including the trace
+  format (`netrc: git credential fill/approve/reject (…)` with
+  Go's `%q` quoting) the shell tests grep on.
+- `api::Client`: preemptive fill on subsequent requests after the
+  first successful auth cycle. Re-walks the helper chain on every
+  request once we've cached creds for the endpoint, so trace-emitting
+  helpers (notably netrc) log a `fill` line per authenticated
+  request — matches upstream's `setRequestAuth` flow under
+  access=basic. Lands the two main netrc tests in `t-credentials.sh`
+  (`credentials from netrc`, `credentials from netrc with unknown
+  keyword`) plus one of two `t-credentials-no-prompt.sh` tests.
+
 - `git`/`cli`: `http.extraHeader` / `http.<url>.extraHeader` (multi-
   value, longest-prefix match) are now installed as default headers on
   the reqwest client backing the LFS API and transfer adapter. Same

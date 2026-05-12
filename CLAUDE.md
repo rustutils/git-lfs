@@ -64,7 +64,7 @@ per-command deferred polish.
 publish-ready (description, keywords, categories, repository, per-crate
 README). Project status remains experimental — for production use,
 upstream Go `git-lfs` is still the answer; ~82% of the vendored shell
-tests pass (652/794 across 104 files).
+tests pass (655/794 across 104 files).
 
 ## Layout
 
