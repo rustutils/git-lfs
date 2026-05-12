@@ -571,7 +571,12 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             match fetch::fetch(&cwd, &opts) {
                 Ok(outcome) => {
                     if !outcome.report.failed.is_empty() {
-                        return Err("one or more objects failed to download".into());
+                        // Upstream format from
+                        // `commands/command_fetch.go::Exit("error: failed to
+                        // fetch some objects from '%s'")`. The vendored
+                        // shell tests grep for the prefix `error: failed
+                        // to fetch some objects` verbatim.
+                        return Err("error: failed to fetch some objects".into());
                     }
                 }
                 Err(fetch::FetchCommandError::Usage(msg)) if msg == "Not in a Git repository." => {

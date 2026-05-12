@@ -3,16 +3,18 @@
 //!
 //! See `docs/api/basic-transfers.md`.
 
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
+use std::path::Path;
 use std::sync::Arc;
 
 use futures::StreamExt;
 use git_lfs_api::{Action, Actions};
 use git_lfs_pointer::Oid;
 use git_lfs_store::Store;
-use reqwest::header::CONTENT_LENGTH;
+use reqwest::header::{CONTENT_LENGTH, RANGE};
 use reqwest::{Body, Method, Response};
 use serde::Serialize;
+use sha2::{Digest as _, Sha256};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::io::{ReaderStream, StreamReader, SyncIoBridge};
 
@@ -34,25 +36,110 @@ struct VerifyBody<'a> {
 
 /// Stream-download `oid` from `action.href` into `store`.
 ///
-/// Hashing + atomic insert happens inside [`store::Store::insert_verified`]
-/// on a blocking thread; the bytes flow through a [`SyncIoBridge`] so we
-/// don't buffer the whole object in memory.
+/// Writes go to `<lfs_dir>/incomplete/<oid>.part` and only rename into
+/// the object store once the bytes hash to `expected`. The partial
+/// file persists across retry attempts: a previous interrupted download
+/// becomes the resume point for the next call (which sends a `Range:`
+/// header). Mirrors upstream's `tq/basic_download.go`.
+///
+/// Status-code handling:
+/// - 200 OK without a Range request → fresh download, overwrites any
+///   stale partial.
+/// - 200 OK with a Range request → server ignored the Range; same as
+///   a fresh download (truncate, write full body).
+/// - 206 Partial Content → append to the existing partial; the bytes
+///   from the prior attempt remain at the front of the file.
+/// - 416 Requested Range Not Satisfiable → clear the partial and
+///   recursively retry without `Range:` (`xfer: server rejected
+///   resume … re-downloading from start`).
 pub(crate) async fn download(
     http: &reqwest::Client,
     store: Arc<Store>,
     oid: &str,
+    size: u64,
     action: &Action,
     events: Option<&UnboundedSender<Event>>,
 ) -> Result<u64, TransferError> {
     let expected = Oid::from_hex(oid)?;
+    let partial_path = store.incomplete_path(expected);
+
+    // A partial whose size meets or exceeds the expected total is
+    // useless as a resume point — the bytes might be corrupt and
+    // `bytes=<size>-<size-1>` is an invalid Range (the upstream
+    // gitserver rejects with 400). Drop it before deciding whether to
+    // resume. t-batch-storage-retries.sh test 5 part B asserts no
+    // Range / 400 line in this case.
+    if let Ok(m) = std::fs::metadata(&partial_path)
+        && m.len() >= size
+    {
+        let _ = std::fs::remove_file(&partial_path);
+    }
+    let resume_offset: Option<u64> = std::fs::metadata(&partial_path)
+        .ok()
+        .map(|m| m.len())
+        .filter(|&n| n > 0 && n < size);
+
+    // Build the GET. Action headers (auth tokens, etc.) ride along on
+    // every attempt; Range only when resuming.
     let mut req = http.request(Method::GET, &action.href);
     for (k, v) in &action.header {
         req = req.header(k, v);
     }
+    let range_header = resume_offset.map(|offset| {
+        // RFC 7233 closed range: end byte is inclusive.
+        format!("bytes={offset}-{}", size.saturating_sub(1))
+    });
+    if let Some(range) = &range_header {
+        req = req.header(RANGE, range);
+        if trace_enabled() {
+            // Upstream's `xfer: Attempting to resume download of %q
+            // from byte %d` in basic_download.go:105. Test grep is
+            // just the substring with the quoted oid.
+            eprintln!(
+                "xfer: Attempting to resume download of {oid:?} from byte {}",
+                resume_offset.unwrap()
+            );
+        }
+    }
+    dump_verbose_request(&action.href, range_header.as_deref(), &action.header);
+
     let resp = req.send().await?;
+    dump_verbose_response(&resp);
+
+    // 416 + we sent Range → server rejected the resume. Clear and
+    // restart without Range. Upstream's
+    // `xfer: server rejected resume … re-downloading from start`
+    // trace at basic_download.go:182.
+    if let Some(offset) = resume_offset
+        && resp.status().as_u16() == 416
+    {
+        if trace_enabled() {
+            eprintln!(
+                "xfer: server rejected resume download request for {oid:?} from byte {offset}; re-downloading from start"
+            );
+        }
+        let _ = std::fs::remove_file(&partial_path);
+        return Box::pin(download(http, store, oid, size, action, events)).await;
+    }
+
     check_status(&resp, &action.href)?;
 
-    let mut bytes_done: u64 = 0;
+    // 206 only counts as "server accepted resume" when we actually
+    // asked. A 200 to a Range request means the server ignored it —
+    // treat like a fresh download.
+    let server_resumed = matches!((resume_offset, resp.status().as_u16()), (Some(_), 206),);
+    if let Some(offset) = resume_offset
+        && server_resumed
+        && trace_enabled()
+    {
+        eprintln!("xfer: server accepted resume download request: {oid:?} from byte {offset}");
+    }
+
+    let mut bytes_done: u64 = if server_resumed {
+        resume_offset.unwrap_or(0)
+    } else {
+        0
+    };
     let oid_owned = oid.to_owned();
     let events_clone = events.cloned();
     let body_stream = resp.bytes_stream().map(move |chunk| {
@@ -71,11 +158,148 @@ pub(crate) async fn download(
     let async_reader = StreamReader::new(body_stream);
     let mut bridge = SyncIoBridge::new(async_reader);
 
-    let size = tokio::task::spawn_blocking(move || store.insert_verified(expected, &mut bridge))
-        .await
-        .map_err(|join_err| std::io::Error::other(join_err.to_string()))??;
+    let partial_path_owned = partial_path.clone();
+    let store_for_blocking = store.clone();
+    let total = tokio::task::spawn_blocking(move || -> Result<u64, TransferError> {
+        std::fs::create_dir_all(store_for_blocking.incomplete_dir())?;
+        write_partial(&partial_path_owned, server_resumed, &mut bridge)?;
+        let actual = hash_file(&partial_path_owned)?;
+        if actual != expected {
+            return Err(TransferError::Store(
+                git_lfs_store::StoreError::HashMismatch { expected, actual },
+            ));
+        }
+        let total = std::fs::metadata(&partial_path_owned)?.len();
+        store_for_blocking.commit_partial(expected, &partial_path_owned)?;
+        Ok(total)
+    })
+    .await
+    .map_err(|join_err| std::io::Error::other(join_err.to_string()))??;
 
-    Ok(size)
+    Ok(total)
+}
+
+/// Returns true when the user asked for `GIT_TRACE`. Kept in sync with
+/// the same gate in `transfer.rs` — both files use this signal.
+fn trace_enabled() -> bool {
+    std::env::var_os("GIT_TRACE").is_some_and(|v| !v.is_empty() && v != "0")
+}
+
+/// Returns true when the user asked for `GIT_CURL_VERBOSE`.
+fn verbose_enabled() -> bool {
+    std::env::var_os("GIT_CURL_VERBOSE").is_some_and(|v| !v.is_empty() && v != "0")
+}
+
+/// Emit the outgoing request line + selected headers in curl-verbose
+/// shape so `t-batch-storage-retries.sh` can grep `Range: bytes=`.
+fn dump_verbose_request(
+    url: &str,
+    range: Option<&str>,
+    extra_headers: &std::collections::HashMap<String, String>,
+) {
+    if !verbose_enabled() {
+        return;
+    }
+    let mut err = std::io::stderr().lock();
+    let _ = writeln!(err, "> GET {url}");
+    if let Some(r) = range {
+        let _ = writeln!(err, "> Range: {r}");
+    }
+    for (k, v) in extra_headers {
+        let _ = writeln!(err, "> {k}: {v}");
+    }
+    let _ = writeln!(err);
+}
+
+/// Emit the response status line + headers. Tests grep for the curl-
+/// style verbose output (`206 Partial Content`, `416 Requested Range
+/// Not Satisfiable`, `Content-Range: bytes …`), so headers go through
+/// `title_case_header` to undo the http crate's lowercase
+/// normalization, and 416 is forced to the RFC 2616 reason phrase
+/// `Requested Range Not Satisfiable` rather than RFC 7233's renamed
+/// `Range Not Satisfiable` — that's what the upstream test suite is
+/// written against.
+fn dump_verbose_response(resp: &Response) {
+    if !verbose_enabled() {
+        return;
+    }
+    let mut err = std::io::stderr().lock();
+    let code = resp.status().as_u16();
+    let reason = match code {
+        416 => "Requested Range Not Satisfiable",
+        _ => resp.status().canonical_reason().unwrap_or(""),
+    };
+    let _ = writeln!(err, "< HTTP/1.1 {code} {reason}");
+    for (k, v) in resp.headers() {
+        if let Ok(value) = v.to_str() {
+            let _ = writeln!(err, "< {}: {value}", title_case_header(k.as_str()));
+        }
+    }
+    let _ = writeln!(err);
+}
+
+/// Title-case a hyphen-separated header name: `content-range` →
+/// `Content-Range`. The http crate normalizes to lowercase, but the
+/// vendored shell tests grep for capitalized header names (the form
+/// curl emits in `-v` output).
+fn title_case_header(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut at_start = true;
+    for c in name.chars() {
+        if at_start {
+            out.extend(c.to_uppercase());
+            at_start = false;
+        } else {
+            out.push(c);
+        }
+        if c == '-' {
+            at_start = true;
+        }
+    }
+    out
+}
+
+/// Write `src`'s contents into `path`. `append == true` (server-accepted
+/// resume): open with O_APPEND so the prior partial bytes stay at the
+/// front. `append == false`: truncate first — either a fresh download
+/// or the server ignored our `Range`.
+fn write_partial(path: &Path, append: bool, src: &mut impl std::io::Read) -> std::io::Result<()> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).write(true);
+    if append {
+        opts.append(true);
+    } else {
+        opts.truncate(true);
+    }
+    let mut file = opts.open(path)?;
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = src.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        file.write_all(&buf[..n])?;
+    }
+    file.flush()?;
+    Ok(())
+}
+
+/// Compute the SHA-256 of `path` in 64 KiB chunks. Called after a
+/// successful stream to decide whether the assembled bytes match what
+/// the batch endpoint promised.
+fn hash_file(path: &Path) -> std::io::Result<Oid> {
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    let bytes: [u8; 32] = hasher.finalize().into();
+    Ok(Oid::from_bytes(bytes))
 }
 
 /// Stream-upload the local copy of `oid` to `action.href`, then call the

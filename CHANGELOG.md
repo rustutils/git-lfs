@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `transfer`: Range-resume on interrupted downloads. The basic
+  download adapter writes through `<lfs_dir>/incomplete/<oid>.part`
+  and, when a prior attempt left a non-empty partial, sends
+  `Range: bytes=<offset>-<size-1>` on the next attempt. Three status
+  paths land:
+  - 206 Partial Content → append to the partial (`xfer: server
+    accepted resume download request`).
+  - 416 Requested Range Not Satisfiable → delete the partial and
+    recurse without `Range:` (`xfer: server rejected resume …
+    re-downloading from start`).
+  - 200 OK to a Range request → server ignored the header; treat
+    as a fresh download (truncate + write).
+
+  Partials whose size meets or exceeds the expected object size are
+  treated as invalid (would produce `bytes=N-(N-1)`) and dropped
+  before any request. `GIT_CURL_VERBOSE` now emits curl-style
+  request/response headers on the storage GET so tests can grep
+  `Range:`, `Content-Range:`, `206 Partial Content`, `416 Requested
+  Range Not Satisfiable`. Mirrors upstream's `tq/basic_download.go`.
+  Lands `t-batch-storage-retries` tests 3-5.
+- `store`: `incomplete_dir()` / `incomplete_path(oid)` /
+  `commit_partial(oid, path)` API for the resumable-download adapter.
+  Hash mismatch error message changed to `expected OID {expected},
+  got {actual}` so the upstream test suite can grep for the
+  substring.
+- `cli`: fetch failures now emit `error: failed to fetch some
+  objects`, matching upstream's `commands/command_fetch.go::Exit`
+  format. Previously emitted `one or more objects failed to
+  download`.
+
 - `transfer`: batch endpoint retries on 429 / 5xx, honoring
   `Retry-After` when the server pinned a wait time. `Transfer::run`
   now routes through a `batch_with_retry` helper that retries the

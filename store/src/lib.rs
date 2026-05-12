@@ -47,7 +47,7 @@ pub struct Store {
 pub enum StoreError {
     #[error(transparent)]
     Io(#[from] io::Error),
-    #[error("hash mismatch: expected {expected}, got {actual}")]
+    #[error("expected OID {expected}, got {actual}")]
     HashMismatch { expected: Oid, actual: Oid },
 }
 
@@ -83,6 +83,36 @@ impl Store {
     /// Directory holding temp files for in-flight inserts.
     pub fn tmp_dir(&self) -> PathBuf {
         self.root.join("tmp")
+    }
+
+    /// Directory holding partial / in-progress downloads. Files are
+    /// named `<oid>.part` and persist across process invocations so a
+    /// later attempt can pick up where a prior one left off (issuing
+    /// a `Range:` request). Mirrors upstream's `incomplete/` layout.
+    pub fn incomplete_dir(&self) -> PathBuf {
+        self.root.join("incomplete")
+    }
+
+    /// Path to the partial-download file for `oid`. The file may not
+    /// exist; the caller is responsible for creating + writing it.
+    pub fn incomplete_path(&self, oid: Oid) -> PathBuf {
+        self.incomplete_dir().join(format!("{oid}.part"))
+    }
+
+    /// Atomically move a fully-downloaded partial file into its final
+    /// object-path location. The caller is responsible for confirming
+    /// the file's bytes hash to `oid` first; this is a pure rename.
+    /// Clobbers any existing file at the destination — see
+    /// [`insert_verified`](Self::insert_verified) for the rationale.
+    pub fn commit_partial(&self, oid: Oid, partial: &Path) -> io::Result<()> {
+        if oid == Oid::EMPTY {
+            return Ok(());
+        }
+        let dest = self.object_path(oid);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::rename(partial, &dest)
     }
 
     /// Sweep `<root>/tmp/objects/` (upstream's path for in-flight

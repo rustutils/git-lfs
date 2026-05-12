@@ -60,7 +60,7 @@ Useful entry points in the upstream tree:
 
 ## Test status snapshot (point in time)
 
-About 667 of 794 vendored shell tests pass (~84%) across 104
+About 670 of 794 vendored shell tests pass (~84%) across 104
 files. Most of the per-command files now pass cleanly; remaining
 failures cluster in features we haven't shipped yet rather than
 edge cases of features we have.
@@ -290,10 +290,15 @@ t-batch-storage-retries-ratelimit (15 tests). Lives in `transfer/`.
   retry #N` per object in the batch per retry. The `Retry-After`
   header now surfaces on `ApiError::Status` via `retry_after()`.
   Lands `t-batch-retries-ratelimit` (5 tests).
-- **7c Range-resume on interrupted downloads** — `Range: bytes=…`
-  retry, 206 / 416 handling, `Attempting to resume` /
-  `xfer: server accepted|rejected resume` trace. Owns
-  `t-batch-storage-retries` tests 3-5.
+- **7c Range-resume on interrupted downloads** ✓ shipped — the
+  basic download adapter writes through `incomplete/<oid>.part`,
+  sends `Range: bytes=<offset>-<size-1>` when a partial is present,
+  and handles 206 (append) / 416 (delete + recurse) / 200-with-range
+  (treat as fresh). `GIT_CURL_VERBOSE` dumps curl-style request +
+  response headers so the `Range:` / `206 Partial Content` /
+  `Content-Range:` / `416 Requested Range Not Satisfiable` greps
+  match. New store API: `incomplete_path` / `commit_partial`.
+  Lands `t-batch-storage-retries` tests 3-5.
 
 ### Milestone 8 — Custom transfer / SSH / tus (large)
 

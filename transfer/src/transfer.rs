@@ -299,7 +299,7 @@ async fn process_object(
                 .as_ref()
                 .ok_or(TransferError::NoDownloadAction)?;
             with_retry(config, &obj.oid, obj.size, || async {
-                basic::download(http, store.clone(), &obj.oid, action, events)
+                basic::download(http, store.clone(), &obj.oid, obj.size, action, events)
                     .await
                     .map(|_| ())
             })
