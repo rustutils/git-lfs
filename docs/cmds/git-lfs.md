@@ -12,7 +12,9 @@ git-lfs [COMMAND]
 
 ## Description
 
-Git LFS — large file storage for git
+Git LFS is a system for managing and versioning large files in association with a Git repository. Instead of storing the large files within the Git repository as blobs, Git LFS stores special "pointer files" in the repository, while storing the actual file contents on a Git LFS server. The contents of the large file are downloaded automatically when needed, for example when a Git branch containing the large file is checked out.
+
+Git LFS works by using a "smudge" filter to look up the large file contents based on the pointer file, and a "clean" filter to create a new version of the pointer file when the large file's contents change. It also uses a pre-push hook to upload the large file contents to the Git LFS server whenever a commit containing a new large file version is about to be pushed to the corresponding Git server.
 
 ## Options
 
@@ -52,6 +54,36 @@ Git LFS — large file storage for git
 - `locks` — Lists currently locked files from the Git LFS server
 - `unlock` — Remove "locked" setting for a file on the Git LFS server
 - `ls-files` — Show information about Git LFS files in the index and working tree
+
+## Examples
+
+To get started with Git LFS, the following commands can be used.
+
+1. Setup Git LFS on your system. You only have to do this once per user account:
+
+   ```
+   git lfs install
+   ```
+
+2. Choose the type of files you want to track, for examples all ISO images, with [git-lfs-track(1)](./git-lfs-track.md):
+
+   ```
+   git lfs track "*.iso"
+   ```
+
+3. The above stores this information in [gitattributes(5)](https://git-scm.com/docs/gitattributes) files, so that file needs to be added to the repository:
+
+   ```
+   git add .gitattributes
+   ```
+
+4. Commit, push and work with the files normally:
+
+   ```
+   git add file.iso
+   git commit -m "Add disk image"
+   git push
+   ```
 
 ## Reporting bugs
 

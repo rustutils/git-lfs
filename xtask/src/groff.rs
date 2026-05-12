@@ -80,6 +80,13 @@ struct State {
     /// already produced the line ending and a stray `\n` would render
     /// as a blank line (and groff treats blanks as implicit `.PP`).
     suppress_next_soft_break: bool,
+    /// Set on `Start(Item)`; consumed by the next `Start(Paragraph)`.
+    /// Suppresses the `.PP` for the item's first paragraph so the
+    /// list marker (`1.` / `•`) sits on the same logical line as
+    /// the first line of body text. Without this, `.IP "1." 4`
+    /// followed by `.PP` resets the paragraph and pushes the body
+    /// onto its own line below the marker.
+    suppress_next_paragraph: bool,
     /// True between an inline-style `Tag::Link` start and end. We use
     /// this to remember whether to emit the matching `.UE` (only for
     /// inline / reference / shortcut links — autolinks render the URL
@@ -90,14 +97,23 @@ struct State {
 #[derive(Clone, Copy)]
 enum ListKind {
     Bullet,
-    Ordered,
+    /// Carries the *next* item number — incremented each `Start(Item)`
+    /// so the rendered markers (`1.`, `2.`, …) match the source's
+    /// ordering even when the markdown starts the list at a non-1
+    /// number (pulldown-cmark threads the start number through
+    /// `Tag::List(Some(n))`).
+    Ordered(u64),
 }
 
 fn handle(event: Event<'_>, state: &mut State, out: &mut String) {
     match event {
         Event::Start(Tag::Paragraph) => {
-            ensure_blank_separator(out);
-            out.push_str(".PP\n");
+            if state.suppress_next_paragraph {
+                state.suppress_next_paragraph = false;
+            } else {
+                ensure_blank_separator(out);
+                out.push_str(".PP\n");
+            }
         }
         Event::End(TagEnd::Paragraph) if !out.ends_with('\n') => {
             out.push('\n');
@@ -119,21 +135,29 @@ fn handle(event: Event<'_>, state: &mut State, out: &mut String) {
         Event::End(TagEnd::Strong) => out.push_str("\\fR"),
 
         Event::Start(Tag::List(start)) => {
-            state.list = Some(if start.is_some() {
-                ListKind::Ordered
-            } else {
-                ListKind::Bullet
+            state.list = Some(match start {
+                Some(n) => ListKind::Ordered(n),
+                None => ListKind::Bullet,
             });
             ensure_blank_separator(out);
         }
         Event::End(TagEnd::List(_)) => {
             state.list = None;
         }
-        Event::Start(Tag::Item) => match state.list {
-            Some(ListKind::Bullet) => out.push_str(".IP \\(bu 2\n"),
-            Some(ListKind::Ordered) => out.push_str(".IP \\(bu 2\n"),
-            None => out.push_str(".PP\n"),
-        },
+        Event::Start(Tag::Item) => {
+            match state.list {
+                Some(ListKind::Bullet) => out.push_str(".IP \\(bu 2\n"),
+                Some(ListKind::Ordered(n)) => {
+                    // `.IP "1." 4` — quoted marker so the literal `.`
+                    // doesn't get parsed as a macro start; indent width
+                    // 4 fits double-digit markers comfortably.
+                    out.push_str(&format!(".IP \"{n}.\" 4\n"));
+                    state.list = Some(ListKind::Ordered(n + 1));
+                }
+                None => out.push_str(".PP\n"),
+            }
+            state.suppress_next_paragraph = true;
+        }
         Event::End(TagEnd::Item) if !out.ends_with('\n') => {
             out.push('\n');
         }

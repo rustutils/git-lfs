@@ -52,6 +52,11 @@ impl ManContent {
 
 const EMPTY: ManContent = ManContent::empty();
 
+const ROOT: ManContent = ManContent {
+    description: None,
+    extra_sections: &[("EXAMPLES", include_str!("../man/root/examples.md"))],
+};
+
 /// Markdown body for the `REPORTING BUGS` section that xtask appends
 /// to every generated man / mdbook page. Single source of truth for
 /// the project URL and the "this is the Rust implementation" framing
@@ -253,6 +258,7 @@ pub fn extras_for(subcommand: &str) -> &'static ManContent {
         "post-commit" => &POST_COMMIT,
         "post-merge" => &POST_MERGE,
         "migrate" => &MIGRATE,
+        "" => &ROOT,
         _ => &EMPTY,
     }
 }
