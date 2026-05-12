@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `migrate info --fixup` now does the real per-tree attribute walk:
+  list every blob at the selected ref, build a fresh `AttrSet` from
+  that tree's `.gitattributes` files (root + nested), and count any
+  non-attrs, non-symlink, non-pointer blob whose path is LFS-tracked
+  per the attrs. Mirrors upstream's
+  `commands/command_migrate_info.go::BlobFn` fixup branch. Lands
+  `t-migrate-info` tests 37-41 (the `--fixup` cluster) → suite is
+  now full pass 50/50. Per-commit attribute resolution across multi-
+  commit history is deferred; the vendored fixup fixtures are all
+  single-commit so the simplification doesn't affect any test today.
+
 ### Fixed
 
 - `api`: `ApiError::Status` Display now surfaces the server's body

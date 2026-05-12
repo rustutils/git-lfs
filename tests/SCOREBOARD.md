@@ -3,7 +3,7 @@
 Per-suite snapshot of the vendored upstream shell tests. Last
 refreshed: **2026-05-12**.
 
-**673 / 794 tests passing (~85%) across 104 suites.**
+**678 / 794 tests passing (~85%) across 104 suites.**
 
 Refresh:
 
@@ -15,48 +15,49 @@ The xtask wrapper runs `make test` under the hood and parses prove's
 TAP output into the Full pass / Partial / Empty groups below. Pipe
 through `tee` if you want the per-suite breakdown saved.
 
-## Full pass — 71 suites, 500 tests
+## Full pass — 73 suites, 567 tests
 
 ```
-t-alternates.sh                          t-migrate-fixup.sh
-t-batch-retries-ratelimit.sh             t-migrate-import-no-rewrite.sh
-t-batch-storage-retries-ratelimit.sh     t-no-remote.sh
-t-batch-storage-retries.sh               t-object-authenticated.sh
-t-batch-transfer-size.sh                 t-path.sh
-t-batch-transfer.sh                      t-pointer.sh
-t-checkout.sh                            t-post-checkout.sh
-t-cherry-pick-commits.sh                 t-post-commit.sh
-t-chunked-transfer-encoding.sh           t-post-merge.sh
-t-clean.sh                               t-pre-push.sh
-t-clone-deprecated.sh                    t-progress-meter.sh
-t-commit-delete-push.sh                  t-prune-worktree.sh
-t-config.sh                              t-prune.sh
-t-content-type.sh                        t-pull.sh
-t-credentials-no-prompt.sh               t-push-bad-dns.sh
-t-credentials-protect.sh                 t-push-failures-local.sh
-t-duplicate-oids.sh                      t-push-failures-remote.sh
-t-env.sh                                 t-push-file-with-branch-name.sh
-t-ext.sh                                 t-reference-clone.sh
-t-extra-header.sh                        t-status.sh
-t-fetch-include.sh                       t-submodule-lfsconfig.sh
-t-fetch-paths.sh                         t-submodule-recurse.sh
-t-fetch-recent.sh                        t-submodule.sh
-t-fetch-refspec.sh                       t-track-attrs.sh
-t-fetch.sh                               t-track-wildcards.sh
-t-filter-branch.sh                       t-track.sh
-t-filter-process.sh                      t-uninstall-worktree.sh
-t-fsck.sh                                t-uninstall.sh
-t-happy-path.sh                          t-unlock.sh
-t-install-custom-hooks-path.sh           t-untrack.sh
-t-install-worktree.sh                    t-unusual-filenames.sh
-t-install.sh                             t-update.sh
-t-lock.sh                                t-version.sh
-t-locks.sh                               t-worktree.sh
-t-malformed-pointers.sh                  t-zero-len-file.sh
-t-mergetool.sh
+t-alternates.sh                          t-migrate-export.sh
+t-batch-retries-ratelimit.sh             t-migrate-fixup.sh
+t-batch-storage-retries-ratelimit.sh     t-migrate-import-no-rewrite.sh
+t-batch-storage-retries.sh               t-migrate-info.sh
+t-batch-transfer-size.sh                 t-no-remote.sh
+t-batch-transfer.sh                      t-object-authenticated.sh
+t-checkout.sh                            t-path.sh
+t-cherry-pick-commits.sh                 t-pointer.sh
+t-chunked-transfer-encoding.sh           t-post-checkout.sh
+t-clean.sh                               t-post-commit.sh
+t-clone-deprecated.sh                    t-post-merge.sh
+t-commit-delete-push.sh                  t-pre-push.sh
+t-config.sh                              t-progress-meter.sh
+t-content-type.sh                        t-prune-worktree.sh
+t-credentials-no-prompt.sh               t-prune.sh
+t-credentials-protect.sh                 t-pull.sh
+t-duplicate-oids.sh                      t-push-bad-dns.sh
+t-env.sh                                 t-push-failures-local.sh
+t-ext.sh                                 t-push-failures-remote.sh
+t-extra-header.sh                        t-push-file-with-branch-name.sh
+t-fetch-include.sh                       t-reference-clone.sh
+t-fetch-paths.sh                         t-status.sh
+t-fetch-recent.sh                        t-submodule-lfsconfig.sh
+t-fetch-refspec.sh                       t-submodule-recurse.sh
+t-fetch.sh                               t-submodule.sh
+t-filter-branch.sh                       t-track-attrs.sh
+t-filter-process.sh                      t-track-wildcards.sh
+t-fsck.sh                                t-track.sh
+t-happy-path.sh                          t-uninstall-worktree.sh
+t-install-custom-hooks-path.sh           t-uninstall.sh
+t-install-worktree.sh                    t-unlock.sh
+t-install.sh                             t-untrack.sh
+t-lock.sh                                t-unusual-filenames.sh
+t-locks.sh                               t-update.sh
+t-malformed-pointers.sh                  t-version.sh
+t-mergetool.sh                           t-worktree.sh
+                                         t-zero-len-file.sh
 ```
 
-## Partial — 30 suites, 173 / 294 tests
+## Partial — 28 suites, 111 / 227 tests
 
 | Suite | Pass / Total |
 | --- | --- |
@@ -75,9 +76,7 @@ t-mergetool.sh
 | `t-logs.sh` | 0 / 1 |
 | `t-ls-files.sh` | 14 / 31 |
 | `t-merge-driver.sh` | 0 / 6 |
-| `t-migrate-export.sh` | 16 / 17 |
 | `t-migrate-import.sh` | 44 / 51 |
-| `t-migrate-info.sh` | 46 / 50 |
 | `t-multiple-remotes.sh` | 0 / 12 |
 | `t-progress.sh` | 0 / 1 |
 | `t-push.sh` | 20 / 27 |

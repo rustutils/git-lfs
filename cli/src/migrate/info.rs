@@ -7,7 +7,9 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use git_lfs_git::{CatFileBatch, CatFileBatchCheck, CatFileHeader, rev_list};
+use git_lfs_git::{
+    AttrSet, CatFileBatch, CatFileBatchCheck, CatFileHeader, rev_list, scan_tree_blobs,
+};
 use git_lfs_pointer::{MAX_POINTER_SIZE, Pointer};
 
 use super::{
@@ -118,13 +120,8 @@ pub fn info(cwd: &Path, opts: &InfoOptions) -> Result<(), MigrateError> {
             "expected '.gitattributes' to be a file, got a symbolic link".into(),
         ));
     }
-    // `--fixup` is a no-op for `info` until we implement the
-    // per-commit attribute walk (see NOTES.md). The validation tests
-    // (47-50) only need the messaging above, and the
-    // "no-fixup-needed" tests pass naturally when we exit silently
-    // here. The "potential fixup" tests still expect the real walk.
     if opts.fixup {
-        return Ok(());
+        return info_fixup(cwd, opts, &include_refs);
     }
 
     let include = build_globset(&opts.include)?;
@@ -189,6 +186,102 @@ pub fn info(cwd: &Path, opts: &InfoOptions) -> Result<(), MigrateError> {
 
     print_table(&by_ext, &lfs_entry, opts);
     Ok(())
+}
+
+/// `--fixup` walk: list blobs at the first include ref, build a
+/// fresh [`AttrSet`] from that tree's `.gitattributes` blobs, and
+/// count every non-attrs, non-symlink, non-pointer blob whose path
+/// the attrs declare LFS-tracked. Mirrors upstream's
+/// `commands/command_migrate_info.go::BlobFn` fixup branch.
+///
+/// Multi-commit per-commit attribute resolution is deferred — the
+/// upstream test suite only exercises single-commit fixup scenarios
+/// today and walking each commit would multiply the work without
+/// changing the test outcomes. Tracked in NOTES.md.
+fn info_fixup(cwd: &Path, opts: &InfoOptions, include_refs: &[String]) -> Result<(), MigrateError> {
+    let Some(reference) = include_refs.first() else {
+        return Ok(());
+    };
+
+    let blobs = scan_tree_blobs(cwd, reference).map_err(|e| MigrateError::Other(e.to_string()))?;
+
+    // First pass: read every `.gitattributes` blob in the tree and
+    // accumulate them into one AttrSet keyed by directory. Shallow →
+    // deep insertion so deeper dirs win in gix-attributes' last-added
+    // ordering. Matches the per-commit logic in
+    // `migrate/transform.rs::process_commit_fixup`.
+    let mut attrs_dirs: Vec<(String, Vec<u8>)> = Vec::new();
+    {
+        let mut batch = CatFileBatch::spawn(cwd)?;
+        for blob in &blobs {
+            let path = blob.path.to_string_lossy();
+            if !is_attrs_path(&path) {
+                continue;
+            }
+            if let Some(b) = batch.read(&blob.blob_oid)? {
+                attrs_dirs.push((dir_of(&path), b.content));
+            }
+        }
+    }
+    attrs_dirs.sort_by_key(|(d, _)| d.matches('/').count());
+
+    let mut attrs = AttrSet::empty();
+    for (dir, content) in &attrs_dirs {
+        attrs.add_buffer_at(content, dir);
+    }
+
+    // Second pass: count non-attrs blobs whose path is LFS-tracked
+    // and aren't already valid pointers (fixup implies
+    // `--pointers=ignore`).
+    let mut by_ext: HashMap<String, Entry> = HashMap::new();
+    let mut batch = CatFileBatch::spawn(cwd)?;
+    for blob in &blobs {
+        let path = blob.path.to_string_lossy();
+        if is_attrs_path(&path) {
+            continue;
+        }
+        if blob.mode == "120000" {
+            // Symlinks aren't pointer candidates; git stores the link
+            // target as the blob content.
+            continue;
+        }
+        if !attrs.is_lfs_tracked(&path) {
+            continue;
+        }
+        // Skip blobs that already parse as LFS pointers — the file is
+        // *already* in LFS, nothing to fix.
+        if (blob.size as usize) < MAX_POINTER_SIZE
+            && let Some(b) = batch.read(&blob.blob_oid)?
+            && Pointer::parse(&b.content).is_ok()
+        {
+            continue;
+        }
+
+        let group = ext_group(&path);
+        accumulate(by_ext.entry(group).or_default(), blob.size, opts.above);
+    }
+
+    let lfs = Entry::default();
+    print_table(&by_ext, &lfs, opts);
+    Ok(())
+}
+
+/// `.gitattributes` filename detector — top-level or nested under any
+/// directory. Mirrors `migrate/transform.rs::is_attrs_path`; duplicated
+/// rather than re-exported because the transform module is private to
+/// the migrate command tree.
+fn is_attrs_path(path: &str) -> bool {
+    const ATTRS: &str = ".gitattributes";
+    path == ATTRS || path.rsplit_once('/').is_some_and(|(_, leaf)| leaf == ATTRS)
+}
+
+/// Directory portion of a tree path, with no trailing slash. Empty
+/// for top-level paths.
+fn dir_of(path: &str) -> String {
+    match path.rsplit_once('/') {
+        Some((parent, _)) => parent.to_owned(),
+        None => String::new(),
+    }
 }
 
 fn accumulate(entry: &mut Entry, size: u64, above: u64) {
