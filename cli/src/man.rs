@@ -166,8 +166,23 @@ const LS_FILES: ManContent = ManContent {
 };
 
 const PRUNE: ManContent = ManContent {
-    description: None,
-    extra_sections: &[("SEE ALSO", include_str!("../man/prune/see_also.md"))],
+    description: Some(include_str!("../man/prune/description.md")),
+    extra_sections: &[
+        ("RECENT FILES", include_str!("../man/prune/recent_files.md")),
+        (
+            "UNPUSHED LFS FILES",
+            include_str!("../man/prune/unpushed.md"),
+        ),
+        (
+            "VERIFY REMOTE",
+            include_str!("../man/prune/verify_remote.md"),
+        ),
+        (
+            "DEFAULT REMOTE",
+            include_str!("../man/prune/default_remote.md"),
+        ),
+        ("SEE ALSO", include_str!("../man/prune/see_also.md")),
+    ],
 };
 
 const FSCK: ManContent = ManContent {

@@ -158,8 +158,17 @@ fn handle(event: Event<'_>, state: &mut State, out: &mut String) {
             }
             state.suppress_next_paragraph = true;
         }
-        Event::End(TagEnd::Item) if !out.ends_with('\n') => {
-            out.push('\n');
+        Event::End(TagEnd::Item) => {
+            // Clear the marker-pairing flag set on Start(Item). In a
+            // tight list (no blank lines between items) pulldown-cmark
+            // skips the per-item Paragraph events entirely, so the
+            // flag never gets consumed and would otherwise leak onto
+            // the next "real" paragraph after the list — eating the
+            // .PP that should separate it from the trailing item.
+            state.suppress_next_paragraph = false;
+            if !out.ends_with('\n') {
+                out.push('\n');
+            }
         }
 
         Event::Start(Tag::DefinitionList) => ensure_blank_separator(out),
