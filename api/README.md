@@ -15,5 +15,11 @@ retry-once → approve/reject loop, with an in-memory cache so
 subsequent requests skip the helper. Credential resolution is
 delegated to [`git-lfs-creds`](https://crates.io/crates/git-lfs-creds).
 
+Server-supplied `Retry-After` is parsed off 429 / 5xx responses and
+surfaced through `ApiError::retry_after()`, so callers (the transfer
+queue, in our case) can honor the rate-limit window instead of
+falling back to exponential backoff. The `parse_retry_after` helper
+is exported for reuse on other response paths.
+
 Part of the [git-lfs Rust workspace](https://gitlab.com/rustutils/git-lfs).
 Experimental — not yet ready for production. License: MIT.

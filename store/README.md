@@ -8,6 +8,11 @@ keyed by SHA-256, with atomic insert via a tempfile rename. A file's
 existence and size double as its integrity check; the OID is
 re-verified on insert.
 
+In-progress downloads stage at `<root>/incomplete/<oid>.part` via
+`incomplete_path` + `commit_partial`. Bytes from an interrupted
+transfer stay on disk so the next attempt can resume with a `Range:`
+request instead of starting over.
+
 ```rust
 use git_lfs_store::Store;
 

@@ -17,9 +17,15 @@ What's implemented today:
   is independent so partial failures don't tear down the queue.
 - Streaming uploads/downloads (no full buffering), and a hash check
   on the download path.
+- Retry on transient failures (5xx, 429, network blips) at both the
+  per-object and batch-request layers. `Retry-After` is honored when
+  the server pins a delay; otherwise exponential backoff applies.
+- Range-resume on interrupted downloads: partial files persist at
+  `.git/lfs/incomplete/<oid>.part` so the next attempt sends
+  `Range: bytes=…` rather than re-fetching from byte 0.
 
-Not yet here: tus uploads, custom transfer agents, retry/Retry-After
-handling. Tracked in the workspace `NOTES.md`.
+Not yet here: tus uploads, custom transfer agents. Tracked in the
+workspace `NOTES.md`.
 
 Part of the [git-lfs Rust workspace](https://gitlab.com/rustutils/git-lfs).
 Experimental — not yet ready for production. License: MIT.

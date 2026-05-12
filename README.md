@@ -12,8 +12,7 @@ in the binaries.
 
 ## Status
 
-Work in progress. Currently, about 75% of the upstream test suite passes
-against this git-lfs implementation. See [`tests/SCOREBOARD.md`](tests/SCOREBOARD.md)
+Work in progress. See [`tests/SCOREBOARD.md`](tests/SCOREBOARD.md)
 for the per-suite breakdown. The majority of functionality is already
 implemented and work end-to-end.
 
