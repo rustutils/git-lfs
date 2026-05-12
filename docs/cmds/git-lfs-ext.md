@@ -24,6 +24,20 @@ With no arguments, prints every configured extension. With `list <name>...`, pri
 
 - `list` — List configured LFS pointer extensions, optionally filtered by name
 
+## Examples
+
+List details for all extensions:
+
+    git lfs ext
+
+or equivalently:
+
+    git lfs ext list
+
+List details for the specified extensions:
+
+    git lfs ext list foo bar
+
 ## Reporting bugs
 
 This command is from the Rust implementation of git-lfs, not the original

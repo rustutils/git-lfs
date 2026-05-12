@@ -47,6 +47,10 @@ On Windows, Git before 2.34.0 does not handle files in the working tree
 larger than 4 gigabytes. Newer versions of Git, as well as Unix
 versions, are unaffected.
 
+## See also
+
+[git-lfs-install(1)](./git-lfs-install.md), [gitattributes(5)](https://git-scm.com/docs/gitattributes), [gitignore(5)](https://git-scm.com/docs/gitignore).
+
 ## Reporting bugs
 
 This command is from the Rust implementation of git-lfs, not the original

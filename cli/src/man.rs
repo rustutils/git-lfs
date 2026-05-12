@@ -68,6 +68,7 @@ const SMUDGE: ManContent = ManContent {
     extra_sections: &[
         ("ENVIRONMENT", include_str!("../man/smudge/environment.md")),
         ("KNOWN BUGS", include_str!("../man/smudge/known_bugs.md")),
+        ("SEE ALSO", include_str!("../man/smudge/see_also.md")),
     ],
 };
 
@@ -228,6 +229,11 @@ const MIGRATE: ManContent = ManContent {
     ],
 };
 
+const EXT: ManContent = ManContent {
+    description: None,
+    extra_sections: &[("EXAMPLES", include_str!("../man/ext/examples.md"))],
+};
+
 /// Look up the doc extras for `subcommand` (e.g. `"fetch"`,
 /// `"checkout"`). Pass `""` for the top-level `git-lfs` page.
 /// Returns a reference to [`ManContent::empty`] when there's no entry,
@@ -235,6 +241,7 @@ const MIGRATE: ManContent = ManContent {
 pub fn extras_for(subcommand: &str) -> &'static ManContent {
     match subcommand {
         "smudge" => &SMUDGE,
+        "ext" => &EXT,
         "checkout" => &CHECKOUT,
         "fetch" => &FETCH,
         "pull" => &PULL,
