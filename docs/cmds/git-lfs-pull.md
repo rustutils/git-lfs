@@ -37,12 +37,6 @@ Requires `git lfs install` to have wired up the smudge filter. If the filter is 
 - `-X`, `--exclude` `<EXCLUDE>`
     Specify `lfs.fetchexclude` just for this invocation
 
-## Default remote
-
-Without arguments, pull downloads from the default remote. The default
-remote is the same as for `git pull`, i.e. based on the remote branch
-you're tracking first, or `origin` otherwise.
-
 ## Include and exclude
 
 You can configure Git LFS to only fetch objects to satisfy references
@@ -60,6 +54,30 @@ matched using wildcard matching as per [gitignore(5)](https://git-scm.com/docs/g
 Note that using the command-line options `-I` and `-X` override the
 respective configuration settings. Setting either option to an empty
 string clears the value.
+
+## Default remote
+
+Without arguments, pull downloads from the default remote. The default
+remote is the same as for `git pull`, i.e. based on the remote branch
+you're tracking first, or `origin` otherwise.
+
+## Examples
+
+Download LFS objects for the current ref from the default remote, then update the working tree:
+
+    git lfs pull
+
+Pull from a specific remote:
+
+    git lfs pull upstream
+
+Pull, but only fetch LFS objects whose paths match a glob (overrides `lfs.fetchinclude` for this invocation):
+
+    git lfs pull -I "textures/**,*.psd"
+
+Pull and skip a path subtree (overrides `lfs.fetchexclude`):
+
+    git lfs pull -X "media/reallybigfiles"
 
 ## See also
 

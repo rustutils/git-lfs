@@ -102,13 +102,14 @@ const PULL: ManContent = ManContent {
     description: None,
     extra_sections: &[
         (
-            "DEFAULT REMOTE",
-            include_str!("../man/pull/default_remote.md"),
-        ),
-        (
             "INCLUDE AND EXCLUDE",
             include_str!("../man/pull/include_and_exclude.md"),
         ),
+        (
+            "DEFAULT REMOTE",
+            include_str!("../man/pull/default_remote.md"),
+        ),
+        ("EXAMPLES", include_str!("../man/pull/examples.md")),
         ("SEE ALSO", include_str!("../man/pull/see_also.md")),
     ],
 };
