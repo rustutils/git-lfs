@@ -74,7 +74,7 @@ t-install, t-uninstall, t-pre-push, t-clean, t-malformed-pointers,
 t-filter-process, t-happy-path, t-migrate-import (36/38),
 t-migrate-info (45/50), t-migrate-export, t-locks (9/9),
 t-batch-transfer (8/8), t-prune (18/18), t-prune-worktree (2/2),
-t-fetch-recent (7/7), t-clone (9/13), t-smudge (8/9),
+t-fetch-recent (7/7), t-clone (11/13), t-smudge (8/9),
 t-push (26/27), t-ls-files (24/31).
 
 **Largest remaining failure clusters** (failed/total):

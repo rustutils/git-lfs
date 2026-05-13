@@ -3,7 +3,7 @@
 Per-suite snapshot of the vendored upstream shell tests. Last
 refreshed: **2026-05-13**.
 
-**711 / 794 tests passing (~90%) across 104 suites.**
+**713 / 794 tests passing (~90%) across 104 suites.**
 
 Refresh:
 
@@ -59,7 +59,7 @@ t-malformed-pointers.sh                  t-worktree.sh
                                          t-zero-len-file.sh
 ```
 
-## Partial — 24 suites, 127 / 210 tests
+## Partial — 24 suites, 129 / 210 tests
 
 | Suite | Pass / Total |
 | --- | --- |
@@ -68,7 +68,7 @@ t-malformed-pointers.sh                  t-worktree.sh
 | `t-batch-storage-encoding.sh` | 0 / 1 |
 | `t-batch-storage-upload-tus.sh` | 0 / 2 |
 | `t-batch-unknown-oids.sh` | 0 / 1 |
-| `t-clone.sh` | 9 / 13 |
+| `t-clone.sh` | 11 / 13 |
 | `t-completion.sh` | 0 / 5 |
 | `t-credentials.sh` | 6 / 20 |
 | `t-custom-transfers.sh` | 0 / 4 |

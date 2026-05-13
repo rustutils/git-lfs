@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `git lfs clone --recursive` (and `--recurse-submodules`) now runs
+  `git submodule foreach --recursive 'git lfs pull'` after the
+  top-level pull, so LFS content materializes in every nested
+  submodule (git ≥ 2.9 forwards the disabled smudge filter to
+  submodules, leaving them with pointer text otherwise). Lands
+  `t-clone::clone with submodules`.
+- `http.cookieFile` support: reqwest cookie jar populated from the
+  configured Netscape-format file, attached to every transfer. Lets
+  the LFS client traverse load balancers / proxies that gate access
+  on a session cookie. URL-scoped overrides (`http.<url>.cookieFile`)
+  win over global. Lands `t-clone::clone (HTTP server/proxy require
+  cookies)`.
 - Action-URL expiration check before upload/download. The transfer
   queue now compares the batch response's `expires_in` (preferred when
   non-zero) / `expires_at` against `now + 5s` and fails the object
