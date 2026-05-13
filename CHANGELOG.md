@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   local value isn't `0`. Mirrors upstream's `verifyRepositoryVersion`
   from `commands/commands.go`; the global scope is intentionally
   ignored. Lands `t-repo-format`.
+- `transfer`: basic upload adapter follows HTTP redirects on the action
+  URL. reqwest can't auto-follow because the PUT body is a one-shot
+  `ReaderStream`; we now detect 3xx responses, log
+  `api: redirect PUT <old> to <new>` (gated on `GIT_TRACE`), re-open the
+  file stream, and retry against the Location target. Capped at 10
+  redirects. Lands `t-upload-redirect`.
 
 ## [0.7.0] - 2026-05-13
 

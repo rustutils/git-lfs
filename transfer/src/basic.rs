@@ -342,66 +342,90 @@ pub(crate) async fn upload(
         None
     };
 
-    let file = tokio::fs::File::open(&path).await?;
-
-    let mut bytes_done: u64 = 0;
-    let oid_owned = oid.to_owned();
-    let events_clone = events.cloned();
-    let stream = ReaderStream::new(file).map(move |chunk| {
-        if let Ok(ref c) = chunk {
-            bytes_done += c.len() as u64;
-            if let Some(s) = &events_clone {
-                let _ = s.send(Event::Progress {
-                    oid: oid_owned.clone(),
-                    bytes_done,
-                });
-            }
-        }
-        chunk
-    });
-    let body = Body::wrap_stream(stream);
-
-    let mut req = http
-        .request(Method::PUT, &upload_action.href)
-        .header(CONTENT_LENGTH, size);
-    for (k, v) in &upload_action.header {
-        req = req.header(k, v);
-    }
     let effective_content_type = if action_has_content_type {
-        // Action header pinned a Content-Type — find it for verbose
-        // logging but don't override.
         upload_action
             .header
             .iter()
             .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
             .map(|(_, v)| v.as_str().to_owned())
     } else {
-        let ct = sniffed_content_type.unwrap_or(OCTET_STREAM);
-        req = req.header(reqwest::header::CONTENT_TYPE, ct);
-        Some(ct.to_owned())
+        Some(sniffed_content_type.unwrap_or(OCTET_STREAM).to_owned())
     };
 
-    // GIT_CURL_VERBOSE: dump the request line + headers so shell tests
-    // like `t-content-type.sh` can grep for the chosen Content-Type.
-    // Stays cheap behind the env-var gate; no per-request cost when
-    // verbose isn't asked for.
-    if std::env::var_os("GIT_CURL_VERBOSE").is_some_and(|v| !v.is_empty() && v != "0") {
-        let mut err = std::io::stderr().lock();
-        let _ = writeln!(err, "> PUT {}", upload_action.href);
-        let _ = writeln!(err, "> Content-Length: {size}");
-        if let Some(ct) = &effective_content_type {
-            let _ = writeln!(err, "> Content-Type: {ct}");
-        }
-        for (k, v) in &upload_action.header {
-            if k.eq_ignore_ascii_case("content-type") {
-                continue; // already printed above
+    // Manual redirect loop: reqwest can't auto-follow because the body
+    // is a one-shot `ReaderStream` (non-cloneable). On 3xx with Location,
+    // log `api: redirect PUT <old> to <new>` (gated on GIT_TRACE), open a
+    // fresh file stream, and retry against the new URL. Matches upstream
+    // `lfshttp/client.go::newRequestForRetry`.
+    let mut href = upload_action.href.clone();
+    let mut verbose_logged = false;
+    let mut redirects = 0u32;
+    let resp = loop {
+        let file = tokio::fs::File::open(&path).await?;
+        let oid_owned = oid.to_owned();
+        let events_clone = events.cloned();
+        let mut bytes_done: u64 = 0;
+        let stream = ReaderStream::new(file).map(move |chunk| {
+            if let Ok(ref c) = chunk {
+                bytes_done += c.len() as u64;
+                if let Some(s) = &events_clone {
+                    let _ = s.send(Event::Progress {
+                        oid: oid_owned.clone(),
+                        bytes_done,
+                    });
+                }
             }
-            let _ = writeln!(err, "> {k}: {v}");
-        }
-        let _ = writeln!(err);
-    }
+            chunk
+        });
+        let body = Body::wrap_stream(stream);
 
-    let resp = req.body(body).send().await?;
+        let mut req = http
+            .request(Method::PUT, &href)
+            .header(CONTENT_LENGTH, size);
+        for (k, v) in &upload_action.header {
+            req = req.header(k, v);
+        }
+        if !action_has_content_type {
+            req = req.header(
+                reqwest::header::CONTENT_TYPE,
+                sniffed_content_type.unwrap_or(OCTET_STREAM),
+            );
+        }
+
+        // GIT_CURL_VERBOSE: dump the request line + headers so shell tests
+        // like `t-content-type.sh` can grep for the chosen Content-Type.
+        // Only emit on the first attempt — redirect retries would
+        // duplicate the dump.
+        if !verbose_logged
+            && std::env::var_os("GIT_CURL_VERBOSE").is_some_and(|v| !v.is_empty() && v != "0")
+        {
+            let mut err = std::io::stderr().lock();
+            let _ = writeln!(err, "> PUT {href}");
+            let _ = writeln!(err, "> Content-Length: {size}");
+            if let Some(ct) = &effective_content_type {
+                let _ = writeln!(err, "> Content-Type: {ct}");
+            }
+            for (k, v) in &upload_action.header {
+                if k.eq_ignore_ascii_case("content-type") {
+                    continue;
+                }
+                let _ = writeln!(err, "> {k}: {v}");
+            }
+            let _ = writeln!(err);
+            verbose_logged = true;
+        }
+
+        let resp = req.body(body).send().await?;
+        if redirects < 10
+            && let Some(new_href) = follow_redirect(&resp, &href)
+        {
+            redirects += 1;
+            href = new_href;
+            continue;
+        }
+        break resp;
+    };
+
     let status = resp.status();
     if status.as_u16() == 422 {
         // 422 = "Unprocessable Entity" — typically a CDN rejecting the
@@ -425,6 +449,31 @@ pub(crate) async fn upload(
         verify(http, oid, size, verify_action).await?;
     }
     Ok(())
+}
+
+/// If `resp` is a 3xx with a usable Location, return the next href and
+/// emit upstream's `api: redirect PUT <old> to <new>` trace (gated on
+/// `GIT_TRACE`). Returns None for non-redirect responses or unparseable
+/// Location values.
+fn follow_redirect(resp: &Response, current: &str) -> Option<String> {
+    if !resp.status().is_redirection() {
+        return None;
+    }
+    let location = resp
+        .headers()
+        .get(reqwest::header::LOCATION)?
+        .to_str()
+        .ok()?;
+    let base = reqwest::Url::parse(current).ok()?;
+    let new = base.join(location).ok()?;
+    let new = new.to_string();
+    if trace_enabled() {
+        let old_no_q = current.split_once('?').map_or(current, |(p, _)| p);
+        let new_no_q = new.split_once('?').map_or(new.as_str(), |(p, _)| p);
+        let mut err = std::io::stderr().lock();
+        let _ = writeln!(err, "api: redirect PUT {old_no_q} to {new_no_q}");
+    }
+    Some(new)
 }
 
 /// Minimal content-type sniffing. Read the first 512 bytes of `path`
