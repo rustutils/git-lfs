@@ -312,6 +312,79 @@ impl PatternListing {
     }
 }
 
+/// Macro table accumulated while walking attribute files. Each macro
+/// name maps to whether the macro's expansion sets `filter=lfs` —
+/// that's the only thing the listing cares about for "already
+/// supported" detection.
+#[derive(Default)]
+struct MacroState {
+    /// Macros that resolve to `filter=lfs` (directly or transitively).
+    /// The bool key in the value position is unused; we store name →
+    /// `()` as a HashSet would, but Vec keeps insertion order
+    /// deterministic for tests.
+    enables_lfs: std::collections::HashSet<String>,
+}
+
+impl MacroState {
+    /// If `line` is `[attr]<name> <tokens...>`, register the macro's
+    /// effective filter setting in `self`. No-op for non-macro lines.
+    fn ingest(&mut self, line: &str) {
+        let trimmed = line.trim_start();
+        let Some(rest) = trimmed.strip_prefix("[attr]") else {
+            return;
+        };
+        let mut tokens = rest.split_whitespace();
+        let Some(name) = tokens.next() else {
+            return;
+        };
+        // The macro's effective filter setting is the *last* `filter=...`,
+        // `-filter`, `!filter`, or referenced macro that wins.
+        let mut enables = false;
+        for tok in tokens {
+            match self.classify(tok) {
+                FilterEffect::SetLfs => enables = true,
+                FilterEffect::Clear => enables = false,
+                FilterEffect::None => {}
+            }
+        }
+        if enables {
+            self.enables_lfs.insert(name.to_owned());
+        } else {
+            self.enables_lfs.remove(name);
+        }
+    }
+
+    /// Classify a single attribute token (post-macro): does it set
+    /// `filter=lfs`, clear filter, or do neither?
+    fn classify(&self, tok: &str) -> FilterEffect {
+        if tok == "filter=lfs" {
+            return FilterEffect::SetLfs;
+        }
+        if tok == "-filter" || tok == "!filter" || tok.starts_with("-filter=") {
+            return FilterEffect::Clear;
+        }
+        // Macro reference: bare name, `-name`, or `!name`. `-NAME` /
+        // `!NAME` unset the macro's attributes (so if it set filter,
+        // we treat this as Clear).
+        if let Some(name) = tok.strip_prefix('-').or_else(|| tok.strip_prefix('!')) {
+            if self.enables_lfs.contains(name) {
+                return FilterEffect::Clear;
+            }
+            return FilterEffect::None;
+        }
+        if self.enables_lfs.contains(tok) {
+            return FilterEffect::SetLfs;
+        }
+        FilterEffect::None
+    }
+}
+
+enum FilterEffect {
+    SetLfs,
+    Clear,
+    None,
+}
+
 /// Walk `.gitattributes` across the workdir plus `.git/info/attributes`
 /// and the user's `core.attributesfile` (if configured), extracting
 /// LFS-related pattern lines for `git lfs track`'s listing mode.
@@ -321,22 +394,28 @@ impl PatternListing {
 /// rather than [`AttrSet`]'s full wildmatch machinery.
 pub fn list_lfs_patterns(repo_root: &Path) -> io::Result<PatternListing> {
     let mut listing = PatternListing::default();
+    let mut macros = MacroState::default();
 
     // The user-level attributes file (`core.attributesfile`, default
+    // `$XDG_CONFIG_HOME/git/attributes`, falling back to
     // `~/.config/git/attributes`). Looked up before `.git/info/attributes`
     // and the per-tree files so it shows up first in the listing —
-    // upstream lists global → repo-local → per-dir.
-    if let Ok(Some(path)) = crate::config::get_effective(repo_root, "core.attributesfile") {
-        let expanded = expand_tilde(&path);
-        if let Ok(bytes) = fs::read(&expanded) {
-            scan_attr_lines(&bytes, &path, &mut listing);
-        }
+    // upstream lists global → repo-local → per-dir. Macros declared
+    // here apply to later files.
+    if let Some((path, bytes)) = read_global_attributes(repo_root) {
+        scan_attr_lines(&bytes, &path, &mut listing, &mut macros, true);
     }
 
     let info = repo_root.join(".git").join("info").join("attributes");
     if info.exists() {
         let bytes = fs::read(&info)?;
-        scan_attr_lines(&bytes, ".git/info/attributes", &mut listing);
+        scan_attr_lines(
+            &bytes,
+            ".git/info/attributes",
+            &mut listing,
+            &mut macros,
+            true,
+        );
     }
 
     let mut found = Vec::new();
@@ -349,9 +428,34 @@ pub fn list_lfs_patterns(repo_root: &Path) -> io::Result<PatternListing> {
             .unwrap_or(&path)
             .to_string_lossy()
             .replace('\\', "/");
-        scan_attr_lines(&bytes, &rel, &mut listing);
+        // Macros are only legal in the repo-root .gitattributes;
+        // subdirectory files emit a "not allowed" warning from git
+        // itself and don't register the macro.
+        let is_root = !rel.contains('/');
+        scan_attr_lines(&bytes, &rel, &mut listing, &mut macros, is_root);
     }
     Ok(listing)
+}
+
+/// Locate and read the user-level git attributes file, returning the
+/// display path + content bytes if it exists. Order matches git:
+/// 1. `core.attributesfile` (from any config scope),
+/// 2. `$XDG_CONFIG_HOME/git/attributes`,
+/// 3. `$HOME/.config/git/attributes`.
+fn read_global_attributes(repo_root: &Path) -> Option<(String, Vec<u8>)> {
+    if let Ok(Some(path)) = crate::config::get_effective(repo_root, "core.attributesfile") {
+        let expanded = expand_tilde(&path);
+        if let Ok(bytes) = fs::read(&expanded) {
+            return Some((path, bytes));
+        }
+    }
+    let xdg = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+    let path = xdg.join("git").join("attributes");
+    let bytes = fs::read(&path).ok()?;
+    Some((path.to_string_lossy().into_owned(), bytes))
 }
 
 /// Resolve a leading `~` / `~/` to the user's home directory. Git's
@@ -370,14 +474,30 @@ fn expand_tilde(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
-fn scan_attr_lines(bytes: &[u8], source: &str, listing: &mut PatternListing) {
+fn scan_attr_lines(
+    bytes: &[u8],
+    source: &str,
+    listing: &mut PatternListing,
+    macros: &mut MacroState,
+    allow_macros: bool,
+) {
     for raw in bytes.split(|&b| b == b'\n') {
         let line = String::from_utf8_lossy(raw);
         // Per `gitattributes(5)`, `#` only starts a comment when it's
         // the first non-whitespace character on the line — patterns like
         // `\#` are valid and must not be cropped here.
         let body = line.trim();
-        if body.is_empty() || body.starts_with('#') || body.starts_with("[attr]") {
+        if body.is_empty() || body.starts_with('#') {
+            continue;
+        }
+        if body.starts_with("[attr]") {
+            // Git itself rejects `[attr]NAME` declarations in
+            // subdirectory `.gitattributes` ("not allowed:
+            // dir/.gitattributes:1"); only honor them from
+            // top-level sources to match.
+            if allow_macros {
+                macros.ingest(body);
+            }
             continue;
         }
         let mut tokens = body.split_whitespace();
@@ -387,11 +507,12 @@ fn scan_attr_lines(bytes: &[u8], source: &str, listing: &mut PatternListing) {
         let mut filter: Option<bool> = None;
         let mut lockable = false;
         for tok in tokens {
-            if tok == "filter=lfs" {
-                filter = Some(true);
-            } else if tok == "-filter" || tok == "!filter" || tok.starts_with("-filter=") {
-                filter = Some(false);
-            } else if tok == "lockable" {
+            match macros.classify(tok) {
+                FilterEffect::SetLfs => filter = Some(true),
+                FilterEffect::Clear => filter = Some(false),
+                FilterEffect::None => {}
+            }
+            if tok == "lockable" {
                 lockable = true;
             }
         }
@@ -640,6 +761,64 @@ mod tests {
         assert!(listing.patterns[0].lockable);
         assert_eq!(listing.patterns[1].pattern, "*.bin");
         assert!(!listing.patterns[1].lockable);
+    }
+
+    #[test]
+    fn list_expands_macro_to_lfs() {
+        // `[attr]lfs filter=lfs ...` registers a macro; `*.dat lfs`
+        // applies it. Upstream's `git lfs track` lists `*.dat` as a
+        // tracked pattern because the macro resolves to filter=lfs.
+        // Lands t-attributes test 1.
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join(".gitattributes"),
+            "[attr]lfs filter=lfs diff=lfs merge=lfs -text\n\
+             *.dat lfs\n",
+        )
+        .unwrap();
+        let listing = list_lfs_patterns(tmp.path()).unwrap();
+        let tracked: Vec<&str> = listing.tracked().map(|p| p.pattern.as_str()).collect();
+        assert_eq!(tracked, vec!["*.dat"]);
+    }
+
+    #[test]
+    fn list_expands_macro_defined_in_earlier_file() {
+        // Macro defined in `.git/info/attributes`, referenced by a
+        // pattern in `.gitattributes`. The pattern still resolves
+        // because we accumulate macros across files in load order.
+        // Models t-attributes test 3 (global → local).
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git/info")).unwrap();
+        std::fs::write(
+            tmp.path().join(".git/info/attributes"),
+            "[attr]lfs filter=lfs diff=lfs merge=lfs -text\n",
+        )
+        .unwrap();
+        std::fs::write(tmp.path().join(".gitattributes"), "*.dat lfs\n").unwrap();
+        let listing = list_lfs_patterns(tmp.path()).unwrap();
+        let tracked: Vec<&str> = listing.tracked().map(|p| p.pattern.as_str()).collect();
+        assert_eq!(tracked, vec!["*.dat"]);
+    }
+
+    #[test]
+    fn list_negated_macro_marks_excluded() {
+        // `*.dat !lfs` — the `!` negation clears the macro's filter
+        // attribute, so the pattern is recorded as excluded rather
+        // than tracked. Models the dir-level override in t-attributes
+        // "macros with unspecified flag".
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join(".gitattributes"),
+            "[attr]lfs filter=lfs diff=lfs merge=lfs -text\n\
+             **/*.dat lfs\n\
+             other.dat !lfs\n",
+        )
+        .unwrap();
+        let listing = list_lfs_patterns(tmp.path()).unwrap();
+        let tracked: Vec<&str> = listing.tracked().map(|p| p.pattern.as_str()).collect();
+        let excluded: Vec<&str> = listing.excluded().map(|p| p.pattern.as_str()).collect();
+        assert_eq!(tracked, vec!["**/*.dat"]);
+        assert_eq!(excluded, vec!["other.dat"]);
     }
 
     #[test]
