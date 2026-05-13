@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Object files committed into the local LFS store now respect
+  `core.sharedRepository` (`group`/`true`/`1` → 0o770/0o660;
+  `all`/`world`/`everybody`/`2` → 0o775/0o664; octal values such as
+  `0660` → that mode; unset / `false` / `umask` → fall through to the
+  process umask). Directories under `.git/lfs/` (`objects/`, `tmp/`,
+  `incomplete/`) get the matching mode with read bits copied to
+  execute bits. The `tempfile` crate creates files at 0o600
+  unconditionally; we chmod after persisting so umask-respecting
+  shells get the same mode they'd get from `git` itself. Wired through
+  Clean / Smudge / FilterProcess / pull / fetch / checkout. Lands
+  `t-umask` (4/4).
 - `git lfs clone --recursive` (and `--recurse-submodules`) now runs
   `git submodule foreach --recursive 'git lfs pull'` after the
   top-level pull, so LFS content materializes in every nested
@@ -53,6 +64,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `git lfs smudge <path>` now honors `lfs.fetchinclude` /
+  `lfs.fetchexclude`. When the path doesn't pass the filter, the
+  pointer bytes pass through verbatim instead of triggering a
+  download — matching `git lfs filter-process` and upstream's
+  `command_smudge.go`. Lands `t-smudge::smudge include/exclude`.
+- Temp-file cleanup at command startup now walks the full
+  `.git/lfs/tmp/` tree rather than only `tmp/objects/`. Files
+  matching `<64-hex>-...` whose object is already complete are
+  removed unconditionally; other files older than an hour are pruned,
+  with subdirectories younger than an hour exempted (hard-linked
+  cross-repo temp files can look stale but still be in use). Mirrors
+  upstream's `fs/cleanup.go`. Lands `t-tempfile`.
 - `git lfs track` listing now expands `[attr]NAME` macros from
   top-level `.gitattributes`, `.git/info/attributes`, and the user
   attributes file (`core.attributesfile`, default

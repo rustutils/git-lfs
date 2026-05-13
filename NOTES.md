@@ -74,8 +74,8 @@ t-install, t-uninstall, t-pre-push, t-clean, t-malformed-pointers,
 t-filter-process, t-happy-path, t-migrate-import (36/38),
 t-migrate-info (45/50), t-migrate-export, t-locks (9/9),
 t-batch-transfer (8/8), t-prune (18/18), t-prune-worktree (2/2),
-t-fetch-recent (7/7), t-clone (11/13), t-smudge (8/9),
-t-push (26/27), t-ls-files (24/31).
+t-fetch-recent (7/7), t-clone (11/13), t-smudge (9/9),
+t-push (26/27), t-ls-files (24/31), t-umask (4/4), t-tempfile (1/1).
 
 **Largest remaining failure clusters** (failed/total):
 
@@ -109,9 +109,8 @@ t-push (26/27), t-ls-files (24/31).
   pushInsteadof, server-already-has counting, and exit-code-2-on-
   upload-failure all shipped.
 - **Single-file holdouts** — t-batch-error-handling, t-progress,
-  t-repo-format, t-tempfile, t-upload-redirect, t-usage,
-  t-verify (4), t-worktree (2), t-batch-storage-encoding,
-  t-batch-unknown-oids, t-umask (3).
+  t-repo-format, t-upload-redirect, t-usage, t-verify (4),
+  t-worktree (2), t-batch-storage-encoding, t-batch-unknown-oids.
 
 ## Release status
 
@@ -360,9 +359,6 @@ missing** and **why it was OK to skip for v0**.
   actually emits a log on push/fetch failure yet. Wire `Panic`-style
   log writing into the fetch/push error paths so users hitting
   intermittent server errors get a postmortem to share.
-- **Permission/umask handling.** Needed by `t-umask.sh`. Tempfile defaults
-  are 0600; multi-user shared repos may need 0660. Add `repo_perms` field
-  on Store + `RepositoryPermissions` helper.
 - **Path encoding/decoding.** Git escapes non-ASCII paths (octal `\NNN`
   sequences) when emitting. Belongs in `git/` not `store/` — the working-
   tree path layer.
