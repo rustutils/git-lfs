@@ -54,6 +54,7 @@ Git LFS works by using a "smudge" filter to look up the large file contents base
 - `locks` — Lists currently locked files from the Git LFS server
 - `unlock` — Remove "locked" setting for a file on the Git LFS server
 - `ls-files` — Show information about Git LFS files in the index and working tree
+- `logs` — Show errors logged by Git LFS
 
 ## Examples
 

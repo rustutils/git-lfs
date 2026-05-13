@@ -87,6 +87,7 @@ pub enum Command {
     Locks(LocksArgs),
     Unlock(UnlockArgs),
     LsFiles(LsFilesArgs),
+    Logs(LogsArgs),
 }
 
 /// Git clean filter that converts large files to pointers
@@ -1476,10 +1477,8 @@ pub struct UnlockArgs {
 /// An asterisk (`*`) after the OID indicates a full object, a minus
 /// (`-`) indicates an LFS pointer.
 ///
-/// Note: upstream's `--include` / `--exclude` path filters and the
-/// `--deleted` flag (which shows the full history of the given
-/// reference, including objects that have been deleted) aren't yet
-/// supported. The two-references form (`git lfs ls-files <a> <b>`,
+/// Note: upstream's `--include` / `--exclude` path filters aren't
+/// yet supported. The two-references form (`git lfs ls-files <a> <b>`,
 /// to show files modified between two refs) is also not yet
 /// supported.
 #[derive(Args)]
@@ -1516,6 +1515,11 @@ pub struct LsFilesArgs {
     #[arg(short, long)]
     pub debug: bool,
 
+    /// Include LFS pointers reachable from history but no longer
+    /// present in the current tree.
+    #[arg(long)]
+    pub deleted: bool,
+
     /// Write Git LFS file information as JSON to standard output if
     /// the command exits successfully.
     ///
@@ -1525,4 +1529,32 @@ pub struct LsFilesArgs {
     /// options will have no effect.
     #[arg(short, long)]
     pub json: bool,
+}
+
+/// Show errors logged by Git LFS
+///
+/// Manages the local log directory under `.git/lfs/logs`. Run with no
+/// subcommand to list log filenames; `last` prints the most recent
+/// log; `show <name>` prints a specific log; `clear` deletes them
+/// all. `boomtown` is a self-test that intentionally panics, writes a
+/// log file, and exits non-zero.
+#[derive(Args)]
+pub struct LogsArgs {
+    #[command(subcommand)]
+    pub sub: Option<LogsSub>,
+}
+
+#[derive(Subcommand)]
+pub enum LogsSub {
+    /// Print the most recent log to stdout.
+    Last,
+    /// Print the named log to stdout.
+    Show {
+        /// Log filename (relative to `.git/lfs/logs`).
+        name: String,
+    },
+    /// Delete every log under `.git/lfs/logs`.
+    Clear,
+    /// Self-test: write a sample crash log and exit with status 2.
+    Boomtown,
 }

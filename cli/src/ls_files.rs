@@ -2,9 +2,9 @@
 //! (default: HEAD), optionally across full history with `--all`.
 //!
 //! v0 supports the most-used flags: `-l/--long`, `-s/--size`, `-n/--name-only`,
-//! `-d/--debug`, `-a/--all`, `-j/--json`. The upstream `--include`/`--exclude`
-//! path filters, `--deleted`, and the two-ref range form are deferred — see
-//! NOTES.md.
+//! `-d/--debug`, `-a/--all`, `--deleted`, `-j/--json`. The upstream
+//! `--include`/`--exclude` path filters and the two-ref range form are
+//! deferred — see NOTES.md.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -50,6 +50,11 @@ pub struct Options {
     pub name_only: bool,
     /// `-a/--all`: scan all refs' history, not just one tree.
     pub all: bool,
+    /// `--deleted`: walk the given ref's full history and surface LFS
+    /// pointers that are reachable from history but no longer present
+    /// in the current tree. Mutually exclusive with `--all` at the
+    /// dispatch layer; this struct doesn't enforce that.
+    pub deleted: bool,
     pub format: Format,
 }
 
@@ -84,6 +89,13 @@ pub fn run(cwd: &Path, refspec: Option<&str>, opts: &Options) -> Result<(), LsFi
             let r: Vec<&str> = refs.iter().map(String::as_str).collect();
             scan_pointers(cwd, &r, &[])?
         }
+    } else if opts.deleted {
+        // `--deleted`: walk the ref's full history (or HEAD by default),
+        // so pointers that were once committed but no longer exist in
+        // the current tree still surface. `scan_pointers` already does
+        // exactly this — it's the ref-history walker used by fetch/push.
+        let r = refspec.unwrap_or("HEAD");
+        scan_pointers(cwd, &[r], &[])?
     } else if let Some(r) = refspec {
         scan_tree(cwd, r)?
     } else {
@@ -98,7 +110,29 @@ pub fn run(cwd: &Path, refspec: Option<&str>, opts: &Options) -> Result<(), LsFi
         } else {
             Vec::new()
         };
-        let index = scan_index_pointers(cwd, ref_or_empty).unwrap_or_default();
+        // `scan_index_pointers` dedupes its results by LFS OID and
+        // accumulates every path the OID was seen at — fine for prune
+        // retention, but ls-files needs one row per file. Fan back out
+        // so each path becomes its own entry before the path-based
+        // dedup below collapses tree↔index overlaps.
+        let index_raw = scan_index_pointers(cwd, ref_or_empty).unwrap_or_default();
+        let mut index: Vec<PointerEntry> = Vec::new();
+        for e in index_raw {
+            if e.paths.is_empty() {
+                index.push(e);
+            } else {
+                for p in &e.paths {
+                    index.push(PointerEntry {
+                        oid: e.oid,
+                        size: e.size,
+                        path: Some(p.clone()),
+                        paths: vec![p.clone()],
+                        canonical: e.canonical,
+                        extensions: e.extensions.clone(),
+                    });
+                }
+            }
+        }
         merge_by_path(index, tree)
     };
 

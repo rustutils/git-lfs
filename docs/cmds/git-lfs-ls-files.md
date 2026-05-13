@@ -18,7 +18,7 @@ Display paths of Git LFS files that are found in the tree at the given reference
 
 An asterisk (`*`) after the OID indicates a full object, a minus (`-`) indicates an LFS pointer.
 
-Note: upstream's `--include` / `--exclude` path filters and the `--deleted` flag (which shows the full history of the given reference, including objects that have been deleted) aren't yet supported. The two-references form (`git lfs ls-files <a> <b>`, to show files modified between two refs) is also not yet supported.
+Note: upstream's `--include` / `--exclude` path filters aren't yet supported. The two-references form (`git lfs ls-files <a> <b>`, to show files modified between two refs) is also not yet supported.
 
 ## Options
 
@@ -47,6 +47,9 @@ Note: upstream's `--include` / `--exclude` path filters and the `--deleted` flag
     Show as much information as possible about an LFS file.
 
     Intended for manual inspection; the exact format may change at any time.
+
+- `--deleted`
+    Include LFS pointers reachable from history but no longer present in the current tree
 
 - `-j`, `--json`
     Write Git LFS file information as JSON to standard output if the command exits successfully.

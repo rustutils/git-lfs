@@ -21,6 +21,7 @@ mod lock;
 mod lock_cache;
 mod lockable;
 mod locks_verify;
+mod logs;
 mod ls_files;
 mod migrate;
 mod pointer_cmd;
@@ -37,11 +38,11 @@ use fetcher::LfsFetcher;
 
 use git_lfs::args::{
     CheckoutArgs, CleanArgs, Cli, CloneArgs, Command, EnvArgs, ExtArgs, ExtCmd, ExtListArgs,
-    FetchArgs, FilterProcessArgs, FsckArgs, InstallArgs, LockArgs, LocksArgs, LsFilesArgs,
-    MigrateArgs, MigrateCmd, MigrateExportArgs, MigrateImportArgs, MigrateInfoArgs, PointerArgs,
-    PostCheckoutArgs, PostCommitArgs, PostMergeArgs, PrePushArgs, PruneArgs, PullArgs, PushArgs,
-    SmudgeArgs, StatusArgs, TrackArgs, UninstallArgs, UnlockArgs, UntrackArgs, UpdateArgs,
-    VersionArgs,
+    FetchArgs, FilterProcessArgs, FsckArgs, InstallArgs, LockArgs, LocksArgs, LogsArgs, LogsSub,
+    LsFilesArgs, MigrateArgs, MigrateCmd, MigrateExportArgs, MigrateImportArgs, MigrateInfoArgs,
+    PointerArgs, PostCheckoutArgs, PostCommitArgs, PostMergeArgs, PrePushArgs, PruneArgs, PullArgs,
+    PushArgs, SmudgeArgs, StatusArgs, TrackArgs, UninstallArgs, UnlockArgs, UntrackArgs,
+    UpdateArgs, VersionArgs,
 };
 
 /// Strip backtick characters from every help-text field in the clap
@@ -1042,6 +1043,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             name_only,
             all,
             debug,
+            deleted,
             json,
         }) => {
             if let Some(code) = bail_if_outside_repo(&cwd) {
@@ -1052,6 +1054,14 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             // `--all`. Almost always a typo for `git lfs ls-files --all --`.
             if refspec.as_deref() == Some("--all") {
                 eprintln!("Did you mean `git lfs ls-files --all --` ?");
+                return Ok(1);
+            }
+            // `--all` walks every ref's history; a positional ref makes
+            // no sense alongside it. Match upstream's exact wording —
+            // `t-ls-files.sh::ls-files: --all with argument(s)` greps
+            // for it verbatim.
+            if all && refspec.is_some() {
+                println!("Cannot use --all with explicit reference");
                 return Ok(1);
             }
             let format = if json {
@@ -1066,9 +1076,26 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 show_size: size,
                 name_only,
                 all,
+                deleted,
                 format,
             };
             ls_files::run(&cwd, refspec.as_deref(), &opts)?;
+        }
+        Command::Logs(LogsArgs { sub }) => {
+            if let Some(code) = bail_if_outside_repo(&cwd) {
+                return Ok(code);
+            }
+            // `git lfs logs <argv...>` is what the boomtown crash log
+            // records as the command line, so reconstruct argv here
+            // rather than threading it through every entrypoint.
+            let argv: Vec<String> = std::env::args().skip(1).collect();
+            return match sub {
+                None => Ok(logs::list(&cwd)?),
+                Some(LogsSub::Last) => Ok(logs::last(&cwd)?),
+                Some(LogsSub::Show { name }) => Ok(logs::show(&cwd, &name)?),
+                Some(LogsSub::Clear) => Ok(logs::clear(&cwd)?),
+                Some(LogsSub::Boomtown) => Ok(logs::boomtown(&cwd, &argv)?),
+            };
         }
         Command::Untrack(UntrackArgs { patterns }) => {
             if patterns.is_empty() {
