@@ -1,9 +1,9 @@
 # Test scoreboard
 
 Per-suite snapshot of the vendored upstream shell tests. Last
-refreshed: **2026-05-12**.
+refreshed: **2026-05-13**.
 
-**678 / 794 tests passing (~85%) across 104 suites.**
+**694 / 794 tests passing (~87%) across 104 suites.**
 
 Refresh:
 
@@ -57,7 +57,7 @@ t-mergetool.sh                           t-worktree.sh
                                          t-zero-len-file.sh
 ```
 
-## Partial — 28 suites, 111 / 227 tests
+## Partial — 28 suites, 127 / 227 tests
 
 | Suite | Pass / Total |
 | --- | --- |
@@ -74,12 +74,12 @@ t-mergetool.sh                           t-worktree.sh
 | `t-dedup.sh` | 0 / 3 |
 | `t-expired.sh` | 3 / 6 |
 | `t-logs.sh` | 0 / 1 |
-| `t-ls-files.sh` | 14 / 31 |
+| `t-ls-files.sh` | 24 / 31 |
 | `t-merge-driver.sh` | 0 / 6 |
 | `t-migrate-import.sh` | 44 / 51 |
 | `t-multiple-remotes.sh` | 0 / 12 |
 | `t-progress.sh` | 0 / 1 |
-| `t-push.sh` | 20 / 27 |
+| `t-push.sh` | 26 / 27 |
 | `t-repo-format.sh` | 0 / 1 |
 | `t-smudge.sh` | 8 / 9 |
 | `t-ssh.sh` | 0 / 2 |

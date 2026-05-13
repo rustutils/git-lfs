@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `git lfs ls-files` (no args) now scans the index in addition to the
+  tree at HEAD, so freshly-staged-but-uncommitted pointers show up.
+  Falls back to the empty tree when HEAD doesn't exist yet, matching
+  upstream's `git.EmptyTree()` path. The `*`/`-` "is the working-tree
+  file present?" check now joins against the repo root so invocations
+  from a subdirectory report the correct marker. Lands `t-ls-files`
+  tests 3–5, 8–9, 27–31 (10 tests).
+- `git lfs ls-files --json` now uses single-space indentation and ends
+  with a trailing newline, matching upstream's
+  `json.Encoder{SetIndent("", " "), Encode()}`.
+- `git lfs push --all` (and any push path with locally-missing pointers
+  the server already holds) now reports `Uploading LFS objects: 100%
+  (N/N)` instead of `(M/N)` when `M < N` because the missing-locally
+  objects are already on the remote. They count as already-successful
+  in both the object count and byte total. Lands `t-push` tests 9–12
+  (4 tests).
+- `api`: `BatchResponse.objects[].size` deserialization now rejects
+  negative values with `invalid size (got: -N)`, matching upstream's
+  wording. Previously serde's default `u64` decoder bailed with a
+  generic type error. Lands `t-push::push (with invalid object size)`.
+- `git lfs push` exits with code 2 when any per-object upload fails
+  (previously: code 1). Matches upstream's "push aborted" semantics
+  and is what `t-push::push with invalid pushInsteadof` greps for.
+
+### Added
+
+- `url.<base>.pushInsteadOf` is honored for upload + verify action URLs
+  when `lfs.transfer.enablehrefrewrite=true`. Falls back to plain
+  `insteadOf` when no push-direction alias matches, so the existing
+  download behavior is preserved. New `git_lfs_git::aliases::load_push_aliases`
+  and `TransferConfig::upload_url_rewriter` carry the push-direction
+  rewrite separately from the download rewriter. Lands `t-push::push
+  with invalid pushInsteadof`.
+
 ## [0.6.0] - 2026-05-13
 
 ### Fixed

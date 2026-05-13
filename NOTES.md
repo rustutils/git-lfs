@@ -60,7 +60,7 @@ Useful entry points in the upstream tree:
 
 ## Test status snapshot (point in time)
 
-About 678 of 794 vendored shell tests pass (~85%) across 104
+About 694 of 794 vendored shell tests pass (~87%) across 104
 files. Most of the per-command files now pass cleanly; remaining
 failures cluster in features we haven't shipped yet rather than
 edge cases of features we have.
@@ -75,7 +75,7 @@ t-filter-process, t-happy-path, t-migrate-import (36/38),
 t-migrate-info (45/50), t-migrate-export, t-locks (9/9),
 t-batch-transfer (8/8), t-prune (18/18), t-prune-worktree (2/2),
 t-fetch-recent (7/7), t-clone (9/13), t-smudge (8/9),
-t-push (19/27).
+t-push (26/27), t-ls-files (24/31).
 
 **Largest remaining failure clusters** (failed/total):
 
@@ -84,9 +84,10 @@ t-push (19/27).
   t-askpass (5/6), t-extra-header (4/4), t-content-type (3/3),
   t-expired (6/6). ~40 tests, blocked on the credential-helper
   ecosystem beyond the basic 401-fill-retry loop.
-- **ls-files long tail** — t-ls-files (21/31 fail). Mostly
-  output-format and flag-coverage gaps; first 5 are a single
-  trailing-newline fix.
+- **ls-files long tail** — t-ls-files (7/31 fail). Index scan
+  + 1-space JSON indent + repo-root path resolution shipped; the
+  remaining failures cluster around `--include`/`--exclude`/
+  `--deleted`/two-ref range/escaped runes in path.
 - **Prune + fetch-recent retention** — t-prune (14/18 fail),
   t-prune-worktree (2/2), t-fetch-recent (6/7). Same root cause:
   `lfs.fetchrecentcommitsdays` / `lfs.fetchrecentrefsdays` /
@@ -107,9 +108,11 @@ t-push (19/27).
   pattern listing.
 - **Unshipped commands** — t-completion (5), t-dedup (3),
   t-logs (1), t-merge-driver (6).
-- **Push edge cases** — t-push (9/27 fail). Deprecated `_links`
-  field, negative-size error message, batch error formatter,
-  pushInsteadof, custom-namespace refs.
+- **Push edge cases** — t-push (1/27 fail). Only `push (retry with
+  expired actions)` remains — needs the action-URL expiry path
+  (`t-expired` cluster). Deprecated `_links`, negative-size,
+  pushInsteadof, server-already-has counting, and exit-code-2-on-
+  upload-failure all shipped.
 - **Single-file holdouts** — t-batch-error-handling, t-progress,
   t-repo-format, t-tempfile, t-upload-redirect, t-usage,
   t-verify (4), t-worktree (2), t-batch-storage-encoding,
@@ -564,22 +567,15 @@ missing** and **why it was OK to skip for v0**.
   We surface the body via `FetchError`, but format it as
   `upload failed: server returned status 403: …`. Need a custom
   formatter for batch failures.
-- **Negative size in batch response.** `t-push.sh::push (with
-  invalid object size)` — server returns `size: -1`. We bail at
-  serde decode; upstream prints `invalid size (got: -1)`. Either
-  loosen the deserializer to `i64` and validate downstream, or
-  intercept the decode error.
-- **Deprecated `_links` field.** `t-push.sh::push with deprecated
-  _links` — old servers send `_links` instead of `actions`. Add it
-  as a serde alias (or tolerant `flatten`).
-- **`url.<base>.pushInsteadOf`.** `t-push.sh::push with invalid
-  pushInsteadof` exercises rewriting the action URL via
-  `url.<base>.pushInsteadOf` when `lfs.transfer.enablehrefrewrite=true`.
-  We honor `insteadOf` (download direction) but not the push-only
-  variant — needs a direction-aware alias loader.
-- **Custom-namespace refs in `--all` setup.** `t-push.sh::push
-  custom reference` uses `lfstest-testutils addcommits` (excluded),
-  so it's gated on porting that helper.
+- **Action-URL expiry retry.** `t-push.sh::push (retry with expired
+  actions)` — server hands back an `expires_at` in the past, expecting
+  the client to re-batch and pick up a fresh action URL on retry.
+  We currently retry but don't re-issue the batch to refresh the URL.
+  Shares plumbing with the `t-expired` suite.
+- **Custom-namespace refs in `--all` setup.** Setup uses
+  `lfstest-testutils addcommits` (now ported), but the
+  custom-namespace check itself was passing pre-M7 polish — keep an
+  eye on it if the addcommits helper grows new shapes.
 
 ### `cli pull`
 - **Don't read every tracked file.** `pull` currently walks every tracked
@@ -706,9 +702,13 @@ missing** and **why it was OK to skip for v0**.
   added between two refs. Maps onto `rev_list(include=[b], exclude=[a])`
   but the CLI parsing must distinguish "second arg is a ref" from "second
   arg is a path".
-- **Index scan when no args.** Upstream additionally scans the index when
-  invoked bare, so newly-staged-but-uncommitted pointers show up. We only
-  scan the tree at HEAD.
+- **`--all` with positional refs.** `git lfs ls-files --all main` is
+  upstream's "error if both given" check that we don't enforce yet.
+- **Escaped runes in paths.** `t-ls-files.sh::list/stat files with
+  escaped runes` blocks on `git lfs track '**/*'` being rejected as
+  matching forbidden `.gitattributes` — our match is glob-based
+  textually, upstream restricts the check to files already in the
+  index that start with `.git`/`.lfs`. Fix lives in `cli/src/track.rs`.
 
 ### `cli env`
 - **Trimmed output fields.** Upstream emits `LocalGitStorageDir`,
