@@ -68,6 +68,7 @@ experimental.
 assets = [
     ["target/release/git-lfs",        "usr/bin/git-lfs",                "0755"],
     ["target/release/../../man/git-lfs*.1", "usr/share/man/man1/",      "0644"],
+    ["target/release/../../man/git-lfs*.5", "usr/share/man/man5/",      "0644"],
     ["../LICENSE.md",                 "usr/share/doc/git-lfs/LICENSE",  "0644"],
     ["../README.md",                  "usr/share/doc/git-lfs/README",   "0644"],
 ]
@@ -81,6 +82,7 @@ requires = { git = "*" }
 assets = [
     { source = "target/release/git-lfs",  dest = "/usr/bin/git-lfs",                mode = "755" },
     { source = "target/man/git-lfs*.1",   dest = "/usr/share/man/man1/",            mode = "644", doc = true },
+    { source = "target/man/git-lfs*.5",   dest = "/usr/share/man/man5/",            mode = "644", doc = true },
     { source = "LICENSE.md",              dest = "/usr/share/doc/git-lfs/LICENSE",  mode = "644", doc = true },
     { source = "README.md",               dest = "/usr/share/doc/git-lfs/README",   mode = "644", doc = true },
 ]
