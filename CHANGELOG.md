@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `creds+api`: authtype-style credentials. `Credentials` gains
+  optional `authtype` + `credential` fields, returned by helpers that
+  see `capability[]=authtype` on the input and choose to honor it.
+  The API client now advertises `authtype` on every refill and maps
+  authtype responses to a new `Auth::Custom { authtype, credential }`
+  variant, which the `apply` impl sends as a literal
+  `Authorization: <authtype> <credential>` header. Verbose dumps emit
+  `Bearer` and custom schemes unmasked (matching upstream's
+  Basic-only masking) so multistage shell tests can grep the wire
+  value. Lands `t-credentials.sh` test 10 (Bearer auth); suite at
+  15/20. Public-API addition: new `Credentials::from_authtype` and
+  the `Auth::Custom` variant.
+
 - `creds`: forward `WWW-Authenticate` / `Lfs-Authenticate` response
   headers as `wwwauth[]=…` lines on the next `git credential fill`
   input. Each 401 in the auth loop captures both header names (matching

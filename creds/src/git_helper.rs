@@ -201,11 +201,19 @@ fn write_input(
     write_field(sink, "host", &query.host, protect_protocol)?;
     write_field(sink, "path", &query.path, protect_protocol)?;
     if let Some(c) = creds {
-        write_field(sink, "username", &c.username, protect_protocol)?;
-        // password is required for approve/reject to be meaningful, even
-        // if empty — let git decide. Empty values still get a key= line.
-        validate_value("password", &c.password, protect_protocol)?;
-        writeln!(sink, "password={}", c.password)?;
+        if let (Some(at), Some(cred)) = (&c.authtype, &c.credential) {
+            // Authtype-style creds round-trip via the same field names
+            // they came back on; username/password are omitted entirely
+            // (matching upstream's `Creds.buffer` behavior).
+            write_field(sink, "authtype", at, protect_protocol)?;
+            write_field(sink, "credential", cred, protect_protocol)?;
+        } else {
+            write_field(sink, "username", &c.username, protect_protocol)?;
+            // password is required for approve/reject to be meaningful, even
+            // if empty — let git decide. Empty values still get a key= line.
+            validate_value("password", &c.password, protect_protocol)?;
+            writeln!(sink, "password={}", c.password)?;
+        }
     }
     if let Some(ctx) = ctx {
         // Order matches upstream's `getCreds` write order:
@@ -284,6 +292,8 @@ fn validate_value(key: &str, value: &str, protect_protocol: bool) -> Result<(), 
 fn parse_response(stdout: &str) -> Option<Credentials> {
     let mut username = String::new();
     let mut password: Option<String> = None;
+    let mut authtype: Option<String> = None;
+    let mut credential: Option<String> = None;
     for line in stdout.lines() {
         let Some((k, v)) = line.split_once('=') else {
             continue;
@@ -291,8 +301,18 @@ fn parse_response(stdout: &str) -> Option<Credentials> {
         match k {
             "username" => username = v.to_owned(),
             "password" => password = Some(v.to_owned()),
+            "authtype" => authtype = Some(v.to_owned()),
+            "credential" => credential = Some(v.to_owned()),
             _ => {}
         }
+    }
+    // Authtype + credential takes precedence: when both are present
+    // we drive `Authorization: <authtype> <credential>` literally and
+    // ignore any username/password the helper may have also emitted.
+    // Mirrors upstream's `Creds.IsAuthtype()` precedence in
+    // `creds/creds.go::Creds.buffer`.
+    if let (Some(at), Some(cred)) = (authtype, credential) {
+        return Some(Credentials::from_authtype(at, cred));
     }
     password.map(|p| Credentials::new(username, p))
 }

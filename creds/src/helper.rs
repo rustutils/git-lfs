@@ -2,25 +2,52 @@
 
 use crate::query::Query;
 
-/// A username/password pair returned by a credential helper.
+/// Credentials returned by a credential helper.
 ///
-/// Username may be empty: some servers accept a token-as-password with no
-/// username set (e.g. GitHub personal access tokens). Password is
-/// required; helpers that can't supply one should return `Ok(None)`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Two flavors. The classic form is `username` + `password`: empty
+/// username is fine (token-as-password setups like GitHub personal
+/// access tokens), but the password is required. The newer form
+/// carries `authtype` + `credential`, which the API client applies as
+/// a literal `Authorization: <authtype> <credential>` header — used
+/// by Bearer tokens and multistage handshakes that don't fit Basic.
+///
+/// Helpers return `authtype` + `credential` only when the input
+/// advertised `capability[]=authtype`. When both forms are absent the
+/// helper returns `Ok(None)`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Credentials {
     /// Username string. May be empty for token-as-password setups.
     pub username: String,
     /// Password (or token) string.
     pub password: String,
+    /// Optional auth scheme name from `authtype=…` in the helper
+    /// response. When `Some`, paired with [`credential`](Self::credential)
+    /// to drive a literal `Authorization: <authtype> <credential>`
+    /// header rather than Basic auth.
+    pub authtype: Option<String>,
+    /// Opaque credential value from `credential=…` in the helper
+    /// response. Used together with [`authtype`](Self::authtype).
+    pub credential: Option<String>,
 }
 
 impl Credentials {
-    /// Build a credentials pair from any pair of string-like values.
+    /// Build basic credentials (username + password).
     pub fn new(username: impl Into<String>, password: impl Into<String>) -> Self {
         Self {
             username: username.into(),
             password: password.into(),
+            authtype: None,
+            credential: None,
+        }
+    }
+
+    /// Build authtype-style credentials (e.g. Bearer + token).
+    pub fn from_authtype(authtype: impl Into<String>, credential: impl Into<String>) -> Self {
+        Self {
+            username: String::new(),
+            password: String::new(),
+            authtype: Some(authtype.into()),
+            credential: Some(credential.into()),
         }
     }
 }

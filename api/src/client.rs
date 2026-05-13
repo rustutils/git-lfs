@@ -434,10 +434,7 @@ impl Client {
                 .await
                 .unwrap_or(Ok(None))
             {
-                *self.auth.lock().unwrap() = Auth::Basic {
-                    username: c.username.clone(),
-                    password: c.password.clone(),
-                };
+                *self.auth.lock().unwrap() = auth_from_creds(&c);
                 *self.filled.lock().unwrap() = Some((self.cred_query(), c));
             }
         }
@@ -523,13 +520,15 @@ impl Client {
             // Refill for the next attempt. A helper whose creds we
             // just rejected will pass on this round, so the chain
             // falls through to the next one. Carry wwwauth[] so the
-            // helper can pick the right scheme.
+            // helper can pick the right scheme; advertise the
+            // capabilities we can apply (authtype today; state lands
+            // with multistage).
             let query = self.cred_query();
             let cred_url_str = self.cred_url_string();
             let ctx = FillContext {
                 wwwauth: wwwauth.clone(),
                 state: Vec::new(),
-                capabilities: Vec::new(),
+                capabilities: vec!["authtype".to_owned()],
             };
             let creds =
                 match fill_for_endpoint(helper.clone(), query.clone(), &cred_url_str, ctx).await? {
@@ -547,10 +546,7 @@ impl Client {
                 };
             {
                 let mut auth = self.auth.lock().unwrap();
-                *auth = Auth::Basic {
-                    username: creds.username.clone(),
-                    password: creds.password.clone(),
-                };
+                *auth = auth_from_creds(&creds);
             }
             {
                 let mut filled = self.filled.lock().unwrap();
@@ -686,6 +682,26 @@ async fn reject_blocking(
         .map_err(|e| ApiError::Decode(format!("credential helper join: {e}")))?
         .map(|_| ())
         .map_err(|e| ApiError::Decode(format!("credential helper reject: {e}")))
+}
+
+/// Translate a credential-helper response into the [`Auth`] variant
+/// we'll send on the wire. Authtype-style creds (`authtype` +
+/// `credential` advertised via `capability[]=authtype`) become
+/// [`Auth::Custom`] and drive a literal `Authorization: <scheme>
+/// <credential>` header; the classic `username` + `password` shape
+/// becomes [`Auth::Basic`].
+fn auth_from_creds(c: &Credentials) -> Auth {
+    if let (Some(at), Some(cred)) = (&c.authtype, &c.credential) {
+        Auth::Custom {
+            authtype: at.clone(),
+            credential: cred.clone(),
+        }
+    } else {
+        Auth::Basic {
+            username: c.username.clone(),
+            password: c.password.clone(),
+        }
+    }
 }
 
 /// Mirrors git's `GIT_TRACE` semantics: any value other than `""`,
