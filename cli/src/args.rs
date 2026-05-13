@@ -13,6 +13,8 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
 
+/// Git LFS — large file storage for git
+///
 /// Git LFS is a system for managing and versioning large files
 /// in association with a Git repository. Instead of storing the
 /// large files within the Git repository as blobs, Git LFS stores
@@ -30,13 +32,10 @@ use clap::{Args, Parser, Subcommand};
 /// corresponding Git server.
 #[derive(Parser)]
 #[command(
-    name = "git-lfs",
-    about = "Git LFS — large file storage for git",
-    // We want `git lfs --version` to print the same banner as
-    // `git lfs version`. clap's auto-derived `--version` would
-    // emit `git-lfs <version>` (one token, no `/` separator),
-    // which doesn't match the user-agent style upstream uses.
-    // Suppress clap's flag and handle --version ourselves.
+    name = "git lfs",
+    bin_name = "git lfs",
+    // Suppress clap's version flag so we can emit a version in the
+    // user-agent style that upstream git-lfs uses.
     disable_version_flag = true,
     max_term_width = 100,
 )]
