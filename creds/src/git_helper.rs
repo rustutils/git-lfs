@@ -294,6 +294,8 @@ fn parse_response(stdout: &str) -> Option<Credentials> {
     let mut password: Option<String> = None;
     let mut authtype: Option<String> = None;
     let mut credential: Option<String> = None;
+    let mut state: Vec<String> = Vec::new();
+    let mut multistage = false;
     for line in stdout.lines() {
         let Some((k, v)) = line.split_once('=') else {
             continue;
@@ -303,6 +305,10 @@ fn parse_response(stdout: &str) -> Option<Credentials> {
             "password" => password = Some(v.to_owned()),
             "authtype" => authtype = Some(v.to_owned()),
             "credential" => credential = Some(v.to_owned()),
+            "state[]" => state.push(v.to_owned()),
+            // `continue` is a bool; upstream's `Creds.IsMultistage`
+            // accepts `1` or `true` (everything else is `false`).
+            "continue" => multistage = matches!(v.trim(), "1" | "true"),
             _ => {}
         }
     }
@@ -312,9 +318,17 @@ fn parse_response(stdout: &str) -> Option<Credentials> {
     // Mirrors upstream's `Creds.IsAuthtype()` precedence in
     // `creds/creds.go::Creds.buffer`.
     if let (Some(at), Some(cred)) = (authtype, credential) {
-        return Some(Credentials::from_authtype(at, cred));
+        let mut c = Credentials::from_authtype(at, cred);
+        c.state = state;
+        c.multistage = multistage;
+        return Some(c);
     }
-    password.map(|p| Credentials::new(username, p))
+    password.map(|p| {
+        let mut c = Credentials::new(username, p);
+        c.state = state;
+        c.multistage = multistage;
+        c
+    })
 }
 
 #[cfg(test)]

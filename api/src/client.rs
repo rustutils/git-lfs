@@ -347,12 +347,12 @@ impl Client {
             for (name, value) in &self.extra_headers {
                 let _ = writeln!(err, "> {name}: {value}");
             }
-            // Authorization header (masked). Mirrors upstream's
-            // `lfshttp/verbose.go::traceHTTPDump`; t-verify greps for
-            // `Authorization: Basic * * * * *`.
-            if let Some(masked) = self.auth.lock().unwrap().masked_header() {
-                let _ = writeln!(err, "> {masked}");
-            }
+            // Note: the `Authorization` header is dumped per attempt
+            // from inside the auth retry loop (see
+            // `send_with_auth_retry_response`), not here. Multistage
+            // tests grep one line per attempt and the auth changes
+            // between attempts, so a one-time dump up here wouldn't
+            // capture the handshake.
             let _ = writeln!(err);
             let _ = err.write_all(&body_bytes);
             let _ = writeln!(err);
@@ -457,8 +457,19 @@ impl Client {
         // next `git credential fill` so helpers can pick a scheme.
         // Suppressed when `credential.<url>.skipwwwauth` is set.
         let mut wwwauth: Vec<String> = Vec::new();
+        // `state[]` carries the helper's continuation tokens across a
+        // multistage handshake; populated from the previous fill's
+        // response.
+        let mut state: Vec<String> = Vec::new();
+
+        let verbose =
+            std::env::var_os("GIT_CURL_VERBOSE").is_some_and(|v| !v.is_empty() && v != "0");
 
         for attempt in 0..max {
+            if verbose && let Some(masked) = self.auth.lock().unwrap().masked_header() {
+                let mut err = std::io::stderr().lock();
+                let _ = writeln!(err, "> {masked}");
+            }
             let resp = build().send().await?;
             let status = resp.status();
 
@@ -498,11 +509,32 @@ impl Client {
             }
             drop(resp);
 
+            // Multistage flag + state from the creds we just sent.
+            // Upstream's `DoWithAuth` suppresses `helper.Reject` for
+            // multistage creds (`!multistage` gate at `lfsapi/auth.go:107`)
+            // because they aren't "wrong" — they're mid-handshake.
+            // State carries to the next fill so the helper can resume.
+            let (was_multistage, prev_state) = {
+                let filled = self.filled.lock().unwrap();
+                filled.as_ref().map_or((false, Vec::new()), |(_, c)| {
+                    (c.multistage, c.state.clone())
+                })
+            };
+            if !prev_state.is_empty() {
+                state = prev_state;
+            }
+
             // Out of attempts. Mirror upstream's trace + error
-            // wording. Reject the last filled set before bailing so
-            // the cache doesn't retain known-bad creds.
+            // wording. Reject the last filled set unless it was a
+            // multistage cred (those aren't "wrong"; the handshake
+            // just didn't complete in time).
             if attempt + 1 >= max {
-                self.reject_filled().await;
+                if was_multistage {
+                    *self.filled.lock().unwrap() = None;
+                    *self.auth.lock().unwrap() = Auth::None;
+                } else {
+                    self.reject_filled().await;
+                }
                 if trace_enabled() {
                     let mut e = std::io::stderr().lock();
                     let _ = writeln!(e, "api: too many authentication attempts");
@@ -510,25 +542,29 @@ impl Client {
                 return Err(ApiError::AuthAttemptsExceeded);
             }
 
-            // Reject the creds we just sent. This clears the cache
-            // entry (so the next chain walk doesn't short-circuit on
-            // them) and sets netrc's skip flag (so the next walk falls
-            // through to the next helper). If `filled` was empty
-            // (anonymous first attempt), this is a no-op.
-            self.reject_filled().await;
+            // Reject the creds we just sent — unless they were
+            // multistage. Reject clears the cache entry and sets
+            // netrc's skip flag so the next walk falls through to the
+            // next helper. For multistage we just clear the filled
+            // record (no helper notification) so the next fill
+            // reaches the helper that drove the handshake.
+            if was_multistage {
+                *self.filled.lock().unwrap() = None;
+                *self.auth.lock().unwrap() = Auth::None;
+            } else {
+                self.reject_filled().await;
+            }
 
-            // Refill for the next attempt. A helper whose creds we
-            // just rejected will pass on this round, so the chain
-            // falls through to the next one. Carry wwwauth[] so the
-            // helper can pick the right scheme; advertise the
-            // capabilities we can apply (authtype today; state lands
-            // with multistage).
+            // Refill for the next attempt. Carry wwwauth[] so the
+            // helper can pick the right scheme, and state[] so a
+            // multistage handshake can resume. Advertise the
+            // capabilities the API client can act on.
             let query = self.cred_query();
             let cred_url_str = self.cred_url_string();
             let ctx = FillContext {
                 wwwauth: wwwauth.clone(),
-                state: Vec::new(),
-                capabilities: vec!["authtype".to_owned()],
+                state: state.clone(),
+                capabilities: vec!["authtype".to_owned(), "state".to_owned()],
             };
             let creds =
                 match fill_for_endpoint(helper.clone(), query.clone(), &cred_url_str, ctx).await? {

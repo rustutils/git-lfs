@@ -28,6 +28,15 @@ pub struct Credentials {
     /// Opaque credential value from `credential=…` in the helper
     /// response. Used together with [`authtype`](Self::authtype).
     pub credential: Option<String>,
+    /// `state[]` values returned by a multistage helper. The API
+    /// client carries these forward into the next fill on a 401, so
+    /// the helper can resume mid-handshake.
+    pub state: Vec<String>,
+    /// `continue=1` in the helper response — the multistage helper
+    /// signals that this is an intermediate stage. The API client
+    /// uses this to suppress reject() on the next 401 (the creds
+    /// aren't "wrong", they're just mid-handshake).
+    pub multistage: bool,
 }
 
 impl Credentials {
@@ -38,6 +47,8 @@ impl Credentials {
             password: password.into(),
             authtype: None,
             credential: None,
+            state: Vec::new(),
+            multistage: false,
         }
     }
 
@@ -48,6 +59,8 @@ impl Credentials {
             password: String::new(),
             authtype: Some(authtype.into()),
             credential: Some(credential.into()),
+            state: Vec::new(),
+            multistage: false,
         }
     }
 }

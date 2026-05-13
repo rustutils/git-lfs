@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `creds+api`: multistage credentials with `state[]` carry-forward.
+  `Credentials` gains `state: Vec<String>` and `multistage: bool`
+  (set from helper response `state[]=…` lines and `continue=1`
+  respectively). The API client now advertises
+  `capability[]=authtype` and `capability[]=state` on every refill,
+  carries the helper's previous `state[]` into the next fill, and
+  suppresses `helper.reject` on multistage creds (those aren't
+  "wrong" — the handshake just isn't done). Mirrors upstream's
+  `IsMultistage()` gate in `lfsapi/auth.go::DoWithAuth`. Also moves
+  the per-attempt `Authorization` dump from the one-shot post_json
+  verbose block into the auth loop so each retry's header lands in
+  the log — multistage shell tests grep one line per attempt. Lands
+  `t-credentials.sh` tests 11 (`multistage auth`), 12 (`loop
+  fails`), and 13 (`above limit fails and resets`); suite now at
+  18/20.
+
 - `creds+api`: authtype-style credentials. `Credentials` gains
   optional `authtype` + `credential` fields, returned by helpers that
   see `capability[]=authtype` on the input and choose to honor it.
