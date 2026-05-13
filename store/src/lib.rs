@@ -1,18 +1,43 @@
-//! Local content-addressable object store for git-lfs.
+//! Content-addressable on-disk store for Git LFS objects.
 //!
-//! Objects live under `<lfs_dir>/objects/aa/bb/aabbcc…` where `aabbcc…` is
-//! the SHA-256 hex of the content (sharded by the first two hex bytes — see
-//! `docs/spec.md`). Writes go through a tmp file in `<lfs_dir>/tmp/` and are
-//! atomically renamed into place once their hash is known.
+//! Git LFS keeps large files outside git's object database, leaving
+//! small pointer blobs committed to git in their place. This crate
+//! owns the local half of that split: where the actual file bytes
+//! live on disk, how they get there, and how they're served back out.
 //!
-//! ```no_run
-//! use git_lfs_store::Store;
-//! let store = Store::new(".git/lfs");
-//! let mut input: &[u8] = b"hello world";
-//! let (oid, size) = store.insert(&mut input).unwrap();
-//! assert!(store.contains(oid));
-//! # let _ = size;
+//! Objects live under `<lfs_dir>/objects/aa/bb/aabbcc…` where the
+//! hex string is the SHA-256 of the content, sharded by the first
+//! two bytes (see [`docs/spec.md`]). Writes go through a tempfile in
+//! `<lfs_dir>/tmp/` and are atomically renamed into place once their
+//! hash is known.
+//!
+//! Two insert paths cover the two callers: [`Store::insert`] hashes
+//! bytes as they're written (the clean-filter path: bytes in, OID
+//! out), and [`Store::insert_verified`] checks the resulting hash
+//! against a caller-supplied expected OID (the download path: the
+//! server names the OID, we confirm what arrived).
+//!
+//! In-progress downloads stage as `.part` files at
+//! [`Store::incomplete_path`] and rename into place via
+//! [`Store::commit_partial`], so an interrupted transfer resumes
+//! with a `Range:` request rather than restarting. Alternate object
+//! stores attached via [`Store::with_references`] are hardlinked or
+//! copied into the primary on a miss (the LFS analogue of
+//! `git clone --shared`). File and directory modes follow
+//! `core.sharedRepository`, see [`Store::with_shared_repository`].
+//!
 //! ```
+//! use git_lfs_store::Store;
+//!
+//! # let _tmp = tempfile::TempDir::new().unwrap();
+//! # let lfs_dir = _tmp.path().join("lfs");
+//! let store = Store::new(&lfs_dir);
+//! let (oid, size) = store.insert(&mut &b"hello world"[..]).unwrap();
+//! assert!(store.contains(oid));
+//! assert_eq!(size, 11);
+//! ```
+//!
+//! [`docs/spec.md`]: https://gitlab.com/rustutils/git-lfs/-/blob/master/docs/spec.md
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -23,15 +48,17 @@ use git_lfs_pointer::Oid;
 use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 
-/// Platform null device — what `object_path` returns for [`Oid::EMPTY`].
+/// Platform null device
+///
+/// What `object_path` returns for [`Oid::EMPTY`].
 const NULL_DEVICE: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
 
 const COPY_BUFFER: usize = 64 * 1024;
 
 /// A local LFS object store rooted at `<lfs_dir>` (typically `.git/lfs`).
 ///
-/// May reference any number of alternate stores — typically the LFS
-/// objects of a `git clone --shared` source — and will materialize a
+/// May reference any number of alternate stores (typically the LFS
+/// objects of a `git clone --shared` source) and will materialize a
 /// hit from one of them into the local store on demand. See
 /// [`Store::with_references`].
 #[derive(Debug, Clone)]
@@ -51,12 +78,14 @@ pub struct Store {
 
 /// File-mode rule used when committing objects and creating their
 /// containing directories. Mirrors git's `core.sharedRepository`
-/// semantics — see `config/config.go::getMask` upstream.
+/// semantics, see `config/config.go::getMask` upstream.
 #[derive(Debug, Clone, Copy)]
 struct ModePolicy {
-    /// Mask: target file mode is `0o666 & !mask`. None means "no
-    /// explicit policy — chmod committed files to `0o666 & !umask`
-    /// since the tempfile crate uses mode 0o600 unconditionally."
+    /// Bits to mask off `0o666` when chmoding a committed object;
+    /// resolved eagerly at construction (from the process umask or
+    /// from `core.sharedRepository`). An explicit chmod is always
+    /// applied because the `tempfile` crate creates files at 0o600
+    /// regardless of umask.
     mask: u32,
 }
 
@@ -126,10 +155,24 @@ fn process_umask() -> u32 {
     0o022
 }
 
+/// Things that can go wrong while inserting an object.
+///
+/// Reads from the store ([`Store::open`], [`Store::contains`], and others)
+/// return a plain [`io::Error`]. This enum is only surfaced by the
+/// insert paths because they have a non-IO failure mode (hash
+/// mismatch) that needs its own variant.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
+    /// Filesystem-level failure.
+    ///
+    /// Surfaced by operations like tempfile creation, write, rename,
+    /// permission, etc.
     #[error(transparent)]
     Io(#[from] io::Error),
+    /// [`Store::insert_verified`] received bytes that hashed to
+    /// something other than the OID the caller asserted.
+    ///
+    /// The tempfile is dropped, so no half-committed object is left behind.
     #[error("expected OID {expected}, got {actual}")]
     HashMismatch { expected: Oid, actual: Oid },
 }
@@ -146,8 +189,10 @@ impl Store {
     }
 
     /// Apply `core.sharedRepository` semantics to objects this store
-    /// commits. `value` is the literal string from `git config`
-    /// (`group`, `everybody`, octal `0660`, …); unrecognized values
+    /// commits.
+    ///
+    /// `value` is the literal string from `git config`
+    /// (`group`, `everybody`, octal `0660`, etc). Unrecognized values
     /// fall back to honoring the process umask. Resets any prior
     /// policy on this `Store`.
     #[must_use]
@@ -157,8 +202,9 @@ impl Store {
     }
 
     /// Attach alternate `lfs/objects/` directories that the store may
-    /// hardlink-or-copy from when a local lookup misses. Used by
-    /// `git clone --shared` setups so the new repo can read the
+    /// hardlink-or-copy from when a local lookup misses.
+    ///
+    /// Used by `git clone --shared` setups so the new repo can read the
     /// source's existing LFS objects without re-downloading.
     ///
     /// Pass [`git_lfs_git::lfs_alternate_dirs`](https://docs.rs/git-lfs-git)
@@ -180,24 +226,30 @@ impl Store {
         self.root.join("tmp")
     }
 
-    /// Directory holding partial / in-progress downloads. Files are
-    /// named `<oid>.part` and persist across process invocations so a
-    /// later attempt can pick up where a prior one left off (issuing
-    /// a `Range:` request). Mirrors upstream's `incomplete/` layout.
+    /// Directory holding partial or in-progress downloads.
+    ///
+    /// Files are named `<oid>.part` and persist across process
+    /// invocations so a later attempt can pick up where a prior
+    /// one left off (issuing a `Range:` request). Mirrors upstream's
+    /// `incomplete/` layout.
     pub fn incomplete_dir(&self) -> PathBuf {
         self.root.join("incomplete")
     }
 
-    /// Path to the partial-download file for `oid`. The file may not
-    /// exist; the caller is responsible for creating + writing it.
+    /// Path to the partial-download file for `oid`.
+    ///
+    /// The file may not exist; the caller is responsible for creating
+    /// and writing it.
     pub fn incomplete_path(&self, oid: Oid) -> PathBuf {
         self.incomplete_dir().join(format!("{oid}.part"))
     }
 
     /// Atomically move a fully-downloaded partial file into its final
-    /// object-path location. The caller is responsible for confirming
+    /// object-path location.
+    ///
+    /// The caller is responsible for confirming
     /// the file's bytes hash to `oid` first; this is a pure rename.
-    /// Clobbers any existing file at the destination — see
+    /// Clobbers any existing file at the destination, see
     /// [`insert_verified`](Self::insert_verified) for the rationale.
     pub fn commit_partial(&self, oid: Oid, partial: &Path) -> io::Result<()> {
         if oid == Oid::EMPTY {
@@ -212,23 +264,26 @@ impl Store {
         Ok(())
     }
 
-    /// Sweep `<root>/tmp/objects/` (upstream's path for in-flight
-    /// download temp files: `<oid>-<random>`) and remove any whose
-    /// leading 64-char OID is already complete in the store, and
-    /// prune anything else under `tmp/` older than an hour.
+    /// Sweep `<root>/tmp/` for stale temp files left behind by
+    /// interrupted prior runs.
     ///
-    /// Best-effort — the dir not existing, or any individual remove
+    /// Filenames matching `<64-hex>-<random>`
+    /// whose object is already complete in the store are removed
+    /// unconditionally (upstream's in-flight download tempfile shape);
+    /// everything else older than an hour is pruned.
+    ///
+    /// Best-effort: the dir not existing, or any individual remove
     /// failing, is silently ignored. Intended to run once per
     /// command invocation, before the command's main work, so an
     /// interrupted prior run doesn't leak temp files indefinitely
     /// (matches upstream's `lfs.cleanupTempFiles` startup task in
     /// `fs/cleanup.go`).
     ///
-    /// Per-file rules — mirroring upstream:
+    /// Per-file rules, mirroring upstream:
     /// 1. Filenames starting with `<64-hex>-` whose object is already
     ///    complete in the store are removed unconditionally
     ///    (interrupted-rename leftovers).
-    /// 2. Otherwise, files older than 1 hour are removed — *unless*
+    /// 2. Otherwise, files older than 1 hour are removed *unless*
     ///    they live in a subdirectory whose own mtime is fresher than
     ///    1 hour, since active processes may have stale-looking files
     ///    they still hold open (hard-linked across repos). Files
@@ -329,9 +384,11 @@ impl Store {
             .join(&hex)
     }
 
-    /// `true` if this object is present locally as a regular file. The empty
-    /// OID is always considered present. If the local copy is missing but
-    /// an alternate store has the object, materializes it locally first.
+    /// Check if this object is present locally as a regular file.
+    ///
+    /// The empty OID is always considered present. If the local copy
+    /// is missing but an alternate store has the object, materializes
+    /// it locally first.
     pub fn contains(&self, oid: Oid) -> bool {
         if oid == Oid::EMPTY {
             return true;
@@ -342,7 +399,8 @@ impl Store {
         self.materialize_from_reference(oid, None)
     }
 
-    /// `true` if the object is present and its on-disk size matches `size`.
+    /// Check if the object is present and its on-disk size matches `size`.
+    ///
     /// Used to detect partial/corrupted local copies. Like
     /// [`contains`](Self::contains), will fault in a matching alternate-store
     /// object on demand.
@@ -359,9 +417,11 @@ impl Store {
         self.materialize_from_reference(oid, Some(size))
     }
 
+    /// Materialize the object from a reference store, if one is available.
+    ///
     /// Walk reference stores looking for `oid`; the first hit (matching
-    /// `size` if specified) is hardlinked — or copied, on cross-device
-    /// fallback — into the local store. Returns `true` if the object
+    /// `size` if specified) is hardlinked (or copied, on cross-device
+    /// fallback) into the local store. Returns `true` if the object
     /// is now present locally as a result.
     fn materialize_from_reference(&self, oid: Oid, size: Option<u64>) -> bool {
         if self.references.is_empty() {
@@ -401,9 +461,7 @@ impl Store {
     /// Traverses the sharded `objects/<aa>/<bb>/<oid>` layout. Filenames
     /// that don't parse as 64-char SHA-256 hex are silently skipped, as
     /// are unexpected directories. The store directory not existing is
-    /// not an error — the result is just empty.
-    ///
-    /// Used by `git lfs prune` and (eventually) `fsck --orphaned`.
+    /// not an error; the result is just empty.
     pub fn each_object(&self) -> io::Result<Vec<(Oid, u64)>> {
         let objects_dir = self.root.join("objects");
         if !objects_dir.exists() {
@@ -440,9 +498,10 @@ impl Store {
         Ok(out)
     }
 
-    /// Open an object for reading. Errors with [`io::ErrorKind::NotFound`]
-    /// if the object isn't in the store. Faults in from a reference
-    /// store if needed.
+    /// Open an object for reading.
+    ///
+    /// Errors with [`io::ErrorKind::NotFound`] if the object isn't in the store.
+    /// Faults in from a reference store if needed.
     pub fn open(&self, oid: Oid) -> io::Result<File> {
         let path = self.object_path(oid);
         match File::open(&path) {
@@ -458,18 +517,14 @@ impl Store {
         }
     }
 
-    /// Stream `src` into the store, computing SHA-256 as we go.
-    /// Returns the resulting OID and byte count.
+    /// Stream `src` into the store, computing SHA-256 as we go, returning
+    /// the resulting OID and byte count.
     ///
-    /// This is the clean-filter path: we don't know the OID until after the
-    /// content is hashed.
-    ///
-    /// If the resulting OID is already present locally, the temp file is
-    /// dropped without persisting. The store is content-addressed, so an
-    /// existing file at that path is necessarily the same bytes; skipping
-    /// `tmp.persist` here preserves any hardlink already at the
-    /// destination (a rename swaps a fresh inode in, which would break
-    /// the link to the alternate-store source).
+    /// This is the clean-filter path: the OID isn't known until the
+    /// content has been hashed. Inserting bytes that already exist
+    /// locally under the same OID is a no-op; in particular, the
+    /// existing on-disk file (which may be a hardlink into an
+    /// alternate store) is left untouched.
     pub fn insert(&self, src: &mut impl Read) -> Result<(Oid, u64), StoreError> {
         let (oid, size, tmp) = self.stream_to_tmp(src)?;
         if oid != Oid::EMPTY && self.object_path(oid).is_file() {
@@ -481,7 +536,9 @@ impl Store {
     }
 
     /// Stream `src` into the store, requiring the resulting hash to equal
-    /// `expected`. On mismatch, returns [`StoreError::HashMismatch`] and the
+    /// `expected`.
+    ///
+    /// On mismatch, returns [`StoreError::HashMismatch`] and the
     /// temp file is dropped without being committed.
     ///
     /// This is the download path: we know the OID upfront and must verify
@@ -518,7 +575,7 @@ impl Store {
     }
 
     fn commit(&self, oid: Oid, tmp: NamedTempFile) -> io::Result<()> {
-        // The empty object lives at /dev/null — never persist it.
+        // The empty object lives at /dev/null, never persist it.
         if oid == Oid::EMPTY {
             return Ok(());
         }
@@ -529,17 +586,20 @@ impl Store {
         // Atomic rename, *clobbering* any existing file at the target
         // path. The store is content-addressed: anything already there
         // is either the same content (no-op overwrite) or corrupt
-        // (truncated, half-written) — and the latter is exactly what
+        // (truncated, half-written), and the latter is exactly what
         // `git lfs fetch --refetch` exists to recover from.
         tmp.persist(&dest).map_err(|e| e.error)?;
         self.set_file_mode(&dest)?;
         Ok(())
     }
 
+    /// Create the directory `target` and its parents, setting the mode
+    /// to the configured mode policy.
+    ///
     /// `mkdir -p` walking the path, chmoding each directory under
     /// `root` to the configured `mode_policy.dir_mode()`. Components
     /// outside `root` (e.g. the user's home directory) are left
-    /// alone — we only own the LFS subtree.
+    /// alone: we only own the LFS subtree.
     fn create_dir_all_with_mode(&self, target: &Path) -> io::Result<()> {
         std::fs::create_dir_all(target)?;
         #[cfg(unix)]
@@ -568,14 +628,18 @@ impl Store {
         Ok(())
     }
 
-    /// Ensure `<root>/incomplete/` exists with the right directory
-    /// mode. Public so the transfer crate can stage `.part` files
-    /// under it without bypassing the `core.sharedRepository` policy.
+    /// Ensure `<root>/incomplete/` exists with the configured
+    /// directory mode.
+    ///
+    /// Call before staging `.part` files yourself
+    /// so the resulting directory honors any `core.sharedRepository`
+    /// policy on this `Store`.
     pub fn prepare_incomplete_dir(&self) -> io::Result<()> {
         self.create_dir_all_with_mode(&self.incomplete_dir())
     }
 
     /// Chmod a committed object file to the configured file mode.
+    ///
     /// No-op on non-unix.
     fn set_file_mode(&self, path: &Path) -> io::Result<()> {
         #[cfg(unix)]
@@ -706,7 +770,7 @@ mod tests {
             }
             other => panic!("expected HashMismatch, got {other:?}"),
         }
-        // Neither the wrong OID nor the actual OID should be present —
+        // Neither the wrong OID nor the actual OID should be present:
         // a failed verify must not leak a half-committed file.
         assert!(!store.contains(wrong));
         assert!(!store.contains(abc_oid()));
@@ -767,7 +831,7 @@ mod tests {
         let (_tmp, store) = fixture();
         let (oid, _) = store.insert(&mut b"hi".as_slice()).unwrap();
         // Drop a stray file in the same shard directory that isn't a
-        // 64-char hex name — must not crash or be reported.
+        // 64-char hex name: must not crash or be reported.
         let shard = store
             .root()
             .join("objects")
@@ -825,7 +889,7 @@ mod tests {
     fn contains_finds_object_via_reference() {
         let (_tmp, _source, shared, oid) = shared_fixture();
         // Object lives only in the source's lfs/objects/ at this
-        // point — `contains` should report it as present (and fault
+        // point. `contains` should report it as present (and fault
         // it in along the way).
         assert!(shared.contains(oid));
         assert!(shared.object_path(oid).is_file());
