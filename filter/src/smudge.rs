@@ -15,32 +15,45 @@ use crate::detect_pointer;
 
 const COPY_BUFFER: usize = 64 * 1024;
 
-/// One pointer extension's smudge side. Mirrors [`crate::CleanExtension`]
-/// — separate types because clean/smudge commands are distinct config
-/// keys (`lfs.extension.<name>.clean` vs `.smudge`) and different code
-/// paths consume them.
+/// One pointer extension's smudge side.
+///
+/// Mirrors [`crate::CleanExtension`]; the two are separate types
+/// because clean and smudge commands come from distinct config keys
+/// (`lfs.extension.<name>.clean` vs `.smudge`) and are consumed by
+/// different code paths.
 #[derive(Debug, Clone)]
 pub struct SmudgeExtension {
+    /// Extension name, as configured under `lfs.extension.<name>`.
     pub name: String,
+    /// Single decimal digit (0-9) determining position in the chain;
+    /// smudge walks extensions in reverse priority order.
     pub priority: u8,
+    /// Raw shell command from `lfs.extension.<name>.smudge`. `%f`
+    /// placeholders are substituted with the working-tree path.
     pub command: String,
 }
 
 /// Result of running the [`smudge`] filter on a piece of input.
 #[derive(Debug)]
 pub enum SmudgeOutcome {
-    /// Input wasn't a pointer (or was malformed) and was emitted to the
-    /// output stream verbatim. This matches upstream's "smudge with invalid
-    /// pointer" behavior — git wraps everything through the filter, and
-    /// non-LFS content has to come out unchanged.
+    /// Input wasn't a pointer (or was malformed) and was emitted to
+    /// the output stream verbatim.
+    ///
+    /// Matches upstream's "smudge with invalid pointer" behavior:
+    /// git wraps everything through the filter, and non-LFS content
+    /// has to come out unchanged.
     Passthrough,
-    /// Input was a pointer; its content was streamed from the store to the
-    /// output (or it was the empty pointer, which writes nothing).
+    /// Input was a pointer; its content was streamed from the store
+    /// to the output (or it was the empty pointer, which writes
+    /// nothing).
     Resolved(Pointer),
 }
 
+/// Things that can go wrong while running [`smudge`].
 #[derive(Debug, thiserror::Error)]
 pub enum SmudgeError {
+    /// Filesystem-level failure: reading the input, writing the
+    /// output, opening the stored object, etc.
     #[error(transparent)]
     Io(#[from] io::Error),
     /// The pointer references an object that isn't in the local store.
@@ -128,11 +141,12 @@ pub fn smudge<R: Read, W: Write>(
 /// Like [`smudge`], but on a missing-object miss invokes `fetch` to populate
 /// the store, then streams the freshly-fetched bytes to `output`.
 ///
-/// `fetch` receives the [`Pointer`] of the missing object — the caller is
-/// expected to download exactly that OID into the local store. After a
-/// successful return, this function re-checks the store and streams the
-/// content; if the store *still* doesn't have the object, an
-/// [`SmudgeError::ObjectMissing`] is surfaced (i.e. the fetch lied).
+/// `fetch` receives the [`Pointer`] of the missing object; the
+/// caller is expected to download exactly that OID into the local
+/// store. After a successful return, this function re-checks the
+/// store and streams the content; if the store *still* doesn't have
+/// the object, an [`SmudgeError::ObjectMissing`] is surfaced (i.e.
+/// the fetch lied).
 pub fn smudge_with_fetch<R, W, F>(
     store: &Store,
     input: &mut R,
@@ -160,12 +174,14 @@ where
 }
 
 /// Stream the working-tree content for an already-parsed `pointer` to
-/// `output`. Used by `pull` and `checkout`, which have the pointer in
-/// hand from the index walk. `spawn_cwd` is the working directory each
-/// extension subprocess runs from — pass `Some(work_tree_root)` from
-/// pull/checkout (so a `git lfs pull` invoked from a subdirectory still
-/// finds `.git/`); the smudge filter (called by git from the work-tree
-/// root) can pass `None` to inherit the parent's cwd.
+/// `output`.
+///
+/// Used by `pull` and `checkout`, which have the pointer in hand
+/// from the index walk. `spawn_cwd` is the working directory each
+/// extension subprocess runs from: pass `Some(work_tree_root)` from
+/// pull or checkout (so a `git lfs pull` invoked from a subdirectory
+/// still finds `.git/`); the smudge filter (called by git from the
+/// work-tree root) can pass `None` to inherit the parent's cwd.
 ///
 /// The caller must have already verified `store.contains_with_size`;
 /// this function won't fetch.

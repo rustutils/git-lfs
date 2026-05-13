@@ -48,25 +48,39 @@ impl CleanOutcome {
 /// order index baked into the extension's pointer line (`ext-{N}-{name}`).
 #[derive(Debug, Clone)]
 pub struct CleanExtension {
+    /// Extension name, as configured under `lfs.extension.<name>`.
     pub name: String,
+    /// Single decimal digit (0-9) determining position in the chain;
+    /// lower priorities run earlier.
     pub priority: u8,
+    /// Raw shell command from `lfs.extension.<name>.clean`. `%f`
+    /// placeholders are substituted with the working-tree path.
     pub command: String,
 }
 
+/// Things that can go wrong while running [`clean`].
 #[derive(Debug, thiserror::Error)]
 pub enum CleanError {
+    /// Filesystem-level failure: reading the input stream, writing
+    /// the tempfile, etc.
     #[error(transparent)]
     Io(#[from] io::Error),
+    /// The local LFS store rejected the bytes.
     #[error(transparent)]
     Store(#[from] StoreError),
+    /// A configured extension was declared with an empty `clean`
+    /// command, so there's nothing to spawn.
     #[error("extension {name:?} has no clean command configured")]
     ExtensionMissingCommand { name: String },
+    /// The extension subprocess couldn't be started (typically
+    /// because the binary isn't on `PATH`).
     #[error("failed to spawn extension {name:?}: {source}")]
     ExtensionSpawnFailed {
         name: String,
         #[source]
         source: io::Error,
     },
+    /// The extension subprocess started but exited non-zero.
     #[error("extension {name:?} exited with status {status:?}")]
     ExtensionFailed { name: String, status: Option<i32> },
 }
@@ -195,10 +209,12 @@ pub fn clean<R: Read, W: Write>(
 }
 
 /// Run `input` through the configured `extensions` chain in priority
-/// order and return the resulting [`Pointer`] **without** inserting the
-/// final stage's output anywhere. Used by `git lfs pointer --file=X` to
-/// preview what `clean` would emit, including the `ext-N-<name>` lines,
-/// without polluting the on-disk store.
+/// order and return the resulting [`Pointer`] without inserting the
+/// final stage's output anywhere.
+///
+/// Used by `git lfs pointer --file=X` to preview what `clean` would
+/// emit, including the `ext-N-<name>` lines, without polluting the
+/// on-disk store.
 ///
 /// Mirrors [`clean`]'s extension chain except for the final stage:
 /// instead of `Store::insert`, the post-extension stream is hashed and

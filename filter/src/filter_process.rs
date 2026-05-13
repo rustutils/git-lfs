@@ -15,14 +15,21 @@ use git_lfs_store::Store;
 
 use crate::{CleanExtension, FetchError, SmudgeExtension, SmudgeOutcome, clean, smudge_with_fetch};
 
+/// Things that can go wrong while running [`filter_process`].
 #[derive(Debug, thiserror::Error)]
 pub enum FilterProcessError {
+    /// Underlying pipe I/O failed (typically because git closed its
+    /// end mid-session).
     #[error(transparent)]
     Io(#[from] io::Error),
+    /// The initial capability-negotiation handshake didn't match
+    /// what the filter-process protocol expects.
     #[error("filter-process handshake: {0}")]
     Handshake(String),
+    /// A request was missing a required header (`command`, etc.).
     #[error("filter-process: missing required header {0:?}")]
     MissingHeader(&'static str),
+    /// Git asked for a command we don't recognize.
     #[error("filter-process: unknown command {0:?}")]
     UnknownCommand(String),
 }
@@ -37,10 +44,10 @@ pub enum FilterProcessError {
 /// to git, same as if [`smudge`](crate::smudge) hit `ObjectMissing`.
 ///
 /// `skip_smudge` reflects the upstream `GIT_LFS_SKIP_SMUDGE` env var.
-/// When true, smudge requests pass the pointer text through unchanged
-/// — the working-tree file ends up holding pointer text and `git lfs
-/// pull` (or another smudge run) is the recovery path. Clean requests
-/// are unaffected.
+/// When true, smudge requests pass the pointer text through
+/// unchanged: the working-tree file ends up holding pointer text
+/// and `git lfs pull` (or another smudge run) is the recovery
+/// path. Clean requests are unaffected.
 #[allow(clippy::too_many_arguments)]
 pub fn filter_process<R, W, F>(
     store: &Store,

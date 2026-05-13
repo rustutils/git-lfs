@@ -1,24 +1,32 @@
 # git-lfs-filter
 
-Clean and smudge filters, plus the long-running [filter-process
-protocol](https://git-scm.com/docs/gitattributes#_long_running_filter_process),
-for Git LFS.
+Clean and smudge filters and the filter-process protocol for Git LFS.
 
-This crate implements the three things git invokes when a user runs
-`git add` or `git checkout` on an LFS-tracked file:
+Git invokes content filters whenever a file moves between the
+working tree and a git blob: a *clean* filter runs on the way
+in (`git add`) and a *smudge* filter runs on the way out
+(`git checkout`). LFS hooks into both ends. Clean hashes the
+working-tree bytes, hands them to the local LFS store, and
+emits a small pointer file (which is what git ends up storing);
+smudge takes the pointer back from git, looks up the real
+bytes (fetching from the server if they're not local), and
+writes the content into the working tree.
 
-- **`clean`** — read raw file content on stdin, hash it, store the
-  bytes locally, emit a pointer file on stdout. Used on `git add`.
-- **`smudge`** — read a pointer on stdin, look up the bytes locally
-  (or fetch them on demand), emit raw content on stdout. Used on
-  `git checkout`.
-- **`filter-process`** — the modern long-running variant of the same
-  protocol. One subprocess handles many files in one session,
-  speaking pkt-line framing.
+This crate implements both filters plus the long-running
+[filter-process protocol][filter-process], which modern git
+uses by default: one subprocess handles many files in a single
+session over a pkt-line-framed connection. The three entry
+points are `clean`, `smudge`, and `filter_process`, invoked as
+the bodies of `git lfs clean`, `git lfs smudge`, and
+`git lfs filter-process` respectively.
 
-Designed to be run as the body of `git-lfs clean`, `git-lfs smudge`,
-and `git-lfs filter-process` — the entry points wired up by
-`git lfs install` via `filter.lfs.{clean,smudge,process}` config.
+Pointer extensions chain external programs between the raw
+bytes and the stored object. On clean, content passes through
+each registered extension in priority order, with each stage's
+input OID recorded in the resulting pointer; smudge undoes the
+chain in reverse to reconstruct the original bytes. Used for
+case-inverters, content-defined chunking, encryption shims, or
+similar transforms; configured via `lfs.extension.<name>.*` in
+git config.
 
-Part of the [git-lfs Rust workspace](https://gitlab.com/rustutils/git-lfs).
-Experimental — not yet ready for production. License: MIT.
+[filter-process]: https://git-scm.com/docs/gitattributes#_long_running_filter_process
