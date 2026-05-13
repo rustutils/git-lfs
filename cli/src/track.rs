@@ -13,10 +13,11 @@ const ATTRIBUTES_FILE: &str = ".gitattributes";
 /// upstream's format byte-for-byte.
 const LFS_FILTER_TAIL: &str = "filter=lfs diff=lfs merge=lfs -text";
 
-/// Files we refuse to LFS-track because doing so would corrupt the
-/// repository (the file itself controls how git understands every other
-/// file).
-const FORBIDDEN: &[&str] = &[".gitattributes", ".gitignore", ".gitmodules", ".lfsconfig"];
+/// Basename prefixes we refuse to LFS-track because doing so would
+/// corrupt the repository (`.gitattributes`, `.gitignore`,
+/// `.gitmodules`, `.lfsconfig`, `.lfs-*`, etc.). Matches upstream's
+/// `prefixBlocklist` in `commands/command_track.go`.
+const FORBIDDEN_PREFIXES: &[&str] = &[".git", ".lfs"];
 
 #[derive(Debug, thiserror::Error)]
 pub enum TrackError {
@@ -337,24 +338,36 @@ pub fn escape_glob_characters(pattern: &str) -> String {
     out
 }
 
-/// If `pattern` would (textually or via globbing) match one of the
-/// forbidden filenames, return that filename. Otherwise `None`.
-pub fn forbidden_match(pattern: &str) -> Option<&'static str> {
-    let stripped = pattern.trim_start_matches("./");
-    for f in FORBIDDEN {
-        if stripped == *f {
-            return Some(*f);
-        }
+/// If `pattern` would match a tracked file whose basename starts with
+/// `.git` or `.lfs`, return the offending filename. Otherwise `None`.
+///
+/// Mirrors upstream's `git ls-files --ignored --cached -z -x <pattern>`
+/// plus basename-prefix check (`commands/command_track.go::blocklistItem`).
+/// The git-driven approach avoids the false positive of `**/*` matching
+/// `.gitattributes` textually before anything is committed: a brand-new
+/// repo has no tracked files for the pattern to conflict with, so the
+/// pattern is allowed.
+pub fn forbidden_match(cwd: &Path, pattern: &str) -> Option<String> {
+    // Upstream `sanitizePattern`: drop a leading `/` (pathspec anchor)
+    // so `git ls-files` treats `pattern` as a glob and not a literal.
+    let safe = pattern.strip_prefix('/').unwrap_or(pattern);
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["ls-files", "--ignored", "--cached", "-z", "-x", safe])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
     }
-    if let Ok(glob) = globset::GlobBuilder::new(stripped)
-        .literal_separator(false)
-        .build()
-    {
-        let m = glob.compile_matcher();
-        for f in FORBIDDEN {
-            if m.is_match(f) {
-                return Some(*f);
-            }
+    for record in out.stdout.split(|&b| b == 0).filter(|s| !s.is_empty()) {
+        let path = std::str::from_utf8(record).ok()?;
+        let base = Path::new(path)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if FORBIDDEN_PREFIXES.iter().any(|p| base.starts_with(p)) {
+            return Some(base);
         }
     }
     None
@@ -569,24 +582,6 @@ mod tests {
         ));
         let content = fs::read_to_string(tmp.path().join(ATTRIBUTES_FILE)).unwrap();
         assert!(content.contains("lockable"));
-    }
-
-    #[test]
-    fn forbidden_match_blocks_literal_gitattributes() {
-        assert_eq!(forbidden_match(".gitattributes"), Some(".gitattributes"));
-        assert_eq!(forbidden_match("./.gitattributes"), Some(".gitattributes"));
-    }
-
-    #[test]
-    fn forbidden_match_blocks_glob_against_dotfiles() {
-        assert!(forbidden_match(".git*").is_some());
-        assert!(forbidden_match("*").is_some());
-    }
-
-    #[test]
-    fn forbidden_match_allows_normal_patterns() {
-        assert_eq!(forbidden_match("*.jpg"), None);
-        assert_eq!(forbidden_match("data/*.bin"), None);
     }
 
     #[test]

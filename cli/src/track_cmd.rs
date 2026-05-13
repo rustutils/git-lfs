@@ -70,7 +70,7 @@ pub fn run(args: Args<'_>) -> Result<u8, Box<dyn std::error::Error>> {
     // contract — `t-track.sh` redirects stdout to a log and greps it),
     // and exit non-zero without touching `.gitattributes`.
     for pat in args.patterns {
-        if let Some(forbidden) = track::forbidden_match(pat) {
+        if let Some(forbidden) = track::forbidden_match(args.cwd, pat) {
             println!("Pattern '{pat}' matches forbidden file '{forbidden}'");
             return Ok(1);
         }
