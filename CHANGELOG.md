@@ -7,8 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `git lfs logs` (and `logs last` / `logs show <name>` / `logs clear` /
+  `logs boomtown`). Manages the crash-log directory under
+  `.git/lfs/logs/`; `boomtown` is the deliberate-failure self-test that
+  writes a sample log and exits 2. Lands `t-logs`.
+- `git lfs ls-files --deleted` walks the ref's full history (matching
+  `scan_pointers`'s reachability semantics) so pointers reachable from
+  prior commits but absent at HEAD still surface. Lands
+  `t-ls-files::reference with --deleted`.
+- `git lfs ls-files --all <ref>` now errors with `Cannot use --all with
+  explicit reference` rather than silently ignoring the positional.
+  Lands `t-ls-files::--all with argument(s)`.
+
 ### Fixed
 
+- `git lfs track` blocklist check now matches upstream's `git ls-files
+  --ignored --cached -z -x <pattern>` + basename-prefix logic rather
+  than textually globbing the pattern against `.gitattributes` etc.
+  Patterns that *would* match a forbidden file but where no such file
+  is currently tracked (e.g. `**/*` in a fresh repo) now go through
+  cleanly. Existing rejection of `git lfs track .gitattributes`, `.git*`,
+  `*` still works because those patterns hit committed `.gitattributes`.
+  Lands `t-ls-files::list/stat files with escaped runes in path
+  before commit` (which sets up via `git lfs track '**/*'`).
 - `git lfs ls-files` (no args) now scans the index in addition to the
   tree at HEAD, so freshly-staged-but-uncommitted pointers show up.
   Falls back to the empty tree when HEAD doesn't exist yet, matching

@@ -60,7 +60,7 @@ Useful entry points in the upstream tree:
 
 ## Test status snapshot (point in time)
 
-About 694 of 794 vendored shell tests pass (~87%) across 104
+About 698 of 794 vendored shell tests pass (~88%) across 104
 files. Most of the per-command files now pass cleanly; remaining
 failures cluster in features we haven't shipped yet rather than
 edge cases of features we have.
@@ -84,10 +84,9 @@ t-push (26/27), t-ls-files (24/31).
   t-askpass (5/6), t-extra-header (4/4), t-content-type (3/3),
   t-expired (6/6). ~40 tests, blocked on the credential-helper
   ecosystem beyond the basic 401-fill-retry loop.
-- **ls-files long tail** — t-ls-files (7/31 fail). Index scan
-  + 1-space JSON indent + repo-root path resolution shipped; the
-  remaining failures cluster around `--include`/`--exclude`/
-  `--deleted`/two-ref range/escaped runes in path.
+- **ls-files long tail** — t-ls-files (4/31 fail). Remaining
+  failures cluster around `--include`/`--exclude` (3 tests, needs
+  filepathfilter) and the two-ref range form (1 test).
 - **Prune + fetch-recent retention** — t-prune (14/18 fail),
   t-prune-worktree (2/2), t-fetch-recent (6/7). Same root cause:
   `lfs.fetchrecentcommitsdays` / `lfs.fetchrecentrefsdays` /
@@ -107,7 +106,7 @@ t-push (26/27), t-ls-files (24/31).
   t-attributes needs `[attr]NAME` macro expansion in `git lfs track`'s
   pattern listing.
 - **Unshipped commands** — t-completion (5), t-dedup (3),
-  t-logs (1), t-merge-driver (6).
+  t-merge-driver (6).
 - **Push edge cases** — t-push (1/27 fail). Only `push (retry with
   expired actions)` remains — needs the action-URL expiry path
   (`t-expired` cluster). Deprecated `_links`, negative-size,
@@ -367,8 +366,11 @@ Things we built minimally and need to come back to. Each entry says **what's
 missing** and **why it was OK to skip for v0**.
 
 ### `store`
-- **Log directory** (`<lfs>/logs/`). Needed by `t-logs.sh` once we have
-  commands that emit logs (push/fetch failures).
+- **Real crash-log integration.** `git lfs logs` reads/writes
+  `<lfs>/logs/` correctly (lands `t-logs.sh`), but no other command
+  actually emits a log on push/fetch failure yet. Wire `Panic`-style
+  log writing into the fetch/push error paths so users hitting
+  intermittent server errors get a postmortem to share.
 - **Permission/umask handling.** Needed by `t-umask.sh`. Tempfile defaults
   are 0600; multi-user shared repos may need 0660. Add `repo_perms` field
   on Store + `RepositoryPermissions` helper.
@@ -876,5 +878,5 @@ import and export share it.
   worth flagging.
 
 ### Whole-project
-- **Remaining commands** — `merge-driver`, `dedup`, `ext`,
-  `standalone-file`, `logs`, `update`. All niche; mostly polish.
+- **Remaining commands** — `merge-driver`, `dedup`,
+  `standalone-file`, `update`. All niche; mostly polish.
