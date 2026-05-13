@@ -99,14 +99,12 @@ t-push (26/27), t-ls-files (24/31).
   t-batch-storage-retries (5/5),
   t-batch-storage-retries-ratelimit (5/5). Server returns 429
   with Retry-After header; we don't honor the schedule.
-- **Pointer extensions / unshipped commands** — t-merge-driver
-  (6/6), t-attributes (4/4). Clean and smudge filters both run
-  extensions; the pointer CLI now does too (closes t-pointer 21-26
-  and t-ext 1). t-merge-driver needs the `merge-driver` subcommand;
-  t-attributes needs `[attr]NAME` macro expansion in `git lfs track`'s
-  pattern listing.
-- **Unshipped commands** — t-completion (5), t-dedup (3),
-  t-merge-driver (6).
+- **Pointer extensions / unshipped commands** — t-attributes (4/4).
+  Clean and smudge filters both run extensions; the pointer CLI now
+  does too (closes t-pointer 21-26 and t-ext 1). t-merge-driver ships
+  (6/6); t-attributes needs `[attr]NAME` macro expansion in
+  `git lfs track`'s pattern listing.
+- **Unshipped commands** — t-completion (5), t-dedup (3).
 - **Push edge cases** — t-push (1/27 fail). Only `push (retry with
   expired actions)` remains — needs the action-URL expiry path
   (`t-expired` cluster). Deprecated `_links`, negative-size,
@@ -184,15 +182,11 @@ what's broken and where to start.
    (no jitter, no honoring of explicit delay). All in
    t-batch-retries-ratelimit, t-batch-storage-retries,
    t-batch-storage-retries-ratelimit.
-6. **`merge-driver` subcommand + track macro expansion** (~10
-   tests). Smudge-side and pointer-CLI extensions now ship; the
-   remaining cluster splits in two: t-merge-driver (6) needs the
-   LFS-aware merge driver implemented, and t-attributes (4) needs
+6. **Track macro expansion** (4 tests). t-attributes (4) needs
    `git lfs track`'s pattern listing to expand `[attr]NAME` macros
    from `.gitattributes` (the underlying `AttrSet` already does;
    only `list_lfs_patterns` is macro-blind).
-7. **Unshipped commands** — `merge-driver` (6 tests), `completion`
-   (5), `dedup` (3), `logs` (1), `ext` (1).
+7. **Unshipped commands** — `completion` (5), `dedup` (3).
 8. **Push edge cases** (9 tests). Deprecated `_links` serde alias
    (1 line), negative-size error message wording, batch error
    formatter, push-direction `pushInsteadof` alias, custom
@@ -337,8 +331,8 @@ adapters in `transfer/`:
 
 ### Milestone 9 — Unshipped commands (small batch)
 
-`merge-driver` (depends on M5), `completion`, `dedup`, `logs`,
-`ext`. Each is small in isolation — bundle as one focused pass.
+`completion`, `dedup`. Each is small in isolation — bundle as one
+focused pass.
 
 ### Milestone 10 — Long-tail polish (ongoing)
 
@@ -878,5 +872,5 @@ import and export share it.
   worth flagging.
 
 ### Whole-project
-- **Remaining commands** — `merge-driver`, `dedup`,
-  `standalone-file`, `update`. All niche; mostly polish.
+- **Remaining commands** — `dedup`, `standalone-file`, `update`. All
+  niche; mostly polish.

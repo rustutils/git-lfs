@@ -3,7 +3,7 @@
 Per-suite snapshot of the vendored upstream shell tests. Last
 refreshed: **2026-05-13**.
 
-**698 / 794 tests passing (~88%) across 104 suites.**
+**704 / 794 tests passing (~89%) across 104 suites.**
 
 Refresh:
 
@@ -15,7 +15,7 @@ The xtask wrapper runs `make test` under the hood and parses prove's
 TAP output into the Full pass / Partial / Empty groups below. Pipe
 through `tee` if you want the per-suite breakdown saved.
 
-## Full pass — 74 suites, 568 tests
+## Full pass — 75 suites, 574 tests
 
 ```
 t-alternates.sh                          t-migrate-export.sh
@@ -54,10 +54,11 @@ t-lock.sh                                t-unusual-filenames.sh
 t-locks.sh                               t-update.sh
 t-logs.sh                                t-version.sh
 t-malformed-pointers.sh                  t-worktree.sh
-t-mergetool.sh                           t-zero-len-file.sh
+t-merge-driver.sh                        t-zero-len-file.sh
+t-mergetool.sh
 ```
 
-## Partial — 27 suites, 130 / 226 tests
+## Partial — 26 suites, 130 / 220 tests
 
 | Suite | Pass / Total |
 | --- | --- |
@@ -74,7 +75,6 @@ t-mergetool.sh                           t-zero-len-file.sh
 | `t-dedup.sh` | 0 / 3 |
 | `t-expired.sh` | 3 / 6 |
 | `t-ls-files.sh` | 27 / 31 |
-| `t-merge-driver.sh` | 0 / 6 |
 | `t-migrate-import.sh` | 44 / 51 |
 | `t-multiple-remotes.sh` | 0 / 12 |
 | `t-progress.sh` | 0 / 1 |

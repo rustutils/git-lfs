@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `git lfs merge-driver`, the LFS-aware Git merge driver. Wired into
+  Git via `[merge "lfs"] driver = git lfs merge-driver --ancestor %O
+  --current %A --other %B --marker-size %L --output %A`. Each of
+  `--ancestor` / `--current` / `--other` is smudged into a tempfile
+  (fetching the object on demand if needed), the three plus a fresh
+  `%D` tempfile are substituted into `--program` (default
+  `git merge-file --stdout --marker-size=%L %A %O %B >%D`), and the
+  merged result is cleaned back into a pointer at `--output`.
+  Non-zero merge program exit propagates as conflicts. Lands
+  `t-merge-driver` (6/6).
 - `git lfs logs` (and `logs last` / `logs show <name>` / `logs clear` /
   `logs boomtown`). Manages the crash-log directory under
   `.git/lfs/logs/`; `boomtown` is the deliberate-failure self-test that
