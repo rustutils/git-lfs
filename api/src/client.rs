@@ -320,6 +320,12 @@ impl Client {
             for (name, value) in &self.extra_headers {
                 let _ = writeln!(err, "> {name}: {value}");
             }
+            // Authorization header (masked). Mirrors upstream's
+            // `lfshttp/verbose.go::traceHTTPDump`; t-verify greps for
+            // `Authorization: Basic * * * * *`.
+            if let Some(masked) = self.auth.lock().unwrap().masked_header() {
+                let _ = writeln!(err, "> {masked}");
+            }
             let _ = writeln!(err);
             let _ = err.write_all(&body_bytes);
             let _ = writeln!(err);

@@ -86,6 +86,13 @@ pub enum TransferError {
     /// fresh batch and retries; this crate fails fast for now.
     #[error("action \"{rel}\" expired")]
     ActionExpired { rel: String },
+
+    /// The verify action failed after exhausting `lfs.transfer.maxverifies`
+    /// attempts. Not retryable at the outer queue level because verify
+    /// owns its own retry budget. Carries the last underlying error so
+    /// the user still sees *why* verify failed.
+    #[error("{0}")]
+    VerifyExhausted(Box<TransferError>),
 }
 
 /// Format the action-URL error message to match upstream's
@@ -140,7 +147,8 @@ impl TransferError {
             | TransferError::Store(_)
             | TransferError::InvalidOid(_)
             | TransferError::UnsupportedHashAlgo(_)
-            | TransferError::ActionExpired { .. } => false,
+            | TransferError::ActionExpired { .. }
+            | TransferError::VerifyExhausted(_) => false,
             // Defer to the wrapped ApiError. A 5xx batch response is
             // worth retrying; a credential-not-found is not.
             TransferError::BatchResponse(e) => e.is_retryable(),

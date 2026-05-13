@@ -569,6 +569,15 @@ fn transfer_config_for(cwd: &Path, endpoint_url: Option<&str>) -> TransferConfig
     {
         config.batch_size = n;
     }
+    // `lfs.transfer.maxverifies` clamps to >= 3, matching upstream's
+    // `tq/verify.go` `max(defaultMaxVerifyAttempts, mv)` — so a negative
+    // or absurdly-small value silently falls back to the default.
+    if let Ok(Some(raw)) = git_lfs_git::config::get_effective(cwd, "lfs.transfer.maxverifies")
+        && let Ok(n) = raw.trim().parse::<u32>()
+        && n >= 3
+    {
+        config.max_verifies = n;
+    }
     // `lfs.<url>.contenttype` falls back to global `lfs.contenttype`,
     // default `true`. Without an endpoint we can't apply URL scoping
     // — fall back to the global key directly.

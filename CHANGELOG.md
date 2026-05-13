@@ -21,6 +21,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `api: redirect PUT <old> to <new>` (gated on `GIT_TRACE`), re-open the
   file stream, and retry against the Location target. Capped at 10
   redirects. Lands `t-upload-redirect`.
+- `transfer`: verify action now retries up to `lfs.transfer.maxverifies`
+  attempts (default 3, values below 3 fall back to the default matching
+  upstream's `tq/verify.go` clamp). Emits
+  `tq: verify <short_oid> attempt #<n> (max: <mv>)` per attempt (gated
+  on `GIT_TRACE`), plus `tq: verify err: <msg>` on each non-final
+  failure. Exhausted-budget failures wrap as
+  `TransferError::VerifyExhausted` so the outer queue retry treats them
+  as terminal rather than re-issuing the whole upload. Lands `t-verify`
+  (4/4).
+- `api`: `GIT_CURL_VERBOSE` batch request dump now includes a masked
+  `Authorization: Basic * * * * *` line so shell tests can confirm
+  auth was attached without leaking credentials. Mirrors upstream's
+  `lfshttp/verbose.go::traceHTTPDump`.
 
 ## [0.7.0] - 2026-05-13
 

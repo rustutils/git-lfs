@@ -25,4 +25,17 @@ impl Auth {
             Auth::Bearer(token) => req.bearer_auth(token),
         }
     }
+
+    /// Masked rendering of the `Authorization:` header for
+    /// `GIT_CURL_VERBOSE` dumps. Mirrors upstream's
+    /// `lfshttp/verbose.go::traceHTTPDump`, which masks `Basic` only;
+    /// `Bearer` tokens dump verbatim there but we mask them too to avoid
+    /// leaking long-lived bearer credentials into shell-test logs.
+    pub(crate) fn masked_header(&self) -> Option<&'static str> {
+        match self {
+            Auth::None => None,
+            Auth::Basic { .. } => Some("Authorization: Basic * * * * *"),
+            Auth::Bearer(_) => Some("Authorization: Bearer * * * * *"),
+        }
+    }
 }

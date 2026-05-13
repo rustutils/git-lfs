@@ -53,6 +53,11 @@ pub struct TransferConfig {
     /// the batch response didn't already set a `Content-Type` in
     /// `action.header`.
     pub detect_content_type: bool,
+    /// `lfs.transfer.maxverifies` — total attempts against the verify
+    /// action URL after a successful upload (when the batch response
+    /// included one). Default 3; values below 3 fall back to the
+    /// default, matching upstream's `tq/verify.go` clamp.
+    pub max_verifies: u32,
 }
 
 impl Default for TransferConfig {
@@ -66,6 +71,7 @@ impl Default for TransferConfig {
             upload_url_rewriter: None,
             batch_size: 100,
             detect_content_type: true,
+            max_verifies: 3,
         }
     }
 }
@@ -84,6 +90,7 @@ impl std::fmt::Debug for TransferConfig {
             )
             .field("batch_size", &self.batch_size)
             .field("detect_content_type", &self.detect_content_type)
+            .field("max_verifies", &self.max_verifies)
             .finish()
     }
 }

@@ -310,6 +310,7 @@ fn hash_file(path: &Path) -> std::io::Result<Oid> {
 /// `Content-Type`, sniff the file's first 512 bytes; when `false`,
 /// send `application/octet-stream` unconditionally. Mirrors upstream's
 /// `tq/basic_upload.go::setContentTypeFor`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn upload(
     http: &reqwest::Client,
     store: Arc<Store>,
@@ -317,6 +318,7 @@ pub(crate) async fn upload(
     size: u64,
     actions: &Actions,
     detect_content_type: bool,
+    max_verifies: u32,
     events: Option<&UnboundedSender<Event>>,
 ) -> Result<(), TransferError> {
     let upload_action = actions
@@ -446,7 +448,7 @@ pub(crate) async fn upload(
     check_status(&resp, &upload_action.href)?;
 
     if let Some(verify_action) = &actions.verify {
-        verify(http, oid, size, verify_action).await?;
+        verify(http, oid, size, verify_action, max_verifies).await?;
     }
     Ok(())
 }
@@ -514,20 +516,46 @@ async fn verify(
     oid: &str,
     size: u64,
     action: &Action,
+    max_attempts: u32,
 ) -> Result<(), TransferError> {
-    let mut req = http
-        .request(Method::POST, &action.href)
-        .header(reqwest::header::ACCEPT, "application/vnd.git-lfs+json")
-        .header(
-            reqwest::header::CONTENT_TYPE,
-            "application/vnd.git-lfs+json",
-        );
-    for (k, v) in &action.header {
-        req = req.header(k, v);
+    let short = oid.get(..7).unwrap_or(oid);
+    let mut last_err: Option<TransferError> = None;
+    for attempt in 1..=max_attempts {
+        if trace_enabled() {
+            eprintln!("tq: verify {short} attempt #{attempt} (max: {max_attempts})");
+        }
+        let mut req = http
+            .request(Method::POST, &action.href)
+            .header(reqwest::header::ACCEPT, "application/vnd.git-lfs+json")
+            .header(
+                reqwest::header::CONTENT_TYPE,
+                "application/vnd.git-lfs+json",
+            );
+        for (k, v) in &action.header {
+            req = req.header(k, v);
+        }
+        match req.json(&VerifyBody { oid, size }).send().await {
+            Ok(resp) => match check_status(&resp, &action.href) {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    if trace_enabled() {
+                        eprintln!("tq: verify err: {e}");
+                    }
+                    last_err = Some(e);
+                }
+            },
+            Err(e) => {
+                let err = TransferError::from(e);
+                if trace_enabled() {
+                    eprintln!("tq: verify err: {err}");
+                }
+                last_err = Some(err);
+            }
+        }
     }
-    let resp = req.json(&VerifyBody { oid, size }).send().await?;
-    check_status(&resp, &action.href)?;
-    Ok(())
+    let last = last_err
+        .unwrap_or_else(|| TransferError::Io(std::io::Error::other("verify exhausted retries")));
+    Err(TransferError::VerifyExhausted(Box::new(last)))
 }
 
 fn check_status(resp: &Response, url: &str) -> Result<(), TransferError> {

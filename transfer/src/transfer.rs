@@ -340,6 +340,7 @@ async fn process_object(
                     obj.size,
                     actions,
                     config.detect_content_type,
+                    config.max_verifies,
                     events,
                 )
                 .await
