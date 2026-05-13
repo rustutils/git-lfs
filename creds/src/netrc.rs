@@ -43,6 +43,7 @@ use std::sync::Mutex;
 
 use crate::helper::{Credentials, Helper, HelperError};
 use crate::query::Query;
+use crate::trace::trace_enabled;
 
 /// One `machine <name> login <user> password <pass>` block from a
 /// netrc file. `machine == "*"` represents a `default` block.
@@ -212,16 +213,6 @@ fn go_quote(s: &str) -> String {
     }
     out.push('"');
     out
-}
-
-fn trace_enabled() -> bool {
-    match std::env::var_os("GIT_TRACE") {
-        None => false,
-        Some(v) => {
-            let s = v.to_string_lossy().trim().to_lowercase();
-            !matches!(s.as_str(), "" | "0" | "false" | "no" | "off")
-        }
-    }
 }
 
 /// Parse a netrc file body into entries. Permissive: unknown

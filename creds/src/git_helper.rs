@@ -17,6 +17,7 @@ use std::process::{Command, Stdio};
 
 use crate::helper::{Credentials, Helper, HelperError};
 use crate::query::Query;
+use crate::trace::trace_enabled;
 
 /// Shells out to the `git` binary's credential subsystem.
 ///
@@ -73,12 +74,10 @@ impl GitCredentialHelper {
 
     fn run(&self, subcommand: &str, query: &Query) -> Result<String, HelperError> {
         // Upstream's `creds: git credential <sub> (%q, %q, %q)` trace
-        // at `creds/creds.go:328`. Go's %q quotes the string with the
-        // double-quote form Rust's {:?} produces, so a hex-clean
-        // protocol/host/path round-trips byte-for-byte.
-        // `t-credentials-no-prompt.sh::askpass: push with bad askpass`
-        // greps for `creds: git credential fill`.
-        {
+        // at `creds/creds.go:328`. Gated on GIT_TRACE because t-lock's
+        // `lock multiple files` test runs with GIT_TRACE=0 and asserts
+        // errlog is clean.
+        if trace_enabled() {
             let mut e = std::io::stderr().lock();
             let _ = writeln!(
                 e,

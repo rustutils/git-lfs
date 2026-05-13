@@ -36,6 +36,7 @@ mod memory;
 mod netrc;
 mod query;
 mod ssh;
+mod trace;
 
 pub use askpass::AskpassHelper;
 pub use chain::HelperChain;

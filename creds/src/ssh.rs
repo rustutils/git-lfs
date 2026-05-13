@@ -45,6 +45,8 @@ use std::time::{Duration, SystemTime};
 
 use serde::Deserialize;
 
+use crate::trace::trace_enabled;
+
 /// `git-lfs-authenticate <path> <operation>` operation argument.
 ///
 /// Wire form is lowercase `upload` / `download`.
@@ -363,18 +365,6 @@ fn trace(args: std::fmt::Arguments) {
     }
     let mut e = std::io::stderr().lock();
     let _ = writeln!(e, "{args}");
-}
-
-/// Mirrors git's `GIT_TRACE` semantics: any value other than
-/// `""`, `0`, `false`, `no`, `off` enables tracing.
-fn trace_enabled() -> bool {
-    match std::env::var_os("GIT_TRACE") {
-        None => false,
-        Some(v) => {
-            let s = v.to_string_lossy().trim().to_lowercase();
-            !matches!(s.as_str(), "" | "0" | "false" | "no" | "off")
-        }
-    }
 }
 
 #[cfg(test)]
