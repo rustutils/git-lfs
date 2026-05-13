@@ -55,6 +55,7 @@ Git LFS works by using a "smudge" filter to look up the large file contents base
 - `unlock` — Remove "locked" setting for a file on the Git LFS server
 - `ls-files` — Show information about Git LFS files in the index and working tree
 - `logs` — Show errors logged by Git LFS
+- `merge-driver` — Merge driver for LFS-tracked files
 
 ## Examples
 

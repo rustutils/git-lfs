@@ -88,6 +88,7 @@ pub enum Command {
     Unlock(UnlockArgs),
     LsFiles(LsFilesArgs),
     Logs(LogsArgs),
+    MergeDriver(MergeDriverArgs),
 }
 
 /// Git clean filter that converts large files to pointers
@@ -1557,4 +1558,58 @@ pub enum LogsSub {
     Clear,
     /// Self-test: write a sample crash log and exit with status 2.
     Boomtown,
+}
+
+/// Merge driver for LFS-tracked files
+///
+/// Invoked by Git through a `merge.<name>.driver` configuration entry,
+/// typically wired up as:
+///
+/// ```text
+/// [merge "lfs"]
+///     name = LFS merge driver
+///     driver = git lfs merge-driver --ancestor %O --current %A --other %B --marker-size %L --output %A
+/// ```
+///
+/// For each of `--ancestor`, `--current`, and `--other`, the input file
+/// is either a pointer (smudged through to its working-tree content,
+/// fetching the object on demand if necessary) or already plain content
+/// (used as-is). The three resulting files plus a fresh tempfile for
+/// the merged output are substituted into `--program` (default
+/// `git merge-file --stdout --marker-size=%L %A %O %B >%D`) and run
+/// via `sh -c`. The merged content is then cleaned back into a pointer
+/// and written to `--output`. Non-zero exit from the merge program
+/// indicates conflicts; that exit code is propagated.
+#[derive(Args)]
+pub struct MergeDriverArgs {
+    /// File containing the ancestor (merge-base) version. Pointer or
+    /// raw content; substituted for `%O` in the program template.
+    #[arg(long)]
+    pub ancestor: Option<String>,
+
+    /// File containing the current (`ours`) version. Pointer or raw
+    /// content; substituted for `%A` in the program template.
+    #[arg(long)]
+    pub current: Option<String>,
+
+    /// File containing the other (`theirs`) version. Pointer or raw
+    /// content; substituted for `%B` in the program template.
+    #[arg(long)]
+    pub other: Option<String>,
+
+    /// Path to write the merged pointer to. Typically the same path
+    /// as `--current` so that Git picks up the result.
+    #[arg(long)]
+    pub output: Option<String>,
+
+    /// Merge program template. Defaults to
+    /// `git merge-file --stdout --marker-size=%L %A %O %B >%D`. `%A`,
+    /// `%O`, `%B`, `%D`, and `%L` are substituted with shell-quoted
+    /// paths / the marker size; `%%` emits a literal `%`.
+    #[arg(long)]
+    pub program: Option<String>,
+
+    /// Conflict marker size to substitute for `%L`.
+    #[arg(long, default_value_t = 7)]
+    pub marker_size: u32,
 }

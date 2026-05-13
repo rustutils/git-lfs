@@ -23,6 +23,7 @@ mod lockable;
 mod locks_verify;
 mod logs;
 mod ls_files;
+mod merge_driver;
 mod migrate;
 mod pointer_cmd;
 mod pre_push;
@@ -39,10 +40,10 @@ use fetcher::LfsFetcher;
 use git_lfs::args::{
     CheckoutArgs, CleanArgs, Cli, CloneArgs, Command, EnvArgs, ExtArgs, ExtCmd, ExtListArgs,
     FetchArgs, FilterProcessArgs, FsckArgs, InstallArgs, LockArgs, LocksArgs, LogsArgs, LogsSub,
-    LsFilesArgs, MigrateArgs, MigrateCmd, MigrateExportArgs, MigrateImportArgs, MigrateInfoArgs,
-    PointerArgs, PostCheckoutArgs, PostCommitArgs, PostMergeArgs, PrePushArgs, PruneArgs, PullArgs,
-    PushArgs, SmudgeArgs, StatusArgs, TrackArgs, UninstallArgs, UnlockArgs, UntrackArgs,
-    UpdateArgs, VersionArgs,
+    LsFilesArgs, MergeDriverArgs, MigrateArgs, MigrateCmd, MigrateExportArgs, MigrateImportArgs,
+    MigrateInfoArgs, PointerArgs, PostCheckoutArgs, PostCommitArgs, PostMergeArgs, PrePushArgs,
+    PruneArgs, PullArgs, PushArgs, SmudgeArgs, StatusArgs, TrackArgs, UninstallArgs, UnlockArgs,
+    UntrackArgs, UpdateArgs, VersionArgs,
 };
 
 /// Strip backtick characters from every help-text field in the clap
@@ -1080,6 +1081,36 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 format,
             };
             ls_files::run(&cwd, refspec.as_deref(), &opts)?;
+        }
+        Command::MergeDriver(MergeDriverArgs {
+            ancestor,
+            current,
+            other,
+            output,
+            program,
+            marker_size,
+        }) => {
+            if let Some(code) = bail_if_outside_repo(&cwd) {
+                return Ok(code);
+            }
+            let opts = merge_driver::MergeDriverOpts {
+                ancestor: ancestor.as_deref(),
+                current: current.as_deref(),
+                other: other.as_deref(),
+                output: output.as_deref(),
+                program: program.as_deref(),
+                marker_size,
+            };
+            match merge_driver::run(&cwd, &opts) {
+                Ok(code) => return Ok(code),
+                Err(merge_driver::MergeDriverError::MissingOptions) => {
+                    eprintln!(
+                        "the --ancestor, --current, --other, and --output options are mandatory"
+                    );
+                    return Ok(2);
+                }
+                Err(e) => return Err(Box::new(e)),
+            }
         }
         Command::Logs(LogsArgs { sub }) => {
             if let Some(code) = bail_if_outside_repo(&cwd) {
