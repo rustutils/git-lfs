@@ -518,17 +518,29 @@ pub(crate) fn upload_in_range_with_args(
         });
     }
 
-    let truly_missing: Vec<(ObjectSpec, Option<PathBuf>)> = if missing.is_empty() {
-        Vec::new()
-    } else {
-        let server_has = fetcher
-            .check_server_has(missing.iter().map(|(s, _)| s.clone()).collect())
-            .map_err(PushCommandError::Fetch)?;
-        missing
-            .into_iter()
-            .filter(|(s, _)| !server_has.contains(&s.oid))
-            .collect()
-    };
+    // Pointers that are missing locally but already on the server count
+    // toward the push total so the user sees `100% (N/N)` even though we
+    // couldn't have re-uploaded the bytes. They're tracked separately
+    // from `to_upload` so we don't try to spawn a real transfer for
+    // them.
+    let (truly_missing, already_on_server): (Vec<(ObjectSpec, Option<PathBuf>)>, Vec<ObjectSpec>) =
+        if missing.is_empty() {
+            (Vec::new(), Vec::new())
+        } else {
+            let server_has = fetcher
+                .check_server_has(missing.iter().map(|(s, _)| s.clone()).collect())
+                .map_err(PushCommandError::Fetch)?;
+            let mut missing_off = Vec::new();
+            let mut on_server = Vec::new();
+            for (spec, path) in missing {
+                if server_has.contains(&spec.oid) {
+                    on_server.push(spec);
+                } else {
+                    missing_off.push((spec, path));
+                }
+            }
+            (missing_off, on_server)
+        };
 
     if !truly_missing.is_empty() {
         let allow = allow_incomplete_push(cwd);
@@ -568,7 +580,7 @@ pub(crate) fn upload_in_range_with_args(
         }
     }
 
-    if to_upload.is_empty() {
+    if to_upload.is_empty() && already_on_server.is_empty() {
         // Nothing healthy to upload, but corrupt objects still need
         // to be reported and fail the push.
         if !corrupt.is_empty() {
@@ -588,22 +600,33 @@ pub(crate) fn upload_in_range_with_args(
         return Ok(PushOutcome::default());
     }
 
-    let total = to_upload.len();
-    let total_bytes: u64 = to_upload.iter().map(|s| s.size).sum();
+    // Objects already on the server count as already-successful — no
+    // bytes to ship, but they belong in the total so the progress line
+    // matches upstream's "N/N" when a partial local cache has been
+    // pruned.
+    let total = to_upload.len() + already_on_server.len();
+    let already_on_server_bytes: u64 = already_on_server.iter().map(|s| s.size).sum();
+    let total_bytes: u64 = to_upload.iter().map(|s| s.size).sum::<u64>() + already_on_server_bytes;
     let succeeded_bytes_lookup: HashMap<String, u64> =
         to_upload.iter().map(|s| (s.oid.clone(), s.size)).collect();
 
-    let report = fetcher
-        .upload_many(to_upload)
-        .map_err(PushCommandError::Fetch)?;
-    fetcher.persist_access_mode();
+    let report = if to_upload.is_empty() {
+        Report::default()
+    } else {
+        let report = fetcher
+            .upload_many(to_upload)
+            .map_err(PushCommandError::Fetch)?;
+        fetcher.persist_access_mode();
+        report
+    };
 
-    let succeeded = report.succeeded.len();
+    let succeeded = report.succeeded.len() + already_on_server.len();
     let succeeded_bytes: u64 = report
         .succeeded
         .iter()
         .filter_map(|oid| succeeded_bytes_lookup.get(oid).copied())
-        .sum();
+        .sum::<u64>()
+        + already_on_server_bytes;
     let percent = if total_bytes == 0 {
         100
     } else {
@@ -625,8 +648,8 @@ pub(crate) fn upload_in_range_with_args(
     // though the push exits non-zero). Always fails the push, even
     // with `lfs.allowincompletepush=true`: corruption is a data-
     // integrity problem the user needs to know about.
-    let aborted = !corrupt.is_empty();
-    if aborted {
+    let aborted = !corrupt.is_empty() || !report.failed.is_empty();
+    if !corrupt.is_empty() {
         eprintln!("LFS upload failed:");
         for (spec, path) in &corrupt {
             let path_str = path

@@ -27,9 +27,16 @@ pub struct TransferConfig {
     pub initial_backoff: Duration,
     /// Upper bound for exponential backoff between retries.
     pub backoff_max: Duration,
-    /// Optional rewriter applied to every action URL before transfer.
-    /// `None` ⇒ use action URLs verbatim.
+    /// Optional rewriter applied to download action URLs before
+    /// transfer. Carries `url.<base>.insteadOf` when
+    /// `lfs.transfer.enablehrefrewrite=true`. `None` ⇒ no rewriting.
     pub url_rewriter: Option<UrlRewriter>,
+    /// Optional rewriter applied to upload + verify action URLs. Carries
+    /// `url.<base>.pushInsteadOf` (falling back to `insteadOf`) when
+    /// `lfs.transfer.enablehrefrewrite=true`. `None` ⇒ no push-direction
+    /// rewriting, in which case the upload-side falls back to
+    /// `url_rewriter`.
+    pub upload_url_rewriter: Option<UrlRewriter>,
     /// Max objects per `POST /objects/batch` call. The transfer queue
     /// chunks the input list into runs of this size and issues one
     /// batch API call per chunk. Default: 100 (matches upstream's
@@ -54,6 +61,7 @@ impl Default for TransferConfig {
             initial_backoff: Duration::from_millis(100),
             backoff_max: Duration::from_secs(30),
             url_rewriter: None,
+            upload_url_rewriter: None,
             batch_size: 100,
             detect_content_type: true,
         }
@@ -68,6 +76,10 @@ impl std::fmt::Debug for TransferConfig {
             .field("initial_backoff", &self.initial_backoff)
             .field("backoff_max", &self.backoff_max)
             .field("url_rewriter", &self.url_rewriter.as_ref().map(|_| "<fn>"))
+            .field(
+                "upload_url_rewriter",
+                &self.upload_url_rewriter.as_ref().map(|_| "<fn>"),
+            )
             .field("batch_size", &self.batch_size)
             .field("detect_content_type", &self.detect_content_type)
             .finish()

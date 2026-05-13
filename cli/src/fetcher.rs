@@ -539,13 +539,29 @@ fn take_url_basic_auth(url: &mut url::Url) -> Auth {
 /// re-resolved because the caller already paid for endpoint resolution.
 fn transfer_config_for(cwd: &Path, endpoint_url: Option<&str>) -> TransferConfig {
     let mut config = TransferConfig::default();
-    if href_rewrite_enabled(cwd)
-        && let Ok(aliases) = git_lfs_git::aliases::load_aliases(cwd)
-        && !aliases.is_empty()
-    {
-        config.url_rewriter = Some(Arc::new(move |url: &str| {
-            git_lfs_git::aliases::apply(&aliases, url)
-        }));
+    if href_rewrite_enabled(cwd) {
+        let aliases = git_lfs_git::aliases::load_aliases(cwd).unwrap_or_default();
+        let push_aliases = git_lfs_git::aliases::load_push_aliases(cwd).unwrap_or_default();
+        if !aliases.is_empty() {
+            let download_aliases = aliases.clone();
+            config.url_rewriter = Some(Arc::new(move |url: &str| {
+                git_lfs_git::aliases::apply(&download_aliases, url)
+            }));
+        }
+        if !push_aliases.is_empty() {
+            // pushInsteadOf wins for upload + verify; insteadOf is the
+            // fallback when a URL doesn't match any push alias.
+            let upload_push = push_aliases;
+            let upload_fallback = aliases;
+            config.upload_url_rewriter = Some(Arc::new(move |url: &str| {
+                let rewritten = git_lfs_git::aliases::apply(&upload_push, url);
+                if rewritten != url {
+                    rewritten
+                } else {
+                    git_lfs_git::aliases::apply(&upload_fallback, url)
+                }
+            }));
+        }
     }
     if let Ok(Some(raw)) = git_lfs_git::config::get_effective(cwd, "lfs.transfer.batchSize")
         && let Ok(n) = raw.trim().parse::<usize>()

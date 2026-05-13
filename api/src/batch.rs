@@ -4,11 +4,34 @@
 
 use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::client::Client;
 use crate::error::ApiError;
 use crate::models::Ref;
+
+/// Deserialize a size field as `u64`, but reject negative values with the
+/// exact wording upstream's `git-lfs` emits so test fixtures keyed on it
+/// (notably `t-push.sh::push (with invalid object size)`) keep matching.
+fn deserialize_object_size<'de, D: Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+    use serde::de::Error;
+    let v = i64::deserialize(d)?;
+    if v < 0 {
+        return Err(D::Error::custom(format!("invalid size (got: {v})")));
+    }
+    Ok(v as u64)
+}
+
+/// `ObjectResult.size` is missing entirely from some servers (see the
+/// `serde(default)` comment), so the deserializer must also tolerate
+/// absence. `#[serde(default, deserialize_with = ...)]` requires the
+/// `deserialize_with` to handle the present case only — defaulting
+/// happens before this runs — so this is structurally the same as
+/// `deserialize_object_size` but kept separate to keep the call sites
+/// self-documenting.
+fn deserialize_optional_object_size<'de, D: Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+    deserialize_object_size(d)
+}
 
 /// Operation requested from the batch endpoint.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -88,7 +111,7 @@ pub struct ObjectResult {
     /// already knows. Default to 0 so we don't refuse the response;
     /// callers that need the real size should look it up from the
     /// matching request entry.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_optional_object_size")]
     pub size: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authenticated: Option<bool>,

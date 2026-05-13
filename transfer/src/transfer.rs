@@ -157,18 +157,30 @@ impl Transfer {
             {
                 obj.size = *s;
             }
-            if let Some(rewriter) = &self.config.url_rewriter
-                && let Some(actions) = obj.actions.as_mut()
-            {
-                for action in [
-                    actions.download.as_mut(),
-                    actions.upload.as_mut(),
-                    actions.verify.as_mut(),
-                ]
-                .into_iter()
-                .flatten()
+            if let Some(actions) = obj.actions.as_mut() {
+                if let Some(rewriter) = &self.config.url_rewriter
+                    && let Some(d) = actions.download.as_mut()
                 {
-                    action.href = rewriter(&action.href);
+                    d.href = rewriter(&d.href);
+                }
+                // Uploads and the verify step that follows go through
+                // `pushInsteadOf` (with `insteadOf` as fallback) when
+                // `lfs.transfer.enablehrefrewrite=true`. When no
+                // push-direction rewriter is configured, fall back to
+                // the download rewriter so the existing `insteadOf`
+                // behavior keeps working for upload paths.
+                let up_rewriter = self
+                    .config
+                    .upload_url_rewriter
+                    .as_ref()
+                    .or(self.config.url_rewriter.as_ref());
+                if let Some(rewriter) = up_rewriter {
+                    if let Some(u) = actions.upload.as_mut() {
+                        u.href = rewriter(&u.href);
+                    }
+                    if let Some(v) = actions.verify.as_mut() {
+                        v.href = rewriter(&v.href);
+                    }
                 }
             }
             let permit_src = limit.clone();

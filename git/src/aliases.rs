@@ -35,10 +35,31 @@ pub fn load_aliases(cwd: &Path) -> Result<Aliases, Error> {
         return Ok(cached.clone());
     }
 
-    let entries = list_insteadof_entries(cwd)?;
+    let entries = list_aliases_entries(cwd, "insteadof")?;
     let aliases = build_aliases(&entries);
 
     aliases_cache()
+        .lock()
+        .unwrap()
+        .insert(canon, aliases.clone());
+    Ok(aliases)
+}
+
+/// Load the push-direction alias map (`url.<base>.pushInsteadOf`) for
+/// `cwd`. Cached separately from `load_aliases`. Falls back to an empty
+/// map when no `pushInsteadOf` entries are configured — callers should
+/// then use [`load_aliases`] for the upload path too, so plain
+/// `insteadOf` still applies.
+pub fn load_push_aliases(cwd: &Path) -> Result<Aliases, Error> {
+    let canon = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    if let Some(cached) = push_aliases_cache().lock().unwrap().get(&canon) {
+        return Ok(cached.clone());
+    }
+
+    let entries = list_aliases_entries(cwd, "pushinsteadof")?;
+    let aliases = build_aliases(&entries);
+
+    push_aliases_cache()
         .lock()
         .unwrap()
         .insert(canon, aliases.clone());
@@ -79,23 +100,21 @@ struct InsteadOf {
     alias: String,
 }
 
-/// Read every `url.*.insteadOf` from the effective config (all
-/// scopes), preserving ordering and duplicates so callers can apply
-/// upstream's "first-seen wins / warn on conflict" rule.
-fn list_insteadof_entries(cwd: &Path) -> Result<Vec<InsteadOf>, Error> {
+/// Read every `url.*.<suffix>` from the effective config (all scopes),
+/// preserving ordering and duplicates so callers can apply upstream's
+/// "first-seen wins / warn on conflict" rule. `suffix` is `"insteadof"`
+/// for the download/general path or `"pushinsteadof"` for the upload
+/// path; git's config parsing is case-insensitive on the key, so the
+/// lowercased form covers `pushInsteadOf` etc.
+fn list_aliases_entries(cwd: &Path, suffix: &str) -> Result<Vec<InsteadOf>, Error> {
+    let regex = format!(r"^url\..*\.{suffix}$");
     // `--null` so newlines in URLs (which never happen in practice but
     // *would* break the default key/value separator) and special chars
     // in alias values come out unambiguously.
     let out = Command::new("git")
         .arg("-C")
         .arg(cwd)
-        .args([
-            "config",
-            "--includes",
-            "--null",
-            "--get-regexp",
-            r"^url\..*\.insteadof$",
-        ])
+        .args(["config", "--includes", "--null", "--get-regexp", &regex])
         .output()?;
     // Exit 1 just means "no matches" — common case.
     match out.status.code() {
@@ -103,12 +122,13 @@ fn list_insteadof_entries(cwd: &Path) -> Result<Vec<InsteadOf>, Error> {
         Some(1) => return Ok(Vec::new()),
         _ => {
             return Err(Error::Failed(format!(
-                "git config --get-regexp insteadof failed: {}",
+                "git config --get-regexp {suffix} failed: {}",
                 String::from_utf8_lossy(&out.stderr).trim()
             )));
         }
     }
 
+    let dot_suffix = format!(".{suffix}");
     let mut entries = Vec::new();
     for record in out.stdout.split(|&b| b == 0) {
         if record.is_empty() {
@@ -117,18 +137,18 @@ fn list_insteadof_entries(cwd: &Path) -> Result<Vec<InsteadOf>, Error> {
         // Each record is `<key>\n<value>` — `--null` separates entries
         // but uses the literal newline between key and value.
         let s = std::str::from_utf8(record)
-            .map_err(|e| Error::Failed(format!("non-utf8 insteadof entry: {e}")))?;
+            .map_err(|e| Error::Failed(format!("non-utf8 {suffix} entry: {e}")))?;
         let (key, value) = match s.split_once('\n') {
             Some(kv) => kv,
             None => continue,
         };
-        // Strip `url.` prefix and `.insteadof` suffix to recover the
+        // Strip `url.` prefix and `.<suffix>` suffix to recover the
         // base URL, which can itself contain dots.
         let trimmed = match key.strip_prefix("url.") {
             Some(s) => s,
             None => continue,
         };
-        let base = match trimmed.strip_suffix(".insteadof") {
+        let base = match trimmed.strip_suffix(dot_suffix.as_str()) {
             Some(s) => s,
             None => continue,
         };
@@ -165,9 +185,14 @@ fn build_aliases(entries: &[InsteadOf]) -> Aliases {
 }
 
 static ALIASES_CACHE: OnceLock<Mutex<HashMap<PathBuf, Aliases>>> = OnceLock::new();
+static PUSH_ALIASES_CACHE: OnceLock<Mutex<HashMap<PathBuf, Aliases>>> = OnceLock::new();
 
 fn aliases_cache() -> &'static Mutex<HashMap<PathBuf, Aliases>> {
     ALIASES_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn push_aliases_cache() -> &'static Mutex<HashMap<PathBuf, Aliases>> {
+    PUSH_ALIASES_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 #[cfg(test)]
