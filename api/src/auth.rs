@@ -2,16 +2,18 @@ use reqwest::RequestBuilder;
 
 /// Authentication to attach to API requests.
 ///
-/// Populated by the caller — typically by `creds/` once it lands. Resolving
-/// credentials (git-credential, keychain, etc.) is deliberately not this
-/// crate's job.
+/// Populated by the caller (typically from a credential helper).
+/// Resolving credentials (git-credential, keychain, etc.) is
+/// deliberately not this crate's job; see [`git-lfs-creds`][creds].
+///
+/// [creds]: https://docs.rs/git-lfs-creds
 #[derive(Debug, Clone)]
 pub enum Auth {
     /// No `Authorization` header.
     None,
-    /// HTTP Basic auth — sent as `Authorization: Basic <base64(user:pass)>`.
+    /// HTTP Basic auth, sent as `Authorization: Basic <base64(user:pass)>`.
     Basic { username: String, password: String },
-    /// Bearer token — sent as `Authorization: Bearer <token>`.
+    /// Bearer token, sent as `Authorization: Bearer <token>`.
     Bearer(String),
 }
 

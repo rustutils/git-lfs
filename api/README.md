@@ -1,25 +1,36 @@
 # git-lfs-api
 
-Async HTTP client for the [Git LFS batch and locking APIs](https://github.com/git-lfs/git-lfs/blob/main/docs/api/README.md),
-built on `reqwest` (rustls).
+HTTP client for the Git LFS batch and locking APIs.
 
-Speaks both halves of the LFS server protocol:
+Git LFS speaks to a server over HTTPS using two endpoints. The
+batch endpoint (`POST /objects/batch`) takes a list of OIDs and
+sizes and returns one transfer URL per object (plus any auth
+headers and an expiry window); the locking endpoint suite
+(`/locks`, `/locks/verify`, `/locks/{id}/unlock`, …) lets clients
+claim files to coordinate edits across users on a shared remote.
 
-- **Batch** — `POST /objects/batch` to negotiate transfers, then
-  follow the returned upload/download/verify actions.
-- **Locking** — list, create, verify, and delete file locks
-  (`/locks`, `/locks/verify`, `/locks/{id}/unlock`).
+This crate is the async HTTP client for both. Built on `reqwest`
+with rustls, it handles JSON request/response, server-typed
+errors, and the auth lifecycle; the actual byte transfer against
+the returned URLs lives in [git-lfs-transfer], and credential
+resolution lives in [git-lfs-creds].
 
-The client routes every request through a 401 → credential-fill →
-retry-once → approve/reject loop, with an in-memory cache so
-subsequent requests skip the helper. Credential resolution is
-delegated to [`git-lfs-creds`](https://crates.io/crates/git-lfs-creds).
+The client uses two complementary auth mechanisms. An initial
+`Auth` (None, Basic, or Bearer) is applied to every request, and
+on a 401 the client queries an attached credential helper,
+retries once with the filled-in credentials, and reports
+`approve` or `reject` to the helper based on the outcome. Once a
+fill succeeds, the resolved credentials are cached so subsequent
+requests skip the 401 dance. SSH-mediated endpoints
+(`git-lfs-authenticate`) hook in via an `SshResolver` trait,
+letting a single `Client` transparently swap in a fresh HTTPS
+URL and auth headers per request.
 
-Server-supplied `Retry-After` is parsed off 429 / 5xx responses and
-surfaced through `ApiError::retry_after()`, so callers (the transfer
-queue, in our case) can honor the rate-limit window instead of
-falling back to exponential backoff. The `parse_retry_after` helper
-is exported for reuse on other response paths.
+Server-supplied `Retry-After` (on 429 or 5xx responses) is
+parsed into the typed error so callers can honor the rate-limit
+window instead of falling back to exponential backoff. The
+`parse_retry_after` helper is exported for reuse on other
+response paths.
 
-Part of the [git-lfs Rust workspace](https://gitlab.com/rustutils/git-lfs).
-Experimental — not yet ready for production. License: MIT.
+[git-lfs-transfer]: https://crates.io/crates/git-lfs-transfer
+[git-lfs-creds]: https://crates.io/crates/git-lfs-creds

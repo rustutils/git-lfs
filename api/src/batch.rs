@@ -38,28 +38,36 @@ fn deserialize_optional_object_size<'de, D: Deserializer<'de>>(d: D) -> Result<u
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Operation {
+    /// Fetching objects from the server.
     Download,
+    /// Sending objects to the server.
     Upload,
 }
 
 /// One object the client wants to transfer.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ObjectSpec {
+    /// SHA-256 of the object's content, as 64-character lowercase hex.
     pub oid: String,
+    /// Size of the object in bytes.
     pub size: u64,
 }
 
 /// A POST body for `/objects/batch`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BatchRequest {
+    /// Whether this batch is for uploading or downloading objects.
     pub operation: Operation,
     /// Transfer adapter identifiers the client supports. If empty, the spec
     /// says the server MUST assume `basic`. We send the field unconditionally
     /// so the server's preferred adapter is well-defined.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub transfers: Vec<String>,
+    /// Optional ref scope for the batch. Some servers grant or deny
+    /// access based on the ref being pushed or fetched.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub r#ref: Option<Ref>,
+    /// The objects to transfer.
     pub objects: Vec<ObjectSpec>,
     /// Optional hash algorithm. Defaults to `sha256` per the spec.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -67,6 +75,10 @@ pub struct BatchRequest {
 }
 
 impl BatchRequest {
+    /// Build a request for `operation` over the given `objects`.
+    ///
+    /// `transfers`, `r#ref`, and `hash_algo` are left empty; set them
+    /// via the builder methods below.
     pub fn new(operation: Operation, objects: Vec<ObjectSpec>) -> Self {
         Self {
             operation,
@@ -77,11 +89,13 @@ impl BatchRequest {
         }
     }
 
+    /// Set the list of supported transfer-adapter identifiers.
     pub fn with_transfers(mut self, transfers: impl IntoIterator<Item = String>) -> Self {
         self.transfers = transfers.into_iter().collect();
         self
     }
 
+    /// Set the ref scope for the batch.
     pub fn with_ref(mut self, r: Ref) -> Self {
         self.r#ref = Some(r);
         self
@@ -95,40 +109,53 @@ pub struct BatchResponse {
     /// it; per the spec the client should assume `basic`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transfer: Option<String>,
+    /// Per-object results, one per [`ObjectSpec`] in the request.
     pub objects: Vec<ObjectResult>,
+    /// Hash algorithm the server expects. Absent means `sha256` per the spec.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hash_algo: Option<String>,
 }
 
-/// Per-object result inside a batch response. Either `actions` or `error`
-/// is populated; both being absent means "server already has this object"
-/// (an upload no-op).
+/// Per-object result inside a batch response.
+///
+/// Either `actions` or `error` is populated; both being absent means
+/// "server already has this object" (an upload no-op).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ObjectResult {
+    /// Echo of the OID from the corresponding [`ObjectSpec`].
     pub oid: String,
-    /// Size in bytes. Per the spec this is required, but the upstream
-    /// `lfstest-gitserver` (and at least one production server in the
-    /// wild) omit it on the action path — they assume the client
-    /// already knows. Default to 0 so we don't refuse the response;
+    /// Size in bytes.
+    ///
+    /// Per the spec this is required, but the upstream
+    /// `lfstest-gitserver` (and at least one production server in
+    /// the wild) omit it on the action path: they assume the client
+    /// already knows. Defaults to 0 so we don't refuse the response;
     /// callers that need the real size should look it up from the
     /// matching request entry.
     #[serde(default, deserialize_with = "deserialize_optional_object_size")]
     pub size: u64,
+    /// `Some(true)` if the server authenticated this response (and
+    /// the action URLs are pre-signed). Optional in the spec.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authenticated: Option<bool>,
+    /// The transfer URLs to use. `None` when `error` is set or when
+    /// the server already has the object.
     #[serde(default, alias = "_links", skip_serializing_if = "Option::is_none")]
     pub actions: Option<Actions>,
+    /// Per-object error from the server. `None` on the success path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<ObjectError>,
 }
 
 /// Per-object error inside a batch response.
 ///
-/// Codes mirror HTTP status codes per `docs/api/batch.md`:
-/// 404 = not found, 409 = hash-algo mismatch, 410 = removed, 422 = invalid.
+/// Codes mirror HTTP status codes per the batch spec: 404 = not
+/// found, 409 = hash-algo mismatch, 410 = removed, 422 = invalid.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ObjectError {
+    /// HTTP-style status code classifying the error.
     pub code: u32,
+    /// Human-readable error description.
     pub message: String,
 }
 
@@ -138,10 +165,15 @@ pub struct ObjectError {
 /// `upload` populates `upload` and optionally `verify`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Actions {
+    /// Action to GET the object bytes. Populated on download batches.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub download: Option<Action>,
+    /// Action to PUT the object bytes. Populated on upload batches.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upload: Option<Action>,
+    /// Optional callback to POST after a successful upload. Lets the
+    /// server confirm the bytes landed before declaring the upload
+    /// complete.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verify: Option<Action>,
 }
@@ -149,7 +181,9 @@ pub struct Actions {
 /// One concrete HTTP request the transfer adapter should make.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Action {
+    /// Absolute URL to dial.
     pub href: String,
+    /// Headers to include with the request (typically `Authorization`).
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub header: HashMap<String, String>,
     /// Seconds until the action URL stops being valid. Preferred over
@@ -157,8 +191,8 @@ pub struct Action {
     /// ±2^31 seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_in: Option<i64>,
-    /// Absolute uppercase RFC 3339 timestamp at which the action URL stops
-    /// being valid. Carried as a string — see [`Lock`](crate::Lock).
+    /// Absolute uppercase RFC 3339 timestamp at which the action URL
+    /// stops being valid. Carried as a string (see [`Lock`](crate::Lock)).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<String>,
 }

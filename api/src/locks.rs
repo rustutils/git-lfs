@@ -13,12 +13,15 @@ use crate::models::{Lock, Ref};
 /// POST `/locks` body.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CreateLockRequest {
+    /// Repo-relative path to lock.
     pub path: String,
+    /// Optional ref scope for the lock.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub r#ref: Option<Ref>,
 }
 
 impl CreateLockRequest {
+    /// Build a request to lock `path`.
     pub fn new(path: impl Into<String>) -> Self {
         Self {
             path: path.into(),
@@ -26,6 +29,7 @@ impl CreateLockRequest {
         }
     }
 
+    /// Set the ref scope for the lock.
     pub fn with_ref(mut self, r: Ref) -> Self {
         self.r#ref = Some(r);
         self
@@ -59,12 +63,15 @@ struct CreateLockResponse {
 /// only ship a message.
 #[derive(Debug, thiserror::Error)]
 pub enum CreateLockError {
+    /// The path is already locked. `existing` carries the
+    /// conflicting lock when the server returned one.
     #[error("lock conflict: {message}")]
     Conflict {
         existing: Option<Lock>,
         message: String,
     },
 
+    /// Anything else (transport, auth, decode, non-409 server error).
     #[error(transparent)]
     Api(#[from] ApiError),
 }
@@ -75,20 +82,29 @@ pub enum CreateLockError {
 /// sent on the wire.
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct ListLocksFilter {
+    /// Return only the lock matching this repo-relative path.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    /// Return only the lock with this server-assigned ID.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+    /// Pagination cursor returned by a prior listing's `next_cursor`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
+    /// Maximum number of locks to return.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
+    /// Refspec scope. Some servers partition locks by ref.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refspec: Option<String>,
 }
 
+/// Response body from `GET /locks`. A page of locks plus an optional
+/// continuation cursor.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LockList {
+    /// Locks on this page.
+    ///
     /// Go LFS servers serialize an empty result as `"locks": null`
     /// rather than `"locks": []`; treat null as the empty list.
     #[serde(default, deserialize_with = "deserialize_null_as_default")]
@@ -100,16 +116,22 @@ pub struct LockList {
 
 // ---- verify ---------------------------------------------------------------
 
+/// POST `/locks/verify` body. Asks the server to partition known locks
+/// into ours and theirs.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VerifyLocksRequest {
+    /// Optional ref scope.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub r#ref: Option<Ref>,
+    /// Pagination cursor returned by a prior verify's `next_cursor`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
+    /// Maximum number of locks per partition.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
 }
 
+/// Response body from `POST /locks/verify`. Locks split by owner.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VerifyLocksResponse {
     /// Locks owned by the authenticated user. Servers may serialize an
@@ -120,17 +142,20 @@ pub struct VerifyLocksResponse {
     /// Locks owned by other users. Same null-handling as `ours`.
     #[serde(default, deserialize_with = "deserialize_null_as_default")]
     pub theirs: Vec<Lock>,
+    /// Opaque cursor; pass back as `cursor` in the next request to continue.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
 }
 
 // ---- delete ---------------------------------------------------------------
 
+/// POST `/locks/{id}/unlock` body. Requests deletion of a single lock.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DeleteLockRequest {
     /// True to delete a lock owned by another user. Server enforces auth.
     #[serde(default, skip_serializing_if = "is_false")]
     pub force: bool,
+    /// Optional ref scope, mirroring the lock's original ref.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub r#ref: Option<Ref>,
 }

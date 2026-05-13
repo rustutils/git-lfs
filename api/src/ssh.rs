@@ -19,10 +19,12 @@ use std::sync::Arc;
 use crate::error::ApiError;
 
 /// `git-lfs-authenticate <path> <op>` operation argument. Wire form is
-/// lowercase `upload` / `download`.
+/// lowercase `upload` or `download`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SshOperation {
+    /// Auth scope needed to push objects to the server.
     Upload,
+    /// Auth scope needed to fetch objects from the server.
     Download,
 }
 
@@ -42,12 +44,14 @@ impl SshOperation {
 /// Resolved auth from a `git-lfs-authenticate` call.
 #[derive(Debug, Clone, Default)]
 pub struct SshAuth {
-    /// Replacement endpoint URL prefix. Empty (`""`) when the server
-    /// expects the original URL to be used as-is.
+    /// Replacement endpoint URL prefix.
+    ///
+    /// Empty (`""`) when the server expects the original URL to be used as-is.
     pub href: String,
-    /// Headers to merge into the outgoing request — typically a single
-    /// `Authorization` entry, but the schema lets servers set arbitrary
-    /// keys (e.g. `X-RemoteAuth-Provider` for vendor extensions).
+    /// Headers to merge into the outgoing request.
+    ///
+    /// Typically a single `Authorization` entry, but the schema lets servers
+    /// set arbitrary keys (e.g. `X-RemoteAuth-Provider` for vendor extensions).
     pub headers: HashMap<String, String>,
 }
 

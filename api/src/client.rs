@@ -20,21 +20,22 @@ pub(crate) const LFS_MEDIA_TYPE: &str = "application/vnd.git-lfs+json";
 
 /// HTTP client for the git-lfs API endpoints.
 ///
-/// One instance per LFS endpoint URL. `Client` is cheap to clone and shares
-/// an underlying connection pool — clone freely.
+/// One instance per LFS endpoint URL. `Client` is cheap to clone and
+/// shares an underlying connection pool, so clone freely.
 ///
 /// # Authentication
 ///
 /// Two complementary mechanisms:
 ///
-/// - [`Auth`] passed at construction is the initial auth — applied to every
-///   request, no retries on 401.
-/// - A credential helper attached via [`Self::with_credential_helper`] is
-///   queried on a 401 response: the request is retried once with the
-///   filled-in credentials, and the helper is told `approve`/`reject`
-///   based on the second attempt's outcome. Once a fill succeeds, the
-///   client remembers the credentials and uses them for subsequent
-///   requests, so the 401 dance only happens at most once per process.
+/// - [`Auth`] passed at construction is the initial auth, applied to
+///   every request with no retry on 401.
+/// - A credential helper attached via [`Self::with_credential_helper`]
+///   is queried on a 401 response: the request is retried once with
+///   the filled-in credentials, and the helper is told `approve` or
+///   `reject` based on the second attempt's outcome. Once a fill
+///   succeeds, the client remembers the credentials and uses them
+///   for subsequent requests, so the 401 dance happens at most once
+///   per process.
 #[derive(Clone)]
 pub struct Client {
     pub(crate) endpoint: Url,
@@ -92,6 +93,7 @@ impl Client {
     }
 
     /// Like [`new`](Self::new) but reuses a caller-supplied `reqwest::Client`.
+    ///
     /// Useful for sharing a connection pool, custom timeouts, proxies, etc.
     pub fn with_http_client(endpoint: Url, auth: Auth, http: reqwest::Client) -> Self {
         Self {
@@ -109,15 +111,19 @@ impl Client {
 
     /// Tell the client which `http.<url>.extraHeader` values are
     /// installed on the underlying `reqwest::Client`, so we can echo
-    /// them under `GIT_CURL_VERBOSE`. Doesn't change what's sent — the
-    /// reqwest client's `default_headers` already carries them.
+    /// them under `GIT_CURL_VERBOSE`.
+    ///
+    /// Doesn't change what's sent: the reqwest client's `default_headers`
+    /// already carries them.
     #[must_use]
     pub fn with_extra_headers_for_verbose(mut self, headers: Vec<(String, String)>) -> Self {
         self.extra_headers = headers;
         self
     }
 
-    /// Attach an SSH auth resolver. Called once per request to resolve
+    /// Attach an SSH auth resolver.
+    ///
+    /// Called once per request to resolve
     /// `git-lfs-authenticate` output; a non-empty returned `href`
     /// overrides the endpoint URL for that request and the returned
     /// headers are merged in. Pass when the LFS endpoint is reached via
@@ -130,8 +136,9 @@ impl Client {
     }
 
     /// Override the URL used for credential prompts and the
-    /// `Git credentials for <url> not found` wording. Pass the git
-    /// remote URL when it shares scheme+host with the LFS endpoint;
+    /// `Git credentials for <url> not found` wording.
+    ///
+    /// Pass the git remote URL when it shares scheme+host with the LFS endpoint;
     /// otherwise leave unset and credentials key on the LFS endpoint.
     #[must_use]
     pub fn with_cred_url(mut self, url: Url) -> Self {
@@ -139,19 +146,21 @@ impl Client {
         self
     }
 
-    /// Attach a credential helper. On 401, the client will call
-    /// `helper.fill`, retry once with the result, then `approve`/`reject`
-    /// based on the outcome.
+    /// Attach a credential helper.
+    ///
+    /// On 401, the client will call `helper.fill`, retry once with the
+    /// result, then `approve`/`reject` based on the outcome.
     #[must_use]
     pub fn with_credential_helper(mut self, helper: Arc<dyn Helper>) -> Self {
         self.credentials = Some(helper);
         self
     }
 
-    /// Toggle `credential.useHttpPath`. When `true`, the endpoint URL's
-    /// path is included in the credential-fill query (so a helper can
-    /// scope per-repo); when `false` (the default, matching git), only
-    /// protocol+host are sent.
+    /// Toggle `credential.useHttpPath`.
+    ///
+    /// When `true`, the endpoint URL's path is included in the credential-fill
+    /// query (so a helper can scope per-repo); when `false` (the default,
+    /// matching git), only protocol+host are sent.
     #[must_use]
     pub fn with_use_http_path(mut self, on: bool) -> Self {
         self.use_http_path = on;
@@ -159,23 +168,29 @@ impl Client {
     }
 
     /// Read-only access to the endpoint URL this client was built
-    /// against. Used by callers that want to persist
+    /// against.
+    ///
+    /// Used by callers that want to persist
     /// `lfs.<url>.access` after a successful authenticated request.
     pub fn endpoint(&self) -> &Url {
         &self.endpoint
     }
 
-    /// `true` if this client's current auth state is basic
-    /// (username/password). Used by callers to detect whether the
+    /// Check if this client's current auth state is basic
+    /// (username/password).
+    ///
+    /// Used by callers to detect whether the
     /// most recent operation actually used basic auth, so they can
     /// persist `lfs.<url>.access = basic` to local git config.
     pub fn used_basic_auth(&self) -> bool {
         matches!(*self.auth.lock().unwrap(), Auth::Basic { .. })
     }
 
-    /// Join `path` onto an explicit base URL. Used both for the
-    /// configured endpoint and for SSH-resolved `href` overrides — the
-    /// latter replaces the endpoint for a single request.
+    /// Join `path` onto an explicit base URL.
+    ///
+    /// Used both for the configured endpoint and for SSH-resolved
+    /// `href` overrides — the latter replaces the endpoint for a
+    /// single request.
     pub(crate) fn join(base: &Url, path: &str) -> Result<Url, ApiError> {
         let mut base = base.clone();
         if !base.path().ends_with('/') {
@@ -186,6 +201,7 @@ impl Client {
     }
 
     /// Resolve SSH auth (if a resolver is attached) for `operation`.
+    ///
     /// Returns the effective base URL (`href` override or the configured
     /// endpoint) plus headers to merge into the request. With no
     /// resolver, returns `(self.endpoint.clone(), {})`.
@@ -218,7 +234,9 @@ impl Client {
     }
 
     /// Build a request with the configured auth applied, then merge
-    /// `ssh.headers` on top — letting SSH-issued `Authorization` headers
+    /// `ssh.headers` on top
+    ///
+    /// Lets SSH-issued `Authorization` headers
     /// override what we'd otherwise apply from the credential helper.
     /// Pass `&SshAuth::default()` for non-SSH calls.
     pub(crate) fn request_with_headers(
@@ -243,7 +261,7 @@ impl Client {
         req
     }
 
-    /// Default credential query for this client — derived from
+    /// Default credential query for this client, derived from
     /// [`Self::cred_url`] when set (the git remote URL), otherwise from
     /// [`Self::endpoint`]. Path is cleared unless `use_http_path` is
     /// set (matches `git credential`'s host-only default and the
@@ -258,15 +276,18 @@ impl Client {
         }
     }
 
-    /// Render the credential URL as a string. Used when constructing
-    /// upstream-compatible error messages like
+    /// Render the credential URL as a string.
+    ///
+    /// Used when constructing upstream-compatible error messages like
     /// `Git credentials for <url> not found`.
     fn cred_url_string(&self) -> String {
         self.cred_url.as_ref().unwrap_or(&self.endpoint).to_string()
     }
 
     /// POST a JSON body and decode a JSON response, with LFS error handling
-    /// and the auth-retry loop. `op` selects the `git-lfs-authenticate`
+    /// and the auth-retry loop.
+    ///
+    /// `op` selects the `git-lfs-authenticate`
     /// operation when an SSH resolver is attached.
     pub(crate) async fn post_json<B, R>(
         &self,
@@ -312,6 +333,7 @@ impl Client {
     }
 
     /// GET a JSON response, with LFS error handling and the auth-retry loop.
+    ///
     /// `query` is appended as URL query parameters. `op` selects the
     /// `git-lfs-authenticate` operation when an SSH resolver is attached.
     pub(crate) async fn get_json<Q, R>(
