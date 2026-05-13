@@ -45,13 +45,15 @@ impl Default for GitCredentialHelper {
 }
 
 impl GitCredentialHelper {
+    /// Build a helper that shells out to the system `git` binary.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Build the helper around a custom `git`-compatible binary. Used by
-    /// the integration tests, which point at a shell script that fakes
-    /// the protocol.
+    /// Build the helper around a custom `git`-compatible binary.
+    ///
+    /// Used by the integration tests, which point at a shell script
+    /// that fakes the protocol.
     pub fn with_program(git_program: impl Into<String>) -> Self {
         Self {
             git_program: git_program.into(),
@@ -59,9 +61,11 @@ impl GitCredentialHelper {
         }
     }
 
-    /// Toggle `credential.protectProtocol`. Default is `true`. Pass
-    /// `false` only when the user has explicitly opted out — carriage
-    /// returns in URLs are otherwise a known smuggling vector.
+    /// Toggle `credential.protectProtocol` for this helper.
+    ///
+    /// Default is `true`. Pass `false` only when the user has
+    /// explicitly opted out; carriage returns in URLs are otherwise
+    /// a known smuggling vector.
     pub fn with_protect_protocol(mut self, protect: bool) -> Self {
         self.protect_protocol = protect;
         self

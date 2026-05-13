@@ -24,13 +24,13 @@ use std::process::{Command, Stdio};
 use crate::helper::{Credentials, Helper, HelperError};
 use crate::query::Query;
 
-/// Spawns `program` with one argument per call (the prompt string) and
-/// reads username/password from stdout.
+/// Spawns `program` per call with a single prompt argument and reads
+/// the username or password from stdout.
 ///
-/// `program` is the raw command string — split on whitespace just like
-/// upstream's `subprocess.ExecCommand` shells expand it. The first token
-/// is the executable; subsequent tokens are passed as additional args
-/// before the prompt.
+/// `program` is the raw command string, split on whitespace the same
+/// way upstream's `subprocess.ExecCommand` shells expand it: the
+/// first token is the executable and subsequent tokens are passed as
+/// additional args before the prompt.
 #[derive(Debug, Clone)]
 pub struct AskpassHelper {
     program: String,

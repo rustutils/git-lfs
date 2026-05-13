@@ -10,23 +10,29 @@ use std::io::Write as _;
 use crate::helper::{Credentials, Helper, HelperError};
 use crate::query::Query;
 
-/// Try each helper in order on `fill`, broadcast `approve`/`reject`.
+/// Try each helper in order on `fill`, broadcast `approve` / `reject`.
 ///
-/// Typical wiring: `chain![CachingHelper::new(), GitCredentialHelper::new()]`
-/// — the cache short-circuits the slow shell-out path once we've resolved
-/// a working pair, and approvals propagate so subsequent calls hit the
-/// cache.
+/// Typical wiring puts a [`CachingHelper`] before a
+/// [`GitCredentialHelper`]: the cache short-circuits the slow
+/// shell-out path once a working pair has resolved, and approvals
+/// propagate so subsequent calls hit the cache.
+///
+/// [`CachingHelper`]: crate::CachingHelper
+/// [`GitCredentialHelper`]: crate::GitCredentialHelper
 pub struct HelperChain {
     helpers: Vec<Box<dyn Helper>>,
 }
 
 impl HelperChain {
+    /// Build a chain from a list of boxed helpers, applied in order.
     pub fn new(helpers: Vec<Box<dyn Helper>>) -> Self {
         Self { helpers }
     }
 
-    /// True if no helpers are configured. Calls into [`Helper::fill`]
-    /// will always return `None` for an empty chain.
+    /// `true` if no helpers are configured.
+    ///
+    /// Calls into [`Helper::fill`] will always return `Ok(None)` for
+    /// an empty chain.
     pub fn is_empty(&self) -> bool {
         self.helpers.is_empty()
     }

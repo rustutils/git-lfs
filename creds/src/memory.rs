@@ -12,12 +12,19 @@ use std::sync::Mutex;
 use crate::helper::{Credentials, Helper, HelperError};
 use crate::query::Query;
 
+/// Process-local credential cache, keyed on the full [`Query`] tuple.
+///
+/// Populated by [`Helper::approve`] and consulted on [`Helper::fill`];
+/// [`Helper::reject`] drops the corresponding entry. Lives for one
+/// CLI invocation; a long-running daemon would want a TTL layered on
+/// top.
 #[derive(Debug, Default)]
 pub struct CachingHelper {
     cache: Mutex<HashMap<Query, Credentials>>,
 }
 
 impl CachingHelper {
+    /// Create an empty cache.
     pub fn new() -> Self {
         Self::default()
     }

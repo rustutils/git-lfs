@@ -45,11 +45,14 @@ use std::time::{Duration, SystemTime};
 
 use serde::Deserialize;
 
-/// `git-lfs-authenticate <path> <operation>` operation argument. Wire
-/// form is lowercase `upload` / `download`.
+/// `git-lfs-authenticate <path> <operation>` operation argument.
+///
+/// Wire form is lowercase `upload` / `download`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SshOperation {
+    /// Upload operation; auth token must be scoped for sending objects.
     Upload,
+    /// Download operation; auth token must be scoped for fetching objects.
     Download,
 }
 
@@ -75,13 +78,16 @@ pub struct SshAuth {
     pub expires_at: Option<SystemTime>,
 }
 
-/// Errors from spawning ssh or parsing its output.
+/// Things that can go wrong while resolving SSH-based credentials.
 #[derive(Debug, thiserror::Error)]
 pub enum SshAuthError {
+    /// Failed to spawn or talk to the ssh subprocess.
     #[error("io error invoking ssh: {0}")]
     Io(#[from] std::io::Error),
+    /// `git-lfs-authenticate` ran but exited non-zero.
     #[error("ssh git-lfs-authenticate failed: {0}")]
     Failed(String),
+    /// `git-lfs-authenticate` stdout wasn't a parseable JSON response.
     #[error("ssh git-lfs-authenticate returned malformed JSON: {0}")]
     Json(String),
 }

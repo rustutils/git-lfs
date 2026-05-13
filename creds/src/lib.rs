@@ -1,25 +1,32 @@
-//! Credential resolution for git-lfs.
+//! Credential helper bridge for Git LFS (git credential fill/approve/reject).
 //!
-//! Bridges to git's credential machinery (`git credential fill/approve/reject`)
-//! and adds a small in-memory cache so repeated requests against the same
-//! host don't re-shell-out for every batch / upload / download.
+//! LFS endpoints are usually HTTPS, and HTTPS auth needs a username
+//! and password. Rather than maintaining a separate credential store,
+//! this crate defers to git's existing one: whatever the user has
+//! already configured for their git remote (osxkeychain, libsecret,
+//! manager, store, plain `cache`, …) is what LFS uses too.
 //!
-//! # Scope (v0)
+//! The [`Helper`] trait represents one credential source. A
+//! [`HelperChain`] tries multiple sources in order, broadcasting
+//! [`Helper::approve`] / [`Helper::reject`] to every helper so caches
+//! stay in sync. The bundled implementations are:
 //!
-//! - [`Query`] is the (protocol, host, path) tuple git's credential helpers
-//!   key on.
-//! - [`Credentials`] holds a username + password.
-//! - [`Helper`] is the trait the API client calls into when it gets a 401.
-//! - [`GitCredentialHelper`] shells out to `git credential` for the real
-//!   resolution.
-//! - [`AskpassHelper`] spawns `GIT_ASKPASS` / `core.askpass` /
-//!   `SSH_ASKPASS` for username + password prompts.
-//! - [`CachingHelper`] memoizes the answer in-process.
-//! - [`HelperChain`] tries each helper in order and writes
-//!   approve/reject decisions back to all of them.
+//! - [`CachingHelper`]: in-process cache keyed on the [`Query`]
+//!   tuple (protocol, host, path).
+//! - [`GitCredentialHelper`]: shells out to `git credential
+//!   fill/approve/reject`, picking up whatever helper the user has
+//!   configured.
+//! - [`AskpassHelper`]: spawns the `GIT_ASKPASS` / `core.askpass` /
+//!   `SSH_ASKPASS` program for interactive prompts.
+//! - [`NetrcCredentialHelper`]: parses `~/.netrc` (or `_netrc` on
+//!   Windows) for host-keyed login/password pairs.
 //!
-//! Deferred (see `NOTES.md`): netrc, NTLM/Kerberos, multi-stage
-//! `wwwauth[]`/`state[]`, URL-pattern config (`credential.<url>.helper`).
+//! SSH remotes follow a different flow. [`SshAuthClient`] runs
+//! `git-lfs-authenticate <path> <operation>` over SSH and parses an
+//! [`SshAuth`] response containing a replacement HTTPS endpoint plus
+//! short-lived authorization headers; no username/password is asked
+//! of the user. Results are cached per request key with the
+//! server-supplied expiry honored.
 
 mod askpass;
 mod chain;

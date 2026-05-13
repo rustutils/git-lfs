@@ -2,15 +2,19 @@
 
 use url::Url;
 
-/// The fields `git credential` expects on stdin (and that `Helper`
-/// implementations key on).
+/// The fields `git credential` expects on stdin, and that [`Helper`]
+/// implementations key on.
 ///
-/// This intentionally mirrors the subset of `git-credential` input that
-/// upstream LFS sends — `protocol`, `host`, `path`. We do **not** populate
-/// `username` from the URL up-front; helpers may fill it in themselves.
+/// Mirrors the subset of git-credential input upstream LFS sends:
+/// `protocol`, `host`, `path`. `username` is intentionally not
+/// pre-populated from the URL; helpers may fill it in themselves.
+///
+/// [`Helper`]: crate::Helper
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Query {
+    /// URL scheme (`https`, `http`, `ssh`, …).
     pub protocol: String,
+    /// Host portion, with `:port` suffix when the URL specifies one.
     pub host: String,
     /// Path portion. Empty string means "no path", which omits the
     /// `path=` line on stdin to git-credential. Helpers that key on path
@@ -20,13 +24,16 @@ pub struct Query {
 }
 
 impl Query {
-    /// Build a query from a URL. `path` is included by default — callers
-    /// that want host-only matching (the upstream default) should clear
-    /// it via [`Self::without_path`]. The path is **percent-decoded**
-    /// to match what upstream LFS sends to `git credential` (Go's
-    /// `url.URL.Path` field is the decoded form). `git credential`'s
-    /// `protectProtocol` check then sees real newlines / NULs / CRs in
-    /// hostile URLs rather than their `%0a` / `%00` / `%0d` forms.
+    /// Build a query from a URL.
+    ///
+    /// `path` is included by default; callers that want host-only
+    /// matching (the upstream default) should clear it via
+    /// [`Self::without_path`]. The path is **percent-decoded** to
+    /// match what upstream LFS sends to `git credential` (Go's
+    /// `url.URL.Path` is the decoded form), which lets
+    /// `git credential`'s `protectProtocol` check see real
+    /// newlines / NULs / CRs in hostile URLs rather than their `%0a` /
+    /// `%00` / `%0d` forms.
     pub fn from_url(url: &Url) -> Self {
         let raw_path = url.path().trim_start_matches('/');
         Self {
@@ -36,8 +43,10 @@ impl Query {
         }
     }
 
-    /// Variant with the path cleared. Matches the default `git credential`
-    /// behavior, which scopes by host only unless `useHttpPath` is set.
+    /// Variant with the path cleared.
+    ///
+    /// Matches the default `git credential` behavior, which scopes by
+    /// host only unless `useHttpPath` is set.
     pub fn without_path(mut self) -> Self {
         self.path.clear();
         self

@@ -53,9 +53,11 @@ struct NetrcEntry {
     password: String,
 }
 
-/// Netrc-backed credential helper. Cheap to construct — the file is
-/// read + parsed once at `new`, and lookups walk the parsed list
-/// linearly (netrc files are small in practice).
+/// Netrc-backed credential helper.
+///
+/// Cheap to construct: the file is read and parsed once at
+/// construction, and lookups walk the parsed list linearly (netrc
+/// files are small in practice).
 #[derive(Debug)]
 pub struct NetrcCredentialHelper {
     entries: Vec<NetrcEntry>,
@@ -71,11 +73,13 @@ impl NetrcCredentialHelper {
         }
     }
 
-    /// Read the user's default netrc file (`$HOME/.netrc`, falling
-    /// back to `$HOME/_netrc` on Windows or when `.netrc` isn't
-    /// present). Returns `None` when no netrc file exists, when
-    /// `$HOME` isn't set, or when the file is unreadable — these are
-    /// not user errors, just "no creds from this source".
+    /// Read the user's default netrc file.
+    ///
+    /// Tries `$HOME/.netrc`, falling back to `$HOME/_netrc` on
+    /// Windows when `.netrc` isn't present. Returns `None` when no
+    /// netrc file exists, when `$HOME` isn't set, or when the file
+    /// is unreadable; these are not user errors, just "no creds from
+    /// this source".
     pub fn from_default_location() -> Option<Self> {
         let home = std::env::var_os("HOME")?;
         let primary = PathBuf::from(&home).join(".netrc");
