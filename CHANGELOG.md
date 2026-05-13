@@ -7,18 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- `migrate info --fixup` now does the real per-tree attribute walk:
-  list every blob at the selected ref, build a fresh `AttrSet` from
-  that tree's `.gitattributes` files (root + nested), and count any
-  non-attrs, non-symlink, non-pointer blob whose path is LFS-tracked
-  per the attrs. Mirrors upstream's
-  `commands/command_migrate_info.go::BlobFn` fixup branch. Lands
-  `t-migrate-info` tests 37-41 (the `--fixup` cluster) → suite is
-  now full pass 50/50. Per-commit attribute resolution across multi-
-  commit history is deferred; the vendored fixup fixtures are all
-  single-commit so the simplification doesn't affect any test today.
+## [0.6.0] - 2026-05-13
 
 ### Fixed
 
@@ -42,8 +31,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `git credential` invocation. Both match upstream's `tracerx.Printf`
   format at `creds/creds.go:284` / `:328`. Lands
   `t-credentials-no-prompt::askpass: push with bad askpass`.
+- `git lfs fetch <ref>...` now scans only the HEAD-state of each
+  named ref instead of walking its full history. Historical /
+  deleted-from-HEAD pointers still get fetched via `--all` or
+  `--recent`. Matches upstream's `fetchRef` vs `fetchRefs` split
+  and is a prerequisite for the upcoming `--recent` semantics.
 
 ### Added
+
+- `migrate info --fixup` now does the real per-tree attribute walk:
+  list every blob at the selected ref, build a fresh `AttrSet` from
+  that tree's `.gitattributes` files (root + nested), and count any
+  non-attrs, non-symlink, non-pointer blob whose path is LFS-tracked
+  per the attrs. Mirrors upstream's
+  `commands/command_migrate_info.go::BlobFn` fixup branch. Lands
+  `t-migrate-info` tests 37-41 (the `--fixup` cluster) → suite is
+  now full pass 50/50. Per-commit attribute resolution across multi-
+  commit history is deferred; the vendored fixup fixtures are all
+  single-commit so the simplification doesn't affect any test today.
 
 - `transfer`: Range-resume on interrupted downloads. The basic
   download adapter writes through `<lfs_dir>/incomplete/<oid>.part`
@@ -303,8 +308,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Mirrors upstream's `pruneTaskGetRetainedStashed` /
   `pruneTaskGetRetainedIndex` / `pruneTaskGetRetainedWorktree`.
 
-### Changed
-
 - LFS object storage and hook installation now resolve through
   `git rev-parse --git-common-dir` instead of `--absolute-git-dir`.
   In a non-worktree repo the two are identical; in a linked
@@ -317,13 +320,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of `git lfs env`. Mirrors upstream's
   `Configuration.LocalGitStorageDir`.
 
-### Fixed
+### Documentation
 
-- `git lfs fetch <ref>...` now scans only the HEAD-state of each
-  named ref instead of walking its full history. Historical /
-  deleted-from-HEAD pointers still get fetched via `--all` or
-  `--recent`. Matches upstream's `fetchRef` vs `fetchRefs` split
-  and is a prerequisite for the upcoming `--recent` semantics.
+- Man-page sweep across every command page. Root `git-lfs(1)` gains
+  EXAMPLES walking through the install → track → commit → push
+  happy path. `git-lfs-prune(1)` fleshed out with DESCRIPTION /
+  RECENT FILES / UNPUSHED LFS FILES / VERIFY REMOTE / DEFAULT
+  REMOTE sections covering the M4 retention model. `git-lfs-fetch(1)`
+  gains RECENT CHANGES with the `lfs.fetchrecent*` config keys.
+  `git-lfs-pull(1)` gains EXAMPLES. The three `migrate-*`
+  subcommand pages get per-mode EXAMPLES + SEE ALSO cross-
+  references. `git-lfs-smudge(1)` gets SEE ALSO; `git-lfs-ext(1)`
+  gets EXAMPLES. Section order across `fetch` / `pull` /
+  `migrate` now matches upstream's INCLUDE AND EXCLUDE → DEFAULT
+  REMOTE → DEFAULT REFS → RECENT CHANGES → EXAMPLES → SEE ALSO
+  flow.
+- `git-lfs-config(5)` rewritten from a 21-line stub to a 219-line
+  reference: CONFIGURATION FILES (precedence + `.lfsconfig`
+  lookup chain + `lfs.<url>.<key>` overrides), GENERAL /
+  UPLOAD AND DOWNLOAD TRANSFER / PUSH / FETCH / PRUNE / EXTENSIONS
+  / OTHER subsections covering ~27 config keys we honor, LFSCONFIG
+  with the allowed-key list, EXAMPLES, and SEE ALSO. Keys we
+  don't implement (custom-transfer agents, NTLM, dial/tls
+  timeouts, etc.) are silently omitted.
+- Installation instructions now cover all three packaging paths:
+  Homebrew tap (Linux + macOS), Debian/Ubuntu apt, Fedora/RHEL
+  dnf, plus the existing `cargo install`. README has the
+  copy-paste-ready commands inline; `docs/install.md` adds context
+  including the `git-lfs-rs` package-name caveat and the post-
+  install `git lfs install` step.
+- Two latent bugs in the groff converter fixed in passing: ordered
+  lists rendered with bullet markers (`ListKind::Ordered` collapsed
+  the start number — now emits `.IP "N." 4` and increments per item),
+  and list-item-first-paragraph leaked across tight-list boundaries
+  (`suppress_next_paragraph` flag now cleared on `End(Item)`).
+- `cli/man/<cmd>/` directory grew supporting markdown for the
+  above. Per-subcommand `ManContent` entries in `cli/src/man.rs`
+  wire them into both the man-page and mdbook output.
 
 ## [0.5.0] - 2026-05-03
 
@@ -900,7 +933,8 @@ Eight workspace crates published under the `git-lfs-*` prefix:
 `git-lfs-transfer`, `git-lfs-creds`, `git-lfs-filter`, and the
 `git-lfs` binary.
 
-[Unreleased]: https://gitlab.com/rustutils/git-lfs/-/compare/v0.5.0...HEAD
+[Unreleased]: https://gitlab.com/rustutils/git-lfs/-/compare/v0.6.0...HEAD
+[0.6.0]: https://gitlab.com/rustutils/git-lfs/-/compare/v0.5.0...v0.6.0
 [0.5.0]: https://gitlab.com/rustutils/git-lfs/-/compare/v0.4.0...v0.5.0
 [0.4.0]: https://gitlab.com/rustutils/git-lfs/-/compare/v0.3.0...v0.4.0
 [0.3.0]: https://gitlab.com/rustutils/git-lfs/-/compare/v0.2.0...v0.3.0

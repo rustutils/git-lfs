@@ -5,14 +5,6 @@ between today and 1.0 are intentionally rough — we'll cut releases as
 the work lands rather than holding up shipping for a perfect milestone
 boundary.
 
-## Today
-
-**v0.4.0** — released 2026-05-02. 596 of 794 vendored upstream shell
-tests pass (~75%) across 57 full-pass suites. Day-to-day flows
-(clean / smudge, fetch / pull / push, track, locking, migrate) work
-end-to-end. See [`tests/SCOREBOARD.md`](tests/SCOREBOARD.md) for the
-per-suite breakdown.
-
 ## Path to 1.0
 
 The bar for 1.0 is full feature parity with upstream Go git-lfs:
