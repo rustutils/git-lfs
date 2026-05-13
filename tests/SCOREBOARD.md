@@ -3,7 +3,7 @@
 Per-suite snapshot of the vendored upstream shell tests. Last
 refreshed: **2026-05-13**.
 
-**708 / 794 tests passing (~89%) across 104 suites.**
+**711 / 794 tests passing (~90%) across 104 suites.**
 
 Refresh:
 
@@ -15,7 +15,7 @@ The xtask wrapper runs `make test` under the hood and parses prove's
 TAP output into the Full pass / Partial / Empty groups below. Pipe
 through `tee` if you want the per-suite breakdown saved.
 
-## Full pass — 76 suites, 578 tests
+## Full pass — 77 suites, 584 tests
 
 ```
 t-alternates.sh                          t-merge-driver.sh
@@ -37,29 +37,29 @@ t-credentials-no-prompt.sh               t-prune-worktree.sh
 t-credentials-protect.sh                 t-prune.sh
 t-duplicate-oids.sh                      t-pull.sh
 t-env.sh                                 t-push-bad-dns.sh
-t-ext.sh                                 t-push-failures-local.sh
-t-extra-header.sh                        t-push-failures-remote.sh
-t-fetch-include.sh                       t-push-file-with-branch-name.sh
-t-fetch-paths.sh                         t-reference-clone.sh
-t-fetch-recent.sh                        t-status.sh
-t-fetch-refspec.sh                       t-submodule-lfsconfig.sh
-t-fetch.sh                               t-submodule-recurse.sh
-t-filter-branch.sh                       t-submodule.sh
-t-filter-process.sh                      t-track-attrs.sh
-t-fsck.sh                                t-track-wildcards.sh
-t-happy-path.sh                          t-track.sh
-t-install-custom-hooks-path.sh           t-uninstall-worktree.sh
-t-install-worktree.sh                    t-uninstall.sh
-t-install.sh                             t-unlock.sh
-t-lock.sh                                t-untrack.sh
-t-locks.sh                               t-unusual-filenames.sh
-t-logs.sh                                t-update.sh
-t-malformed-pointers.sh                  t-version.sh
-                                         t-worktree.sh
+t-expired.sh                             t-push-failures-local.sh
+t-ext.sh                                 t-push-failures-remote.sh
+t-extra-header.sh                        t-push-file-with-branch-name.sh
+t-fetch-include.sh                       t-reference-clone.sh
+t-fetch-paths.sh                         t-status.sh
+t-fetch-recent.sh                        t-submodule-lfsconfig.sh
+t-fetch-refspec.sh                       t-submodule-recurse.sh
+t-fetch.sh                               t-submodule.sh
+t-filter-branch.sh                       t-track-attrs.sh
+t-filter-process.sh                      t-track-wildcards.sh
+t-fsck.sh                                t-track.sh
+t-happy-path.sh                          t-uninstall-worktree.sh
+t-install-custom-hooks-path.sh           t-uninstall.sh
+t-install-worktree.sh                    t-unlock.sh
+t-install.sh                             t-untrack.sh
+t-lock.sh                                t-unusual-filenames.sh
+t-locks.sh                               t-update.sh
+t-logs.sh                                t-version.sh
+t-malformed-pointers.sh                  t-worktree.sh
                                          t-zero-len-file.sh
 ```
 
-## Partial — 25 suites, 130 / 216 tests
+## Partial — 24 suites, 127 / 210 tests
 
 | Suite | Pass / Total |
 | --- | --- |
@@ -73,7 +73,6 @@ t-malformed-pointers.sh                  t-version.sh
 | `t-credentials.sh` | 6 / 20 |
 | `t-custom-transfers.sh` | 0 / 4 |
 | `t-dedup.sh` | 0 / 3 |
-| `t-expired.sh` | 3 / 6 |
 | `t-ls-files.sh` | 27 / 31 |
 | `t-migrate-import.sh` | 44 / 51 |
 | `t-multiple-remotes.sh` | 0 / 12 |

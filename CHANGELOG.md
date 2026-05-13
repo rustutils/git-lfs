@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Action-URL expiration check before upload/download. The transfer
+  queue now compares the batch response's `expires_in` (preferred when
+  non-zero) / `expires_at` against `now + 5s` and fails the object
+  with `action "<rel>" expired` rather than driving an already-stale
+  URL into the wire. Lands `t-expired` (6/6). The matching
+  `t-push::push (retry with expired actions)` still fails because that
+  test requires the upstream retry-then-rebatch flow we haven't
+  implemented yet.
 - `git lfs merge-driver`, the LFS-aware Git merge driver. Wired into
   Git via `[merge "lfs"] driver = git lfs merge-driver --ancestor %O
   --current %A --other %B --marker-size %L --output %A`. Each of

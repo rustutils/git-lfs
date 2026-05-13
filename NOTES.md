@@ -203,9 +203,10 @@ index / multi-worktree retention, `--recent` + `lfs.fetchrecentalways`).
 The `--verify-remote` / `--verify-unreachable` /
 `--when-unverified` slice (with `lfs.pruneverify*always`) closes
 out the milestone — `t-prune` 18/18, `t-prune-worktree` 2/2,
-`t-fetch-recent` 7/7. The three remaining `t-expired.sh` failures
-(non-SSH) are about action-URL expiry on batch responses, tracked
-separately under `api`.
+`t-fetch-recent` 7/7. `t-expired` 6/6 now ships too (action-URL
+expiry on batch responses lands via the fail-fast path in
+`transfer/`; the retry-then-rebatch variant in `t-push` is still
+deferred).
 
 ### Milestone 5 — Pointer CLI clean-extensions + ext list ✓ shipped
 
