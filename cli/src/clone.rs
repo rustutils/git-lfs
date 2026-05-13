@@ -53,6 +53,12 @@ struct DecodedArgs {
     no_checkout: bool,
     bare: bool,
     skip_repo: bool,
+    /// `--recursive` or `--recurse-submodules`. After the top-level
+    /// `git lfs pull`, drives a `git submodule foreach --recursive
+    /// 'git lfs pull'` so each submodule's LFS content materializes
+    /// too — the smudge filter was disabled for the top-level clone,
+    /// and git ≥ 2.9 propagates that to submodules.
+    recurse_submodules: bool,
     include: Vec<String>,
     exclude: Vec<String>,
 }
@@ -102,6 +108,26 @@ pub fn run(cwd: &Path, raw_args: &[String]) -> Result<(), CloneError> {
     if !decoded.bare && !decoded.no_checkout && has_resolvable_head(&clonedir) {
         let refs: Vec<String> = Vec::new();
         pull::pull_with_filter(&clonedir, &refs, &decoded.include, &decoded.exclude)?;
+        if decoded.recurse_submodules {
+            // git ≥ 2.9 forwards `-c filter.lfs.*=` to submodules, so
+            // each submodule's working tree comes out of `git clone`
+            // with pointer text instead of materialized LFS content.
+            // Re-run `git lfs pull` inside each (recursively) to
+            // download. Errors here aren't fatal to the top-level
+            // clone — surface them with a status code matching
+            // upstream's "Error performing git lfs pull for
+            // submodules" wording so tests can grep for the message.
+            let status = Command::new("git")
+                .current_dir(&clonedir)
+                .args(["submodule", "foreach", "--recursive", "git lfs pull"])
+                .status()?;
+            if !status.success() {
+                eprintln!(
+                    "Error performing `git lfs pull` for submodules: exit {}",
+                    status.code().unwrap_or(1)
+                );
+            }
+        }
     }
 
     // Step 4: install hooks (best effort) so subsequent commits run
@@ -124,6 +150,7 @@ fn decode_args(raw: &[String]) -> DecodedArgs {
     let mut no_checkout = false;
     let mut bare = false;
     let mut skip_repo = false;
+    let mut recurse_submodules = false;
     let mut include: Vec<String> = Vec::new();
     let mut exclude: Vec<String> = Vec::new();
     let mut after_dashdash = false;
@@ -178,6 +205,11 @@ fn decode_args(raw: &[String]) -> DecodedArgs {
             no_checkout = true;
         } else if a == "--bare" {
             bare = true;
+        } else if a == "--recursive"
+            || a == "--recurse-submodules"
+            || a.starts_with("--recurse-submodules=")
+        {
+            recurse_submodules = true;
         }
         // Bundled short flags: `-lvn` etc. Recognize -n inside.
         if let Some(rest) = a.strip_prefix('-')
@@ -210,6 +242,7 @@ fn decode_args(raw: &[String]) -> DecodedArgs {
         no_checkout,
         bare,
         skip_repo,
+        recurse_submodules,
         include,
         exclude,
     }
