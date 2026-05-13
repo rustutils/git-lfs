@@ -47,144 +47,59 @@ Useful entry points in the upstream tree:
 - Go unit tests (`*_test.go`) — useful as behavioral references, but not
   portable. Reimplement alongside Rust modules.
 
-## Suggested milestones
+## Remaining failure clusters
 
-1. **Pointer format + clean/smudge filters.** Self-contained, no network.
-   `t-clean.sh`, `t-smudge.sh`, `t-pointer.sh`, `t-malformed-pointers.sh`,
-   `t-filter-process.sh` are the green-bar targets.
-2. **Batch API client + basic transfer adapter.** Unlocks `fetch`/`push` for
-   the happy path. `t-happy-path.sh`, `t-batch-transfer.sh`, `t-fetch.sh`,
-   `t-push.sh`.
-3. **Locking, custom transfers, SSH protocol, migrate** — each independent.
-4. **Windows + credential helpers** — defer; flag scope before committing.
+Per-suite counts live in `tests/SCOREBOARD.md`. This section is
+the categorical view: what's still broken and what would unlock
+it. Used to triage which milestone to pick up next.
 
-## Test status snapshot (point in time)
-
-About 698 of 794 vendored shell tests pass (~88%) across 104
-files. Most of the per-command files now pass cleanly; remaining
-failures cluster in features we haven't shipped yet rather than
-edge cases of features we have.
-
-**Fully or near-fully passing** (no failures, or only one):
-t-env (17/17), t-config (10/10), t-checkout (18/18), t-pull
-(20/20), t-status (17/17), t-pointer (26/26), t-ext (1/1),
-t-credentials-protect (3/3), t-askpass (5/6), t-extra-header (4/4),
-t-content-type (3/3), t-fsck, t-update, t-track, t-untrack,
-t-install, t-uninstall, t-pre-push, t-clean, t-malformed-pointers,
-t-filter-process, t-happy-path, t-migrate-import (36/38),
-t-migrate-info (45/50), t-migrate-export, t-locks (9/9),
-t-batch-transfer (8/8), t-prune (18/18), t-prune-worktree (2/2),
-t-fetch-recent (7/7), t-clone (11/13), t-smudge (9/9),
-t-push (26/27), t-ls-files (24/31), t-umask (4/4), t-tempfile (1/1).
-
-**Largest remaining failure clusters** (failed/total):
-
-- **Credentials family** — t-credentials (17/20 fail),
-  t-credentials-protect (3/3), t-credentials-no-prompt (2/2),
-  t-askpass (5/6), t-extra-header (4/4), t-content-type (3/3),
-  t-expired (6/6). ~40 tests, blocked on the credential-helper
-  ecosystem beyond the basic 401-fill-retry loop.
-- **ls-files long tail** — t-ls-files (4/31 fail). Remaining
-  failures cluster around `--include`/`--exclude` (3 tests, needs
-  filepathfilter) and the two-ref range form (1 test).
-- **Prune + fetch-recent retention** — t-prune (14/18 fail),
-  t-prune-worktree (2/2), t-fetch-recent (6/7). Same root cause:
-  `lfs.fetchrecentcommitsdays` / `lfs.fetchrecentrefsdays` /
-  `lfs.fetchexclude` retention windows aren't implemented.
-- **Custom transfer adapters / SSH / tus** — t-custom-transfers
-  (4/4), t-standalone-file (8/9), t-ssh (2/2),
-  t-batch-storage-upload-tus (2/2), t-multiple-remotes (12/12).
-  Real protocol surface; basic adapter only ships today.
-- **Retry / rate-limit** — t-batch-retries-ratelimit (5/5),
-  t-batch-storage-retries (5/5),
-  t-batch-storage-retries-ratelimit (5/5). Server returns 429
-  with Retry-After header; we don't honor the schedule.
-- **Pointer extensions** — clean and smudge filters both run
-  extensions; the pointer CLI does too (closes t-pointer 21-26 and
-  t-ext 1). t-merge-driver ships (6/6); t-attributes ships (4/4).
-- **Unshipped commands** — t-completion (5), t-dedup (3).
-- **Push edge cases** — t-push (1/27 fail). Only `push (retry with
-  expired actions)` remains — needs the action-URL expiry path
-  (`t-expired` cluster). Deprecated `_links`, negative-size,
-  pushInsteadof, server-already-has counting, and exit-code-2-on-
-  upload-failure all shipped.
+- **Credentials family** — t-credentials, t-askpass test 4. The
+  basic 401-fill-retry loop ships, but multi-attempt auth (`wwwauth[]`
+  / `state[]`), per-URL `credential.<url>.helper`, and NTLM /
+  Negotiate are deferred.
+- **Prune + fetch-recent retention** — t-prune, t-prune-worktree,
+  t-fetch-recent edge cases. `lfs.fetchrecentcommitsdays` /
+  `lfs.fetchrecentrefsdays` / `lfs.fetchexclude` retention windows
+  aren't implemented.
+- **Custom transfer adapters, SSH transfer protocol, tus** —
+  t-custom-transfers, t-standalone-file, t-ssh, t-batch-storage-upload-tus,
+  t-multiple-remotes. Real protocol surface; basic adapter only
+  ships today.
+- **ls-files long tail** — `--include` / `--exclude` (needs
+  filepathfilter) and the two-ref range form.
+- **Unshipped commands** — `completion`, `dedup`.
+- **Push edge cases** — `push (retry with expired actions)` needs
+  the action-URL expiry + rebatch flow (companion to the t-expired
+  cluster).
 - **Single-file holdouts** — t-batch-error-handling, t-progress,
-  t-repo-format, t-upload-redirect, t-usage, t-verify (4),
-  t-worktree (2), t-batch-storage-encoding, t-batch-unknown-oids.
-
-## Release status
-
-**v0.2.0 published to crates.io** (April 2026). All eight
-workspace members have publish-ready metadata, per-crate READMEs,
-and a workspace-root README that flags the experimental status.
-The cli's README (which is what the crates.io listing for
-`git-lfs` shows) leads with the experimental warning.
-
-`lfstest-testutils` lives in its own non-published workspace
-member at `tests/cmd/` (one `lfstest` crate; future Rust ports
-of upstream test helpers drop into `tests/cmd/src/bin/<name>.rs`).
-`cargo install git-lfs` installs only the production binary.
-
-## Hook installation (corrected)
-
-Earlier notes claimed `init.templateDir` was the key gap for fresh
-clones; that turned out to be wrong. Upstream's `git lfs install`
-does **not** write to `init.templateDir`, and the test framework
-`testenv.sh` exports `GIT_TEMPLATE_DIR=tests/fixtures/templates`
-which is hooks-empty. Hooks land in `.git/hooks/` *as a side
-effect* of `installHooks(false)` calls scattered through the
-upstream commands: `clean`, `smudge`, `filter-process`, `fsck`,
-`track`, `untrack`, `migrate import`. Any LFS operation against a
-fresh clone — even just running the smudge filter when checking
-out pointer files — drops the four hook scripts.
-
-Our Rust port now mirrors this: those six dispatch arms each call
-`install::try_install_hooks(&cwd)` (best-effort, ignores errors).
-Real `git lfs clone` (the deprecated wrapper) is still missing,
-so t-clone's exact assertions don't pass yet, but plain
-`git clone` followed by any LFS operation now leaves the working
-tree in the same hook-installed state upstream produces.
+  t-repo-format, t-upload-redirect, t-usage, t-verify, t-worktree,
+  t-batch-storage-encoding, t-batch-unknown-oids.
 
 ## Highest-leverage gaps (descending leverage)
 
 Listed by the size of the cluster they unlock. Each entry says
 what's broken and where to start.
 
-1. **Credential helper ecosystem** (~40 tests). The basic 401 →
-   `git credential fill` → retry → approve/reject loop ships, but
-   nothing beyond it: no netrc fallback, no askpass, no NTLM /
-   Negotiate, no per-URL `credential.<url>.helper` config, no
-   stateful multi-stage auth (`state[]` / `wwwauth[]` carried
-   between fills). Also covers credential-protect (suspicious-URL
-   refusals), expired credentials, extra HTTP headers, custom
-   content-type. See `creds/` deferral list.
-2. **Prune + fetch-recent retention** (~22 tests). `lfs.fetchrecentcommitsdays`
-   / `lfs.fetchrecentrefsdays` / `lfs.fetchrecentremoterefs` /
-   `lfs.fetchexclude` aren't honored. v0 prune retains only HEAD's
-   tree + unpushed; everything older is fair game. Drives t-prune
-   (14 fail), t-prune-worktree (2), t-fetch-recent (6), and the
-   "X local objects, Y retained" output strings whose numbers
-   depend on the retention windows.
-3. **ls-files long tail** (21 tests). Output-format gaps plus
-   `--include` / `--exclude` / `--deleted` / two-ref range / index
-   scan. First 5 failures are a single trailing-newline fix.
-4. **Custom transfer adapters + tus + SSH** (~28 tests across
-   t-custom-transfers, t-standalone-file, t-ssh,
-   t-batch-storage-upload-tus, t-multiple-remotes). Third-party
+1. **Credential helper ecosystem.** The basic 401 →
+   `git credential fill` → retry → approve/reject loop ships, plus
+   netrc, askpass, extra HTTP headers, content-type, and
+   credential-protect. Still missing: per-URL `credential.<url>.helper`
+   config, stateful multi-stage auth (`state[]` / `wwwauth[]` carried
+   between fills), NTLM / Negotiate. See `creds/` deferral list.
+2. **Prune + fetch-recent retention.** `lfs.fetchrecentcommitsdays` /
+   `lfs.fetchrecentrefsdays` / `lfs.fetchrecentremoterefs` /
+   `lfs.fetchexclude` aren't honored. Today prune retains only
+   HEAD's tree + unpushed; everything older is fair game.
+3. **ls-files long tail.** `--include` / `--exclude` filters
+   (needs filepathfilter) and the two-ref range form.
+4. **Custom transfer adapters + tus + pure-SSH.** Third-party
    protocol surface; basic adapter only ships today. SSH
-   `git-lfs-authenticate` flow (server-discovery.md §SSH) also
-   needed for self-hosted servers that don't speak HTTPS.
-5. **Retry / Retry-After / rate-limit** (15 tests). 429 + 503 with
-   Retry-After header. We retry but ignore the server's schedule
-   (no jitter, no honoring of explicit delay). All in
-   t-batch-retries-ratelimit, t-batch-storage-retries,
-   t-batch-storage-retries-ratelimit.
-6. **Unshipped commands** — `completion` (5), `dedup` (3).
-7. **Push edge cases** (9 tests). Deprecated `_links` serde alias
-   (1 line), negative-size error message wording, batch error
-   formatter, push-direction `pushInsteadof` alias, custom
-   reference namespaces (gated on the excluded
-   `lfstest-testutils` paths).
+   `git-lfs-authenticate` ships, but the pure-SSH transfer
+   protocol (`git-lfs-transfer`) doesn't.
+5. **Unshipped commands** — `completion`, `dedup`.
+6. **Push retry-with-expired-actions.** Server hands back stale
+   action URLs; client should rebatch and retry. Shares plumbing
+   with the t-expired suite.
 
 ## Roadmap
 
@@ -192,150 +107,41 @@ Loose ordering for the deferred work. Each milestone is independent
 enough to ship on its own; rough effort is small (1-3 days), medium
 (1-2 weeks), large (multi-week).
 
-### Milestone 4 — Prune + fetch-recent retention ✓ shipped
+### Credentials — multi-stage auth + NTLM/Negotiate
 
-`lfs.fetchrecentrefsdays`, `lfs.fetchrecentcommitsdays`,
-`lfs.fetchrecentremoterefs`, `lfs.pruneoffsetdays`, and
-`lfs.fetchexclude` honor in fetch / prune. The retention pieces
-landed across earlier commits (per-anchor commit windows, stash /
-index / multi-worktree retention, `--recent` + `lfs.fetchrecentalways`).
-The `--verify-remote` / `--verify-unreachable` /
-`--when-unverified` slice (with `lfs.pruneverify*always`) closes
-out the milestone — `t-prune` 18/18, `t-prune-worktree` 2/2,
-`t-fetch-recent` 7/7. `t-expired` 6/6 now ships too (action-URL
-expiry on batch responses lands via the fail-fast path in
-`transfer/`; the retry-then-rebatch variant in `t-push` is still
-deferred).
-
-### Milestone 5 — Pointer CLI clean-extensions + ext list ✓ shipped
-
-`git lfs pointer --file=X` now runs the configured clean chain (and
-honors `--no-extensions`); `git lfs ext list [<name>...]` filters
-the bare extension listing. Owns t-pointer 21-26 and t-ext 1.
-Smudge-side and clean-side filter extensions had already shipped
-in earlier milestones.
-
-Original M5 spec described smudge-extension implementation; that
-work was discovered already complete during planning, so the
-milestone was retargeted to the adjacent CLI gaps.
-
-### Milestone 6 — Credential ecosystem (medium, sliced)
-
-~40 tests across t-credentials, t-credentials-protect,
-t-credentials-no-prompt, t-askpass, t-extra-header, t-content-type,
-t-expired. Best done in independent slices:
-
-- **6 prelude + protect** ✓ shipped — `creds` validates input bytes,
-  `api::ApiError::CredentialsNotFound` and
-  `transfer::TransferError::BatchResponse` carry upstream's error
-  wrapping, `credential.{useHttpPath,protectProtocol}` plumb through
-  the API client. Lands t-credentials-protect (3 tests). The error
-  wrapping is shared infrastructure for every later slice.
-- **6b askpass** ✓ shipped (5 of 6 tests) — `AskpassHelper` spawns
-  `GIT_ASKPASS` / `core.askpass` / `SSH_ASKPASS`; `cli/fetcher`
-  inserts it ahead of git-credential when configured and skips it
-  when a (URL-scoped) `credential.helper` is set. URL-embedded
-  `user:pass@` becomes initial `Auth::Basic`. Auth-retry now
-  resets on 403 too. `Authorization error: <url>` formatting from
-  401/403 unblocks the locks-verify wording. Test 4 (multi-attempt
-  loop) still failing — bundled with 6d wwwauth/state.
-- **6a netrc** ✓ shipped — `creds::NetrcCredentialHelper` reads
-  `$HOME/.netrc` (Windows: `_netrc` fallback) at construction,
-  slots ahead of the cache in the chain, and traces matching
-  upstream's `tracerx` lines. Preemptive-fill in `api::Client`
-  lands the per-request trace count the test suite expects.
-  Lands `t-credentials.sh::credentials from netrc` (+ unknown
-  keyword variant) and one of `t-credentials-no-prompt.sh`.
-  Test 18 (`bad netrc creds will retry`) still requires
-  askpass-fallback after netrc rejection — bundled with M6d.
-- **6c extra HTTP headers + content-type** ✓ shipped —
-  `http.extraHeader` / `http.<url>.extraHeader` ride along on every
-  request via reqwest's `default_headers`; multi-value preserved.
-  Basic upload adapter sniffs gzip / falls back to octet-stream,
-  honors `lfs.<url>.contenttype`, and emits upstream's 422 hint when
-  a CDN rejects the sniffed type. Lands t-extra-header (4 tests) and
-  t-content-type (3 tests).
-- **6d per-URL credential config + multi-stage auth** —
+- **Per-URL credential config + multi-stage auth** —
   `credential.<url>.helper`, `state[]` / `wwwauth[]` carrying.
-- **6e NTLM / Negotiate** — heaviest; defer until a real Windows AD
+  Owns t-askpass test 4 plus the t-credentials tail.
+- **NTLM / Negotiate** — heaviest; defer until a real Windows AD
   user surfaces.
 
-### Milestone 7 — Retry / Retry-After / rate-limit (small/medium)
+### Custom transfer / pure-SSH / tus (large)
 
-Owns t-batch-retries-ratelimit, t-batch-storage-retries,
-t-batch-storage-retries-ratelimit (15 tests). Lives in `transfer/`.
+Three independent adapters in `transfer/`:
 
-- **7a Storage Retry-After + retry breadcrumbs** ✓ shipped —
-  `git_lfs_api::parse_retry_after` parses the header on action-URL
-  responses; `with_retry` sleeps for the server-supplied delay
-  when present, exponential backoff otherwise. Trace lines match
-  upstream's `tq: retrying object` / `tq: enqueue retry #N` formats.
-  Default `max_attempts` bumped 3 → 9 to outlast the 10s rate-limit
-  window in the test server. Lands `t-batch-storage-retries-ratelimit`
-  (5) + `t-batch-storage-retries` tests 1-2 = 7 tests.
-- **7b Batch Retry-After / delayed retry** ✓ shipped — batch
-  endpoint 429 with Retry-After (or 5xx) routes through a
-  `batch_with_retry` helper that sleeps for the server-supplied
-  delay (exponential fallback when absent) and emits `tq: enqueue
-  retry #N` per object in the batch per retry. The `Retry-After`
-  header now surfaces on `ApiError::Status` via `retry_after()`.
-  Lands `t-batch-retries-ratelimit` (5 tests).
-- **7c Range-resume on interrupted downloads** ✓ shipped — the
-  basic download adapter writes through `incomplete/<oid>.part`,
-  sends `Range: bytes=<offset>-<size-1>` when a partial is present,
-  and handles 206 (append) / 416 (delete + recurse) / 200-with-range
-  (treat as fresh). `GIT_CURL_VERBOSE` dumps curl-style request +
-  response headers so the `Range:` / `206 Partial Content` /
-  `Content-Range:` / `416 Requested Range Not Satisfiable` greps
-  match. New store API: `incomplete_path` / `commit_partial`.
-  Lands `t-batch-storage-retries` tests 3-5.
-
-### Milestone 8 — Custom transfer / SSH / tus (large)
-
-~28 tests across t-custom-transfers, t-standalone-file, t-ssh,
-t-batch-storage-upload-tus, t-multiple-remotes. Three independent
-adapters in `transfer/`:
-
-- **8a SSH `git-lfs-authenticate`** ✓ shipped — `creds::SshAuthClient`
-  spawns `ssh ... git-lfs-authenticate <path> <op>`, parses the JSON
-  response, caches per `(host, port, path, operation)`. Auth client
-  consults `api::SshResolver` once per request; non-empty `href`
-  overrides the endpoint and `header` map merges into the outgoing
-  request. Lands t-batch-transfer SSH test, t-locks SSH test,
-  t-expired SSH trio. Deferred surface tracked below: SSH connection
-  multiplexing (`-oControlMaster`, `lfs.ssh.automultiplex`); retry
-  count (`lfs.ssh.retries`, default 5 in upstream — we fail on first
-  error); HTTP Basic fallback when SSH command fails; `core.sshCommand`
-  (we honor `GIT_SSH_COMMAND` / `GIT_SSH` only); `lfs.activitytimeout`;
-  `lfs.defaulttokenttl` fallback when server omits expiry; and
-  per-OS path-quoting nuances on Windows. The pure-SSH transfer
-  protocol (8c-equivalent, `git-lfs-transfer`) is also deferred —
-  `lfs.<url>.sshtransfer=always` errors with upstream's exact
-  wording; `=never` is honored trivially.
-- **8b Custom transfer agent protocol** — `docs/custom-transfers.md`.
+- **Custom transfer agent protocol** — `docs/custom-transfers.md`.
   Third-party byte-for-byte contract.
-- **8c Tus resumable uploads** — chunk + resume + finalize.
-- **8d Pure-SSH transfer (`git-lfs-transfer`)** — extends 8a with
-  byte transfer over SSH instead of HTTPS. Currently we error on
-  `lfs.<url>.sshtransfer=always`; `t-batch-transfer.sh` tests 6-8
-  and `t-locks.sh` test 4 already pass via the basic SSH auth flow,
-  but they don't actually exercise the pure-SSH protocol path —
-  they happen to work because we fall through to HTTPS via
-  `git-lfs-authenticate`.
+- **Tus resumable uploads** — chunk + resume + finalize.
+- **Pure-SSH transfer (`git-lfs-transfer`)** — byte transfer over
+  SSH instead of HTTPS. Currently we error on
+  `lfs.<url>.sshtransfer=always`. `t-batch-transfer.sh` tests 6-8
+  and `t-locks.sh` test 4 already pass via the basic SSH auth
+  flow, but they don't actually exercise the pure-SSH protocol
+  path — they happen to work because we fall through to HTTPS
+  via `git-lfs-authenticate`.
 
-### Milestone 9 — Unshipped commands (small batch)
+### Unshipped commands (small batch)
 
 `completion`, `dedup`. Each is small in isolation — bundle as one
 focused pass.
 
-### Milestone 10 — Long-tail polish (ongoing)
+### Long-tail polish (ongoing)
 
-ls-files (`--include`/`--exclude`/`--deleted`/two-ref range/index
-scan), push (negative size message, batch error formatter,
-`pushInsteadOf`), checkout `--to <path> [--ours|--theirs]`, fetch
-`--recent` integration, install `--manual`, prune `--verify-remote`,
-fsck `<a>..<b>` range. Pluck individual items between bigger
-milestones rather than as a single pass.
+ls-files (`--include`/`--exclude`/two-ref range), push retry-with-
+expired-actions, checkout `--to <path> [--ours|--theirs]`, fetch
+`--recent` integration, install `--manual`, fsck `<a>..<b>` range.
+Pluck individual items between bigger milestones rather than as a
+single pass.
 
 ## Open questions / things to flag before deep diving
 
@@ -479,8 +285,6 @@ missing** and **why it was OK to skip for v0**.
   / `expires_in`. We treat "no expiry" as "never expires until
   process exit", which is fine for the MVP test but loose for
   long-running daemons.
-- **netrc.** Upstream `creds/netrc.go` reads `~/.netrc` as a fallback.
-  Skipped — `git credential` already shells through to it on most setups.
 - **NTLM / Negotiate (Kerberos).** Upstream supports both via separate
   access modes. Out of scope until a real user hits a Windows AD
   deployment.
@@ -495,8 +299,8 @@ missing** and **why it was OK to skip for v0**.
   does one fill+retry per request. Upstream's `DoWithAuth` loops up
   to 3-4 times and emits `api: too many authentication attempts` when
   the budget is exhausted. Owns t-askpass test 4 plus several
-  t-credentials tests. Bundle with 6d (wwwauth/state) — they share
-  the loop machinery.
+  t-credentials tests. Bundle with the wwwauth / state slice — they
+  share the loop machinery.
 - **Path-scoped queries.** [`Query::from_url`] populates path; the
   `Client::with_use_http_path` builder now wires the global
   `credential.useHttpPath` config through. URL-scoped
@@ -522,10 +326,24 @@ missing** and **why it was OK to skip for v0**.
 - **`--recent`.** Apply `lfs.fetchrecentrefsdays` and
   `lfs.fetchrecentcommitsdays` to add recent refs + recent history.
   Big-repo polish — most common after `git fetch` to top up.
-- **`--prune`.** Combine fetch with prune-after.
+- **`--prune`.** Combine fetch with prune-after. Wired as a best-effort
+  prune-after-fetch; upstream may have a more nuanced "fetch + prune
+  in one walk" — confirm before declaring parity.
 - **`--include`/`--exclude` patterns.** Filter pointers by working-tree
   path. Builds on top of `filepathfilter/` which we haven't ported yet.
 - **`--dry-run`, `--json`, `--refetch`.** Output / behavior knobs.
+  `--json` action capture works for `--dry-run`; non-dry-run emits
+  transfers without action URLs because the transfer queue doesn't
+  surface the batch response back to the caller yet.
+- **`Invalid remote name` for first-arg-not-a-remote.** Upstream
+  treats `git lfs fetch not-a-remote` as "first arg is a remote
+  name → error if not a remote" rather than "try as ref →
+  Invalid ref argument". `t-fetch.sh::fetch with invalid remote`
+  explicitly greps for the remote-flavor message.
+- **Empty SSL key tolerance.** `t-fetch.sh::fetch does not crash on
+  empty key files` sets `http.sslKey=/dev/null` and expects an
+  `Error decoding PEM block` message. We don't currently surface
+  that — needs a graceful path through the rustls TLS setup.
 - **Progress events.** v0 prints a one-line summary; we already have
   `Event::Progress` flowing through `transfer/`, just need a renderer
   (e.g. `indicatif`-based bar) wired up.
@@ -560,9 +378,8 @@ missing** and **why it was OK to skip for v0**.
   We currently retry but don't re-issue the batch to refresh the URL.
   Shares plumbing with the `t-expired` suite.
 - **Custom-namespace refs in `--all` setup.** Setup uses
-  `lfstest-testutils addcommits` (now ported), but the
-  custom-namespace check itself was passing pre-M7 polish — keep an
-  eye on it if the addcommits helper grows new shapes.
+  `lfstest-testutils addcommits` (now ported); keep an eye on the
+  custom-namespace check if the helper grows new shapes.
 
 ### `cli pull`
 - **Don't read every tracked file.** `pull` currently walks every tracked
@@ -574,25 +391,6 @@ missing** and **why it was OK to skip for v0**.
   pointer-shaped file it can resolve from the store. Probably want a
   guard ("file has uncommitted edits → skip with warning") once users
   start trusting this in serious workflows.
-
-### `cli fetch`
-- **`--json` action capture for non-dry-run.** `--json` works for
-  `--dry-run` (we run the batch, capture URLs, emit them as the
-  `actions` field). For non-dry-run we currently emit transfers
-  without action URLs — needs the transfer queue to surface the
-  batch response back to the caller.
-- **`--prune` integration.** Wired as a best-effort prune after the
-  fetch. Upstream may have a more nuanced "fetch + prune in one
-  walk" — confirm before declaring parity.
-- **`Invalid remote name` for first-arg-not-a-remote.** Upstream
-  treats `git lfs fetch not-a-remote` as "first arg is a remote
-  name → error if not a remote" rather than "try as ref →
-  Invalid ref argument". `t-fetch.sh::fetch with invalid remote`
-  explicitly greps for the remote-flavor message.
-- **Empty SSL key tolerance.** `t-fetch.sh::fetch does not crash on
-  empty key files` sets `http.sslKey=/dev/null` and expects an
-  `Error decoding PEM block` message. We don't currently surface
-  that — needs a graceful path through the rustls TLS setup.
 
 ### `cli install`
 - **`--system` scope.** Trivial — just another `ConfigScope` variant.

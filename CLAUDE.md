@@ -6,65 +6,50 @@ level, with a better `--help`/UX and a cleaner library split.
 
 ## Status
 
-**Milestone 1 (sync foundation)** — shipped. Pointer parse/encode,
-content-addressable store, clean/smudge filters, filter-process protocol,
-`install`, `track`.
+Experimental, but already covers most of the upstream surface. The
+full clone → fetch → smudge → edit → clean → push cycle works
+end-to-end against authenticated LFS endpoints. All eight workspace
+members are publish-ready and shipped on crates.io.
 
-**Milestone 2 (read+write loop)** — shipped. The full clone → fetch → smudge
-→ edit → clean → push cycle works end-to-end against authenticated LFS
-endpoints with no explicit `lfs.url` config.
+What's implemented today:
 
-- **Networking.** `api/` does the batch + locking HTTP client; `creds/`
-  bridges `git credential fill/approve/reject` and runs the 401 → fill →
-  retry-once → approve/reject loop with an in-memory cache.
-  `git::endpoint` walks the full upstream URL priority chain: `GIT_LFS_URL`
-  → `lfs.url` (git config + `.lfsconfig`) → `remote.<name>.lfsurl` →
-  derived from `remote.<name>.url` (SSH/git URL → HTTPS rewriting). The
-  batch response decoder tolerates servers that omit `size`.
-- **Transfer.** `transfer/` is a concurrent queue with the basic adapter
-  (up + down + verify). Smudge does on-demand download.
-- **Git interop.** `git/` ships the scanner (`rev_list`, `cat-file
-  --batch[-check]`, `scan_pointers`, `scan_tree`), `diff_index`, refspec
-  resolution (`branch.<x>.merge` / current ref), and a `.gitattributes`
-  parser+matcher backed by `gix-attributes` + `gix-glob`.
-- **Commands.** `fetch`, `pull`, `push`, `pre-push`, `clone` (deprecated
-  upstream wrapper), `checkout`, `fsck`, `prune`, `migrate` (info /
-  import / export — full history rewriting via `fast-export | transform |
-  fast-import`), `lock` / `locks` / `unlock`, `ls-files`, `env`, `status`,
-  `track` / `untrack`, `install` / `uninstall`, `version`, `pointer`. All
-  four hook entry points (`pre-push`, `post-checkout`, `post-commit`,
-  `post-merge`) ship.
-- **Lockable invariant.** `cli/src/lockable.rs` owns the workdir walk, the
-  lazy `verify_locks` "ours" query, and the per-platform chmod (owner-
-  write bit on Unix, `set_readonly` on Windows). Honors both
-  `lfs.setlockablereadonly` config and `GIT_LFS_SET_LOCKABLE_READONLY`.
-- **Hook auto-install.** `clean`, `smudge`, `filter-process`, `fsck`,
-  `track`, `untrack`, `migrate import` all best-effort install the four
-  hooks on invocation, mirroring upstream's `installHooks(false)`
-  side-effect pattern.
-- **Pre-push lock verification.** `cli/src/locks_verify.rs` reads
-  `lfs.<endpoint>.locksverify` (falling back to `lfs.locksverify`) and
-  runs the full setting × status matrix (enabled / unset / disabled ×
-  200 / 5xx / 501 / 403 / 404).
-- **Test scaffolding.** `lfstest-testutils addcommits` ported to Rust at
-  `tests/cmd/src/bin/lfstest-testutils.rs` so the ~11 fixture-building
-  shell tests can run without the upstream Go testtools. Lives in its
-  own `lfstest` crate (publish=false), so `cargo install git-lfs`
-  installs only the production binary.
+- The CLI surface — `fetch`, `pull`, `push`, `pre-push`, `clone`
+  (deprecated upstream wrapper), `checkout`, `fsck`, `prune`,
+  `migrate` (info / import / export), `lock` / `locks` / `unlock`,
+  `ls-files`, `env`, `status`, `track` / `untrack`, `install` /
+  `uninstall`, `merge-driver`, `logs`, `version`, `pointer`, plus
+  the four hook entry points.
+- Networking — `api/` for batch + locking; `creds/` for the
+  `git credential fill / approve / reject` bridge plus netrc and
+  askpass; `git::endpoint` for the full URL priority chain;
+  `transfer/` for the concurrent queue with the basic adapter
+  (upload, download, verify, Retry-After, range-resume).
+- Git interop — `git/` ships the scanner (`rev_list`, `cat-file
+  --batch[-check]`, `scan_pointers`, `scan_tree`), `diff_index`,
+  refspec resolution, and a `.gitattributes` parser + matcher
+  backed by `gix-attributes` + `gix-glob`.
+- Lockable invariant — `cli/src/lockable.rs` owns the workdir
+  walk, the lazy `verify_locks` "ours" query, and the per-platform
+  chmod (Unix owner-write bit, Windows `set_readonly`).
+- Hook auto-install — `clean`, `smudge`, `filter-process`, `fsck`,
+  `track`, `untrack`, `migrate import` all best-effort install
+  the four hooks on invocation, mirroring upstream's
+  `installHooks(false)` side-effect pattern.
+- Pre-push lock verification — `cli/src/locks_verify.rs` honors
+  `lfs.<endpoint>.locksverify` (falling back to `lfs.locksverify`)
+  across the full setting × status matrix.
+- Test scaffolding — `lfstest-testutils addcommits` ported to Rust
+  at `tests/cmd/src/bin/lfstest-testutils.rs` so the
+  fixture-building shell tests run without the upstream Go
+  testtools. Lives in its own `lfstest` crate (publish=false), so
+  `cargo install git-lfs` installs only the production binary.
 
-**Milestone 3 territory** — not started or partial. Custom transfer
-adapters + tus, pure-SSH transfer (`git-lfs-transfer`), netrc / NTLM /
-Kerberos / mTLS, `merge-driver`, `dedup`, `ext`, `standalone-file`,
-`logs`, `completion`, retry / Retry-After / rate-limit handling,
-fetch-recent semantics, full prune retention. SSH `git-lfs-authenticate`
-itself shipped (M8a). See `NOTES.md` for the ranked gap list and
-per-command deferred polish.
-
-**Released as v0.2.0 on crates.io.** All eight workspace members are
-publish-ready (description, keywords, categories, repository, per-crate
-README). Project status remains experimental — for production use,
-upstream Go `git-lfs` is still the answer; ~85% of the vendored shell
-tests pass (678/794 across 104 files).
+What's still gapped: custom transfer adapters + tus, pure-SSH
+transfer (`git-lfs-transfer`), NTLM / Kerberos / mTLS, multi-stage
+auth (`wwwauth[]` / `state[]`), `dedup`, `completion`, full
+fetch-recent / prune retention semantics. See `NOTES.md` for the
+ranked gap list, per-command deferred polish, and
+`tests/SCOREBOARD.md` for the live per-suite pass rate.
 
 ## Layout
 
@@ -157,4 +142,5 @@ inventing a new one.
 
 ## See also
 
-- `NOTES.md` — milestones, vendored-vs-skipped rationale, open questions.
+- `NOTES.md`: milestones, vendored-vs-skipped rationale, open questions.
+- `ROADMAP.md`: high-level roadmap for the projects (milestones)

@@ -61,8 +61,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `git lfs ls-files --all <ref>` now errors with `Cannot use --all with
   explicit reference` rather than silently ignoring the positional.
   Lands `t-ls-files::--all with argument(s)`.
+- `url.<base>.pushInsteadOf` is honored for upload + verify action URLs
+  when `lfs.transfer.enablehrefrewrite=true`. Falls back to plain
+  `insteadOf` when no push-direction alias matches, so the existing
+  download behavior is preserved. New `git_lfs_git::aliases::load_push_aliases`
+  and `TransferConfig::upload_url_rewriter` carry the push-direction
+  rewrite separately from the download rewriter. Lands `t-push::push
+  with invalid pushInsteadof`.
 
 ### Fixed
+
+- `creds`: gate the `creds: git credential <sub> (...)` trace line on
+  `GIT_TRACE` so it stays silent when tracing is off. Matches upstream's
+  `tracerx.Printf` behavior. Lands `t-lock::lock multiple files`, whose
+  `grep -v CREDS errlog` assertion was tripping on the always-on lowercase
+  line. Restores `t-lock` to 17/17.
 
 - `git lfs smudge <path>` now honors `lfs.fetchinclude` /
   `lfs.fetchexclude`. When the path doesn't pass the filter, the
@@ -117,16 +130,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `git lfs push` exits with code 2 when any per-object upload fails
   (previously: code 1). Matches upstream's "push aborted" semantics
   and is what `t-push::push with invalid pushInsteadof` greps for.
-
-### Added
-
-- `url.<base>.pushInsteadOf` is honored for upload + verify action URLs
-  when `lfs.transfer.enablehrefrewrite=true`. Falls back to plain
-  `insteadOf` when no push-direction alias matches, so the existing
-  download behavior is preserved. New `git_lfs_git::aliases::load_push_aliases`
-  and `TransferConfig::upload_url_rewriter` carry the push-direction
-  rewrite separately from the download rewriter. Lands `t-push::push
-  with invalid pushInsteadof`.
 
 ## [0.6.0] - 2026-05-13
 
