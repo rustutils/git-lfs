@@ -262,6 +262,17 @@ fn split_csv(values: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// Read `core.sharedRepository` from any config scope. `None` means
+/// "respect process umask"; a returned value is fed to
+/// [`Store::with_shared_repository`] to apply the right file/dir mode
+/// policy when committing objects. `git config` errors are non-fatal —
+/// the default umask path is always a safe fallback.
+pub fn shared_repo_config(cwd: &std::path::Path) -> Option<String> {
+    git_lfs_git::config::get_effective(cwd, "core.sharedRepository")
+        .ok()
+        .flatten()
+}
+
 /// Read configured pointer extensions and convert to the filter crate's
 /// runtime form. Skips entries whose `clean` is empty or whose priority
 /// is outside the spec's 0-9 range — those wouldn't produce a valid
@@ -326,7 +337,10 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
     match cmd {
         Command::Clean(CleanArgs { path }) => {
             let _ = install::try_install_hooks(&cwd);
-            let store = Store::new(git_lfs_git::lfs_dir(&cwd)?);
+            let mut store = Store::new(git_lfs_git::lfs_dir(&cwd)?);
+            if let Some(v) = shared_repo_config(&cwd) {
+                store = store.with_shared_repository(&v);
+            }
             // No `with_references` here: clean writes new content
             // computed from working-tree input, so alternate stores
             // can't satisfy the lookup (and we don't want to reuse
@@ -344,8 +358,11 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
         }
         Command::Smudge(SmudgeArgs { path, skip }) => {
             let _ = install::try_install_hooks(&cwd);
-            let store = Store::new(git_lfs_git::lfs_dir(&cwd)?)
+            let mut store = Store::new(git_lfs_git::lfs_dir(&cwd)?)
                 .with_references(git_lfs_git::lfs_alternate_dirs(&cwd).unwrap_or_default());
+            if let Some(v) = shared_repo_config(&cwd) {
+                store = store.with_shared_repository(&v);
+            }
             let stdin = io::stdin().lock();
             let mut input: Box<dyn Read> = Box::new(stdin);
             let mut output: Box<dyn Write> = Box::new(BufWriter::new(io::stdout().lock()));
@@ -358,28 +375,44 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                     .as_deref()
                     .map(|p| p.to_string_lossy().into_owned())
                     .unwrap_or_default();
+                // Honor `lfs.fetchinclude` / `lfs.fetchexclude` even
+                // on the standalone smudge entrypoint: filter-process
+                // (used by `git checkout`) already does, but
+                // `git lfs smudge <path>` invocations bypass that
+                // path. When `<path>` doesn't pass the filter, emit
+                // the pointer bytes verbatim — same passthrough
+                // semantics filter-process uses.
+                let include_set = fetch::build_pattern_set(&cwd, &[], "lfs.fetchinclude")?;
+                let exclude_set = fetch::build_pattern_set(&cwd, &[], "lfs.fetchexclude")?;
+                let filter_passes = path
+                    .as_deref()
+                    .is_none_or(|p| fetch::path_passes_filter(Some(p), &include_set, &exclude_set));
                 // Buffer stdin so we can pass the original pointer
                 // bytes through on a fetch failure when
                 // `lfs.skipdownloaderrors` is set. Pointers are tiny
                 // (`MAX_POINTER_SIZE`), so the buffer cost is bounded.
                 let mut buf = Vec::new();
                 io::copy(&mut input, &mut buf)?;
-                let result = smudge_with_fetch(
-                    &store,
-                    &mut buf.as_slice(),
-                    &mut output,
-                    &path_str,
-                    &smudge_extensions,
-                    |p| fetcher.fetch(p),
-                );
-                match result {
-                    Ok(_) => {}
-                    Err(SmudgeError::FetchFailed(_)) if env::skip_download_errors(&cwd) => {
-                        output.write_all(&buf)?;
+                if !filter_passes {
+                    output.write_all(&buf)?;
+                } else {
+                    let result = smudge_with_fetch(
+                        &store,
+                        &mut buf.as_slice(),
+                        &mut output,
+                        &path_str,
+                        &smudge_extensions,
+                        |p| fetcher.fetch(p),
+                    );
+                    match result {
+                        Ok(_) => {}
+                        Err(SmudgeError::FetchFailed(_)) if env::skip_download_errors(&cwd) => {
+                            output.write_all(&buf)?;
+                        }
+                        Err(e) => return Err(Box::new(e)),
                     }
-                    Err(e) => return Err(Box::new(e)),
+                    fetcher.persist_access_mode();
                 }
-                fetcher.persist_access_mode();
             }
             output.flush()?;
         }
@@ -503,8 +536,11 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
         }
         Command::FilterProcess(FilterProcessArgs { skip }) => {
             let _ = install::try_install_hooks(&cwd);
-            let store = Store::new(git_lfs_git::lfs_dir(&cwd)?)
+            let mut store = Store::new(git_lfs_git::lfs_dir(&cwd)?)
                 .with_references(git_lfs_git::lfs_alternate_dirs(&cwd).unwrap_or_default());
+            if let Some(v) = shared_repo_config(&cwd) {
+                store = store.with_shared_repository(&v);
+            }
             let fetcher = LfsFetcher::from_repo(&cwd, &store)?;
             let stdin = io::stdin().lock();
             let stdout = io::stdout().lock();

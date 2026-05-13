@@ -14,6 +14,7 @@
 //! # let _ = size;
 //! ```
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -41,6 +42,88 @@ pub struct Store {
     /// misses, [`Store::contains_with_size`] / [`Store::open`] walk
     /// these in order and hardlink (or copy) any hit into `root`.
     references: Vec<PathBuf>,
+    /// File/directory mode policy for objects committed into the
+    /// store. Defaults to "honor process umask"; set via
+    /// [`Store::with_shared_repository`] to override (e.g. to apply
+    /// `core.sharedRepository=group` semantics).
+    mode_policy: ModePolicy,
+}
+
+/// File-mode rule used when committing objects and creating their
+/// containing directories. Mirrors git's `core.sharedRepository`
+/// semantics — see `config/config.go::getMask` upstream.
+#[derive(Debug, Clone, Copy)]
+struct ModePolicy {
+    /// Mask: target file mode is `0o666 & !mask`. None means "no
+    /// explicit policy — chmod committed files to `0o666 & !umask`
+    /// since the tempfile crate uses mode 0o600 unconditionally."
+    mask: u32,
+}
+
+impl ModePolicy {
+    fn from_umask() -> Self {
+        Self {
+            mask: process_umask(),
+        }
+    }
+
+    /// Parse a `core.sharedRepository` config value into a mask.
+    /// Recognized: `umask`/`false`/`0`/unset → process umask;
+    /// `group`/`true`/`1` → 0o007; `all`/`world`/`everybody`/`2` →
+    /// 0o002; any other octal value N → `0o666 & !N`. Unrecognized
+    /// strings fall back to umask.
+    fn from_shared_repository(value: &str) -> Self {
+        let v = value.trim().to_ascii_lowercase();
+        let mask = match v.as_str() {
+            "group" | "true" | "1" => 0o007,
+            "all" | "world" | "everybody" | "2" => 0o002,
+            "umask" | "false" | "0" | "" => process_umask(),
+            other => {
+                // Try octal interpretation. Strip any leading `0` to
+                // match git's `strconv.ParseInt(v, 8, ...)` behavior.
+                match u32::from_str_radix(other.trim_start_matches('0'), 8) {
+                    Ok(mode) if mode <= 0o777 => 0o666 & !mode,
+                    _ => process_umask(),
+                }
+            }
+        };
+        Self { mask: mask & 0o777 }
+    }
+
+    /// Target file mode for committed objects (and the temp files
+    /// they're persisted from).
+    fn file_mode(self) -> u32 {
+        0o666 & !self.mask & 0o777
+    }
+
+    /// Target directory mode. Matches git's
+    /// `tools.ExecutablePermissions`: copy read bits to execute bits.
+    fn dir_mode(self) -> u32 {
+        let f = self.file_mode();
+        (f | ((f & 0o444) >> 2)) & 0o777
+    }
+}
+
+/// Read the process umask without permanently changing it. POSIX's
+/// `umask` syscall is read-modify-write; the bracketed `(0,prev)`
+/// dance is the standard way to capture it without races.
+#[cfg(unix)]
+fn process_umask() -> u32 {
+    // SAFETY: `libc::umask` is signal-safe and thread-safe to call;
+    // the brief window where umask is 0 only matters if another
+    // thread creates a file in that interval. Stores live for the
+    // duration of a single command and are constructed before any
+    // worker threads spawn.
+    unsafe {
+        let prev = libc::umask(0o022);
+        libc::umask(prev);
+        (prev as u32) & 0o777
+    }
+}
+
+#[cfg(not(unix))]
+fn process_umask() -> u32 {
+    0o022
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -58,7 +141,19 @@ impl Store {
         Self {
             root: lfs_dir.into(),
             references: Vec::new(),
+            mode_policy: ModePolicy::from_umask(),
         }
+    }
+
+    /// Apply `core.sharedRepository` semantics to objects this store
+    /// commits. `value` is the literal string from `git config`
+    /// (`group`, `everybody`, octal `0660`, …); unrecognized values
+    /// fall back to honoring the process umask. Resets any prior
+    /// policy on this `Store`.
+    #[must_use]
+    pub fn with_shared_repository(mut self, value: &str) -> Self {
+        self.mode_policy = ModePolicy::from_shared_repository(value);
+        self
     }
 
     /// Attach alternate `lfs/objects/` directories that the store may
@@ -110,46 +205,109 @@ impl Store {
         }
         let dest = self.object_path(oid);
         if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)?;
+            self.create_dir_all_with_mode(parent)?;
         }
-        std::fs::rename(partial, &dest)
+        std::fs::rename(partial, &dest)?;
+        self.set_file_mode(&dest)?;
+        Ok(())
     }
 
     /// Sweep `<root>/tmp/objects/` (upstream's path for in-flight
     /// download temp files: `<oid>-<random>`) and remove any whose
-    /// leading 64-char OID is already complete in the store.
+    /// leading 64-char OID is already complete in the store, and
+    /// prune anything else under `tmp/` older than an hour.
     ///
     /// Best-effort — the dir not existing, or any individual remove
     /// failing, is silently ignored. Intended to run once per
     /// command invocation, before the command's main work, so an
     /// interrupted prior run doesn't leak temp files indefinitely
-    /// (matches upstream's `lfs.cleanupTempFiles` startup task).
+    /// (matches upstream's `lfs.cleanupTempFiles` startup task in
+    /// `fs/cleanup.go`).
+    ///
+    /// Per-file rules — mirroring upstream:
+    /// 1. Filenames starting with `<64-hex>-` whose object is already
+    ///    complete in the store are removed unconditionally
+    ///    (interrupted-rename leftovers).
+    /// 2. Otherwise, files older than 1 hour are removed — *unless*
+    ///    they live in a subdirectory whose own mtime is fresher than
+    ///    1 hour, since active processes may have stale-looking files
+    ///    they still hold open (hard-linked across repos). Files
+    ///    directly under `tmp/` are exempt from the subdir-age
+    ///    short-circuit since we modify the top-level tmp dir often
+    ///    enough that it would never expire.
     pub fn cleanup_tmp_objects(&self) {
-        let dir = self.root.join("tmp").join("objects");
-        let Ok(entries) = std::fs::read_dir(&dir) else {
+        let tmp = self.root.join("tmp");
+        if !tmp.exists() {
+            return;
+        }
+        let cutoff =
+            match std::time::SystemTime::now().checked_sub(std::time::Duration::from_secs(3600)) {
+                Some(t) => t,
+                None => return,
+            };
+        // Cache subdir mtimes so the 1-hour exemption check doesn't
+        // re-stat the same dir per file.
+        let mut dir_mtimes: HashMap<PathBuf, std::time::SystemTime> = HashMap::new();
+        self.walk_tmp(&tmp, &tmp, cutoff, &mut dir_mtimes);
+    }
+
+    fn walk_tmp(
+        &self,
+        root: &Path,
+        dir: &Path,
+        cutoff: std::time::SystemTime,
+        dir_mtimes: &mut HashMap<PathBuf, std::time::SystemTime>,
+    ) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
             return;
         };
         for entry in entries.flatten() {
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            if name_str.len() < 64 {
+            let path = entry.path();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                self.walk_tmp(root, &path, cutoff, dir_mtimes);
                 continue;
             }
-            // Slice the leading 64 chars and reconstruct the
-            // object's sharded path purely as a string (no hex
-            // validation): upstream's cleanup is filesystem-level
-            // and accepts any 64-char prefix, which matters because
-            // the upstream test exercises this with non-hex
-            // sentinel strings like `good...` / `bad...`.
-            let oid_str = &name_str[..64];
-            let object_path = self
-                .root
-                .join("objects")
-                .join(&oid_str[0..2])
-                .join(&oid_str[2..4])
-                .join(oid_str);
-            if object_path.is_file() {
-                let _ = std::fs::remove_file(entry.path());
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            // Rule 1: "<oid>-..." file whose object is already complete.
+            // The filesystem-level cleanup accepts any 64-char prefix
+            // (no hex validation) so upstream test sentinels like
+            // `good...` / `bad...` round-trip.
+            if name_str.len() > 64 && name_str.as_bytes().get(64) == Some(&b'-') {
+                let oid_str = &name_str[..64];
+                let object_path = self
+                    .root
+                    .join("objects")
+                    .join(&oid_str[0..2])
+                    .join(&oid_str[2..4])
+                    .join(oid_str);
+                if object_path.is_file() {
+                    let _ = std::fs::remove_file(&path);
+                    continue;
+                }
+            }
+            // Rule 2a: skip files in young subdirectories. The
+            // top-level tmp/ itself is exempt (otherwise it'd never
+            // expire). Cache the dir's mtime so we don't restat per
+            // file.
+            if dir != root {
+                let dir_mtime = *dir_mtimes.entry(dir.to_path_buf()).or_insert_with(|| {
+                    std::fs::metadata(dir)
+                        .and_then(|m| m.modified())
+                        .unwrap_or(std::time::UNIX_EPOCH)
+                });
+                if dir_mtime > cutoff {
+                    continue;
+                }
+            }
+            // Rule 2b: remove file if older than the cutoff.
+            let Ok(meta) = entry.metadata() else { continue };
+            let Ok(mtime) = meta.modified() else { continue };
+            if mtime < cutoff {
+                let _ = std::fs::remove_file(&path);
             }
         }
     }
@@ -225,12 +383,13 @@ impl Store {
             }
             let dest = self.object_path(oid);
             if let Some(parent) = dest.parent() {
-                let _ = std::fs::create_dir_all(parent);
+                let _ = self.create_dir_all_with_mode(parent);
             }
             // Hardlink first (free, O(1), shares inode); fall back to
             // copy on EXDEV / NotSupported (e.g. alternate on a
             // different filesystem).
             if std::fs::hard_link(&src, &dest).is_ok() || std::fs::copy(&src, &dest).is_ok() {
+                let _ = self.set_file_mode(&dest);
                 return true;
             }
         }
@@ -338,7 +497,7 @@ impl Store {
     }
 
     fn stream_to_tmp(&self, src: &mut impl Read) -> io::Result<(Oid, u64, NamedTempFile)> {
-        std::fs::create_dir_all(self.tmp_dir())?;
+        self.create_dir_all_with_mode(&self.tmp_dir())?;
         let mut tmp = NamedTempFile::new_in(self.tmp_dir())?;
         let mut hasher = Sha256::new();
         let mut total: u64 = 0;
@@ -365,14 +524,71 @@ impl Store {
         }
         let dest = self.object_path(oid);
         if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)?;
+            self.create_dir_all_with_mode(parent)?;
         }
         // Atomic rename, *clobbering* any existing file at the target
         // path. The store is content-addressed: anything already there
         // is either the same content (no-op overwrite) or corrupt
         // (truncated, half-written) — and the latter is exactly what
         // `git lfs fetch --refetch` exists to recover from.
-        tmp.persist(&dest).map(|_| ()).map_err(|e| e.error)
+        tmp.persist(&dest).map_err(|e| e.error)?;
+        self.set_file_mode(&dest)?;
+        Ok(())
+    }
+
+    /// `mkdir -p` walking the path, chmoding each directory under
+    /// `root` to the configured `mode_policy.dir_mode()`. Components
+    /// outside `root` (e.g. the user's home directory) are left
+    /// alone — we only own the LFS subtree.
+    fn create_dir_all_with_mode(&self, target: &Path) -> io::Result<()> {
+        std::fs::create_dir_all(target)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = self.mode_policy.dir_mode();
+            // Walk from root → target, chmoding each component that
+            // exists under our LFS root. The check `starts_with(root)`
+            // guards against calls with an unrelated path.
+            let mut cursor = self.root.clone();
+            if cursor.is_dir() {
+                let _ = std::fs::set_permissions(&cursor, std::fs::Permissions::from_mode(mode));
+            }
+            if let Ok(rel) = target.strip_prefix(&self.root) {
+                for component in rel.components() {
+                    cursor.push(component);
+                    if cursor.is_dir() {
+                        let _ = std::fs::set_permissions(
+                            &cursor,
+                            std::fs::Permissions::from_mode(mode),
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Ensure `<root>/incomplete/` exists with the right directory
+    /// mode. Public so the transfer crate can stage `.part` files
+    /// under it without bypassing the `core.sharedRepository` policy.
+    pub fn prepare_incomplete_dir(&self) -> io::Result<()> {
+        self.create_dir_all_with_mode(&self.incomplete_dir())
+    }
+
+    /// Chmod a committed object file to the configured file mode.
+    /// No-op on non-unix.
+    fn set_file_mode(&self, path: &Path) -> io::Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = self.mode_policy.file_mode();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = path;
+        }
+        Ok(())
     }
 }
 

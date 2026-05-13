@@ -16,3 +16,8 @@ git-lfs-pointer = { workspace = true }
 sha2 = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+# `umask` syscall for honoring git's `core.sharedRepository` /
+# umask behavior when chmoding committed objects.
+libc = "0.2"

@@ -161,7 +161,7 @@ pub(crate) async fn download(
     let partial_path_owned = partial_path.clone();
     let store_for_blocking = store.clone();
     let total = tokio::task::spawn_blocking(move || -> Result<u64, TransferError> {
-        std::fs::create_dir_all(store_for_blocking.incomplete_dir())?;
+        store_for_blocking.prepare_incomplete_dir()?;
         write_partial(&partial_path_owned, server_resumed, &mut bridge)?;
         let actual = hash_file(&partial_path_owned)?;
         if actual != expected {

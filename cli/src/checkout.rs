@@ -112,8 +112,11 @@ pub fn run(cwd: &Path, opts: &Options) -> Result<(), CheckoutError> {
         return Ok(());
     }
 
-    let store = Store::new(git_lfs_git::lfs_dir(cwd)?)
+    let mut store = Store::new(git_lfs_git::lfs_dir(cwd)?)
         .with_references(git_lfs_git::lfs_alternate_dirs(cwd).unwrap_or_default());
+    if let Some(v) = crate::shared_repo_config(cwd) {
+        store = store.with_shared_repository(&v);
+    }
     let repo_root = repo_root(cwd)?;
     let smudge_extensions = collect_smudge_extensions(cwd);
 
@@ -621,8 +624,11 @@ fn run_to_conflict(cwd: &Path, opts: &Options, stage: Option<u8>) -> Result<(), 
     // Make sure the object is local. If not, fetch through the same
     // pipeline `git lfs fetch` uses; failures bubble up as a generic
     // "Error checking out" line.
-    let store = Store::new(git_lfs_git::lfs_dir(cwd)?)
+    let mut store = Store::new(git_lfs_git::lfs_dir(cwd)?)
         .with_references(git_lfs_git::lfs_alternate_dirs(cwd).unwrap_or_default());
+    if let Some(v) = crate::shared_repo_config(cwd) {
+        store = store.with_shared_repository(&v);
+    }
     if !store.contains_with_size(pointer.oid, pointer.size) {
         let fetcher = LfsFetcher::from_repo(cwd, &store)?;
         fetcher.fetch(&pointer).map_err(|e| {

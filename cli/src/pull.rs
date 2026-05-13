@@ -92,8 +92,11 @@ pub fn pull_with_filter(
     let include_set = fetch::build_pattern_set(cwd, include, "lfs.fetchinclude")?;
     let exclude_set = fetch::build_pattern_set(cwd, exclude, "lfs.fetchexclude")?;
 
-    let store = Store::new(git_lfs_git::lfs_dir(cwd)?)
+    let mut store = Store::new(git_lfs_git::lfs_dir(cwd)?)
         .with_references(git_lfs_git::lfs_alternate_dirs(cwd).unwrap_or_default());
+    if let Some(v) = crate::shared_repo_config(cwd) {
+        store = store.with_shared_repository(&v);
+    }
     let repo_root = repo_root(cwd)?;
     // Pointer extensions (case-inverter, encryption shims, etc.) need
     // to run on the way out of the store. Resolve once before the
