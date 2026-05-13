@@ -61,23 +61,22 @@ it. Used to triage which milestone to pick up next.
   basic 401-fill-retry loop ships, but multi-attempt auth (`wwwauth[]`
   / `state[]`), per-URL `credential.<url>.helper`, and NTLM /
   Negotiate are deferred.
-- **Prune + fetch-recent retention** — t-prune, t-prune-worktree,
-  t-fetch-recent edge cases. `lfs.fetchrecentcommitsdays` /
-  `lfs.fetchrecentrefsdays` / `lfs.fetchexclude` retention windows
-  aren't implemented.
 - **Custom transfer adapters, SSH transfer protocol, tus** —
   t-custom-transfers, t-standalone-file, t-ssh, t-batch-storage-upload-tus,
   t-multiple-remotes. Real protocol surface; basic adapter only
   ships today.
 - **ls-files long tail** — `--include` / `--exclude` (needs
   filepathfilter) and the two-ref range form.
+- **Migrate import** — 7 tests in t-migrate-import still fail, most
+  around `--no-rewrite`, `--object-map`, and pattern-accumulation
+  edge cases.
 - **Unshipped commands** — `completion`, `dedup`.
 - **Push edge cases** — `push (retry with expired actions)` needs
   the action-URL expiry + rebatch flow (companion to the t-expired
   cluster).
 - **Single-file holdouts** — t-batch-error-handling, t-progress,
-  t-repo-format, t-upload-redirect, t-usage, t-verify, t-worktree,
-  t-batch-storage-encoding, t-batch-unknown-oids.
+  t-batch-storage-encoding, t-batch-unknown-oids, t-clone
+  (ClientCert tests).
 
 ## Highest-leverage gaps (descending leverage)
 
@@ -90,18 +89,14 @@ what's broken and where to start.
    credential-protect. Still missing: per-URL `credential.<url>.helper`
    config, stateful multi-stage auth (`state[]` / `wwwauth[]` carried
    between fills), NTLM / Negotiate. See `creds/` deferral list.
-2. **Prune + fetch-recent retention.** `lfs.fetchrecentcommitsdays` /
-   `lfs.fetchrecentrefsdays` / `lfs.fetchrecentremoterefs` /
-   `lfs.fetchexclude` aren't honored. Today prune retains only
-   HEAD's tree + unpushed; everything older is fair game.
-3. **ls-files long tail.** `--include` / `--exclude` filters
-   (needs filepathfilter) and the two-ref range form.
-4. **Custom transfer adapters + tus + pure-SSH.** Third-party
+2. **Custom transfer adapters + tus + pure-SSH.** Third-party
    protocol surface; basic adapter only ships today. SSH
    `git-lfs-authenticate` ships, but the pure-SSH transfer
    protocol (`git-lfs-transfer`) doesn't.
-5. **Unshipped commands** — `completion`, `dedup`.
-6. **Push retry-with-expired-actions.** Server hands back stale
+3. **ls-files long tail.** `--include` / `--exclude` filters
+   (needs filepathfilter) and the two-ref range form.
+4. **Unshipped commands** — `completion`, `dedup`.
+5. **Push retry-with-expired-actions.** Server hands back stale
    action URLs; client should rebatch and retry. Shares plumbing
    with the t-expired suite.
 
@@ -261,10 +256,6 @@ missing** and **why it was OK to skip for v0**.
 - **`remote.<name>.pushurl`.** Upstream honors a separate push URL for
   the same remote; we only read `remote.<name>.url`. Minor accuracy gap
   for users with split read/write URLs.
-- **`url.<base>.pushinsteadof`.** Push-only URL alias variant of
-  `insteadof`. Upstream applies it for upload-direction transfers under
-  `lfs.transfer.enablehrefrewrite`; we honor `insteadof` (download +
-  endpoint derivation) but not `pushinsteadof`. Owns t-push 22.
 - **`remote.<name>.lfspushurl`.** Per-remote push-only LFS URL. Skipped.
 - **`lfs.<url>.access`.** Force an access mode (basic/ntlm/negotiate) per
   endpoint. Relevant once NTLM/Negotiate land.
@@ -323,31 +314,11 @@ missing** and **why it was OK to skip for v0**.
   retry, surface it.
 
 ### `cli fetch`
-- **Remote arg.** Upstream's CLI is `git lfs fetch [<remote>] [<ref>...]`;
-  v0 only accepts refs. Server discovery is done — derive endpoint from
-  the named remote when wiring this up.
-- **`--all`.** Walk every ref in the repo (`git rev-list --all`).
-- **`--recent`.** Apply `lfs.fetchrecentrefsdays` and
-  `lfs.fetchrecentcommitsdays` to add recent refs + recent history.
-  Big-repo polish — most common after `git fetch` to top up.
-- **`--prune`.** Combine fetch with prune-after. Wired as a best-effort
-  prune-after-fetch; upstream may have a more nuanced "fetch + prune
-  in one walk" — confirm before declaring parity.
-- **`--include`/`--exclude` patterns.** Filter pointers by working-tree
-  path. Builds on top of `filepathfilter/` which we haven't ported yet.
-- **`--dry-run`, `--json`, `--refetch`.** Output / behavior knobs.
-  `--json` action capture works for `--dry-run`; non-dry-run emits
-  transfers without action URLs because the transfer queue doesn't
-  surface the batch response back to the caller yet.
-- **`Invalid remote name` for first-arg-not-a-remote.** Upstream
-  treats `git lfs fetch not-a-remote` as "first arg is a remote
-  name → error if not a remote" rather than "try as ref →
-  Invalid ref argument". `t-fetch.sh::fetch with invalid remote`
-  explicitly greps for the remote-flavor message.
-- **Empty SSL key tolerance.** `t-fetch.sh::fetch does not crash on
-  empty key files` sets `http.sslKey=/dev/null` and expects an
-  `Error decoding PEM block` message. We don't currently surface
-  that — needs a graceful path through the rustls TLS setup.
+- **`--json` action capture for non-dry-run.** `--json` works for
+  `--dry-run` (the batch runs, URLs captured, emitted as `actions`).
+  For non-dry-run we currently emit transfers without action URLs —
+  needs the transfer queue to surface the batch response back to the
+  caller.
 - **Progress events.** v0 prints a one-line summary; we already have
   `Event::Progress` flowing through `transfer/`, just need a renderer
   (e.g. `indicatif`-based bar) wired up.
@@ -358,32 +329,13 @@ missing** and **why it was OK to skip for v0**.
   spawns `git push` against a wiremock-backed remote to catch hook
   invocation bugs (PATH, exit codes propagating) — but real `git push`
   needs an SSH or HTTP git remote, so the setup is heavier.
-- **Push-to-remote mapping** (`url.<base>.pushInsteadOf`). Upstream's
-  `git.MapRemoteURL` honors this; we use the remote name verbatim.
-- **Pre-flight `verify_locks` end-to-end.** Shipped, but a couple
-  of t-pre-push tests still fail because they `clone_repo` then
-  `git push` without first running any LFS-side command — the
-  hooks-on-smudge bootstrap (now wired through clean / smudge /
-  filter-process / fsck / track / untrack / migrate-import)
-  doesn't fire if no LFS path is touched between clone and push.
-  A dedicated `git lfs clone` wrapper (deprecated upstream but
-  still tested) would close the remaining holes.
 
 ### `cli push`
-- **Batch error message format.** `t-push.sh::push with bad ref`
-  greps `batch response: Expected ref "refs/heads/X", got
-  "refs/heads/Y"` against the branch-required server's 403 body.
-  We surface the body via `FetchError`, but format it as
-  `upload failed: server returned status 403: …`. Need a custom
-  formatter for batch failures.
 - **Action-URL expiry retry.** `t-push.sh::push (retry with expired
   actions)` — server hands back an `expires_at` in the past, expecting
   the client to re-batch and pick up a fresh action URL on retry.
   We currently retry but don't re-issue the batch to refresh the URL.
   Shares plumbing with the `t-expired` suite.
-- **Custom-namespace refs in `--all` setup.** Setup uses
-  `lfstest-testutils addcommits` (now ported); keep an eye on the
-  custom-namespace check if the helper grows new shapes.
 
 ### `cli pull`
 - **Don't read every tracked file.** `pull` currently walks every tracked
@@ -482,22 +434,12 @@ missing** and **why it was OK to skip for v0**.
 
 ### `cli ls-files`
 - **`--include` / `--exclude` path filters.** Upstream filters output by
-  working-tree pattern. Builds on the same `filepathfilter/` we haven't
-  ported yet (see also `cli fetch`).
-- **`--deleted`.** Include deleted-but-still-reachable LFS pointers from
-  history. Pairs naturally with `scan_pointers` (which does walk history),
-  but we need to surface deletions distinctly.
+  working-tree pattern. Builds on a filepathfilter-style glob matcher
+  we haven't ported yet (see also `cli fetch`).
 - **Two-ref range form** — `git lfs ls-files <a> <b>` walks pointers
   added between two refs. Maps onto `rev_list(include=[b], exclude=[a])`
   but the CLI parsing must distinguish "second arg is a ref" from "second
   arg is a path".
-- **`--all` with positional refs.** `git lfs ls-files --all main` is
-  upstream's "error if both given" check that we don't enforce yet.
-- **Escaped runes in paths.** `t-ls-files.sh::list/stat files with
-  escaped runes` blocks on `git lfs track '**/*'` being rejected as
-  matching forbidden `.gitattributes` — our match is glob-based
-  textually, upstream restricts the check to files already in the
-  index that start with `.git`/`.lfs`. Fix lives in `cli/src/track.rs`.
 
 ### `cli env`
 - **Trimmed output fields.** Upstream emits `LocalGitStorageDir`,
@@ -601,26 +543,6 @@ import and export share it.
   patterns, match strings) — `ignore` is overkill for our use case
   because we don't need its directory walker or hierarchical
   `.gitignore` traversal.
-
-### `cli prune`
-- **Recent-refs / recent-commits retention windows.** `lfs.fetchrecentrefsdays`
-  and `lfs.fetchrecentcommitsdays` keep pointers from refs / commits
-  touched within those windows (plus `lfs.pruneoffsetdays` cushion). v0
-  retains only HEAD's tree + unpushed; older history is fair game.
-- **Worktree + stash + index walks.** Upstream also retains pointers
-  reachable from other worktrees' HEADs and indexes, plus stash
-  entries. We skip all three. Niche, but matters for users who lean on
-  stashes or worktree-heavy workflows.
-- **`--verify-remote`.** Confirm each prunable object exists on the
-  remote before deleting (talks to the batch API in download-check
-  mode). Needs the transfer queue's verify-only path. Useful safety net
-  for users who don't fully trust their backups.
-- **`--recent` / `--force`.** Inverses of "keep recent refs / keep
-  unpushed." We don't have those retention paths yet, so the flags
-  would be no-ops. Add when the paths exist.
-- **`lfs.fetchexclude` honor.** Same gap as fsck — paths the user opted
-  out of fetching shouldn't generate "missing" reports or affect
-  retention.
 
 ### `cli fsck`
 - **`<a>..<b>` range form.** Upstream parses a single arg as either a
