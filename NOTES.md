@@ -46,6 +46,10 @@ Useful entry points in the upstream tree:
 - All Go source — we're rewriting, not translating.
 - Go unit tests (`*_test.go`) — useful as behavioral references, but not
   portable. Reimplement alongside Rust modules.
+- `t-usage.sh` — checks that the synopsis line reads `git lfs <command>
+  [<args>]`. We own our help output and let clap render the default
+  `Usage: git-lfs [COMMAND]`; matching the upstream wording would mean
+  fighting clap on every subcommand. Stays a permanent failure.
 
 ## Remaining failure clusters
 

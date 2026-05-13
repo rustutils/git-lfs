@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `git lfs track` now writes `lfs.repositoryformatversion = 0` to the
+  local git config on first invocation, and errors with
+  `Unknown repository format version: <val>` (exit 128) when an existing
+  local value isn't `0`. Mirrors upstream's `verifyRepositoryVersion`
+  from `commands/commands.go`; the global scope is intentionally
+  ignored. Lands `t-repo-format`.
+
 ## [0.7.0] - 2026-05-13
 
 ### Added

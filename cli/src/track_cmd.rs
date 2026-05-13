@@ -7,6 +7,8 @@ use std::process::Command;
 
 use serde::Serialize;
 
+use git_lfs_git::config::{self, ConfigScope};
+
 use crate::install;
 use crate::lockable::{self, HeldLocks};
 use crate::track::{self, LockableMode, TrackOptions, TrackResult, unescape_attr_pattern};
@@ -48,6 +50,9 @@ pub fn run(args: Args<'_>) -> Result<u8, Box<dyn std::error::Error>> {
         Ok(p) => p,
         Err(code) => return Ok(code),
     };
+    if let Err(code) = verify_repository_version(args.cwd) {
+        return Ok(code);
+    }
     let attrs_dir = if git_bool(args.cwd, "--is-inside-work-tree") == Some(true) {
         args.cwd.to_path_buf()
     } else {
@@ -332,6 +337,26 @@ fn check_repo_context(cwd: &Path) -> Result<std::path::PathBuf, u8> {
         return Err(128);
     }
     Ok(work_tree)
+}
+
+/// Mirrors upstream `verifyRepositoryVersion` in `commands/commands.go`.
+/// Reads `lfs.repositoryformatversion` from local config only (global is
+/// ignored): empty → write `0`; `0` → fine; anything else → print
+/// `Unknown repository format version: <val>` and exit 128.
+fn verify_repository_version(cwd: &Path) -> Result<(), u8> {
+    const KEY: &str = "lfs.repositoryformatversion";
+    match config::get(cwd, ConfigScope::Local, KEY) {
+        Ok(None) => {
+            let _ = config::set(cwd, ConfigScope::Local, KEY, "0");
+            Ok(())
+        }
+        Ok(Some(val)) if val == "0" => Ok(()),
+        Ok(Some(val)) => {
+            println!("Unknown repository format version: {val}");
+            Err(128)
+        }
+        Err(_) => Ok(()),
+    }
 }
 
 /// `git rev-parse <flag>` parsed as `true` / `false`. Returns `None` if
