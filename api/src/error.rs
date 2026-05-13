@@ -70,6 +70,13 @@ pub enum ApiError {
     /// Format mirrors upstream's `creds.FillCreds`.
     #[error("Git credentials for {url} not found{}", detail.as_deref().map(|d| format!(":\n{d}")).unwrap_or_else(|| ".".into()))]
     CredentialsNotFound { url: String, detail: Option<String> },
+
+    /// The auth retry loop tried `MAX_AUTH_ATTEMPTS` times and still
+    /// kept getting 401s. Surfaces upstream's `too many authentication
+    /// attempts` wording so `t-credentials.sh` tests 12/13 can grep
+    /// for it.
+    #[error("too many authentication attempts")]
+    AuthAttemptsExceeded,
 }
 
 /// Render an [`ApiError::Status`] for the user.

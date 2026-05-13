@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `api`: multi-attempt auth loop matching upstream's `DoWithAuth`. The
+  one-shot 401 → fill → retry → done pattern becomes a loop with
+  `MAX_AUTH_ATTEMPTS = 3` budget: each 401 rejects the current filled
+  creds (clearing the cache entry and setting netrc's skip flag) and
+  refills via the helper chain, so successive attempts naturally fall
+  through to the next helper. Anonymous-start requests get one
+  uncounted probe before the budget begins, mirroring upstream's
+  `maxAuthAttempts++` for `NoneAccess`. Exhausting the budget emits
+  `api: too many authentication attempts` (gated on `GIT_TRACE`) and
+  surfaces a new `ApiError::AuthAttemptsExceeded` variant — wrapped by
+  `TransferError::BatchResponse` so the upload-error path renders the
+  upstream `batch response: too many authentication attempts` line.
+  Lands `t-credentials.sh` tests 5 and 18, plus `t-askpass.sh` test 4
+  (the long-standing 5/6 partial). Suite tally moves to 12/20 and
+  6/6.
+
 ### Changed
 
 - `creds`: rework approve / reject to walk the helper chain like

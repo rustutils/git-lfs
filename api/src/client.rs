@@ -18,6 +18,15 @@ use crate::ssh::{SharedSshResolver, SshAuth, SshOperation};
 /// parameter; we send the bare media type (servers must accept either).
 pub(crate) const LFS_MEDIA_TYPE: &str = "application/vnd.git-lfs+json";
 
+/// Maximum total auth attempts per request, matching upstream's
+/// `lfsapi/auth.go::defaultMaxAuthAttempts`. The retry loop sends with
+/// whatever auth is in place, and on each 401 rejects + refills via
+/// the helper chain — so the second attempt typically falls through to
+/// the next helper. Exhausting the budget emits
+/// `api: too many authentication attempts` and surfaces
+/// [`ApiError::AuthAttemptsExceeded`].
+const MAX_AUTH_ATTEMPTS: u32 = 3;
+
 /// HTTP client for the git-lfs API endpoints.
 ///
 /// One instance per LFS endpoint URL. `Client` is cheap to clone and
@@ -370,21 +379,19 @@ impl Client {
     }
 
     /// Drive a single request through the credential-helper retry loop
-    /// and return the (possibly second) raw `Response`. Caller is on the
-    /// hook for decoding it — used by endpoints with bespoke status
-    /// handling (`create_lock`'s 409 → Conflict path, mostly).
+    /// and return the raw `Response`. Caller is on the hook for
+    /// decoding it — used by endpoints with bespoke status handling
+    /// (`create_lock`'s 409 → Conflict path, mostly).
     ///
-    /// `build` produces a fresh `RequestBuilder` each call — it's
-    /// invoked at most twice (once with whatever auth is in place, once
-    /// after a 401 → fill).
+    /// `build` produces a fresh `RequestBuilder` each call. The loop
+    /// invokes it up to [`MAX_AUTH_ATTEMPTS`] times; between attempts
+    /// it rejects the current credentials (so helpers like netrc set
+    /// their skip flag and the next fill falls through the chain),
+    /// refills via the helper chain, and re-sends with the new auth.
     ///
-    /// Approve / reject semantics (intentionally narrow):
-    /// - 2xx response: approve cached creds (in case they were freshly
-    ///   filled this call, or stayed valid from a prior call).
-    /// - 401 response: reject + clear cached creds. After fill+retry, a
-    ///   second 401 rejects the freshly-filled creds too.
-    /// - Anything else (4xx not-401, 5xx): leave the credential helper
-    ///   alone; we can't tell whether auth was the problem.
+    /// Mirrors upstream's `lfsapi/auth.go::DoWithAuth`, including the
+    /// `api: too many authentication attempts` trace + error on
+    /// overrun.
     pub(crate) async fn send_with_auth_retry_response<F>(
         &self,
         build: F,
@@ -409,10 +416,6 @@ impl Client {
                 .await
                 .unwrap_or(Ok(None))
             {
-                // Replace cached creds with the freshly-resolved set
-                // so on success approve_filled() lands on the right
-                // pair. Same query as the initial fill, so the cache
-                // entry doesn't churn.
                 *self.auth.lock().unwrap() = Auth::Basic {
                     username: c.username.clone(),
                     password: c.password.clone(),
@@ -421,60 +424,89 @@ impl Client {
             }
         }
 
-        let resp = build().send().await?;
-        if resp.status().is_success() {
-            self.approve_filled().await;
-            return Ok(resp);
-        }
-        if resp.status().as_u16() != 401 {
-            return Ok(resp);
-        }
-        // 401 — try the fill+retry dance.
-        let Some(helper) = self.credentials.clone() else {
-            return Ok(resp);
+        // The first send goes out with whatever auth is currently set
+        // (anonymous for fresh requests, cached Basic for repeats).
+        // When we start anonymous, the initial 401 isn't counted
+        // toward the budget — upstream's `DoWithAuth` bumps
+        // `maxAuthAttempts++` for `NoneAccess`. Subsequent sends all
+        // carry auth from the prior fill and count toward the limit.
+        let starts_anonymous = matches!(*self.auth.lock().unwrap(), Auth::None);
+        let max = if starts_anonymous {
+            MAX_AUTH_ATTEMPTS + 1
+        } else {
+            MAX_AUTH_ATTEMPTS
         };
-        let query = self.cred_query();
-        self.reject_filled().await;
-        let cred_url_str = self.cred_url_string();
-        let creds = match fill_for_endpoint(helper.clone(), query.clone(), &cred_url_str).await? {
-            Some(c) => c,
-            // No helper had anything for this URL. Surface the upstream
-            // "Git credentials for X not found" wording so callers (and
-            // batch-error formatters) can distinguish "auth missing" from
-            // a generic 401 the server returned for non-auth reasons.
-            None => {
-                return Err(ApiError::CredentialsNotFound {
-                    url: cred_url_str,
-                    detail: None,
-                });
+
+        for attempt in 0..max {
+            let resp = build().send().await?;
+            let status = resp.status();
+
+            if status.is_success() {
+                self.approve_filled().await;
+                return Ok(resp);
             }
-        };
-        {
-            let mut auth = self.auth.lock().unwrap();
-            *auth = Auth::Basic {
-                username: creds.username.clone(),
-                password: creds.password.clone(),
+            if status.as_u16() != 401 {
+                return Ok(resp);
+            }
+
+            // 401. We can only refill if a helper is configured.
+            let Some(helper) = self.credentials.clone() else {
+                return Ok(resp);
             };
+
+            // Out of attempts. Mirror upstream's trace + error
+            // wording. Reject the last filled set before bailing so
+            // the cache doesn't retain known-bad creds.
+            if attempt + 1 >= max {
+                self.reject_filled().await;
+                if trace_enabled() {
+                    let mut e = std::io::stderr().lock();
+                    let _ = writeln!(e, "api: too many authentication attempts");
+                }
+                return Err(ApiError::AuthAttemptsExceeded);
+            }
+
+            // Reject the creds we just sent. This clears the cache
+            // entry (so the next chain walk doesn't short-circuit on
+            // them) and sets netrc's skip flag (so the next walk falls
+            // through to the next helper). If `filled` was empty
+            // (anonymous first attempt), this is a no-op.
+            self.reject_filled().await;
+
+            // Refill for the next attempt. A helper whose creds we
+            // just rejected will pass on this round, so the chain
+            // falls through to the next one.
+            let query = self.cred_query();
+            let cred_url_str = self.cred_url_string();
+            let creds =
+                match fill_for_endpoint(helper.clone(), query.clone(), &cred_url_str).await? {
+                    Some(c) => c,
+                    // No helper had anything for this URL. Surface upstream's
+                    // "Git credentials for X not found" wording so callers
+                    // (and batch-error formatters) can distinguish "auth
+                    // missing" from a generic 401.
+                    None => {
+                        return Err(ApiError::CredentialsNotFound {
+                            url: cred_url_str,
+                            detail: None,
+                        });
+                    }
+                };
+            {
+                let mut auth = self.auth.lock().unwrap();
+                *auth = Auth::Basic {
+                    username: creds.username.clone(),
+                    password: creds.password.clone(),
+                };
+            }
+            {
+                let mut filled = self.filled.lock().unwrap();
+                *filled = Some((query.clone(), creds));
+            }
+            // Loop continues for the next attempt with the new auth.
         }
-        {
-            let mut filled = self.filled.lock().unwrap();
-            *filled = Some((query.clone(), creds.clone()));
-        }
-        let resp2 = build().send().await?;
-        if resp2.status().is_success() {
-            approve_blocking(helper, query, creds).await?;
-        } else if matches!(resp2.status().as_u16(), 401 | 403) {
-            // Both 401 (unauthorized) and 403 (forbidden after auth)
-            // mean the just-filled creds are wrong. Drop them so the
-            // *next* request triggers another 401 → fill → retry
-            // dance — without this reset, every subsequent request
-            // would silently reuse the bad credentials and skip the
-            // helper. Matches upstream's per-request `getCreds` flow.
-            reject_blocking(helper, query, creds).await?;
-            *self.filled.lock().unwrap() = None;
-            *self.auth.lock().unwrap() = Auth::None;
-        }
-        Ok(resp2)
+
+        unreachable!("the loop returns or errors before exhausting max attempts")
     }
 
     /// Like [`send_with_auth_retry_response`] but decodes a JSON body.
@@ -600,4 +632,16 @@ async fn reject_blocking(
         .map_err(|e| ApiError::Decode(format!("credential helper join: {e}")))?
         .map(|_| ())
         .map_err(|e| ApiError::Decode(format!("credential helper reject: {e}")))
+}
+
+/// Mirrors git's `GIT_TRACE` semantics: any value other than `""`,
+/// `0`, `false`, `no`, `off` enables tracing.
+fn trace_enabled() -> bool {
+    match std::env::var_os("GIT_TRACE") {
+        None => false,
+        Some(v) => {
+            let s = v.to_string_lossy().trim().to_lowercase();
+            !matches!(s.as_str(), "" | "0" | "false" | "no" | "off")
+        }
+    }
 }

@@ -619,8 +619,11 @@ async fn batch_unauthorized_with_no_creds_returns_credentials_not_found() {
 #[tokio::test]
 async fn batch_persistent_unauthorized_rejects_filled_creds() {
     // Server always 401s, even with the right header. Helper hands out
-    // creds that the server doesn't accept → client should reject() so
-    // those creds get evicted from caches downstream.
+    // creds that the server doesn't accept → multi-attempt loop tries
+    // up to `MAX_AUTH_ATTEMPTS` more times after the anonymous send
+    // (each cycle rejects the just-filled creds), then surfaces
+    // `AuthAttemptsExceeded`. Reject count should match the number of
+    // filled-then-rejected cycles.
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/objects/batch"))
@@ -646,8 +649,22 @@ async fn batch_persistent_unauthorized_rejects_filled_creds() {
         }],
     );
     let err = client.batch(&req).await.unwrap_err();
-    assert!(err.is_unauthorized());
-    assert_eq!(helper.reject_count(), 1, "bad creds should be rejected");
+    // Wrapped by TransferError::BatchResponse on the caller side, but
+    // at the api layer we surface the upstream-shaped "too many
+    // authentication attempts" variant.
+    let err_str = err.to_string();
+    assert!(
+        err_str.contains("too many authentication attempts"),
+        "expected too-many error, got: {err_str}"
+    );
+    // Helper hands creds 3 times (one per non-final attempt after the
+    // anonymous probe); each cycle rejects them before re-filling,
+    // plus a final reject on overrun.
+    assert_eq!(
+        helper.reject_count(),
+        3,
+        "every filled set should be rejected"
+    );
     assert_eq!(helper.approve_count(), 0);
 }
 
