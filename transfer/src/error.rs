@@ -70,6 +70,15 @@ pub enum TransferError {
     /// users see in `GIT_TRACE` logs and shell-test grep patterns.
     #[error("batch response: {0}")]
     BatchResponse(Box<ApiError>),
+
+    /// The action URL the server returned is already expired (or
+    /// expires within the safety buffer). Surfacing this before the
+    /// upload/download avoids hitting an action that's guaranteed to
+    /// fail. Upstream re-requests a fresh batch and retries; we fail
+    /// fast for now — re-batching would require restructuring the
+    /// queue.
+    #[error("action \"{rel}\" expired")]
+    ActionExpired { rel: String },
 }
 
 /// Format the action-URL error message to match upstream's
@@ -121,7 +130,8 @@ impl TransferError {
             | TransferError::NoDownloadAction
             | TransferError::Store(_)
             | TransferError::InvalidOid(_)
-            | TransferError::UnsupportedHashAlgo(_) => false,
+            | TransferError::UnsupportedHashAlgo(_)
+            | TransferError::ActionExpired { .. } => false,
             // Defer to the wrapped ApiError. A 5xx batch response is
             // worth retrying; a credential-not-found is not.
             TransferError::BatchResponse(e) => e.is_retryable(),

@@ -1,7 +1,7 @@
 //! Top-level transfer orchestrator: batch + concurrent per-object transfer.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use git_lfs_api::{
     BatchRequest, BatchResponse, Client as ApiClient, ObjectResult, ObjectSpec, Operation, Ref,
@@ -310,6 +310,7 @@ async fn process_object(
                 .download
                 .as_ref()
                 .ok_or(TransferError::NoDownloadAction)?;
+            check_not_expired("download", action)?;
             with_retry(config, &obj.oid, obj.size, || async {
                 basic::download(http, store.clone(), &obj.oid, obj.size, action, events)
                     .await
@@ -319,6 +320,12 @@ async fn process_object(
         }
         (Dir::Download, None) => Err(TransferError::NoDownloadAction),
         (Dir::Upload, Some(actions)) => {
+            if let Some(upload) = actions.upload.as_ref() {
+                check_not_expired("upload", upload)?;
+            }
+            if let Some(verify) = actions.verify.as_ref() {
+                check_not_expired("verify", verify)?;
+            }
             with_retry(config, &obj.oid, obj.size, || async {
                 basic::upload(
                     http,
@@ -338,6 +345,19 @@ async fn process_object(
             Ok(())
         }
     }
+}
+
+/// Match upstream's `objectExpirationToTransfer = 5 * time.Second`
+/// safety buffer.
+const ACTION_EXPIRATION_BUFFER: Duration = Duration::from_secs(5);
+
+fn check_not_expired(rel: &str, action: &git_lfs_api::Action) -> Result<(), TransferError> {
+    if action.is_expired_within(SystemTime::now(), ACTION_EXPIRATION_BUFFER) {
+        return Err(TransferError::ActionExpired {
+            rel: rel.to_owned(),
+        });
+    }
+    Ok(())
 }
 
 /// Run `op` with retry. Two paths: when the server sent a `Retry-After`
