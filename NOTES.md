@@ -99,11 +99,9 @@ t-push (26/27), t-ls-files (24/31).
   t-batch-storage-retries (5/5),
   t-batch-storage-retries-ratelimit (5/5). Server returns 429
   with Retry-After header; we don't honor the schedule.
-- **Pointer extensions / unshipped commands** — t-attributes (4/4).
-  Clean and smudge filters both run extensions; the pointer CLI now
-  does too (closes t-pointer 21-26 and t-ext 1). t-merge-driver ships
-  (6/6); t-attributes needs `[attr]NAME` macro expansion in
-  `git lfs track`'s pattern listing.
+- **Pointer extensions** — clean and smudge filters both run
+  extensions; the pointer CLI does too (closes t-pointer 21-26 and
+  t-ext 1). t-merge-driver ships (6/6); t-attributes ships (4/4).
 - **Unshipped commands** — t-completion (5), t-dedup (3).
 - **Push edge cases** — t-push (1/27 fail). Only `push (retry with
   expired actions)` remains — needs the action-URL expiry path
@@ -182,12 +180,8 @@ what's broken and where to start.
    (no jitter, no honoring of explicit delay). All in
    t-batch-retries-ratelimit, t-batch-storage-retries,
    t-batch-storage-retries-ratelimit.
-6. **Track macro expansion** (4 tests). t-attributes (4) needs
-   `git lfs track`'s pattern listing to expand `[attr]NAME` macros
-   from `.gitattributes` (the underlying `AttrSet` already does;
-   only `list_lfs_patterns` is macro-blind).
-7. **Unshipped commands** — `completion` (5), `dedup` (3).
-8. **Push edge cases** (9 tests). Deprecated `_links` serde alias
+6. **Unshipped commands** — `completion` (5), `dedup` (3).
+7. **Push edge cases** (9 tests). Deprecated `_links` serde alias
    (1 line), negative-size error message wording, batch error
    formatter, push-direction `pushInsteadof` alias, custom
    reference namespaces (gated on the excluded

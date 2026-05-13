@@ -33,6 +33,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `git lfs track` listing now expands `[attr]NAME` macros from
+  top-level `.gitattributes`, `.git/info/attributes`, and the user
+  attributes file (`core.attributesfile`, default
+  `$XDG_CONFIG_HOME/git/attributes`). Patterns like `*.dat lfs` are
+  recognized as LFS-tracked when `[attr]lfs filter=lfs ...` is in
+  scope, so `git lfs track '*.dat'` correctly reports
+  `"*.dat" already supported`. Subdirectory `[attr]NAME` declarations
+  are ignored (git itself rejects them as "not allowed:
+  dir/.gitattributes:N"). Lands `t-attributes` (4/4).
 - `git lfs track` blocklist check now matches upstream's `git ls-files
   --ignored --cached -z -x <pattern>` + basename-prefix logic rather
   than textually globbing the pattern against `.gitattributes` etc.

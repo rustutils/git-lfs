@@ -3,7 +3,7 @@
 Per-suite snapshot of the vendored upstream shell tests. Last
 refreshed: **2026-05-13**.
 
-**704 / 794 tests passing (~89%) across 104 suites.**
+**708 / 794 tests passing (~89%) across 104 suites.**
 
 Refresh:
 
@@ -15,55 +15,55 @@ The xtask wrapper runs `make test` under the hood and parses prove's
 TAP output into the Full pass / Partial / Empty groups below. Pipe
 through `tee` if you want the per-suite breakdown saved.
 
-## Full pass — 75 suites, 574 tests
+## Full pass — 76 suites, 578 tests
 
 ```
-t-alternates.sh                          t-migrate-export.sh
-t-batch-retries-ratelimit.sh             t-migrate-fixup.sh
-t-batch-storage-retries-ratelimit.sh     t-migrate-import-no-rewrite.sh
-t-batch-storage-retries.sh               t-migrate-info.sh
-t-batch-transfer-size.sh                 t-no-remote.sh
-t-batch-transfer.sh                      t-object-authenticated.sh
-t-checkout.sh                            t-path.sh
-t-cherry-pick-commits.sh                 t-pointer.sh
-t-chunked-transfer-encoding.sh           t-post-checkout.sh
-t-clean.sh                               t-post-commit.sh
-t-clone-deprecated.sh                    t-post-merge.sh
-t-commit-delete-push.sh                  t-pre-push.sh
-t-config.sh                              t-progress-meter.sh
-t-content-type.sh                        t-prune-worktree.sh
-t-credentials-no-prompt.sh               t-prune.sh
-t-credentials-protect.sh                 t-pull.sh
-t-duplicate-oids.sh                      t-push-bad-dns.sh
-t-env.sh                                 t-push-failures-local.sh
-t-ext.sh                                 t-push-failures-remote.sh
-t-extra-header.sh                        t-push-file-with-branch-name.sh
-t-fetch-include.sh                       t-reference-clone.sh
-t-fetch-paths.sh                         t-status.sh
-t-fetch-recent.sh                        t-submodule-lfsconfig.sh
-t-fetch-refspec.sh                       t-submodule-recurse.sh
-t-fetch.sh                               t-submodule.sh
-t-filter-branch.sh                       t-track-attrs.sh
-t-filter-process.sh                      t-track-wildcards.sh
-t-fsck.sh                                t-track.sh
-t-happy-path.sh                          t-uninstall-worktree.sh
-t-install-custom-hooks-path.sh           t-uninstall.sh
-t-install-worktree.sh                    t-unlock.sh
-t-install.sh                             t-untrack.sh
-t-lock.sh                                t-unusual-filenames.sh
-t-locks.sh                               t-update.sh
-t-logs.sh                                t-version.sh
-t-malformed-pointers.sh                  t-worktree.sh
-t-merge-driver.sh                        t-zero-len-file.sh
-t-mergetool.sh
+t-alternates.sh                          t-merge-driver.sh
+t-attributes.sh                          t-mergetool.sh
+t-batch-retries-ratelimit.sh             t-migrate-export.sh
+t-batch-storage-retries-ratelimit.sh     t-migrate-fixup.sh
+t-batch-storage-retries.sh               t-migrate-import-no-rewrite.sh
+t-batch-transfer-size.sh                 t-migrate-info.sh
+t-batch-transfer.sh                      t-no-remote.sh
+t-checkout.sh                            t-object-authenticated.sh
+t-cherry-pick-commits.sh                 t-path.sh
+t-chunked-transfer-encoding.sh           t-pointer.sh
+t-clean.sh                               t-post-checkout.sh
+t-clone-deprecated.sh                    t-post-commit.sh
+t-commit-delete-push.sh                  t-post-merge.sh
+t-config.sh                              t-pre-push.sh
+t-content-type.sh                        t-progress-meter.sh
+t-credentials-no-prompt.sh               t-prune-worktree.sh
+t-credentials-protect.sh                 t-prune.sh
+t-duplicate-oids.sh                      t-pull.sh
+t-env.sh                                 t-push-bad-dns.sh
+t-ext.sh                                 t-push-failures-local.sh
+t-extra-header.sh                        t-push-failures-remote.sh
+t-fetch-include.sh                       t-push-file-with-branch-name.sh
+t-fetch-paths.sh                         t-reference-clone.sh
+t-fetch-recent.sh                        t-status.sh
+t-fetch-refspec.sh                       t-submodule-lfsconfig.sh
+t-fetch.sh                               t-submodule-recurse.sh
+t-filter-branch.sh                       t-submodule.sh
+t-filter-process.sh                      t-track-attrs.sh
+t-fsck.sh                                t-track-wildcards.sh
+t-happy-path.sh                          t-track.sh
+t-install-custom-hooks-path.sh           t-uninstall-worktree.sh
+t-install-worktree.sh                    t-uninstall.sh
+t-install.sh                             t-unlock.sh
+t-lock.sh                                t-untrack.sh
+t-locks.sh                               t-unusual-filenames.sh
+t-logs.sh                                t-update.sh
+t-malformed-pointers.sh                  t-version.sh
+                                         t-worktree.sh
+                                         t-zero-len-file.sh
 ```
 
-## Partial — 26 suites, 130 / 220 tests
+## Partial — 25 suites, 130 / 216 tests
 
 | Suite | Pass / Total |
 | --- | --- |
 | `t-askpass.sh` | 5 / 6 |
-| `t-attributes.sh` | 0 / 4 |
 | `t-batch-error-handling.sh` | 0 / 1 |
 | `t-batch-storage-encoding.sh` | 0 / 1 |
 | `t-batch-storage-upload-tus.sh` | 0 / 2 |
