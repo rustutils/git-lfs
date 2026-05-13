@@ -23,7 +23,7 @@ pub enum ExtError {
 /// Print all configured extensions (bare `git lfs ext` and `git lfs ext list`
 /// with no name args).
 pub fn run(cwd: &Path) -> Result<(), ExtError> {
-    for ext in git_lfs_git::list_extensions(cwd) {
+    for ext in git_lfs_git::extension::list_extensions(cwd) {
         print_ext(&ext);
     }
     Ok(())
@@ -36,11 +36,11 @@ pub fn run_list(cwd: &Path, names: &[String]) -> Result<(), ExtError> {
     if names.is_empty() {
         return run(cwd);
     }
-    let configured = git_lfs_git::list_extensions(cwd);
+    let configured = git_lfs_git::extension::list_extensions(cwd);
     for name in names {
         match configured.iter().find(|e| e.name == *name) {
             Some(ext) => print_ext(ext),
-            None => print_ext(&git_lfs_git::ExtensionConfig {
+            None => print_ext(&git_lfs_git::extension::ExtensionConfig {
                 name: name.clone(),
                 clean: String::new(),
                 smudge: String::new(),
@@ -51,7 +51,7 @@ pub fn run_list(cwd: &Path, names: &[String]) -> Result<(), ExtError> {
     Ok(())
 }
 
-fn print_ext(ext: &git_lfs_git::ExtensionConfig) {
+fn print_ext(ext: &git_lfs_git::extension::ExtensionConfig) {
     println!("Extension: {}", ext.name);
     println!("    clean = {}", ext.clean);
     println!("    smudge = {}", ext.smudge);

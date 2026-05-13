@@ -209,7 +209,7 @@ fn push_to_local_path(
 
     let inc: Vec<&str> = includes.iter().map(String::as_str).collect();
     let exc: Vec<&str> = excludes.iter().map(String::as_str).collect();
-    let pointers = git_lfs_git::scan_pointers_with_args(cwd, &inc, &exc, &[])?;
+    let pointers = git_lfs_git::scanner::scan_pointers_with_args(cwd, &inc, &exc, &[])?;
 
     let local_store = git_lfs_store::Store::new(git_lfs_git::lfs_dir(cwd)?);
     let target_objects_root = target_lfs_dir.join("objects");
@@ -262,13 +262,13 @@ fn object_exists(cwd: &Path, oid: &str) -> bool {
 /// Used by pre-push to short-circuit `git push ../sibling-clone`
 /// style invocations that have no LFS server.
 fn is_local_path_remote(cwd: &Path, remote: &str) -> bool {
-    if git_lfs_git::looks_like_url(remote) {
+    if git_lfs_git::endpoint::looks_like_url(remote) {
         return false;
     }
     if remote.contains(':') {
         return false;
     }
-    if git_lfs_git::endpoint_for_remote(cwd, Some(remote)).is_ok() {
+    if git_lfs_git::endpoint::endpoint_for_remote(cwd, Some(remote)).is_ok() {
         return false;
     }
     std::path::Path::new(remote).is_dir()
@@ -278,7 +278,7 @@ fn is_acceptable_remote(cwd: &Path, remote: &str) -> bool {
     if remote.is_empty() {
         return false;
     }
-    if git_lfs_git::looks_like_url(remote) {
+    if git_lfs_git::endpoint::looks_like_url(remote) {
         return true;
     }
     if remote.contains(':') {
@@ -287,7 +287,7 @@ fn is_acceptable_remote(cwd: &Path, remote: &str) -> bool {
         // forms upstream's `ValidateRemoteURL` allows.
         return true;
     }
-    if git_lfs_git::endpoint_for_remote(cwd, Some(remote)).is_ok() {
+    if git_lfs_git::endpoint::endpoint_for_remote(cwd, Some(remote)).is_ok() {
         return true;
     }
     // Local path push (`git push ../sibling`, `git push .`). Accept if

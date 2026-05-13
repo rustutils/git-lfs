@@ -265,7 +265,7 @@ fn is_remote_or_url(cwd: &Path, name: &str) -> bool {
         return true;
     }
     // Endpoint-resolvable via `lfs.url` / `remote.<name>.lfsurl` / etc.
-    git_lfs_git::endpoint_for_remote(cwd, Some(name)).is_ok()
+    git_lfs_git::endpoint::endpoint_for_remote(cwd, Some(name)).is_ok()
 }
 
 /// True if `<ref>` resolves to a commit. Used to distinguish a typo'd
@@ -343,8 +343,12 @@ pub(crate) fn upload_in_range_with_args(
 ) -> Result<PushOutcome, PushCommandError> {
     let store = Store::new(git_lfs_git::lfs_dir(cwd)?)
         .with_references(git_lfs_git::lfs_alternate_dirs(cwd).unwrap_or_default());
-    let pointers =
-        git_lfs_git::scan_pointers_with_args(cwd, includes, excludes, extra_rev_list_args)?;
+    let pointers = git_lfs_git::scanner::scan_pointers_with_args(
+        cwd,
+        includes,
+        excludes,
+        extra_rev_list_args,
+    )?;
 
     // Partition pointers three ways:
     //   - present-locally: full-size match → eligible for upload.
@@ -402,7 +406,7 @@ pub(crate) fn upload_in_range_with_args(
             .chain(corrupt.iter().map(|(s, _)| s))
             .filter_map(|s| s.oid.parse().ok())
             .collect();
-        let full = git_lfs_git::scan_pointers_with_args(cwd, includes, excludes, &[])?;
+        let full = git_lfs_git::scanner::scan_pointers_with_args(cwd, includes, excludes, &[])?;
         for entry in full {
             if known.contains(&entry.oid) {
                 continue;
@@ -463,7 +467,7 @@ pub(crate) fn upload_in_range_with_args(
     // not just LFS-pointer paths — locks can be held on lockable-but-
     // non-LFS files too (`*.dat lockable` without `filter=lfs`), and
     // those still need to gate the push.
-    let endpoint = git_lfs_git::endpoint_for_remote(cwd, Some(remote))
+    let endpoint = git_lfs_git::endpoint::endpoint_for_remote(cwd, Some(remote))
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     let changed_paths = changed_paths_in_range(cwd, includes, excludes, extra_rev_list_args)?;
     let theirs_blockers: Vec<git_lfs_api::Lock> =

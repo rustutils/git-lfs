@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use git_lfs_api::ObjectSpec;
-use git_lfs_git::{PointerEntry, scan_pointers};
+use git_lfs_git::scanner::{PointerEntry, scan_pointers};
 use git_lfs_store::Store;
 use git_lfs_transfer::Report;
 use globset::{Glob, GlobSet, GlobSetBuilder};
@@ -164,7 +164,7 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
     let ref_strs: Vec<&str> = walk_refs.iter().map(String::as_str).collect();
 
     let mut pointers = if walk_refs.is_empty() {
-        git_lfs_git::scan_index_lfs(cwd)?
+        git_lfs_git::scanner::scan_index_lfs(cwd)?
     } else if opts.all {
         // `--all` walks every reachable commit so historical /
         // deleted-from-HEAD pointers still get fetched. Augmented
@@ -180,7 +180,7 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
         use std::collections::HashMap;
         let mut by_oid: HashMap<git_lfs_pointer::Oid, PointerEntry> = HashMap::new();
         for r in &walk_refs {
-            for e in git_lfs_git::scan_tree(cwd, r)? {
+            for e in git_lfs_git::scanner::scan_tree(cwd, r)? {
                 by_oid
                     .entry(e.oid)
                     .and_modify(|existing| {
@@ -210,7 +210,7 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
         use std::collections::HashMap;
         let mut extra_paths: HashMap<git_lfs_pointer::Oid, Vec<PathBuf>> = HashMap::new();
         for r in &walk_refs {
-            let Ok(entries) = git_lfs_git::scan_tree(cwd, r) else {
+            let Ok(entries) = git_lfs_git::scanner::scan_tree(cwd, r) else {
                 continue;
             };
             for e in entries {
@@ -242,7 +242,7 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
     // Mirrors upstream's `fetchRecent` (command_fetch.go::fetchRecent).
     // Skipped on `--all` (already walks full history) and on the
     // index-only / no-arg path (no refs to anchor the walk).
-    let fp_cfg = git_lfs_git::FetchPruneConfig::from_repo(cwd);
+    let fp_cfg = git_lfs_git::fetch_prune::FetchPruneConfig::from_repo(cwd);
     let want_recent = (opts.recent || fp_cfg.fetch_recent_always) && !opts.all;
     if want_recent {
         // Anchor the scan: when the user passed no positional refs the
@@ -726,7 +726,7 @@ pub(crate) fn is_resolvable_ref(cwd: &Path, r: &str) -> bool {
 /// `gitscanner.ScanPreviousVersions` calls it spawns).
 fn recent_walk(
     cwd: &Path,
-    cfg: &git_lfs_git::FetchPruneConfig,
+    cfg: &git_lfs_git::fetch_prune::FetchPruneConfig,
     remote: Option<&str>,
     named_refs: &[String],
     pointers: &mut Vec<PointerEntry>,
@@ -751,7 +751,7 @@ fn recent_walk(
         } else {
             None
         };
-        let refs = git_lfs_git::recent_branches(
+        let refs = git_lfs_git::refs::recent_branches(
             cwd,
             since,
             cfg.fetch_recent_refs_include_remotes,
@@ -778,7 +778,7 @@ fn recent_walk(
         }
     }
     for r in &all_anchors {
-        for entry in git_lfs_git::scan_tree(cwd, r)? {
+        for entry in git_lfs_git::scanner::scan_tree(cwd, r)? {
             if have_oids.insert(entry.oid) {
                 pointers.push(entry);
             }
@@ -798,7 +798,7 @@ fn recent_walk(
             };
             let commits_since = SystemTime::UNIX_EPOCH + Duration::from_secs(tip_unix as u64)
                 - day * cfg.fetch_recent_commits_days as u32;
-            for entry in git_lfs_git::scan_previous_versions(cwd, r, commits_since)? {
+            for entry in git_lfs_git::scanner::scan_previous_versions(cwd, r, commits_since)? {
                 if have_oids.insert(entry.oid) {
                     pointers.push(entry);
                 }

@@ -278,7 +278,7 @@ pub fn shared_repo_config(cwd: &std::path::Path) -> Option<String> {
 /// is outside the spec's 0-9 range — those wouldn't produce a valid
 /// `ext-N-<name>` line anyway.
 fn collect_clean_extensions(cwd: &std::path::Path) -> Vec<CleanExtension> {
-    git_lfs_git::list_extensions(cwd)
+    git_lfs_git::extension::list_extensions(cwd)
         .into_iter()
         .filter_map(|ext| {
             if ext.clean.trim().is_empty() {
@@ -299,7 +299,7 @@ fn collect_clean_extensions(cwd: &std::path::Path) -> Vec<CleanExtension> {
 /// filter-process, and the pull/checkout materialize loops to invert
 /// what `clean` did during commit.
 fn collect_smudge_extensions(cwd: &std::path::Path) -> Vec<SmudgeExtension> {
-    git_lfs_git::list_extensions(cwd)
+    git_lfs_git::extension::list_extensions(cwd)
         .into_iter()
         .filter_map(|ext| {
             if ext.smudge.trim().is_empty() {

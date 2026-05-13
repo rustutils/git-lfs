@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use git_lfs_filter::{SmudgeError, smudge_object_to};
-use git_lfs_git::scan_index_lfs;
+use git_lfs_git::scanner::scan_index_lfs;
 use git_lfs_pointer::Pointer;
 use git_lfs_store::Store;
 use globset::{Glob, GlobSetBuilder};
@@ -157,7 +157,7 @@ pub fn run(cwd: &Path, opts: &Options) -> Result<(), CheckoutError> {
     // `filepathfilter: accepting`/`rejecting` trace lines under
     // GIT_TRACE so the upstream test suite's grep assertions line up.
     let trace = trace_enabled();
-    let mut work: Vec<(&git_lfs_git::PointerEntry, &PathBuf)> = Vec::new();
+    let mut work: Vec<(&git_lfs_git::scanner::PointerEntry, &PathBuf)> = Vec::new();
     for p in &pointers {
         for rel in &p.paths {
             let s = rel.to_string_lossy();

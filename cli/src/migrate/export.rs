@@ -191,7 +191,7 @@ fn prune_unreferenced(cwd: &Path, store: &Store) -> Result<(), MigrateError> {
     let ref_args: Vec<&str> = refs.iter().map(String::as_str).collect();
     let remote_refs = list_remote_tracking_refs(cwd);
     let exclude_args: Vec<&str> = remote_refs.iter().map(String::as_str).collect();
-    let entries = git_lfs_git::scan_pointers(cwd, &ref_args, &exclude_args)?;
+    let entries = git_lfs_git::scanner::scan_pointers(cwd, &ref_args, &exclude_args)?;
     let retained: std::collections::HashSet<git_lfs_pointer::Oid> =
         entries.into_iter().map(|e| e.oid).collect();
     for (oid, _) in local {

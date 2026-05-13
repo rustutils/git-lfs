@@ -1,4 +1,4 @@
-//! Git config get/set/unset, scoped to one of git's config files.
+//! Get, set, and unset git config values, scoped to one of git's config files.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

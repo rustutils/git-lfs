@@ -7,9 +7,10 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use git_lfs_git::{
-    AttrSet, CatFileBatch, CatFileBatchCheck, CatFileHeader, rev_list, scan_tree_blobs,
-};
+use git_lfs_git::AttrSet;
+use git_lfs_git::cat_file::{CatFileBatch, CatFileBatchCheck, CatFileHeader};
+use git_lfs_git::rev_list::rev_list;
+use git_lfs_git::scanner::scan_tree_blobs;
 use git_lfs_pointer::{MAX_POINTER_SIZE, Pointer};
 
 use super::{

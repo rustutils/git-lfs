@@ -35,9 +35,10 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
-use git_lfs_git::{
-    FetchPruneConfig, scan_index_pointers, scan_pointers, scan_pointers_with_args,
-    scan_previous_versions, scan_stashed, scan_tree,
+use git_lfs_git::fetch_prune::FetchPruneConfig;
+use git_lfs_git::scanner::{
+    scan_index_pointers, scan_pointers, scan_pointers_with_args, scan_previous_versions,
+    scan_stashed, scan_tree,
 };
 use git_lfs_pointer::Oid;
 use git_lfs_store::Store;
@@ -309,7 +310,7 @@ fn build_retain_set(cwd: &Path, opts: &Options) -> Result<HashSet<Oid>, PruneErr
     // the user's exclude/include filter. Pointers without any path
     // (orphan blobs) always pass.
     let mut retained: HashSet<Oid> = HashSet::new();
-    let keep = |entry: git_lfs_git::PointerEntry, retained: &mut HashSet<Oid>| {
+    let keep = |entry: git_lfs_git::scanner::PointerEntry, retained: &mut HashSet<Oid>| {
         if paths_pass_filter(&entry.paths, &include_set, &exclude_set) {
             retained.insert(entry.oid);
         }
@@ -323,7 +324,7 @@ fn build_retain_set(cwd: &Path, opts: &Options) -> Result<HashSet<Oid>, PruneErr
     // a worktree pointing at the same commit as another one doesn't
     // re-walk the tree.
     let head_present = head_exists(cwd);
-    let wts = git_lfs_git::worktrees(cwd);
+    let wts = git_lfs_git::refs::worktrees(cwd);
     let head_sha = head_present.then(|| current_head_sha(cwd)).flatten();
     if !opts.force {
         let mut seen_shas: HashSet<String> = HashSet::new();
@@ -364,8 +365,12 @@ fn build_retain_set(cwd: &Path, opts: &Options) -> Result<HashSet<Oid>, PruneErr
         let since = SystemTime::now() - day * prune_ref_days as u32;
         // No `only_remote` filter: prune retains across ALL recent
         // remote refs the user has tracked, not just one fetch source.
-        let recent =
-            git_lfs_git::recent_branches(cwd, since, cfg.fetch_recent_refs_include_remotes, None)?;
+        let recent = git_lfs_git::refs::recent_branches(
+            cwd,
+            since,
+            cfg.fetch_recent_refs_include_remotes,
+            None,
+        )?;
         for r in recent {
             if !anchors.contains(&r.full) {
                 anchors.push(r.full.clone());

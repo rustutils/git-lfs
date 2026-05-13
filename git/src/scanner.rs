@@ -76,7 +76,7 @@ pub fn scan_pointers(
 }
 
 /// [`scan_pointers`] with extra rev-list cmdline args. See
-/// [`rev_list_with_args`](crate::rev_list_with_args).
+/// [`rev_list_with_args`](crate::rev_list::rev_list_with_args).
 pub fn scan_pointers_with_args(
     cwd: &Path,
     include: &[&str],

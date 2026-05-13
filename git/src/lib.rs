@@ -1,7 +1,23 @@
-//! Git interop for git-lfs.
+//! Git interop helpers for Git LFS: config, refs, scanners, and `.gitattributes` matching.
 //!
-//! Everything in this crate shells out to the `git` binary — see CLAUDE.md
-//! for the rationale.
+//! Git LFS needs the user's git binary for a handful of things
+//! with no LFS-specific equivalent: where the repo lives, what's
+//! in its config, which objects each ref reaches, and how
+//! `.gitattributes` applies to a given path. This crate collects
+//! those helpers in one place. Everything runs by shelling out
+//! to the `git` binary the user has installed; this crate does
+//! not bundle its own git implementation.
+//!
+//! It sits at the bottom of the LFS workspace: every other crate
+//! goes through it whenever it needs to know something about the
+//! repo it's running against. The crate is intentionally a
+//! collection of unrelated helpers rather than a single
+//! abstraction, so the pieces are independent of each other and
+//! you can pick what you need. See the per-module docs below for
+//! the specific surfaces.
+//!
+//! [`Error`] is the shared error type for the few cases that
+//! need to surface git's stderr verbatim.
 
 use std::io;
 use std::path::Path;
@@ -22,24 +38,13 @@ pub mod refs;
 pub mod rev_list;
 pub mod scanner;
 
+// Top-level re-exports: a small set of widely-used helpers that
+// feel natural as flat names. Everything else is accessed through
+// its module — see the module list rendered below by rustdoc.
 pub use attr::AttrSet;
-pub use cat_file::{BlobContent, CatFileBatch, CatFileBatchCheck, CatFileHeader};
 pub use config::ConfigScope;
-pub use diff_index::{DiffEntry, diff_index};
-pub use endpoint::{
-    EndpointError, EndpointInfo, SshInfo, derive_lfs_url, endpoint_for_remote, looks_like_url,
-    parse_ssh_url, remote_url, resolve_endpoint,
-};
-pub use extension::{ExtensionConfig, list_extensions};
-pub use fetch_prune::FetchPruneConfig;
 pub use http_options::{HttpOptions, extra_headers_for, lfs_url_bool};
 pub use path::{git_common_dir, git_dir, lfs_alternate_dirs, lfs_dir, work_tree_root};
-pub use refs::{RecentRef, RefKind, WorktreeEntry, recent_branches, worktrees};
-pub use rev_list::{RevListEntry, rev_list, rev_list_with_args};
-pub use scanner::{
-    PointerEntry, TreeBlob, scan_index_lfs, scan_index_pointers, scan_pointers,
-    scan_pointers_with_args, scan_previous_versions, scan_stashed, scan_tree, scan_tree_blobs,
-};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

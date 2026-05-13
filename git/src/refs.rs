@@ -1,5 +1,5 @@
 //! Refspec resolution for the LFS lock APIs and ref enumeration
-//! helpers used by fetch-recent / prune retention.
+//! helpers used by fetch-recent and prune retention.
 
 use std::path::Path;
 use std::process::Command;

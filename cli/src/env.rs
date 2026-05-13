@@ -11,7 +11,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
-use git_lfs_git::{SshInfo, resolve_endpoint};
+use git_lfs_git::endpoint::{SshInfo, resolve_endpoint};
 
 /// `filter.lfs.*` keys we emit. The value comes straight from git
 /// config — empty string when unset or unreadable — to match upstream's

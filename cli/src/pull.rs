@@ -18,7 +18,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use git_lfs_filter::{SmudgeError, smudge_object_to};
-use git_lfs_git::scan_index_lfs;
+use git_lfs_git::scanner::scan_index_lfs;
 use git_lfs_pointer::Pointer;
 use git_lfs_store::Store;
 

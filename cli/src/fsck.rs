@@ -22,7 +22,9 @@
 use std::io::Read;
 use std::path::Path;
 
-use git_lfs_git::{AttrSet, CatFileBatch, scan_pointers, scan_tree_blobs};
+use git_lfs_git::AttrSet;
+use git_lfs_git::cat_file::CatFileBatch;
+use git_lfs_git::scanner::{scan_pointers, scan_tree_blobs};
 use git_lfs_pointer::{MAX_POINTER_SIZE, Oid, Pointer};
 use git_lfs_store::Store;
 use sha2::{Digest, Sha256};
@@ -247,7 +249,7 @@ enum ObjectVerify {
 /// is fsck, which would just report nothing extra rather than fail).
 fn build_tree_attrs(
     cwd: &Path,
-    blobs: &[git_lfs_git::TreeBlob],
+    blobs: &[git_lfs_git::scanner::TreeBlob],
     batch: &mut CatFileBatch,
 ) -> std::io::Result<AttrSet> {
     let mut attrs = AttrSet::empty();
@@ -255,7 +257,7 @@ fn build_tree_attrs(
     // Sort by path-component depth so root .gitattributes is added
     // first, mirroring AttrSet::from_workdir's "shallow → deep" order
     // (gix-attributes' last-added wins).
-    let mut by_depth: Vec<&git_lfs_git::TreeBlob> = blobs
+    let mut by_depth: Vec<&git_lfs_git::scanner::TreeBlob> = blobs
         .iter()
         .filter(|b| b.path.file_name().is_some_and(|n| n == ".gitattributes"))
         .collect();

@@ -27,7 +27,7 @@ use git_lfs_creds::{
 };
 use git_lfs_filter::FetchError;
 use git_lfs_git::ConfigScope;
-use git_lfs_git::SshInfo;
+use git_lfs_git::endpoint::SshInfo;
 use git_lfs_pointer::Pointer;
 use git_lfs_store::Store;
 use git_lfs_transfer::{Report, Transfer, TransferConfig};
@@ -78,7 +78,7 @@ impl LfsFetcher {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        let endpoint_url = git_lfs_git::endpoint_for_remote(cwd, remote);
+        let endpoint_url = git_lfs_git::endpoint::endpoint_for_remote(cwd, remote);
         // Even for SSH endpoints we want the http client configured for
         // the *eventual* HTTPS host — proxy/CA settings index by URL.
         // For SSH-shaped endpoints, the resolver will replace the URL
@@ -301,7 +301,7 @@ impl LfsFetcher {
 /// helper chain attached. Used both by [`LfsFetcher`] (for transfers) and
 /// by the locking commands (no transfers, just JSON requests).
 pub fn build_api_client(cwd: &Path, remote: Option<&str>) -> Result<ApiClient, String> {
-    let endpoint = git_lfs_git::endpoint_for_remote(cwd, remote)
+    let endpoint = git_lfs_git::endpoint::endpoint_for_remote(cwd, remote)
         .map_err(|e| format!("resolving LFS endpoint: {e}"))?;
     let http = crate::http_client::build(cwd, &endpoint);
     build_api_client_with(cwd, remote, http)
@@ -312,7 +312,7 @@ fn build_api_client_with(
     remote: Option<&str>,
     http: reqwest::Client,
 ) -> Result<ApiClient, String> {
-    let info = git_lfs_git::resolve_endpoint(cwd, remote)
+    let info = git_lfs_git::endpoint::resolve_endpoint(cwd, remote)
         .map_err(|e| format!("resolving LFS endpoint: {e}"))?;
     // For SSH-shaped endpoints, the configured URL might be `ssh://...`
     // (e.g. `lfs.url = ssh://git@host/repo`). reqwest needs an http(s)
@@ -334,7 +334,7 @@ fn build_api_client_with(
     // `credential.<url>.helper` lookup, and the API client uses it for
     // prompts and "Git credentials for X not found" wording.
     let resolved_cred_url = remote
-        .and_then(|r| git_lfs_git::remote_url(cwd, r).ok().flatten())
+        .and_then(|r| git_lfs_git::endpoint::remote_url(cwd, r).ok().flatten())
         .and_then(|raw| url::Url::parse(&raw).ok())
         .filter(|gu| {
             gu.scheme() == url.scheme()
@@ -443,11 +443,11 @@ impl SshResolver for DisabledSshResolver {
 /// are run through [`derive_lfs_url`] to get the matching HTTPS form;
 /// HTTP/HTTPS pass through verbatim. The SSH resolver overrides this
 /// per-request when it returns a non-empty `href`.
-fn http_compatible_endpoint(url_str: &str) -> Result<String, git_lfs_git::EndpointError> {
+fn http_compatible_endpoint(url_str: &str) -> Result<String, git_lfs_git::endpoint::EndpointError> {
     if url_str.starts_with("http://") || url_str.starts_with("https://") {
         return Ok(url_str.to_owned());
     }
-    git_lfs_git::derive_lfs_url(url_str)
+    git_lfs_git::endpoint::derive_lfs_url(url_str)
 }
 
 /// Construct an [`SshResolver`] for the given SSH endpoint metadata,

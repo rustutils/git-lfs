@@ -15,7 +15,9 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use git_lfs_git::{CatFileBatch, DiffEntry, PointerEntry, diff_index, scan_pointers};
+use git_lfs_git::cat_file::CatFileBatch;
+use git_lfs_git::diff_index::{DiffEntry, diff_index};
+use git_lfs_git::scanner::{PointerEntry, scan_pointers};
 use git_lfs_pointer::Pointer;
 use serde::Serialize;
 use sha2::{Digest, Sha256};

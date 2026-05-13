@@ -9,7 +9,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use git_lfs_git::{PointerEntry, scan_index_pointers, scan_pointers, scan_tree};
+use git_lfs_git::scanner::{PointerEntry, scan_index_pointers, scan_pointers, scan_tree};
 use git_lfs_pointer::VERSION_LATEST;
 use git_lfs_store::Store;
 use serde::Serialize;

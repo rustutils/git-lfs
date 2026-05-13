@@ -1,4 +1,4 @@
-//! Git's packet-line protocol — the framing used by `filter-process` and a
+//! Git's packet-line protocol: the framing used by `filter-process` and a
 //! handful of other long-running git subprocess interfaces.
 //!
 //! Each packet is `<4-byte hex length><payload>`, where the length includes
