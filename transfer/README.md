@@ -1,31 +1,36 @@
 # git-lfs-transfer
 
-Concurrent transfer queue and "basic" adapter for Git LFS object
-uploads and downloads.
+Concurrent transfer queue and basic adapter for Git LFS uploads and downloads.
 
-Sits between [`git-lfs-api`](https://crates.io/crates/git-lfs-api) and
-[`git-lfs-store`](https://crates.io/crates/git-lfs-store): given a list
-of `(oid, size)` pairs, it negotiates a batch with the LFS server,
-spawns a bounded pool of tasks to drive the resulting actions, and
-streams progress events back to the caller.
+When Git LFS wants to transfer files between a client and a
+server, it first asks the server's batch endpoint with a list of
+OIDs and sizes for the files involved, and the server returns one
+URL per object (typically a presigned link to S3 or a CDN, plus
+auth headers and an expiry window); the client then PUTs or GETs
+the bytes against those URLs.
 
-What's implemented today:
+This crate implements the client side of that dance. It sits between
+[git-lfs-api] and [git-lfs-store]: given a list of `(oid, size)`
+pairs, it negotiates the batch, drives the per-object byte
+movement concurrently, and streams progress events back to the
+caller.
 
-- The **basic** transfer adapter (HTTPS upload via PUT, download via
-  GET, optional verify callback).
-- Concurrent dispatch with per-object error reporting; each transfer
-  is independent so partial failures don't tear down the queue.
-- Streaming uploads/downloads (no full buffering), and a hash check
-  on the download path.
-- Retry on transient failures (5xx, 429, network blips) at both the
-  per-object and batch-request layers. `Retry-After` is honored when
-  the server pins a delay; otherwise exponential backoff applies.
-- Range-resume on interrupted downloads: partial files persist at
-  `.git/lfs/incomplete/<oid>.part` so the next attempt sends
-  `Range: bytes=…` rather than re-fetching from byte 0.
+A bounded pool runs up to `concurrency` transfers in flight at once.
+Each transfer streams through the network rather than buffering the
+whole object in memory, and downloads hash-verify against the OID
+the server promised before committing into the store.
 
-Not yet here: tus uploads, custom transfer agents. Tracked in the
-workspace `NOTES.md`.
+Failures are localized: one corrupt object doesn't tear down the
+queue. Retries handle transient errors (5xx, 429, network blips)
+with exponential backoff, or the server's `Retry-After` when one is
+supplied. Expired action URLs are caught before dialing rather than
+burning a request on a guaranteed-to-fail endpoint, and interrupted
+downloads resume via `Range:` from a `.part` file rather than
+restarting at byte 0.
 
-Part of the [git-lfs Rust workspace](https://gitlab.com/rustutils/git-lfs).
-Experimental — not yet ready for production. License: MIT.
+Only the `basic` HTTPS transfer is implemented at the moment. The
+`tus`, custom-transfer-agent, and pure-SSH adapters are not
+implemented yet.
+
+[git-lfs-api]: https://crates.io/crates/git-lfs-api
+[git-lfs-store]: https://crates.io/crates/git-lfs-store

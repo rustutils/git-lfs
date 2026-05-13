@@ -2,25 +2,27 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// Optional URL transform applied to every action `href` returned by the
-/// batch endpoint before the transfer adapter dials it. Used to plumb
-/// `lfs.transfer.enablehrefrewrite` + `url.<base>.insteadOf` from the
-/// caller (which has the git-config context) down into the queue.
+/// batch endpoint before the transfer adapter dials it.
+///
+/// Used to plumb `lfs.transfer.enablehrefrewrite` + `url.<base>.insteadOf`
+/// from the caller (which has the git-config context) down into the queue.
 pub type UrlRewriter = Arc<dyn Fn(&str) -> String + Send + Sync>;
 
 /// Tunables for the transfer queue.
 ///
-/// Defaults aim at "sensible for a developer laptop on a corporate VPN" —
-/// not too aggressive on concurrency, generous retries for flaky links.
-/// Upstream Git LFS scales `concurrency` to CPU count (commit `aa08c37f`);
-/// we hard-code 8 for v0 and let callers override.
+/// Defaults aim at "sensible for a developer laptop on a corporate
+/// VPN": not too aggressive on concurrency, generous retries for
+/// flaky links. Upstream Git LFS scales `concurrency` to CPU count;
+/// this crate hard-codes 8 and lets callers override.
 #[derive(Clone)]
 pub struct TransferConfig {
     /// Max number of concurrent in-flight transfers.
     pub concurrency: usize,
-    /// Total attempts per object — including the first. So 9 means "try
-    /// once, then up to 8 retries". Matches upstream's
-    /// `defaultMaxRetries = 8` in `tq/manifest.go` (upstream counts
-    /// retries; we count attempts, hence +1).
+    /// Total attempts per object, including the first.
+    ///
+    /// 9 means "try once, then up to 8 retries". Matches upstream's
+    /// `defaultMaxRetries = 8` (upstream counts retries; we count
+    /// attempts, hence +1).
     pub max_attempts: u32,
     /// Sleep before the first retry. Doubled before each subsequent retry,
     /// capped at [`backoff_max`](Self::backoff_max).

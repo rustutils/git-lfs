@@ -51,6 +51,12 @@ impl Transfer {
         Self::with_http_client(api, store, config, reqwest::Client::new())
     }
 
+    /// Build a transfer queue around an existing `reqwest::Client`.
+    ///
+    /// Use this when the caller already has an HTTP client wired up
+    /// for the LFS endpoint (with custom TLS config, headers,
+    /// cookies, etc.) and wants the transfer queue to reuse its
+    /// connection pool rather than spawn a fresh one.
     pub fn with_http_client(
         api: ApiClient,
         store: Store,
