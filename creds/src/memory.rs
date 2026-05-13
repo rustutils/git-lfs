@@ -7,10 +7,12 @@
 //! a TTL on top of this. Not relevant for our short-lived CLI subcommands.
 
 use std::collections::HashMap;
+use std::io::Write as _;
 use std::sync::Mutex;
 
 use crate::helper::{Credentials, Helper, HelperError, HelperOutcome};
 use crate::query::Query;
+use crate::trace::trace_enabled;
 
 /// Process-local credential cache, keyed on the full [`Query`] tuple.
 ///
@@ -32,7 +34,20 @@ impl CachingHelper {
 
 impl Helper for CachingHelper {
     fn fill(&self, query: &Query) -> Result<Option<Credentials>, HelperError> {
-        Ok(self.cache.lock().unwrap().get(query).cloned())
+        let hit = self.cache.lock().unwrap().get(query).cloned();
+        if hit.is_some() && trace_enabled() {
+            // Mirrors upstream's `creds: git credential cache (%q, %q, %q)`
+            // trace at `creds/creds.go:435`. t-credentials's "bad netrc
+            // creds will retry" greps this to confirm the second request
+            // reused the just-cached askpass result.
+            let mut e = std::io::stderr().lock();
+            let _ = writeln!(
+                e,
+                "creds: git credential cache ({:?}, {:?}, {:?})",
+                query.protocol, query.host, query.path,
+            );
+        }
+        Ok(hit)
     }
 
     /// Cache the working credentials so the next request skips the helper
