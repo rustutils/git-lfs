@@ -15,7 +15,7 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-use crate::helper::{Credentials, Helper, HelperError};
+use crate::helper::{Credentials, Helper, HelperError, HelperOutcome};
 use crate::query::Query;
 use crate::trace::trace_enabled;
 
@@ -73,18 +73,7 @@ impl GitCredentialHelper {
     }
 
     fn run(&self, subcommand: &str, query: &Query) -> Result<String, HelperError> {
-        // Upstream's `creds: git credential <sub> (%q, %q, %q)` trace
-        // at `creds/creds.go:328`. Gated on GIT_TRACE because t-lock's
-        // `lock multiple files` test runs with GIT_TRACE=0 and asserts
-        // errlog is clean.
-        if trace_enabled() {
-            let mut e = std::io::stderr().lock();
-            let _ = writeln!(
-                e,
-                "creds: git credential {subcommand} ({:?}, {:?}, {:?})",
-                query.protocol, query.host, query.path,
-            );
-        }
+        trace_call(subcommand, query);
         let mut child = Command::new(&self.git_program)
             .args(["credential", subcommand])
             .stdin(Stdio::piped())
@@ -124,7 +113,8 @@ impl Helper for GitCredentialHelper {
         Ok(parse_response(&stdout))
     }
 
-    fn approve(&self, query: &Query, creds: &Credentials) -> Result<(), HelperError> {
+    fn approve(&self, query: &Query, creds: &Credentials) -> Result<HelperOutcome, HelperError> {
+        trace_call("approve", query);
         let mut child = spawn(&self.git_program, "approve")?;
         if let Some(stdin) = child.stdin.as_mut() {
             write_input(stdin, query, Some(creds), self.protect_protocol)?;
@@ -137,10 +127,11 @@ impl Helper for GitCredentialHelper {
                 String::from_utf8_lossy(&out.stderr).trim(),
             )));
         }
-        Ok(())
+        Ok(HelperOutcome::Handled)
     }
 
-    fn reject(&self, query: &Query, creds: &Credentials) -> Result<(), HelperError> {
+    fn reject(&self, query: &Query, creds: &Credentials) -> Result<HelperOutcome, HelperError> {
+        trace_call("reject", query);
         let mut child = spawn(&self.git_program, "reject")?;
         if let Some(stdin) = child.stdin.as_mut() {
             write_input(stdin, query, Some(creds), self.protect_protocol)?;
@@ -153,8 +144,23 @@ impl Helper for GitCredentialHelper {
                 String::from_utf8_lossy(&out.stderr).trim(),
             )));
         }
-        Ok(())
+        Ok(HelperOutcome::Handled)
     }
+}
+
+/// Upstream's `creds: git credential <sub> (%q, %q, %q)` trace at
+/// `creds/creds.go:328`. Gated on `GIT_TRACE` so commands run with
+/// tracing off (notably `git lfs lock`) leave stderr clean.
+fn trace_call(subcommand: &str, query: &Query) {
+    if !trace_enabled() {
+        return;
+    }
+    let mut e = std::io::stderr().lock();
+    let _ = writeln!(
+        e,
+        "creds: git credential {subcommand} ({:?}, {:?}, {:?})",
+        query.protocol, query.host, query.path,
+    );
 }
 
 fn spawn(program: &str, subcommand: &str) -> Result<std::process::Child, HelperError> {

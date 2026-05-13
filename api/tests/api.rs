@@ -498,13 +498,21 @@ impl Helper for StubHelper {
     fn fill(&self, _q: &Query) -> Result<Option<Credentials>, HelperError> {
         Ok(self.answer.lock().unwrap().clone())
     }
-    fn approve(&self, q: &Query, c: &Credentials) -> Result<(), HelperError> {
+    fn approve(
+        &self,
+        q: &Query,
+        c: &Credentials,
+    ) -> Result<git_lfs_creds::HelperOutcome, HelperError> {
         self.approves.lock().unwrap().push((q.clone(), c.clone()));
-        Ok(())
+        Ok(git_lfs_creds::HelperOutcome::Handled)
     }
-    fn reject(&self, q: &Query, c: &Credentials) -> Result<(), HelperError> {
+    fn reject(
+        &self,
+        q: &Query,
+        c: &Credentials,
+    ) -> Result<git_lfs_creds::HelperOutcome, HelperError> {
         self.rejects.lock().unwrap().push((q.clone(), c.clone()));
-        Ok(())
+        Ok(git_lfs_creds::HelperOutcome::Handled)
     }
 }
 

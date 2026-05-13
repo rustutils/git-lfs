@@ -586,6 +586,7 @@ async fn approve_blocking(
     tokio::task::spawn_blocking(move || helper.approve(&query, &creds))
         .await
         .map_err(|e| ApiError::Decode(format!("credential helper join: {e}")))?
+        .map(|_| ())
         .map_err(|e| ApiError::Decode(format!("credential helper approve: {e}")))
 }
 
@@ -597,5 +598,6 @@ async fn reject_blocking(
     tokio::task::spawn_blocking(move || helper.reject(&query, &creds))
         .await
         .map_err(|e| ApiError::Decode(format!("credential helper join: {e}")))?
+        .map(|_| ())
         .map_err(|e| ApiError::Decode(format!("credential helper reject: {e}")))
 }

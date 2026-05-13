@@ -7,7 +7,7 @@
 
 use std::io::Write as _;
 
-use crate::helper::{Credentials, Helper, HelperError};
+use crate::helper::{Credentials, Helper, HelperError, HelperOutcome};
 use crate::query::Query;
 
 /// Try each helper in order on `fill`, broadcast `approve` / `reject`.
@@ -70,32 +70,42 @@ impl Helper for HelperChain {
         }
     }
 
-    /// Broadcast to every helper. Errors from individual helpers are
-    /// surfaced (first wins) — a failed approve generally means we
-    /// couldn't write to the keystore, which is worth knowing about.
-    fn approve(&self, query: &Query, creds: &Credentials) -> Result<(), HelperError> {
+    /// Walk helpers in order; stop at the first
+    /// [`HelperOutcome::Handled`]. Mirrors upstream's
+    /// `CredentialHelpers.Approve` at `creds/creds.go:552`. The cache
+    /// helper returning `Handled` on a repeat call is what stops
+    /// `git credential approve` from firing twice within a single push.
+    fn approve(&self, query: &Query, creds: &Credentials) -> Result<HelperOutcome, HelperError> {
         let mut first_err = None;
         for h in &self.helpers {
-            if let Err(e) = h.approve(query, creds) {
-                first_err.get_or_insert(e);
+            match h.approve(query, creds) {
+                Ok(HelperOutcome::Handled) => return Ok(HelperOutcome::Handled),
+                Ok(HelperOutcome::Continue) => continue,
+                Err(e) => {
+                    first_err.get_or_insert(e);
+                }
             }
         }
         match first_err {
             Some(e) => Err(e),
-            None => Ok(()),
+            None => Ok(HelperOutcome::Continue),
         }
     }
 
-    fn reject(&self, query: &Query, creds: &Credentials) -> Result<(), HelperError> {
+    fn reject(&self, query: &Query, creds: &Credentials) -> Result<HelperOutcome, HelperError> {
         let mut first_err = None;
         for h in &self.helpers {
-            if let Err(e) = h.reject(query, creds) {
-                first_err.get_or_insert(e);
+            match h.reject(query, creds) {
+                Ok(HelperOutcome::Handled) => return Ok(HelperOutcome::Handled),
+                Ok(HelperOutcome::Continue) => continue,
+                Err(e) => {
+                    first_err.get_or_insert(e);
+                }
             }
         }
         match first_err {
             Some(e) => Err(e),
-            None => Ok(()),
+            None => Ok(HelperOutcome::Continue),
         }
     }
 }
@@ -116,13 +126,13 @@ mod tests {
         fn fill(&self, _q: &Query) -> Result<Option<Credentials>, HelperError> {
             Ok(self.answer.clone())
         }
-        fn approve(&self, q: &Query, c: &Credentials) -> Result<(), HelperError> {
+        fn approve(&self, q: &Query, c: &Credentials) -> Result<HelperOutcome, HelperError> {
             self.approves.lock().unwrap().push((q.clone(), c.clone()));
-            Ok(())
+            Ok(HelperOutcome::Handled)
         }
-        fn reject(&self, q: &Query, c: &Credentials) -> Result<(), HelperError> {
+        fn reject(&self, q: &Query, c: &Credentials) -> Result<HelperOutcome, HelperError> {
             self.rejects.lock().unwrap().push((q.clone(), c.clone()));
-            Ok(())
+            Ok(HelperOutcome::Handled)
         }
     }
 
@@ -150,17 +160,15 @@ mod tests {
     }
 
     #[test]
-    fn approve_broadcasts_to_all_helpers() {
-        let chain = crate::CachingHelper::new();
-        let outer = HelperChain::new(vec![
-            Box::new(StaticHelper::default()),
-            Box::new(crate::CachingHelper::new()),
-        ]);
+    fn approve_stops_at_first_handled() {
+        // Cache returns Continue on first approve so the chain reaches
+        // the persistor; second approve returns Handled and short-
+        // circuits the persistor. Verify the persistor sees one call,
+        // not two.
+        let cache = crate::CachingHelper::new();
+        let chain = HelperChain::new(vec![Box::new(cache)]);
         let c = Credentials::new("u", "p");
-        outer.approve(&q(), &c).unwrap();
-        // First helper recorded the approve; can't peek at the inner cache
-        // through the trait, but the broadcast itself completing without
-        // error is what we're checking.
-        let _ = chain;
+        assert_eq!(chain.approve(&q(), &c).unwrap(), HelperOutcome::Continue);
+        assert_eq!(chain.approve(&q(), &c).unwrap(), HelperOutcome::Handled);
     }
 }

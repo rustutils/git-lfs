@@ -41,7 +41,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use crate::helper::{Credentials, Helper, HelperError};
+use crate::helper::{Credentials, Helper, HelperError, HelperOutcome};
 use crate::query::Query;
 use crate::trace::trace_enabled;
 
@@ -127,32 +127,33 @@ impl Helper for NetrcCredentialHelper {
         Ok(Some(Credentials::new(&entry.login, &entry.password)))
     }
 
-    fn approve(&self, query: &Query, creds: &Credentials) -> Result<(), HelperError> {
+    fn approve(&self, query: &Query, creds: &Credentials) -> Result<HelperOutcome, HelperError> {
         let host = strip_port(&query.host);
         let Some(entry) = self.find_machine(host) else {
-            return Ok(());
+            return Ok(HelperOutcome::Continue);
         };
         if entry.login != creds.username || entry.password != creds.password {
             // Different creds — they must have come from another
-            // helper. Stay silent (no trace, no skip mutation).
-            return Ok(());
+            // helper. Stay silent (no trace, no skip mutation) and let
+            // the chain continue.
+            return Ok(HelperOutcome::Continue);
         }
         trace_netrc_simple("approve", &query.protocol, &query.host, &query.path);
         self.skip.lock().unwrap().remove(host);
-        Ok(())
+        Ok(HelperOutcome::Handled)
     }
 
-    fn reject(&self, query: &Query, creds: &Credentials) -> Result<(), HelperError> {
+    fn reject(&self, query: &Query, creds: &Credentials) -> Result<HelperOutcome, HelperError> {
         let host = strip_port(&query.host);
         let Some(entry) = self.find_machine(host) else {
-            return Ok(());
+            return Ok(HelperOutcome::Continue);
         };
         if entry.login != creds.username || entry.password != creds.password {
-            return Ok(());
+            return Ok(HelperOutcome::Continue);
         }
         trace_netrc_simple("reject", &query.protocol, &query.host, &query.path);
         self.skip.lock().unwrap().insert(host.to_owned());
-        Ok(())
+        Ok(HelperOutcome::Handled)
     }
 }
 

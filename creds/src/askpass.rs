@@ -21,7 +21,7 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-use crate::helper::{Credentials, Helper, HelperError};
+use crate::helper::{Credentials, Helper, HelperError, HelperOutcome};
 use crate::query::Query;
 
 /// Spawns `program` per call with a single prompt argument and reads
@@ -121,13 +121,13 @@ impl Helper for AskpassHelper {
     }
 
     /// Askpass has no persistence, so approve is a no-op.
-    fn approve(&self, _query: &Query, _creds: &Credentials) -> Result<(), HelperError> {
-        Ok(())
+    fn approve(&self, _query: &Query, _creds: &Credentials) -> Result<HelperOutcome, HelperError> {
+        Ok(HelperOutcome::Continue)
     }
 
     /// Askpass has no persistence, so reject is a no-op.
-    fn reject(&self, _query: &Query, _creds: &Credentials) -> Result<(), HelperError> {
-        Ok(())
+    fn reject(&self, _query: &Query, _creds: &Credentials) -> Result<HelperOutcome, HelperError> {
+        Ok(HelperOutcome::Continue)
     }
 }
 

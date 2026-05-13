@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use crate::helper::{Credentials, Helper, HelperError};
+use crate::helper::{Credentials, Helper, HelperError, HelperOutcome};
 use crate::query::Query;
 
 /// Process-local credential cache, keyed on the full [`Query`] tuple.
@@ -36,19 +36,27 @@ impl Helper for CachingHelper {
     }
 
     /// Cache the working credentials so the next request skips the helper
-    /// chain entirely.
-    fn approve(&self, query: &Query, creds: &Credentials) -> Result<(), HelperError> {
-        self.cache
-            .lock()
-            .unwrap()
-            .insert(query.clone(), creds.clone());
-        Ok(())
+    /// chain entirely. Returns [`HelperOutcome::Continue`] on the first
+    /// approve for a query (so a persisting helper downstream still
+    /// gets a turn) and [`HelperOutcome::Handled`] on subsequent calls,
+    /// short-circuiting duplicate `git credential approve` invocations
+    /// across requests in the same push. Mirrors upstream's
+    /// `credentialCacher.Approve` at `creds/creds.go:445`.
+    fn approve(&self, query: &Query, creds: &Credentials) -> Result<HelperOutcome, HelperError> {
+        let mut cache = self.cache.lock().unwrap();
+        if cache.contains_key(query) {
+            return Ok(HelperOutcome::Handled);
+        }
+        cache.insert(query.clone(), creds.clone());
+        Ok(HelperOutcome::Continue)
     }
 
     /// Drop the cached entry — whatever's in there clearly didn't work.
-    fn reject(&self, query: &Query, _creds: &Credentials) -> Result<(), HelperError> {
+    /// Returns [`HelperOutcome::Continue`] so the chain reaches the
+    /// real persistor (typically `git credential reject`).
+    fn reject(&self, query: &Query, _creds: &Credentials) -> Result<HelperOutcome, HelperError> {
         self.cache.lock().unwrap().remove(query);
-        Ok(())
+        Ok(HelperOutcome::Continue)
     }
 }
 
@@ -69,8 +77,17 @@ mod tests {
         let h = CachingHelper::new();
         assert!(h.fill(&q()).unwrap().is_none());
         let c = Credentials::new("alice", "hunter2");
-        h.approve(&q(), &c).unwrap();
+        let outcome = h.approve(&q(), &c).unwrap();
+        assert_eq!(outcome, HelperOutcome::Continue);
         assert_eq!(h.fill(&q()).unwrap(), Some(c));
+    }
+
+    #[test]
+    fn second_approve_returns_handled() {
+        let h = CachingHelper::new();
+        let c = Credentials::new("alice", "hunter2");
+        assert_eq!(h.approve(&q(), &c).unwrap(), HelperOutcome::Continue);
+        assert_eq!(h.approve(&q(), &c).unwrap(), HelperOutcome::Handled);
     }
 
     #[test]
