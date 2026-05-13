@@ -1,26 +1,27 @@
 # git-lfs-pointer
 
-Parse and encode [Git LFS pointer files](https://github.com/git-lfs/git-lfs/blob/main/docs/spec.md).
+Parse and encode Git LFS pointer files.
 
-A pointer is a small UTF-8 text file that stands in for a large file in
-a git repo. It carries the file's SHA-256 OID, its size, and an
-optional list of extension records. This crate is a self-contained
-parser/encoder for that format — no I/O, no network, no git.
+A pointer is a small UTF-8 text file that stands in for a large file
+in a git repository. It carries the file's SHA-256 OID, its size, and
+an optional list of extension records. This crate handles parsing and
+encoding of that format, with no I/O, no network, and no git
+dependency.
 
-```rust
-use git_lfs_pointer::{Oid, Pointer};
+The format is a sorted sequence of `key value` lines: the `version`
+URL always first, then optional extension records sorted by
+single-digit priority, then the `oid` and `size` lines. The whole
+file must be under 1024 bytes; see the [spec](../docs/spec.md)
+for the full grammar.
 
-let oid: Oid = "4d7a214614ab2935c943f9e0ff69d22eadbb8f32b1258daaa5e2ca24d17e2393"
-    .parse()
-    .unwrap();
-let pointer = Pointer::new(oid, 12345);
+Parsing is permissive (CRLF line endings, trailing whitespace,
+unsorted extensions, and older version URLs are all accepted), but
+encoding always emits the canonical form. Each parsed pointer
+carries a `canonical` flag so callers like the smudge filter can
+pass the original bytes through verbatim when they already match;
+re-encoding a non-canonical pointer would change its git blob hash.
 
-let encoded = pointer.encode();
-let parsed = Pointer::parse(encoded.as_bytes()).unwrap();
-assert_eq!(parsed.oid, oid);
-assert_eq!(parsed.size, 12345);
-assert!(parsed.canonical);
-```
-
-Part of the [git-lfs Rust workspace](https://gitlab.com/rustutils/git-lfs).
-Experimental — not yet ready for production. License: MIT.
+Parse errors split into "not a pointer" (input bears no LFS markers
+at all; callers should treat the bytes as opaque content) and
+"malformed" (input has pointer shape but invalid contents; callers
+should surface the error).

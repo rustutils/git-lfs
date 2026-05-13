@@ -1,8 +1,12 @@
 use std::fmt;
 use std::str::FromStr;
 
-/// Hex form of the SHA-256 of the empty input. Used as the OID of the empty
-/// pointer (which represents an empty file — see `docs/spec.md`).
+/// Hex form of the SHA-256 of the empty input.
+///
+/// Used as the OID of the [empty pointer], which represents an
+/// empty file (see the spec).
+///
+/// [empty pointer]: crate::Pointer::empty
 pub const EMPTY_HEX: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 /// A SHA-256 object identifier.
@@ -81,10 +85,14 @@ impl FromStr for Oid {
     }
 }
 
+/// Why [`Oid::from_hex`] (or `Oid::from_str`) failed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum OidParseError {
+    /// Input wasn't exactly 64 characters long.
     #[error("oid must be 64 hex characters, got {0}")]
     InvalidLength(usize),
+    /// Input contained a character outside `0-9a-f` (uppercase
+    /// rejected; the spec mandates lowercase).
     #[error("oid contains invalid character {0:?} (must be lowercase 0-9a-f)")]
     InvalidCharacter(char),
 }
