@@ -6,12 +6,17 @@
 //! path filters, `--deleted`, and the two-ref range form are deferred — see
 //! NOTES.md.
 
-use std::path::Path;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
-use git_lfs_git::{PointerEntry, scan_pointers, scan_tree};
+use git_lfs_git::{PointerEntry, scan_index_pointers, scan_pointers, scan_tree};
 use git_lfs_pointer::VERSION_LATEST;
 use git_lfs_store::Store;
 use serde::Serialize;
+
+/// Git's well-known empty-tree hash. Used as the diff-index baseline when
+/// the repo has no commits yet, so freshly-staged pointers still surface.
+const EMPTY_TREE_SHA: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 #[derive(Debug, thiserror::Error)]
 pub enum LsFilesError {
@@ -79,18 +84,65 @@ pub fn run(cwd: &Path, refspec: Option<&str>, opts: &Options) -> Result<(), LsFi
             let r: Vec<&str> = refs.iter().map(String::as_str).collect();
             scan_pointers(cwd, &r, &[])?
         }
-    } else {
-        let r = refspec.unwrap_or("HEAD");
-        // Tolerate empty repos: if HEAD doesn't exist yet, there's
-        // nothing to list. Match upstream by silently emitting nothing
-        // rather than erroring.
-        if refspec.is_none() && !head_exists(cwd) {
-            return emit(&[], &store, cwd, opts);
-        }
+    } else if let Some(r) = refspec {
         scan_tree(cwd, r)?
+    } else {
+        // No args: combine the tree at HEAD with the index, so
+        // freshly-staged-but-uncommitted pointers show up. Fall back to
+        // the empty tree when HEAD doesn't exist yet (matches upstream's
+        // `git.EmptyTree()` path) so the index pass still works.
+        let has_head = head_exists(cwd);
+        let ref_or_empty = if has_head { "HEAD" } else { EMPTY_TREE_SHA };
+        let tree = if has_head {
+            scan_tree(cwd, "HEAD")?
+        } else {
+            Vec::new()
+        };
+        let index = scan_index_pointers(cwd, ref_or_empty).unwrap_or_default();
+        merge_by_path(index, tree)
     };
 
-    emit(&pointers, &store, cwd, opts)
+    // Pointer paths come back repo-relative (from `git ls-tree` and
+    // `git diff-index`), so the `*`/`-` "is the working-tree file
+    // present?" check must join against the repo root rather than the
+    // caller's cwd — otherwise `ls-files` run from a subdirectory
+    // reports `-` for every file that does exist in the working tree.
+    let working_dir = repo_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
+    emit(&pointers, &store, &working_dir, opts)
+}
+
+fn repo_root(cwd: &Path) -> Option<PathBuf> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    if s.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(s))
+    }
+}
+
+/// Concatenate two pointer lists and drop entries whose path was already
+/// seen. Matches upstream's `seen[p.Name]` dedup: when the index and tree
+/// both surface a path, the first one (index) wins. Entries without a
+/// path are kept unconditionally.
+fn merge_by_path(first: Vec<PointerEntry>, second: Vec<PointerEntry>) -> Vec<PointerEntry> {
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+    let mut out = Vec::with_capacity(first.len() + second.len());
+    for e in first.into_iter().chain(second) {
+        match e.path.as_deref() {
+            Some(p) if !seen.insert(p.to_path_buf()) => {}
+            _ => out.push(e),
+        }
+    }
+    out
 }
 
 fn emit(
@@ -175,8 +227,16 @@ fn emit_json(pointers: &[PointerEntry], store: &Store, cwd: &Path) -> Result<(),
             version: VERSION_LATEST,
         })
         .collect();
-    let s = serde_json::to_string_pretty(&JsonOutput { files })?;
-    println!("{s}");
+    // Upstream's `json.Encoder` with `SetIndent("", " ")` — single-space
+    // indent and a trailing newline (Encode always appends one).
+    let formatter = serde_json::ser::PrettyFormatter::with_indent(b" ");
+    let mut buf = Vec::new();
+    let mut ser = serde_json::Serializer::with_formatter(&mut buf, formatter);
+    use serde::Serialize as _;
+    JsonOutput { files }.serialize(&mut ser)?;
+    buf.push(b'\n');
+    use std::io::Write;
+    std::io::stdout().write_all(&buf)?;
     Ok(())
 }
 
