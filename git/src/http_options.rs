@@ -7,9 +7,10 @@
 //!
 //! TLS surface is intentionally narrow (CA bundle, verify toggle, the
 //! client-cert pair for mTLS). The same URL-prefix machinery is reused
-//! for `http.extraHeader` (multi-value, applied to every request) and
-//! for the LFS-namespace boolean `lfs.<url>.contenttype`. Remaining
-//! surface (`sslCertPasswordProtected`, `cookieFile`, …) is deferred.
+//! for `http.extraHeader` (multi-value, applied to every request), the
+//! Netscape-format `http.cookieFile`, and the LFS-namespace boolean
+//! `lfs.<url>.contenttype`. Remaining surface (e.g.
+//! `sslCertPasswordProtected`) is deferred.
 
 use std::path::Path;
 use std::process::Command;
@@ -28,6 +29,11 @@ pub struct HttpOptions {
     pub ssl_cert: Option<String>,
     /// `http.sslKey` — path to the matching PEM-encoded private key.
     pub ssl_key: Option<String>,
+    /// `http.cookieFile` — path to a Netscape-format cookie jar that
+    /// should be sent with every HTTP request. Used to pass through
+    /// load-balancer / proxy session cookies in front of the LFS
+    /// server.
+    pub cookie_file: Option<String>,
 }
 
 impl HttpOptions {
@@ -50,6 +56,9 @@ impl HttpOptions {
             ssl_key: scoped
                 .lookup("sslkey")
                 .or_else(|| get_global(cwd, "http.sslKey").ok().flatten()),
+            cookie_file: scoped
+                .lookup("cookiefile")
+                .or_else(|| get_global(cwd, "http.cookieFile").ok().flatten()),
         })
     }
 }

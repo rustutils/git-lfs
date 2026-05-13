@@ -18,6 +18,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use git_lfs_git::{HttpOptions, extra_headers_for};
+use reqwest::cookie::Jar;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::{DigitallySignedStruct, SignatureScheme};
@@ -63,7 +64,68 @@ pub fn build(cwd: &Path, endpoint_url: &str) -> reqwest::Client {
         }
     }
 
+    if let Some(path) = opts.cookie_file.as_deref()
+        && let Some(jar) = load_netscape_cookies(path)
+    {
+        builder = builder.cookie_provider(Arc::new(jar));
+    }
+
     builder.build().unwrap_or_else(|_| reqwest::Client::new())
+}
+
+/// Parse a Netscape-format cookie file (the format `curl -b/-c` and
+/// most browsers use) and return a populated [`Jar`]. Each line is
+/// tab-separated:
+///
+/// ```text
+/// <domain>  <include_subdomains>  <path>  <secure>  <expires>  <name>  <value>
+/// ```
+///
+/// Lines starting with `#` are comments unless they're the special
+/// `#HttpOnly_<domain>` prefix marking an HttpOnly cookie. Malformed
+/// lines are silently skipped — the file came from `git config`, and
+/// a single bad line shouldn't block the whole transfer.
+fn load_netscape_cookies(path: &str) -> Option<Jar> {
+    let bytes = std::fs::read(path).ok()?;
+    let text = String::from_utf8_lossy(&bytes);
+    let jar = Jar::default();
+    let mut added = 0usize;
+    for raw in text.lines() {
+        let line = raw.trim_end_matches('\r');
+        // Honor the `#HttpOnly_` marker: strip it so the domain
+        // parses, but otherwise treat the cookie like any other (the
+        // HttpOnly attribute only matters to JS, not to our outgoing
+        // requests).
+        let line = line.strip_prefix("#HttpOnly_").unwrap_or(line);
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let fields: Vec<&str> = line.split('\t').collect();
+        if fields.len() < 7 {
+            continue;
+        }
+        let domain = fields[0].trim_start_matches('.');
+        let path = fields[2];
+        let secure = fields[3].eq_ignore_ascii_case("TRUE");
+        let name = fields[5];
+        let value = fields[6];
+        if name.is_empty() || domain.is_empty() {
+            continue;
+        }
+        // Reconstruct a Set-Cookie header and a base URL for reqwest's
+        // jar. The scheme matters for the secure flag but reqwest's
+        // jar honors `Domain=` for cross-host sending either way.
+        let scheme = if secure { "https" } else { "http" };
+        let base = format!("{scheme}://{domain}{path}");
+        let Ok(url) = url::Url::parse(&base) else {
+            continue;
+        };
+        let secure_attr = if secure { "; Secure" } else { "" };
+        let cookie = format!("{name}={value}; Domain={domain}; Path={path}{secure_attr}");
+        jar.add_cookie_str(&cookie, &url);
+        added += 1;
+    }
+    if added == 0 { None } else { Some(jar) }
 }
 
 /// Read `path` as one or more PEM-encoded certs and build a rustls

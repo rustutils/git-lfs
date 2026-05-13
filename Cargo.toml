@@ -58,6 +58,6 @@ sha2        = "0.10"
 tokio       = { version = "1" }
 tokio-util  = { version = "0.7", default-features = false }
 futures     = { version = "0.3", default-features = false, features = ["std"] }
-reqwest     = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "charset", "http2", "stream"] }
+reqwest     = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "charset", "http2", "stream", "cookies"] }
 url         = "2"
 wiremock    = "0.6"
