@@ -13,12 +13,17 @@ members = [
     "xtask",
 ]
 
-# Let rustc strip release binaries
+# strip binaries, and enable LTO to get smaller binaries
 [profile.release]
 strip = true
-lto = "thin"
+lto = true
 codegen-units = 1
 panic = "abort"
+
+# profile for even smaller binaries (at the expense of some optimizations)
+[profile.small]
+inherits = "release"
+opt-level = "z"
 
 [workspace.package]
 version    = "0.7.0"
