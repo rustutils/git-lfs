@@ -7,7 +7,7 @@
 
 use std::io::Write as _;
 
-use crate::helper::{Credentials, Helper, HelperError, HelperOutcome};
+use crate::helper::{Credentials, FillContext, Helper, HelperError, HelperOutcome};
 use crate::query::Query;
 
 /// Try each helper in order on `fill`, broadcast `approve` / `reject`.
@@ -47,9 +47,17 @@ impl Helper for HelperChain {
     /// helper errored, surface the last error so callers see *why*
     /// nothing worked rather than a bare "credentials not found".
     fn fill(&self, query: &Query) -> Result<Option<Credentials>, HelperError> {
+        self.fill_with_context(query, &FillContext::default())
+    }
+
+    fn fill_with_context(
+        &self,
+        query: &Query,
+        ctx: &FillContext,
+    ) -> Result<Option<Credentials>, HelperError> {
         let mut last_err: Option<HelperError> = None;
         for h in &self.helpers {
-            match h.fill(query) {
+            match h.fill_with_context(query, ctx) {
                 Ok(Some(c)) => return Ok(Some(c)),
                 Ok(None) => continue,
                 Err(e) => {

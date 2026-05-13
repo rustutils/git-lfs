@@ -37,6 +37,40 @@ pub enum HelperError {
     Failed(String),
 }
 
+/// Extra context piggybacking on a `fill` call.
+///
+/// Carries the per-attempt details that upstream forwards to
+/// `git credential fill` via the `wwwauth[]`, `state[]`, and
+/// `capability[]` input lines. Default-constructed for the first
+/// attempt; populated by the API client's auth loop on subsequent
+/// retries from the prior 401's `WWW-Authenticate` response headers
+/// (`wwwauth`) and the prior helper response's continuation tokens
+/// (`state`). `capabilities` advertises which protocol extensions
+/// (`authtype`, `state`) we as a client understand.
+///
+/// Helpers that don't speak any of these knobs (cache, netrc,
+/// askpass) ignore the context entirely — the default
+/// [`Helper::fill_with_context`] impl just forwards to [`Helper::fill`].
+#[derive(Debug, Clone, Default)]
+pub struct FillContext {
+    /// `WWW-Authenticate` response header values from the prior 401,
+    /// or empty on the first attempt. Forwarded as `wwwauth[]=…` lines
+    /// on the `git credential fill` input so helpers can pick the
+    /// right scheme.
+    pub wwwauth: Vec<String>,
+
+    /// `state[]` values returned by the helper in the previous
+    /// response, or empty on the first attempt. Forwarded back as
+    /// `state[]=…` lines so multistage helpers can resume where they
+    /// left off.
+    pub state: Vec<String>,
+
+    /// `capability[]` values to advertise on the input. Today we send
+    /// `authtype` and `state` so multistage-capable helpers know they
+    /// can use those extensions; passive helpers ignore them.
+    pub capabilities: Vec<String>,
+}
+
 /// What a helper did with an `approve` / `reject` call.
 ///
 /// The [`HelperChain`](crate::HelperChain) iterates in order and stops
@@ -66,6 +100,19 @@ pub trait Helper: Send + Sync {
     /// next helper. `Err` is a hard failure (e.g. helper subprocess
     /// crashed) and aborts the chain.
     fn fill(&self, query: &Query) -> Result<Option<Credentials>, HelperError>;
+
+    /// Like [`fill`](Self::fill) but accepting a [`FillContext`] from
+    /// the calling auth loop. The default implementation ignores the
+    /// context and delegates to `fill`; helpers that consume the
+    /// extra fields (notably [`GitCredentialHelper`](crate::GitCredentialHelper))
+    /// override this.
+    fn fill_with_context(
+        &self,
+        query: &Query,
+        _ctx: &FillContext,
+    ) -> Result<Option<Credentials>, HelperError> {
+        self.fill(query)
+    }
 
     /// Tell the helper that `creds` worked for `query`.
     ///

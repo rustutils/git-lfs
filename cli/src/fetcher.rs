@@ -348,9 +348,14 @@ fn build_api_client_with(
     // `cli/src/http_client.rs`); the snapshot is purely so the
     // verbose dump can name them.
     let extras = git_lfs_git::extra_headers_for(cwd, url.as_str());
+    // `credential.<url>.skipwwwauth` falls back to `credential.skipwwwauth`,
+    // default false. Mirrors upstream's `urlConfig.Bool("credential",
+    // rawurl, "skipwwwauth", false)` lookup.
+    let skip_wwwauth = url_scoped_credential_bool(cwd, &cred_url_for_helper, "skipwwwauth", false);
     let mut client = ApiClient::with_http_client(url.clone(), initial_auth, http)
         .with_credential_helper(default_helper_chain(cwd, &cred_url_for_helper))
         .with_use_http_path(use_http_path)
+        .with_skip_wwwauth(skip_wwwauth)
         .with_extra_headers_for_verbose(extras);
     if let Some(git_url) = resolved_cred_url {
         client = client.with_cred_url(git_url);
@@ -669,6 +674,48 @@ fn resolve_askpass_program(cwd: &Path) -> Option<String> {
         return Some(v.to_string_lossy().into_owned());
     }
     None
+}
+
+/// Read a `credential.<url>.<suffix>` bool with `credential.<suffix>`
+/// fallback. Checks the same URL-prefix variants `has_credential_helper`
+/// walks: most-specific (`<scheme>://<host>:<port><path>`), then
+/// host-authority, then bare global. First match wins; absent or
+/// unparseable values fall through to `default`. Mirrors upstream's
+/// `urlConfig.Bool("credential", rawurl, suffix, default)`.
+fn url_scoped_credential_bool(
+    cwd: &Path,
+    cred_url: &url::Url,
+    suffix: &str,
+    default: bool,
+) -> bool {
+    let mut keys = Vec::with_capacity(3);
+    let host_authority = match (cred_url.host_str(), cred_url.port()) {
+        (Some(h), Some(p)) => Some(format!("{}://{h}:{p}", cred_url.scheme())),
+        (Some(h), None) => Some(format!("{}://{h}", cred_url.scheme())),
+        _ => None,
+    };
+    if let Some(h) = &host_authority {
+        if !cred_url.path().is_empty() && cred_url.path() != "/" {
+            keys.push(format!(
+                "credential.{}{}.{suffix}",
+                h,
+                cred_url.path().trim_end_matches('/'),
+            ));
+        }
+        keys.push(format!("credential.{h}.{suffix}"));
+    }
+    keys.push(format!("credential.{suffix}"));
+    for key in &keys {
+        let Ok(Some(raw)) = git_lfs_git::config::get_effective(cwd, key) else {
+            continue;
+        };
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" | "on" => return true,
+            "false" | "0" | "no" | "off" => return false,
+            _ => continue,
+        }
+    }
+    default
 }
 
 /// True if a non-empty `credential.helper` is configured for `cred_url`.

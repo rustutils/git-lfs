@@ -41,7 +41,7 @@ mod trace;
 pub use askpass::AskpassHelper;
 pub use chain::HelperChain;
 pub use git_helper::GitCredentialHelper;
-pub use helper::{Credentials, Helper, HelperError, HelperOutcome};
+pub use helper::{Credentials, FillContext, Helper, HelperError, HelperOutcome};
 pub use memory::CachingHelper;
 pub use netrc::NetrcCredentialHelper;
 pub use query::Query;

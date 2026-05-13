@@ -1,7 +1,7 @@
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
-use git_lfs_creds::{Credentials, Helper, Query};
+use git_lfs_creds::{Credentials, FillContext, Helper, Query};
 use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 use reqwest::{Method, RequestBuilder, Response};
 use serde::Serialize;
@@ -79,6 +79,12 @@ pub struct Client {
     /// cheap and lets the dump match upstream's `> Name: Value` form
     /// (which the `t-extra-header.sh` greps look for).
     pub(crate) extra_headers: Vec<(String, String)>,
+    /// Mirrors `credential.<url>.skipwwwauth`. When `true`, the auth
+    /// loop suppresses the `wwwauth[]` forwarding into `git credential
+    /// fill`. Some helpers (e.g. `git-credential-manager` setups
+    /// configured against a different realm than the LFS server
+    /// advertises) trip on the extra input.
+    pub(crate) skip_wwwauth: bool,
 }
 
 impl std::fmt::Debug for Client {
@@ -115,6 +121,7 @@ impl Client {
             cred_url: None,
             ssh_resolver: None,
             extra_headers: Vec::new(),
+            skip_wwwauth: false,
         }
     }
 
@@ -173,6 +180,17 @@ impl Client {
     #[must_use]
     pub fn with_use_http_path(mut self, on: bool) -> Self {
         self.use_http_path = on;
+        self
+    }
+
+    /// Toggle `credential.<url>.skipwwwauth`.
+    ///
+    /// When `true`, the auth loop will not forward
+    /// `WWW-Authenticate` response headers as `wwwauth[]=…` lines on
+    /// the next `git credential fill` input.
+    #[must_use]
+    pub fn with_skip_wwwauth(mut self, on: bool) -> Self {
+        self.skip_wwwauth = on;
         self
     }
 
@@ -437,6 +455,12 @@ impl Client {
             MAX_AUTH_ATTEMPTS
         };
 
+        // `wwwauth[]` accumulates across attempts: each 401 may carry
+        // one or more `WWW-Authenticate` headers we forward to the
+        // next `git credential fill` so helpers can pick a scheme.
+        // Suppressed when `credential.<url>.skipwwwauth` is set.
+        let mut wwwauth: Vec<String> = Vec::new();
+
         for attempt in 0..max {
             let resp = build().send().await?;
             let status = resp.status();
@@ -453,6 +477,29 @@ impl Client {
             let Some(helper) = self.credentials.clone() else {
                 return Ok(resp);
             };
+
+            // Capture authenticate-challenge values from this response
+            // before we drop it. Each 401 may carry multiple
+            // challenges; we forward every Basic/Bearer/etc. line
+            // verbatim — git credential's helpers pick the one they
+            // support. Upstream looks at both `Lfs-Authenticate` (LFS
+            // server's preferred name) and `Www-Authenticate` (HTTP
+            // standard), in that order, matching
+            // `lfsapi/auth.go::authenticateHeaders`.
+            if !self.skip_wwwauth {
+                let mut new_wwwauth: Vec<String> = Vec::new();
+                for hname in ["lfs-authenticate", "www-authenticate"] {
+                    for v in resp.headers().get_all(hname) {
+                        if let Ok(s) = v.to_str() {
+                            new_wwwauth.push(s.to_owned());
+                        }
+                    }
+                }
+                if !new_wwwauth.is_empty() {
+                    wwwauth = new_wwwauth;
+                }
+            }
+            drop(resp);
 
             // Out of attempts. Mirror upstream's trace + error
             // wording. Reject the last filled set before bailing so
@@ -475,11 +522,17 @@ impl Client {
 
             // Refill for the next attempt. A helper whose creds we
             // just rejected will pass on this round, so the chain
-            // falls through to the next one.
+            // falls through to the next one. Carry wwwauth[] so the
+            // helper can pick the right scheme.
             let query = self.cred_query();
             let cred_url_str = self.cred_url_string();
+            let ctx = FillContext {
+                wwwauth: wwwauth.clone(),
+                state: Vec::new(),
+                capabilities: Vec::new(),
+            };
             let creds =
-                match fill_for_endpoint(helper.clone(), query.clone(), &cred_url_str).await? {
+                match fill_for_endpoint(helper.clone(), query.clone(), &cred_url_str, ctx).await? {
                     Some(c) => c,
                     // No helper had anything for this URL. Surface upstream's
                     // "Git credentials for X not found" wording so callers
@@ -599,9 +652,10 @@ async fn fill_for_endpoint(
     helper: Arc<dyn Helper>,
     query: Query,
     endpoint: &str,
+    ctx: FillContext,
 ) -> Result<Option<Credentials>, ApiError> {
     let endpoint_str = endpoint.to_owned();
-    tokio::task::spawn_blocking(move || helper.fill(&query))
+    tokio::task::spawn_blocking(move || helper.fill_with_context(&query, &ctx))
         .await
         .map_err(|e| ApiError::Decode(format!("credential helper join: {e}")))?
         .map_err(|e| ApiError::CredentialsNotFound {

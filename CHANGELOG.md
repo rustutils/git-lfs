@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `creds`: forward `WWW-Authenticate` / `Lfs-Authenticate` response
+  headers as `wwwauth[]=…` lines on the next `git credential fill`
+  input. Each 401 in the auth loop captures both header names (matching
+  upstream's `authenticateHeaders = []string{"Lfs-Authenticate",
+  "Www-Authenticate"}` order) and threads them into the refill via a
+  new `FillContext` type. Honors `credential.<url>.skipwwwauth`
+  (falling back to `credential.skipwwwauth`, default false) — wired
+  through a new `Client::with_skip_wwwauth` builder and `cli/fetcher`
+  helper `url_scoped_credential_bool`. Lands `t-credentials.sh` tests
+  7 and 8; suite now at 14/20. Public-API addition: new
+  `Helper::fill_with_context` trait method (default impl delegates to
+  `fill`, so existing helpers continue to compile unchanged).
+
 - `api`: multi-attempt auth loop matching upstream's `DoWithAuth`. The
   one-shot 401 → fill → retry → done pattern becomes a loop with
   `MAX_AUTH_ATTEMPTS = 3` budget: each 401 rejects the current filled

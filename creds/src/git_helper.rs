@@ -8,14 +8,17 @@
 //! * `git credential approve` and `reject` take the same key/value input
 //!   and produce no useful stdout.
 //!
-//! For now we only emit `protocol`, `host`, and (optionally) `path` —
-//! upstream LFS also passes `wwwauth[]` and `state[]` for multi-stage
-//! authentication, which is on the deferred list.
+//! Fills can additionally carry [`FillContext`](crate::FillContext)
+//! lines (`capability[]`, `wwwauth[]`, `state[]`) that the API
+//! client's auth loop populates from the prior 401's
+//! `WWW-Authenticate` / `Lfs-Authenticate` headers and the helper's
+//! previous `state[]` response. Multi-stage credential helpers need
+//! those to pick a scheme and resume between fills.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-use crate::helper::{Credentials, Helper, HelperError, HelperOutcome};
+use crate::helper::{Credentials, FillContext, Helper, HelperError, HelperOutcome};
 use crate::query::Query;
 use crate::trace::trace_enabled;
 
@@ -72,7 +75,12 @@ impl GitCredentialHelper {
         self
     }
 
-    fn run(&self, subcommand: &str, query: &Query) -> Result<String, HelperError> {
+    fn run(
+        &self,
+        subcommand: &str,
+        query: &Query,
+        ctx: Option<&FillContext>,
+    ) -> Result<String, HelperError> {
         trace_call(subcommand, query);
         let mut child = Command::new(&self.git_program)
             .args(["credential", subcommand])
@@ -86,7 +94,7 @@ impl GitCredentialHelper {
                 .stdin
                 .as_mut()
                 .ok_or_else(|| HelperError::Failed("git stdin unavailable".into()))?;
-            write_input(stdin, query, None, self.protect_protocol)?;
+            write_input(stdin, query, None, ctx, self.protect_protocol)?;
         }
 
         let out = child.wait_with_output()?;
@@ -109,7 +117,16 @@ impl GitCredentialHelper {
 
 impl Helper for GitCredentialHelper {
     fn fill(&self, query: &Query) -> Result<Option<Credentials>, HelperError> {
-        let stdout = self.run("fill", query)?;
+        let stdout = self.run("fill", query, None)?;
+        Ok(parse_response(&stdout))
+    }
+
+    fn fill_with_context(
+        &self,
+        query: &Query,
+        ctx: &FillContext,
+    ) -> Result<Option<Credentials>, HelperError> {
+        let stdout = self.run("fill", query, Some(ctx))?;
         Ok(parse_response(&stdout))
     }
 
@@ -117,7 +134,7 @@ impl Helper for GitCredentialHelper {
         trace_call("approve", query);
         let mut child = spawn(&self.git_program, "approve")?;
         if let Some(stdin) = child.stdin.as_mut() {
-            write_input(stdin, query, Some(creds), self.protect_protocol)?;
+            write_input(stdin, query, Some(creds), None, self.protect_protocol)?;
         }
         let out = child.wait_with_output()?;
         if !out.status.success() {
@@ -134,7 +151,7 @@ impl Helper for GitCredentialHelper {
         trace_call("reject", query);
         let mut child = spawn(&self.git_program, "reject")?;
         if let Some(stdin) = child.stdin.as_mut() {
-            write_input(stdin, query, Some(creds), self.protect_protocol)?;
+            write_input(stdin, query, Some(creds), None, self.protect_protocol)?;
         }
         let out = child.wait_with_output()?;
         if !out.status.success() {
@@ -177,6 +194,7 @@ fn write_input(
     sink: &mut impl Write,
     query: &Query,
     creds: Option<&Credentials>,
+    ctx: Option<&FillContext>,
     protect_protocol: bool,
 ) -> Result<(), HelperError> {
     write_field(sink, "protocol", &query.protocol, protect_protocol)?;
@@ -188,6 +206,21 @@ fn write_input(
         // if empty — let git decide. Empty values still get a key= line.
         validate_value("password", &c.password, protect_protocol)?;
         writeln!(sink, "password={}", c.password)?;
+    }
+    if let Some(ctx) = ctx {
+        // Order matches upstream's `getCreds` write order:
+        // capability[] first so the helper knows what we speak, then
+        // wwwauth[] and state[] for the actual handshake. Each is a
+        // multi-value input — emit one line per entry.
+        for cap in &ctx.capabilities {
+            write_field(sink, "capability[]", cap, protect_protocol)?;
+        }
+        for w in &ctx.wwwauth {
+            write_field(sink, "wwwauth[]", w, protect_protocol)?;
+        }
+        for s in &ctx.state {
+            write_field(sink, "state[]", s, protect_protocol)?;
+        }
     }
     // Trailing blank line tells git "end of input".
     writeln!(sink)?;
@@ -299,7 +332,7 @@ mod tests {
             path: "evil\nrepo".into(),
         };
         let mut buf = Vec::new();
-        let err = write_input(&mut buf, &q, None, true).unwrap_err();
+        let err = write_input(&mut buf, &q, None, None, true).unwrap_err();
         assert!(
             matches!(&err, HelperError::Failed(m) if m.contains("contains newline")),
             "got {err:?}"
@@ -314,7 +347,7 @@ mod tests {
             path: "evil\0repo".into(),
         };
         let mut buf = Vec::new();
-        let err = write_input(&mut buf, &q, None, false).unwrap_err();
+        let err = write_input(&mut buf, &q, None, None, false).unwrap_err();
         assert!(
             matches!(&err, HelperError::Failed(m) if m.contains("contains null byte")),
             "got {err:?}"
@@ -329,7 +362,7 @@ mod tests {
             path: "evil\rrepo".into(),
         };
         let mut buf = Vec::new();
-        let err = write_input(&mut buf, &q, None, true).unwrap_err();
+        let err = write_input(&mut buf, &q, None, None, true).unwrap_err();
         assert!(
             matches!(&err, HelperError::Failed(m) if m.contains("contains carriage return")),
             "got {err:?}"
@@ -344,7 +377,7 @@ mod tests {
             path: "evil\rrepo".into(),
         };
         let mut buf = Vec::new();
-        write_input(&mut buf, &q, None, false).unwrap();
+        write_input(&mut buf, &q, None, None, false).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(s.contains("path=evil\rrepo\n"));
     }
@@ -357,7 +390,7 @@ mod tests {
             path: String::new(),
         };
         let mut buf = Vec::new();
-        write_input(&mut buf, &q, None, true).unwrap();
+        write_input(&mut buf, &q, None, None, true).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(!s.contains("path="));
         assert!(s.contains("protocol=https\n"));
