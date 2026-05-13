@@ -1,18 +1,13 @@
-//! Clap CLI surface (struct `Cli` + subcommands).
+//! Command-line interface for `git-lfs`.
 //!
-//! Extracted from `main.rs` so xtask (and any future tool) can
-//! reuse the command tree for man-page generation, completion
-//! scripts, etc. Keep this file focused on the clap derive — all
-//! dispatch / business logic stays in main.rs and the per-command
-//! modules.
+//! This module implements the command-line interface for
+//! `git-lfs`. It uses `clap` to parse command-line arguments.
+//! Commands are split out into subcommands, with one struct per
+//! subcommand.
 //!
-//! Each subcommand is a tuple variant on [`Command`] delegating to
-//! a `*Args` struct. The struct is the home for the rustdoc that
-//! drives clap's `about` / `long_about` (first paragraph → about,
-//! rest → long_about) and for `#[command(...)]` extras such as
-//! `after_help`, aliases, and arg-group headings. Keep the variants
-//! themselves bare — putting a doc comment on the variant would
-//! shadow the struct's docs.
+//! This module is public so that other workspace tools can depend
+//! on it. Concretely, the man pages and markdown documentation are
+//! automatically generated from the command-line definitions.
 
 use std::path::PathBuf;
 
@@ -54,8 +49,12 @@ pub struct Cli {
     pub command: Option<Command>,
 }
 
-// note: don't add rustdoc comments here, they will shadow the struct's docs
-// in the clap-generated help output
+// Subcommand convention: each subcommand is a tuple variant on `Command`
+// delegating to a `*Args` struct. The struct's rustdoc drives clap's help
+// output (first paragraph becomes `about`, the rest becomes `long_about`),
+// plus `#[command(...)]` extras like `after_help`, aliases, and arg-group
+// headings. Don't put rustdoc on the variant itself; it would shadow the
+// struct's docs in the generated help.
 #[derive(Subcommand)]
 pub enum Command {
     Clean(CleanArgs),

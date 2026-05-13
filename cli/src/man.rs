@@ -1,33 +1,36 @@
 //! Per-subcommand documentation extras (man pages + mdbook).
 //!
 //! The clap derive in [`crate::args`] is the source of truth for the
-//! NAME / SYNOPSIS / OPTIONS surface — xtask renders that automatically
-//! into both groff (man pages) and markdown (mdbook). This module owns
-//! everything richer: DESCRIPTION prose, EXAMPLES, NOTES, FILES,
-//! SEE ALSO.
+//! NAME, SYNOPSIS, and OPTIONS surface; xtask renders that
+//! automatically into both groff (man pages) and markdown (mdbook).
+//! This module owns everything richer: DESCRIPTION prose, EXAMPLES,
+//! NOTES, FILES, SEE ALSO.
 //!
 //! **Bodies are authored in markdown.** xtask passes them through
-//! verbatim for the markdown output and converts them to groff for the
-//! man pages, so a single source feeds both formats. The supported
-//! markdown vocabulary is intentionally small — paragraphs, bold/italic,
-//! code spans / fenced code blocks, bulleted and numbered lists. Stick
-//! to that and the groff conversion stays predictable.
+//! verbatim for the markdown output and converts them to groff for
+//! the man pages, so a single source feeds both formats. The
+//! supported markdown vocabulary is intentionally small: paragraphs,
+//! bold and italic, code spans and fenced code blocks, bulleted and
+//! numbered lists. Stick to that and the groff conversion stays
+//! predictable.
 //!
-//! Each subcommand exposes its extras here as a [`ManContent`] entry in
-//! [`extras_for`]. Bodies live under `cli/man/<sub>/*.md` and are pulled
-//! in via [`include_str!`], keeping prose out of `man.rs`.
+//! Each subcommand exposes its extras here as a [`ManContent`] entry
+//! in [`extras_for`]. Bodies live under `cli/man/<sub>/*.md` and are
+//! pulled in via [`include_str!`], keeping prose out of `man.rs`.
 //!
 //! Onboarding a new section is two-step:
 //! 1. Drop one or more `.md` files into `cli/man/<subcommand>/`.
 //! 2. Add a match arm in [`extras_for`] referencing them.
 //!
 //! Subcommands without an entry get the auto-generated page with no
-//! extras — still useful, just shorter.
+//! extras: still useful, just shorter.
 
-/// Hand-authored extras for a single command's documentation. Returned
-/// by [`extras_for`] keyed on the subcommand name (or `""` for the top-
-/// level `git-lfs` page). Both fields are markdown — xtask renders them
-/// to either groff or markdown depending on output format.
+/// Hand-authored extras for a single command's documentation.
+///
+/// Returned by [`extras_for`] keyed on the subcommand name (or `""`
+/// for the top-level `git-lfs` page). Both fields are markdown; xtask
+/// renders them to either groff or markdown depending on output
+/// format.
 #[derive(Debug)]
 pub struct ManContent {
     /// Replaces the auto-generated DESCRIPTION (which is just the short
@@ -42,6 +45,11 @@ pub struct ManContent {
 }
 
 impl ManContent {
+    /// A [`ManContent`] with no description and no extra sections.
+    ///
+    /// Returned by [`extras_for`] for subcommands that don't have
+    /// hand-authored extras; the caller splices in the empty result
+    /// unconditionally.
     pub const fn empty() -> Self {
         Self {
             description: None,
@@ -57,10 +65,12 @@ const ROOT: ManContent = ManContent {
     extra_sections: &[("EXAMPLES", include_str!("../man/root/examples.md"))],
 };
 
-/// Markdown body for the `REPORTING BUGS` section that xtask appends
-/// to every generated man / mdbook page. Single source of truth for
+/// Markdown body for the `REPORTING BUGS` section.
+///
+/// xtask appends this to every generated man page and mdbook page, so
 /// the project URL and the "this is the Rust implementation" framing
-/// — change here and every page picks it up on the next regen.
+/// have a single source of truth. Change here and every page picks it
+/// up on the next regen.
 pub const REPORTING_BUGS: &str = include_str!("../man/reporting_bugs.md");
 
 const SMUDGE: ManContent = ManContent {
@@ -290,11 +300,11 @@ const EXT: ManContent = ManContent {
     extra_sections: &[("EXAMPLES", include_str!("../man/ext/examples.md"))],
 };
 
-/// git-lfs-config(5) is a synthetic page — no clap-derived OPTIONS or
-/// DESCRIPTION. Everything lives in the extras. The OPTIONS section
-/// is built up across several commits; the framing sections
-/// (CONFIGURATION FILES / LFSCONFIG / EXAMPLES / SEE ALSO) bracket
-/// whatever lands in between.
+// git-lfs-config(5) is a synthetic page: no clap-derived OPTIONS or
+// DESCRIPTION, everything lives in the extras. The OPTIONS section is
+// built up across several commits; the framing sections
+// (CONFIGURATION FILES, LFSCONFIG, EXAMPLES, SEE ALSO) bracket
+// whatever lands in between.
 const CONFIG: ManContent = ManContent {
     description: None,
     extra_sections: &[
@@ -333,10 +343,12 @@ const CONFIG: ManContent = ManContent {
     ],
 };
 
-/// Look up the doc extras for `subcommand` (e.g. `"fetch"`,
-/// `"checkout"`). Pass `""` for the top-level `git-lfs` page.
-/// Returns a reference to [`ManContent::empty`] when there's no entry,
-/// so the caller can always splice unconditionally.
+/// Look up the doc extras for `subcommand`.
+///
+/// `subcommand` is the clap subcommand name (e.g. `"fetch"`,
+/// `"checkout"`); pass `""` for the top-level `git-lfs` page. Returns
+/// a reference to [`ManContent::empty`] when there's no entry, so the
+/// caller can always splice unconditionally.
 pub fn extras_for(subcommand: &str) -> &'static ManContent {
     match subcommand {
         "smudge" => &SMUDGE,
