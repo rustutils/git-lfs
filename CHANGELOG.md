@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `transfer`: pure-SSH transfer protocol scaffolding (`git-lfs-transfer`).
+  New `sshtransfer` module ships the pkt-line reader/writer (4-byte
+  hex length headers, flush `0000`, delim `0001`, text packets with
+  implicit LF terminator, capped at the 65515-byte payload upstream's
+  `git-lfs/pktline` Go library uses) and a `Connection` type that
+  spawns the long-lived SSH subprocess, performs the version
+  handshake (`version=1` capability → `version 1` → `status 200`),
+  and tears down cleanly via the `quit` command. The argv builder
+  emits the SSH multiplexing flags chosen by the caller
+  (`-oControlMaster=yes -oControlPath=<sock>` for the first
+  connection, `-oControlMaster=no` for clients sharing that socket),
+  the variant-aware port flag
+  (`-p` vs PuTTY/TortoisePlink `-P`), the `-batch` prefix for
+  TortoisePlink, and the dash-leading user-and-host defense (default
+  `ssh` uses `--` to mark end-of-options, simple/PuTTY strip the
+  leading dashes — mirrors `sshOptPrefixRE.ReplaceAllString` in
+  upstream's `ssh/ssh.go`). Trace lines (`spawning pure SSH connection
+  (#N)`, `pure SSH connection successful (#N)`, `terminating pure SSH
+  connection (#N)`, `exec: <prog> <args>`) match upstream verbatim
+  for `t-batch-transfer.sh`'s greps. Scaffolding only — no transfer
+  adapter or test count movement yet; the download/upload commands
+  and queue integration land in follow-on commits.
+
 - `creds+api`: multistage credentials with `state[]` carry-forward.
   `Credentials` gains `state: Vec<String>` and `multistage: bool`
   (set from helper response `state[]=…` lines and `continue=1`
