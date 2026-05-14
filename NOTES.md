@@ -61,10 +61,23 @@ it. Used to triage which milestone to pick up next.
   basic 401-fill-retry loop ships, but multi-attempt auth (`wwwauth[]`
   / `state[]`), per-URL `credential.<url>.helper`, and NTLM /
   Negotiate are deferred.
-- **Custom transfer adapters, SSH transfer protocol, tus** —
-  t-custom-transfers, t-standalone-file, t-ssh, t-batch-storage-upload-tus,
-  t-multiple-remotes. Real protocol surface; basic adapter only
-  ships today.
+- **Custom transfer adapters + tus** — t-custom-transfers,
+  t-standalone-file, t-batch-storage-upload-tus, t-multiple-remotes.
+  Real protocol surface; basic adapter only ships today.
+- **Pure-SSH transfer (Phase 4 — SSH locks)** — t-batch-transfer
+  6-8, t-push-failures-local 2/4/6, t-lock 17, t-locks 4,
+  t-unlock SSH variant. Transfer/download/upload already ship
+  through Phase 3; what's left is SSH lock commands plus a
+  pre-push lock-pool spawn that the test helper's connection-
+  count check asserts. See the "Pure-SSH transfer" section
+  below for the full Phase 4 scope.
+- **SSH URL injection (t-ssh.sh)** — both tests check that
+  `ssh://-oProxyCommand=…` URLs get rejected. Defense lives in
+  `transfer::sshtransfer::connection::build_argv` (the `--` /
+  dash-strip handling), but the auth-side path in
+  `creds::SshAuthClient::spawn` still passes user-and-host
+  verbatim. Port the defense over for the git-lfs-authenticate
+  flow too.
 - **ls-files long tail** — `--include` / `--exclude` (needs
   filepathfilter) and the two-ref range form.
 - **Migrate import** — 7 tests in t-migrate-import still fail, most
@@ -89,10 +102,12 @@ what's broken and where to start.
    credential-protect. Still missing: per-URL `credential.<url>.helper`
    config, stateful multi-stage auth (`state[]` / `wwwauth[]` carried
    between fills), NTLM / Negotiate. See `creds/` deferral list.
-2. **Custom transfer adapters + tus + pure-SSH.** Third-party
-   protocol surface; basic adapter only ships today. SSH
-   `git-lfs-authenticate` ships, but the pure-SSH transfer
-   protocol (`git-lfs-transfer`) doesn't.
+2. **Custom transfer adapters + tus.** Third-party protocol
+   surface; basic adapter only ships today. Pure-SSH transfer
+   (`git-lfs-transfer`) is mostly shipped through Phase 3 —
+   download, upload, batch, and `Backend` negotiate dispatch
+   all work. Phase 4 (SSH lock commands + pre-push lock-pool
+   spawn) is what's left; see the dedicated section below.
 3. **ls-files long tail.** `--include` / `--exclude` filters
    (needs filepathfilter) and the two-ref range form.
 4. **Unshipped commands** — `completion`, `dedup`.
@@ -114,20 +129,57 @@ enough to ship on its own; rough effort is small (1-3 days), medium
 - **NTLM / Negotiate** — heaviest; defer until a real Windows AD
   user surfaces.
 
-### Custom transfer / pure-SSH / tus (large)
+### Custom transfer + tus (large)
 
-Three independent adapters in `transfer/`:
+Two independent adapters in `transfer/`:
 
 - **Custom transfer agent protocol** — `docs/custom-transfers.md`.
   Third-party byte-for-byte contract.
 - **Tus resumable uploads** — chunk + resume + finalize.
-- **Pure-SSH transfer (`git-lfs-transfer`)** — byte transfer over
-  SSH instead of HTTPS. Currently we error on
-  `lfs.<url>.sshtransfer=always`. `t-batch-transfer.sh` tests 6-8
-  and `t-locks.sh` test 4 already pass via the basic SSH auth
-  flow, but they don't actually exercise the pure-SSH protocol
-  path — they happen to work because we fall through to HTTPS
-  via `git-lfs-authenticate`.
+
+### Pure-SSH transfer (`git-lfs-transfer`) — Phase 4 remaining
+
+Phases 1-3 shipped (commits `ab224`, `7cca3`, `1b265`, `0099f`):
+pkt-line framing, `Connection` with version handshake and quit,
+`Pool` (master + lazy-spawned multiplex clients), `ssh::batch`,
+`ssh::download`, `ssh::upload` (`put-object` + `verify-object`),
+`Backend` enum with negotiate dispatch (`lfs.<url>.sshtransfer
+= always | negotiate | never`, default negotiate for `ssh://`),
+HTTP fallback per direction when pool spawn fails, and `Drop`
+for `Connection` that reaps the child. Wired into
+`cli::fetcher::LfsFetcher`. Lands `t-filter-process` test 8 and
+`t-push-failures-local` test 8 once scutiger is vendored at
+`tests/scutiger/bin/git-lfs-transfer` (via `cargo install --root
+tests/scutiger scutiger-lfs`).
+
+**Phase 4 — SSH lock commands** (~700 LOC, recovers ~10 tests):
+
+- New `lock` / `unlock` / `list-lock` protocol commands on
+  `transfer::sshtransfer::adapter` (or new lock module). Spec at
+  `docs/proposals/ssh_adapter.md` section "Locks".
+- New `LockClient` trait + `HttpLockClient` (wraps the existing
+  `api::Client::{create_lock, list_locks, delete_lock}`) +
+  `SshLockClient` (uses the SSH pool + new protocol commands).
+- Refactor `cli/src/lock.rs`, `unlock.rs`, `locks.rs` to call
+  through `LockClient` instead of `api::Client` directly.
+- `LfsFetcher` (or sibling type) constructs the right
+  `LockClient` per endpoint and shares the SSH pool with the
+  transfer backend.
+- Pre-push lock-verify pool spawn: upstream's push always spawns
+  a second `-oControlMaster=yes` SSH connection during upload
+  for locking commands "and never shuts it down cleanly" (per
+  the `assert_ssh_transfer_sessions` helper's comment in
+  `tests/t-batch-transfer.sh`), even when no locks are involved.
+  `expected_ctrl=2` on upload tests because of this. We need to
+  spawn the lock pool master during push to match the count;
+  the lock pool itself just sits there. Quirky upstream
+  behavior that's load-bearing for the tests.
+
+  Test impact: `t-batch-transfer` tests 6-8, `t-push-failures-local`
+  tests 2/4/6, `t-lock` test 17, `t-locks` test 4, and the
+  `t-unlock` SSH variant. The actual transfer logic already
+  works on those after Phase 3 — only the connection-count
+  signature is missing.
 
 ### Unshipped commands (small batch)
 
