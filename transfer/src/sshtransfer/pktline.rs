@@ -367,14 +367,15 @@ mod tests {
         // version handshake-ish: server sends "version=1", flush;
         // client sends "version 1", flush; server sends "status 200", flush.
         let mut buf = Vec::new();
-        let mut w = Writer::new(&mut buf);
-        w.write_text("version=1").unwrap();
-        w.write_flush().unwrap();
-        w.write_text("version 1").unwrap();
-        w.write_flush().unwrap();
-        w.write_text("status 200").unwrap();
-        w.write_flush().unwrap();
-        drop(w);
+        {
+            let mut w = Writer::new(&mut buf);
+            w.write_text("version=1").unwrap();
+            w.write_flush().unwrap();
+            w.write_text("version 1").unwrap();
+            w.write_flush().unwrap();
+            w.write_text("status 200").unwrap();
+            w.write_flush().unwrap();
+        }
 
         let mut r = Reader::new(&buf[..]);
         assert_eq!(
