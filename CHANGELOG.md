@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `transfer`: pure-SSH protocol primitives for batch and object
+  commands. Phase 2a, no test count movement yet. Extracts a
+  generic `ProtoStream<R, W>` from `Connection` so the pkt-line
+  framed read/write primitives can be unit-tested over in-memory
+  pipes (`Cursor<Vec<u8>>` / `Vec<u8>`) instead of requiring a
+  subprocess. New methods on the stream:
+  - `send_command_with_lines(cmd, args, lines)` — command + args
+    + delim + text lines + flush. Drives `batch` requests.
+  - `send_command_with_data(cmd, args, reader)` — command + args
+    + delim + data chunked into max-size pkt-line packets +
+    flush. Drives `put-object` uploads.
+  - `read_status_until_delim()` — reads `status <code>` plus args,
+    stops at the delim. Prelude to `get-object` / `batch`
+    responses where the payload is read separately.
+  - `copy_data_until_flush(writer)` — drains pkt-line data packets
+    to `writer`, returns bytes written. Streams `get-object`
+    bodies to disk.
+  - `read_text_lines_until_flush()` — drains text packets to a
+    `Vec<String>`. Reads error messages on non-2xx responses and
+    `list-lock` data rows.
+
+  Connection now exposes the stream via `Connection::stream()` so
+  callers (the soon-to-land download adapter) can drive these
+  primitives without the protocol layer leaking into the
+  subprocess-lifecycle layer. 13 new unit tests round-trip every
+  wire shape; stub-server integration tests reworked to invoke
+  scripts via `sh <path>` instead of chmod +x to dodge the ETXTBSY
+  race under parallel cargo test.
+
 - `transfer`: pure-SSH transfer protocol scaffolding (`git-lfs-transfer`).
   New `sshtransfer` module ships the pkt-line reader/writer (4-byte
   hex length headers, flush `0000`, delim `0001`, text packets with
