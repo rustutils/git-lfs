@@ -40,7 +40,7 @@ mod basic;
 mod config;
 mod error;
 mod event;
-mod sshtransfer;
+pub mod sshtransfer;
 mod transfer;
 
 pub use config::{TransferConfig, UrlRewriter};

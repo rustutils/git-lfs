@@ -30,6 +30,10 @@ use git_lfs_git::ConfigScope;
 use git_lfs_git::endpoint::SshInfo;
 use git_lfs_pointer::Pointer;
 use git_lfs_store::Store;
+use git_lfs_transfer::sshtransfer::connection::{
+    Metadata as PoolMetadata, Operation as PoolOperation, Variant as PoolVariant,
+};
+use git_lfs_transfer::sshtransfer::pool::{Pool, PoolConfig};
 use git_lfs_transfer::{Report, Transfer, TransferConfig};
 use tokio::runtime::Runtime;
 
@@ -78,7 +82,17 @@ impl LfsFetcher {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        let endpoint_url = git_lfs_git::endpoint::endpoint_for_remote(cwd, remote);
+        let endpoint_info = git_lfs_git::endpoint::resolve_endpoint(cwd, remote);
+        let endpoint_url = endpoint_info
+            .as_ref()
+            .map(|i| i.url.clone())
+            .map_err(|e| std::io::Error::other(format!("resolve endpoint: {e}")));
+        let endpoint_url = endpoint_url.or_else(|_e: std::io::Error| {
+            // Re-derive the same error from resolve_endpoint, since
+            // we want `Result<String, EndpointError>` semantics
+            // upstream.
+            git_lfs_git::endpoint::endpoint_for_remote(cwd, remote)
+        });
         // Even for SSH endpoints we want the http client configured for
         // the *eventual* HTTPS host — proxy/CA settings index by URL.
         // For SSH-shaped endpoints, the resolver will replace the URL
@@ -91,9 +105,35 @@ impl LfsFetcher {
             .unwrap_or_default();
         let api = build_api_client_with(cwd, remote, http.clone());
         let config = transfer_config_for(cwd, endpoint_url.as_deref().ok());
-        let transfer = api
-            .clone()
-            .map(|c| Transfer::with_http_client(c, store.clone(), config, http));
+
+        // Routing: when the endpoint is SSH-shaped AND
+        // `lfs.<url>.sshtransfer=always` is set, the user has opted
+        // into the pure-SSH transfer protocol (`git-lfs-transfer`).
+        // Build a connection Pool for the Download direction and
+        // hand it to a `Transfer::new_ssh`. Phase 2b only wires the
+        // download path; uploads still need the HTTP fallback path
+        // (which fails over because the API client's
+        // `DisabledSshResolver` refuses to bridge to HTTPS when
+        // `sshtransfer=always`).
+        let ssh_pool = endpoint_info
+            .as_ref()
+            .ok()
+            .and_then(|info| info.ssh.as_ref().map(|ssh| (info.url.clone(), ssh.clone())))
+            .and_then(
+                |(url, ssh)| match read_sshtransfer_for(cwd, &url).as_deref() {
+                    Some("always") => {
+                        Some(build_ssh_pool(cwd, &ssh, PoolOperation::Download, &config))
+                    }
+                    _ => None,
+                },
+            );
+        let transfer = match ssh_pool {
+            Some(Ok(pool)) => Ok(Transfer::new_ssh(pool, store.clone(), config)),
+            Some(Err(e)) => Err(format!("pure-SSH transfer pool: {e}")),
+            None => api
+                .clone()
+                .map(|c| Transfer::with_http_client(c, store.clone(), config, http)),
+        };
         let refspec = git_lfs_git::refs::current_refspec(cwd).map(Ref::new);
         Ok(Self {
             runtime,
@@ -464,6 +504,38 @@ fn build_ssh_resolver(info: SshInfo) -> SharedSshResolver {
         client: Arc::new(SshAuthClient::new(program)),
         ssh: info,
     })
+}
+
+/// Build a pure-SSH transfer pool for `(ssh, operation)`. Sized to
+/// match `config.concurrency` so the queue's semaphore never
+/// out-races available connections. Errors propagate the master
+/// connection's spawn or version-handshake failure.
+fn build_ssh_pool(
+    _cwd: &Path,
+    ssh: &SshInfo,
+    operation: PoolOperation,
+    config: &TransferConfig,
+) -> Result<Arc<Pool>, String> {
+    let pool_config = PoolConfig {
+        program: resolve_ssh_program(),
+        // Variant detection (`GIT_SSH_VARIANT`, `ssh.variant`,
+        // autodetect from program name) lands when we wire the
+        // multistage SSH config — for now we assume OpenSSH, which
+        // matches the platforms covered by the upstream tests.
+        variant: PoolVariant::Default,
+        metadata: PoolMetadata {
+            user_and_host: ssh.user_and_host.clone(),
+            port: ssh.port.clone(),
+            path: ssh.path.clone(),
+        },
+        operation,
+        // Matches upstream's `lfs.ssh.automultiplex` default: on
+        // everywhere but Windows.
+        multiplex_enabled: !cfg!(target_os = "windows"),
+    };
+    Pool::new(pool_config, config.concurrency.max(1))
+        .map(Arc::new)
+        .map_err(|e| e.to_string())
 }
 
 /// Pick the SSH executable per upstream's order:

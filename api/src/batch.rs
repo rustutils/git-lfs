@@ -178,10 +178,20 @@ pub struct Actions {
     pub verify: Option<Action>,
 }
 
-/// One concrete HTTP request the transfer adapter should make.
+/// One concrete next-step the transfer adapter should perform.
+///
+/// For the HTTP basic adapter, this is an HTTP request: `href` is the
+/// URL and `header` carries the auth. For the pure-SSH transfer
+/// adapter, `href` is unused (the connection is already open) and
+/// `id` / `token` carry the opaque session handles the server hands
+/// back from the SSH `batch` response — they're echoed on subsequent
+/// `get-object` / `put-object` / `verify-object` calls so the server
+/// can correlate. Both fields are `None` on HTTP responses.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Action {
-    /// Absolute URL to dial.
+    /// Absolute URL to dial. Empty when the transfer happens over a
+    /// non-HTTP channel (pure-SSH).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub href: String,
     /// Headers to include with the request (typically `Authorization`).
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
@@ -195,6 +205,16 @@ pub struct Action {
     /// stops being valid. Carried as a string (see [`Lock`](crate::Lock)).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<String>,
+    /// Pure-SSH only: opaque session identifier returned by the
+    /// server's `batch` response. Echoed back on follow-up commands
+    /// (`get-object`, `put-object`, `verify-object`) so the server
+    /// can match the call to a granted permission. Always `None`
+    /// on HTTP responses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Pure-SSH only: opaque auth token paired with [`id`](Self::id).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
 }
 
 impl Action {

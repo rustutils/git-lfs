@@ -20,13 +20,13 @@ futures    = { workspace = true }
 reqwest    = { workspace = true }
 serde      = { workspace = true }
 sha2       = { workspace = true }
+tempfile   = { workspace = true }
 thiserror  = { workspace = true }
 tokio      = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "fs", "io-util", "time"] }
 tokio-util = { workspace = true, features = ["io", "io-util"] }
 
 [dev-dependencies]
 serde_json = { workspace = true }
-tempfile   = { workspace = true }
 tokio      = { workspace = true, features = ["test-util"] }
 url        = { workspace = true }
 wiremock   = { workspace = true }

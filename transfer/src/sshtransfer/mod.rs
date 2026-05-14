@@ -1,5 +1,3 @@
-#![allow(dead_code)] // Phase 1 scaffolding — wired up by the download adapter.
-
 //! Pure-SSH transfer protocol client (`git-lfs-transfer`).
 //!
 //! Transfers LFS objects over a long-lived SSH connection to a
@@ -20,5 +18,7 @@
 //! sharing the control socket) so the upfront handshake cost
 //! amortizes across multiple commands.
 
+pub mod adapter;
 pub mod connection;
 pub mod pktline;
+pub mod pool;

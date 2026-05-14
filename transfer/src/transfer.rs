@@ -15,6 +15,8 @@ use crate::basic;
 use crate::config::TransferConfig;
 use crate::error::{Report, TransferError};
 use crate::event::Event;
+use crate::sshtransfer::adapter as ssh;
+use crate::sshtransfer::pool::Pool;
 
 /// Direction of a single transfer batch — used internally to share the
 /// fan-out machinery between [`Transfer::download`] and [`Transfer::upload`].
@@ -33,25 +35,51 @@ impl From<Dir> for Operation {
     }
 }
 
+/// Transport backend the queue uses for batch + per-object transfers.
+/// HTTP is the default (`Transfer::new` / `with_http_client`); SSH
+/// is opt-in for pure-SSH endpoints (`Transfer::new_ssh`).
+///
+/// Cloning is cheap — `ApiClient` boxes, `reqwest::Client` and
+/// `Arc<Pool>` are reference-counted internally. The HTTP variant
+/// boxes `ApiClient` so the enum size doesn't explode (clippy's
+/// `large_enum_variant` gate).
+#[derive(Clone)]
+pub enum Backend {
+    /// HTTP backend: batch over `api`, per-object via `http`.
+    Http {
+        /// LFS batch API client.
+        api: Box<ApiClient>,
+        /// `reqwest::Client` for action-URL transfers.
+        http: reqwest::Client,
+    },
+    /// Pure-SSH backend: both batch and per-object run through a
+    /// shared connection [`Pool`].
+    Ssh {
+        /// Connection pool sized to match [`TransferConfig::concurrency`].
+        pool: Arc<Pool>,
+    },
+}
+
 /// Concurrent transfer queue. One [`Transfer`] is bound to one LFS endpoint
-/// (the `api` client) and one local store; create more if you need more.
+/// (the backend) and one local store; create more if you need more.
 #[derive(Clone)]
 pub struct Transfer {
-    api: ApiClient,
+    backend: Backend,
     store: Arc<Store>,
-    http: reqwest::Client,
     config: TransferConfig,
 }
 
 impl Transfer {
-    /// Build a transfer queue. The `reqwest::Client` used for the action-URL
-    /// transfers is created fresh; if you need to share a connection pool,
-    /// use [`with_http_client`](Self::with_http_client).
+    /// Build a transfer queue with the HTTP backend. The
+    /// `reqwest::Client` used for the action-URL transfers is
+    /// created fresh; if you need to share a connection pool, use
+    /// [`with_http_client`](Self::with_http_client).
     pub fn new(api: ApiClient, store: Store, config: TransferConfig) -> Self {
         Self::with_http_client(api, store, config, reqwest::Client::new())
     }
 
-    /// Build a transfer queue around an existing `reqwest::Client`.
+    /// Build a transfer queue with the HTTP backend around an
+    /// existing `reqwest::Client`.
     ///
     /// Use this when the caller already has an HTTP client wired up
     /// for the LFS endpoint (with custom TLS config, headers,
@@ -64,9 +92,24 @@ impl Transfer {
         http: reqwest::Client,
     ) -> Self {
         Self {
-            api,
+            backend: Backend::Http {
+                api: Box::new(api),
+                http,
+            },
             store: Arc::new(store),
-            http,
+            config,
+        }
+    }
+
+    /// Build a transfer queue with the pure-SSH backend. The
+    /// `Pool` must have been spawned for the right operation
+    /// (upload vs. download); a single `Transfer` can't service
+    /// both directions over the same pool because the SSH session
+    /// negotiates the operation at spawn time.
+    pub fn new_ssh(pool: Arc<Pool>, store: Store, config: TransferConfig) -> Self {
+        Self {
+            backend: Backend::Ssh { pool },
+            store: Arc::new(store),
             config,
         }
     }
@@ -140,7 +183,14 @@ impl Transfer {
         if let Some(r) = r#ref {
             req = req.with_ref(r);
         }
-        let resp: BatchResponse = self.batch_with_retry(&req).await?;
+        let resp: BatchResponse = match &self.backend {
+            Backend::Http { .. } => self.batch_with_retry(&req).await?,
+            // SSH batch doesn't go through `batch_with_retry` — the
+            // pool's master connection is the retry boundary, and a
+            // failure there means the whole transfer session is
+            // dead anyway.
+            Backend::Ssh { pool } => ssh::batch(pool.clone(), &req).await?,
+        };
 
         // The spec requires `sha256` and treats an absent/empty
         // `hash_algo` as that default. Anything else means the server
@@ -190,14 +240,15 @@ impl Transfer {
                 }
             }
             let permit_src = limit.clone();
-            let http = self.http.clone();
+            let backend = self.backend.clone();
             let store = self.store.clone();
             let config = self.config.clone();
             let events = events.clone();
             join.spawn(async move {
                 let _permit = permit_src.acquire_owned().await.expect("semaphore live");
                 let oid = obj.oid.clone();
-                let result = process_object(dir, &http, store, &config, obj, events.as_ref()).await;
+                let result =
+                    process_object(dir, &backend, store, &config, obj, events.as_ref()).await;
                 (oid, result)
             });
         }
@@ -238,6 +289,15 @@ impl Transfer {
     /// transfer queue routes each object through `enqueueRetry` even
     /// though the failure is at the batch layer.
     async fn batch_with_retry(&self, req: &BatchRequest) -> Result<BatchResponse, TransferError> {
+        let api = match &self.backend {
+            Backend::Http { api, .. } => api,
+            // Caller already gated on backend variant; SSH batch
+            // doesn't use this path (no retry layer over the SSH
+            // session for the batch alone).
+            Backend::Ssh { .. } => {
+                unreachable!("batch_with_retry called on SSH backend")
+            }
+        };
         let mut backoff = self.config.initial_backoff;
         let mut retry_count: u32 = 0;
         let mut last_err: Option<git_lfs_api::ApiError> = None;
@@ -245,7 +305,7 @@ impl Transfer {
             if trace_enabled() {
                 eprintln!("tq: sending batch of size {}", req.objects.len());
             }
-            match self.api.batch(req).await {
+            match api.batch(req).await {
                 Ok(resp) => return Ok(resp),
                 Err(e) => {
                     let retry = e.is_retryable() && attempt + 1 < self.config.max_attempts;
@@ -293,7 +353,7 @@ fn trace_enabled() -> bool {
 /// move the error into the Report without cloning.
 async fn process_object(
     dir: Dir,
-    http: &reqwest::Client,
+    backend: &Backend,
     store: Arc<Store>,
     config: &TransferConfig,
     obj: ObjectResult,
@@ -318,9 +378,24 @@ async fn process_object(
                 .ok_or(TransferError::NoDownloadAction)?;
             check_not_expired("download", action)?;
             with_retry(config, &obj.oid, obj.size, || async {
-                basic::download(http, store.clone(), &obj.oid, obj.size, action, events)
-                    .await
-                    .map(|_| ())
+                match backend {
+                    Backend::Http { http, .. } => {
+                        basic::download(http, store.clone(), &obj.oid, obj.size, action, events)
+                            .await
+                            .map(|_| ())
+                    }
+                    Backend::Ssh { pool } => {
+                        ssh::download(
+                            pool.clone(),
+                            store.clone(),
+                            &obj.oid,
+                            obj.size,
+                            action,
+                            events.cloned(),
+                        )
+                        .await
+                    }
+                }
             })
             .await
         }
@@ -332,6 +407,16 @@ async fn process_object(
             if let Some(verify) = actions.verify.as_ref() {
                 check_not_expired("verify", verify)?;
             }
+            let http = match backend {
+                Backend::Http { http, .. } => http,
+                // Upload over SSH lands in Phase 3 — for now,
+                // surface a clear error rather than panicking.
+                Backend::Ssh { .. } => {
+                    return Err(TransferError::Io(std::io::Error::other(
+                        "SSH upload not implemented yet",
+                    )));
+                }
+            };
             with_retry(config, &obj.oid, obj.size, || async {
                 basic::upload(
                     http,

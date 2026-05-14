@@ -9,6 +9,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `transfer+cli`: pure-SSH transfer Pool, download adapter, and
+  opt-in routing. Phase 2b, no test count movement yet. New
+  `Pool` type owns a slot-array of `Connection`s with the OpenSSH
+  control-master multiplexing socket living in a tempdir for the
+  pool's lifetime — slot 0 is the master (spawned eagerly so the
+  socket exists before any client connects), 1.. are lazy clients
+  sharing that socket. `PoolGuard` checks out a slot at acquire
+  time and returns it on drop, with an explicit `discard()` for
+  callers that know the connection is in a bad state (next
+  acquire on that slot respawns a fresh one). Pool capacity is
+  sized to match `TransferConfig::concurrency` so the queue's
+  semaphore can't out-race available connections.
+
+  `transfer::sshtransfer::adapter` ships the high-level commands
+  the queue calls into: `batch()` translates a `BatchRequest` into
+  the SSH-protocol `batch` command (text args + `<oid> <size>`
+  data lines), parses the `<oid> <size> <action> [key=val]...`
+  response rows back into `BatchResponse`, and merges multiple
+  rows for the same OID (e.g. upload + verify) into one
+  `ObjectResult`. `download()` runs `get-object`, drains the
+  binary payload to a buffer hashed and committed to the local
+  store via `Store::insert_verified`. Both wrap the synchronous
+  Pool / Connection I/O in `tokio::task::spawn_blocking` so the
+  queue's async runtime stays unblocked.
+
+  `Transfer` gains a `Backend` enum (`Http` vs `Ssh`) and a new
+  `Transfer::new_ssh(pool, store, config)` constructor; the run
+  loop and `process_object` branch on backend variant. SSH upload
+  is deferred to Phase 3 and surfaces a clear "SSH upload not
+  implemented yet" error rather than panicking.
+
+  `api::Action` gains optional `id` and `token` fields (both
+  `serde(default, skip_serializing_if = "Option::is_none")` so
+  the HTTP wire shape is unchanged) so the SSH backend can echo
+  the server's per-object opaque session handles back on
+  follow-up `get-object` / `put-object` / `verify-object` calls.
+
+  `cli::fetcher::LfsFetcher` now resolves `EndpointInfo` (URL +
+  optional `SshInfo`) and, when the endpoint is SSH-shaped AND
+  `lfs.<url>.sshtransfer=always` is set, builds a download-direction
+  `Pool` and hands it to `Transfer::new_ssh`. Without that
+  opt-in, the existing HTTP backend path (with the SSH-to-HTTPS
+  `git-lfs-authenticate` resolver) keeps running — no change in
+  default behavior, no regression on the SSH-authenticate test.
+
 - `transfer`: pure-SSH protocol primitives for batch and object
   commands. Phase 2a, no test count movement yet. Extracts a
   generic `ProtoStream<R, W>` from `Connection` so the pkt-line
