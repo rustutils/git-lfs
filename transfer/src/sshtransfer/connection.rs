@@ -50,6 +50,15 @@ impl Operation {
     }
 }
 
+impl From<git_lfs_api::Operation> for Operation {
+    fn from(op: git_lfs_api::Operation) -> Self {
+        match op {
+            git_lfs_api::Operation::Upload => Self::Upload,
+            git_lfs_api::Operation::Download => Self::Download,
+        }
+    }
+}
+
 /// SSH client variant. Drives port-flag selection (`-p` vs `-P`),
 /// the dash-leading user-and-host defense, and whether multiplexing
 /// is supported.
@@ -510,27 +519,37 @@ impl Connection {
             "terminating pure SSH connection (#{id})",
             id = self.id
         ));
-        let proto_result = (|| {
-            self.stream.send_command("quit", &[])?;
-            let (status, _args) = self.stream.read_status()?;
-            if status != 200 {
-                return Err(ConnectionError::Protocol(format!(
-                    "quit returned status {status}"
-                )));
-            }
-            Ok::<_, ConnectionError>(())
-        })();
-
-        // Drop the protocol stream (which drops the inner pipes) so
-        // the child notices EOF, then wait for it.
-        drop(self.stream);
-        let wait_result = self.child.wait();
-
-        proto_result?;
-        wait_result?;
+        self.stream.send_command("quit", &[])?;
+        let (status, _args) = self.stream.read_status()?;
+        if status != 200 {
+            return Err(ConnectionError::Protocol(format!(
+                "quit returned status {status}"
+            )));
+        }
+        // Drop runs as `self` falls out of scope: closes the inner
+        // pipes (signaling EOF to the child) and reaps via kill+wait.
         Ok(())
     }
+}
 
+impl Drop for Connection {
+    /// Kill the SSH subprocess if it's still running. `std::process::Child`
+    /// doesn't reap on drop by default — it just abandons the child, which
+    /// leaks file descriptors and (for long-lived multiplex masters) keeps
+    /// SSH connections open. We send SIGKILL and reap so the OS frees the
+    /// resources before the next test runs in the same `make test` session.
+    fn drop(&mut self) {
+        // try_wait first — if the child already exited (e.g. after
+        // `quit`), the kill is a no-op and wait reaps the zombie.
+        if let Ok(Some(_)) = self.child.try_wait() {
+            return;
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+impl Connection {
     fn negotiate_version(&mut self) -> Result<(), ConnectionError> {
         let caps = self.stream.read_packet_list()?;
         if !caps.iter().any(|c| c == "version=1") {

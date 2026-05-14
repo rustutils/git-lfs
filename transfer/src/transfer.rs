@@ -11,12 +11,12 @@ use tokio::sync::Semaphore;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinSet;
 
+use crate::backend::{Backend, HttpTransport, SshBackend, Transport};
 use crate::basic;
 use crate::config::TransferConfig;
 use crate::error::{Report, TransferError};
 use crate::event::Event;
 use crate::sshtransfer::adapter as ssh;
-use crate::sshtransfer::pool::Pool;
 
 /// Direction of a single transfer batch — used internally to share the
 /// fan-out machinery between [`Transfer::download`] and [`Transfer::upload`].
@@ -33,31 +33,6 @@ impl From<Dir> for Operation {
             Dir::Upload => Operation::Upload,
         }
     }
-}
-
-/// Transport backend the queue uses for batch + per-object transfers.
-/// HTTP is the default (`Transfer::new` / `with_http_client`); SSH
-/// is opt-in for pure-SSH endpoints (`Transfer::new_ssh`).
-///
-/// Cloning is cheap — `ApiClient` boxes, `reqwest::Client` and
-/// `Arc<Pool>` are reference-counted internally. The HTTP variant
-/// boxes `ApiClient` so the enum size doesn't explode (clippy's
-/// `large_enum_variant` gate).
-#[derive(Clone)]
-pub enum Backend {
-    /// HTTP backend: batch over `api`, per-object via `http`.
-    Http {
-        /// LFS batch API client.
-        api: Box<ApiClient>,
-        /// `reqwest::Client` for action-URL transfers.
-        http: reqwest::Client,
-    },
-    /// Pure-SSH backend: both batch and per-object run through a
-    /// shared connection [`Pool`].
-    Ssh {
-        /// Connection pool sized to match [`TransferConfig::concurrency`].
-        pool: Arc<Pool>,
-    },
 }
 
 /// Concurrent transfer queue. One [`Transfer`] is bound to one LFS endpoint
@@ -102,13 +77,12 @@ impl Transfer {
     }
 
     /// Build a transfer queue with the pure-SSH backend. The
-    /// `Pool` must have been spawned for the right operation
-    /// (upload vs. download); a single `Transfer` can't service
-    /// both directions over the same pool because the SSH session
-    /// negotiates the operation at spawn time.
-    pub fn new_ssh(pool: Arc<Pool>, store: Store, config: TransferConfig) -> Self {
+    /// `SshBackend` carries the per-direction lazy pool spawner
+    /// (and optional HTTP fallback for negotiate mode) — see
+    /// [`SshBackend::new`].
+    pub fn new_ssh(backend: SshBackend, store: Store, config: TransferConfig) -> Self {
         Self {
-            backend: Backend::Ssh { pool },
+            backend: Backend::Ssh(Arc::new(backend)),
             store: Arc::new(store),
             config,
         }
@@ -184,12 +158,19 @@ impl Transfer {
             req = req.with_ref(r);
         }
         let resp: BatchResponse = match &self.backend {
-            Backend::Http { .. } => self.batch_with_retry(&req).await?,
+            Backend::Http { api, .. } => self.batch_with_retry(api, &req).await?,
             // SSH batch doesn't go through `batch_with_retry` — the
             // pool's master connection is the retry boundary, and a
             // failure there means the whole transfer session is
-            // dead anyway.
-            Backend::Ssh { pool } => ssh::batch(pool.clone(), &req).await?,
+            // dead anyway. In negotiate mode, fall back to HTTP via
+            // the cached fallback api client when pool spawn fails.
+            Backend::Ssh(ssh_backend) => match ssh_backend.dispatch(dir.into()) {
+                Transport::Pool(pool) => ssh::batch(pool, &req).await?,
+                Transport::Http(http) => self.batch_with_retry(&http.api, &req).await?,
+                Transport::NoFallback(e) => {
+                    return Err(TransferError::Io(std::io::Error::other(e.to_string())));
+                }
+            },
         };
 
         // The spec requires `sha256` and treats an absent/empty
@@ -288,16 +269,11 @@ impl Transfer {
     /// `t-batch-retries-ratelimit.sh` greps for, since upstream's
     /// transfer queue routes each object through `enqueueRetry` even
     /// though the failure is at the batch layer.
-    async fn batch_with_retry(&self, req: &BatchRequest) -> Result<BatchResponse, TransferError> {
-        let api = match &self.backend {
-            Backend::Http { api, .. } => api,
-            // Caller already gated on backend variant; SSH batch
-            // doesn't use this path (no retry layer over the SSH
-            // session for the batch alone).
-            Backend::Ssh { .. } => {
-                unreachable!("batch_with_retry called on SSH backend")
-            }
-        };
+    async fn batch_with_retry(
+        &self,
+        api: &ApiClient,
+        req: &BatchRequest,
+    ) -> Result<BatchResponse, TransferError> {
         let mut backoff = self.config.initial_backoff;
         let mut retry_count: u32 = 0;
         let mut last_err: Option<git_lfs_api::ApiError> = None;
@@ -370,6 +346,11 @@ async fn process_object(
         });
     }
 
+    // Pick the transport for this object's direction. In negotiate
+    // mode this may transparently fall back to HTTP if the SSH pool
+    // failed to spawn for this direction.
+    let transport = resolve_transport(backend, dir);
+
     match (dir, &obj.actions) {
         (Dir::Download, Some(actions)) => {
             let action = actions
@@ -378,13 +359,18 @@ async fn process_object(
                 .ok_or(TransferError::NoDownloadAction)?;
             check_not_expired("download", action)?;
             with_retry(config, &obj.oid, obj.size, || async {
-                match backend {
-                    Backend::Http { http, .. } => {
-                        basic::download(http, store.clone(), &obj.oid, obj.size, action, events)
-                            .await
-                            .map(|_| ())
-                    }
-                    Backend::Ssh { pool } => {
+                match &transport {
+                    Transport::Http(http) => basic::download(
+                        &http.http,
+                        store.clone(),
+                        &obj.oid,
+                        obj.size,
+                        action,
+                        events,
+                    )
+                    .await
+                    .map(|_| ()),
+                    Transport::Pool(pool) => {
                         ssh::download(
                             pool.clone(),
                             store.clone(),
@@ -394,6 +380,9 @@ async fn process_object(
                             events.cloned(),
                         )
                         .await
+                    }
+                    Transport::NoFallback(e) => {
+                        Err(TransferError::Io(std::io::Error::other(e.to_string())))
                     }
                 }
             })
@@ -407,28 +396,36 @@ async fn process_object(
             if let Some(verify) = actions.verify.as_ref() {
                 check_not_expired("verify", verify)?;
             }
-            let http = match backend {
-                Backend::Http { http, .. } => http,
-                // Upload over SSH lands in Phase 3 — for now,
-                // surface a clear error rather than panicking.
-                Backend::Ssh { .. } => {
-                    return Err(TransferError::Io(std::io::Error::other(
-                        "SSH upload not implemented yet",
-                    )));
-                }
-            };
             with_retry(config, &obj.oid, obj.size, || async {
-                basic::upload(
-                    http,
-                    store.clone(),
-                    &obj.oid,
-                    obj.size,
-                    actions,
-                    config.detect_content_type,
-                    config.max_verifies,
-                    events,
-                )
-                .await
+                match &transport {
+                    Transport::Http(http) => {
+                        basic::upload(
+                            &http.http,
+                            store.clone(),
+                            &obj.oid,
+                            obj.size,
+                            actions,
+                            config.detect_content_type,
+                            config.max_verifies,
+                            events,
+                        )
+                        .await
+                    }
+                    Transport::Pool(pool) => {
+                        ssh::upload(
+                            pool.clone(),
+                            store.clone(),
+                            &obj.oid,
+                            obj.size,
+                            actions,
+                            events.cloned(),
+                        )
+                        .await
+                    }
+                    Transport::NoFallback(e) => {
+                        Err(TransferError::Io(std::io::Error::other(e.to_string())))
+                    }
+                }
             })
             .await
         }
@@ -436,6 +433,20 @@ async fn process_object(
             // Server already has it — no actions means no-op, treated as success.
             Ok(())
         }
+    }
+}
+
+/// Resolve a [`Transport`] for `dir` from the backend. HTTP backends
+/// always produce a `Transport::Http` (no negotiate ambiguity); SSH
+/// backends consult their cached per-direction dispatch state and
+/// may fall back to HTTP transparently.
+fn resolve_transport(backend: &Backend, dir: Dir) -> Transport {
+    match backend {
+        Backend::Http { api, http } => Transport::Http(HttpTransport {
+            api: api.clone(),
+            http: http.clone(),
+        }),
+        Backend::Ssh(ssh_backend) => ssh_backend.dispatch(dir.into()),
     }
 }
 

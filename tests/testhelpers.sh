@@ -1037,7 +1037,10 @@ urlify() {
 }
 
 setup_pure_ssh() {
-  export PATH="$ROOTDIR/t/scutiger/bin:$PATH"
+  # Vendored install location: `cargo install --root tests/scutiger
+  # scutiger-lfs` lands the binary here. (Upstream's layout uses
+  # `t/scutiger/bin`; ours mirrors that under `tests/`.)
+  export PATH="$ROOTDIR/tests/scutiger/bin:$PATH"
   if ! command -v git-lfs-transfer >/dev/null 2>&1
   then
     if [ -z "$CI" ] || [ -n "$TEST_SKIP_LFS_TRANSFER" ]

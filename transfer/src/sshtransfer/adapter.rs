@@ -275,6 +275,103 @@ pub async fn download(
     }
 }
 
+/// Upload one object via the pool. Streams the on-disk object
+/// bytes through `put-object`, then issues `verify-object` to
+/// confirm the server accepted them. Both commands echo back the
+/// `id` / `token` opaque handles the server returned in the batch
+/// response so the server can correlate the call to the granted
+/// permission.
+pub async fn upload(
+    pool: Arc<Pool>,
+    store: Arc<Store>,
+    oid: &str,
+    size: u64,
+    actions: &Actions,
+    events: Option<UnboundedSender<Event>>,
+) -> Result<(), TransferError> {
+    let upload_action = actions
+        .upload
+        .as_ref()
+        .ok_or_else(|| TransferError::Io(std::io::Error::other("missing upload action")))?;
+    // `verify-object` is conventionally always done in the SSH
+    // protocol (mirrors upstream's `verifyUpload`), but the action
+    // info comes from the batch response. Use the upload action's
+    // id/token by default; if a verify action was returned with its
+    // own handles, prefer those.
+    let verify_action_owned = actions
+        .verify
+        .clone()
+        .unwrap_or_else(|| upload_action.clone());
+
+    let oid_owned = oid.to_owned();
+    let put_args = ssh_args(size, upload_action);
+    let verify_args = ssh_args(size, &verify_action_owned);
+
+    let oid_parsed = Oid::from_hex(oid)?;
+    let object_path = store.object_path(oid_parsed);
+
+    let result = tokio::task::spawn_blocking(move || -> Result<(), TransferError> {
+        let mut guard = pool
+            .acquire()
+            .map_err(|e| TransferError::Io(std::io::Error::other(e.to_string())))?;
+        let conn = guard.connection();
+
+        // Open the object file and stream it.
+        let mut file = std::fs::File::open(&object_path).map_err(TransferError::Io)?;
+        let put_arg_refs: Vec<&str> = put_args.iter().map(String::as_str).collect();
+        let cmd = format!("put-object {oid_owned}");
+        conn.stream()
+            .send_command_with_data(&cmd, &put_arg_refs, &mut file)
+            .map_err(TransferError::Io)?;
+        let (status, _args, lines) = conn
+            .stream()
+            .read_status_with_lines()
+            .map_err(|e| TransferError::Io(std::io::Error::other(e.to_string())))?;
+        if !(200..300).contains(&status) {
+            let detail = lines.first().cloned().unwrap_or_default();
+            guard.discard();
+            return Err(TransferError::Io(std::io::Error::other(format!(
+                "put-object {oid_owned} returned status {status}: {detail}"
+            ))));
+        }
+
+        // Verify step. The protocol's `verify-object` echoes back
+        // the same `size=<n> id=<id> token=<token>` args; the
+        // server confirms (status 200) it durably has the bytes.
+        let verify_arg_refs: Vec<&str> = verify_args.iter().map(String::as_str).collect();
+        let verify_cmd = format!("verify-object {oid_owned}");
+        conn.stream()
+            .send_command(&verify_cmd, &verify_arg_refs)
+            .map_err(TransferError::Io)?;
+        let (vstatus, _vargs, vlines) = conn
+            .stream()
+            .read_status_with_lines()
+            .map_err(|e| TransferError::Io(std::io::Error::other(e.to_string())))?;
+        if !(200..300).contains(&vstatus) {
+            let detail = vlines.first().cloned().unwrap_or_default();
+            guard.discard();
+            return Err(TransferError::Io(std::io::Error::other(format!(
+                "verify-object {oid_owned} returned status {vstatus}: {detail}"
+            ))));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| TransferError::Io(std::io::Error::other(e.to_string())))?;
+
+    match (result, events) {
+        (Ok(()), Some(s)) => {
+            let _ = s.send(Event::Progress {
+                oid: oid.to_owned(),
+                bytes_done: size,
+            });
+            Ok(())
+        }
+        (Ok(()), None) => Ok(()),
+        (Err(e), _) => Err(e),
+    }
+}
+
 fn ssh_args(size: u64, action: &Action) -> Vec<String> {
     let mut args = Vec::with_capacity(3);
     args.push(format!("size={size}"));

@@ -1,5 +1,6 @@
 /target
 /bin
 /tests/remote
+/tests/scutiger
 /tests/test_count
 /tests/test_count.lock

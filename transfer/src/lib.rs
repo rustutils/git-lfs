@@ -36,6 +36,7 @@
 //! [`git_lfs_store`]: https://docs.rs/git-lfs-store
 //! [spec]: https://gitlab.com/rustutils/git-lfs/-/blob/master/docs/api/basic-transfers.md
 
+pub mod backend;
 mod basic;
 mod config;
 mod error;

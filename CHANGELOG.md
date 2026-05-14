@@ -9,6 +9,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `transfer+cli`: pure-SSH upload + negotiate dispatch. Phase 3
+  of the pure-SSH transfer protocol. Adds `ssh::upload`
+  (`put-object` streamed binary data + `verify-object` ack),
+  refactors `Backend::Ssh` so it can serve both directions from
+  one `Transfer` (lazy per-direction pool, plus an optional HTTP
+  fallback for negotiate mode), and flips the default for
+  `ssh://` URLs from "HTTP fallback only" to "try pure-SSH
+  first, fall back to git-lfs-authenticate on master spawn or
+  version-handshake failure". Three `lfs.<url>.sshtransfer`
+  modes wired through:
+
+  - `always` — pure-SSH only; pool spawn failure surfaces to the
+    user. No fallback. Lands a clear error if the remote doesn't
+    have `git-lfs-transfer` installed.
+  - `negotiate` (default for `ssh://`) — try pure-SSH first;
+    on master spawn or handshake failure, transparently fall back
+    to HTTP per direction. Cached per `(backend, direction)` so a
+    second call to `download()` doesn't re-probe the pool.
+  - `never` — never try pure-SSH; use the HTTP path
+    (`git-lfs-authenticate` over the API client).
+
+  New `transfer::backend` module exposes `Backend`, `SshBackend`,
+  `HttpTransport`, `PoolSpawner`, and `Transport`. `SshBackend::new`
+  takes the spawner closure plus optional fallback and owns the
+  per-direction `TransportState` machine (`Untried → Pool` or
+  `Untried → Fallback`). `cli::fetcher::LfsFetcher` constructs
+  the right backend variant per URL: SSH-shaped + `always` →
+  `SshBackend::new(spawner, None)`; SSH-shaped + default →
+  `SshBackend::new(spawner, Some(fallback))`; everything else
+  stays on the HTTP backend.
+
+  Also adds `Drop` for `Connection` that kills + reaps the SSH
+  subprocess. Without it, dropped pools leak file descriptors and
+  multiplex socket masters — fine for a single CLI invocation but
+  the cumulative leak across many tests in a single `make test`
+  session could exhaust resources. And `tests/testhelpers.sh`
+  `setup_pure_ssh` PATH-prepend fix: was pointing at upstream's
+  `$ROOTDIR/t/scutiger/bin`; corrected to our `tests/scutiger/bin`
+  layout so a vendored install via `cargo install --root
+  tests/scutiger scutiger-lfs` actually gets picked up.
+
+  Test impact: `t-filter-process` test 8 (`git archive does not
+  invoke SSH`) and `t-push-failures-local` test 8 (push reject
+  corrupt object via git-lfs-transfer) recover from skip-pass to
+  real-pass. The other pure-SSH tests (t-batch-transfer 6-8,
+  t-push-failures-local 2/4/6, t-lock test 17, t-locks test 4)
+  still fail — they expect a second `-oControlMaster=yes`
+  connection for SSH locking, which lands in Phase 4. The actual
+  transfer logic completes successfully on those tests; it's the
+  connection-count signature in the test helper's
+  `assert_ssh_transfer_sessions` that doesn't yet match.
+
 - `transfer+cli`: pure-SSH transfer Pool, download adapter, and
   opt-in routing. Phase 2b, no test count movement yet. New
   `Pool` type owns a slot-array of `Connection`s with the OpenSSH

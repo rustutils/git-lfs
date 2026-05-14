@@ -30,9 +30,8 @@ use git_lfs_git::ConfigScope;
 use git_lfs_git::endpoint::SshInfo;
 use git_lfs_pointer::Pointer;
 use git_lfs_store::Store;
-use git_lfs_transfer::sshtransfer::connection::{
-    Metadata as PoolMetadata, Operation as PoolOperation, Variant as PoolVariant,
-};
+use git_lfs_transfer::backend::{HttpTransport, SshBackend};
+use git_lfs_transfer::sshtransfer::connection::{Metadata as PoolMetadata, Variant as PoolVariant};
 use git_lfs_transfer::sshtransfer::pool::{Pool, PoolConfig};
 use git_lfs_transfer::{Report, Transfer, TransferConfig};
 use tokio::runtime::Runtime;
@@ -106,31 +105,71 @@ impl LfsFetcher {
         let api = build_api_client_with(cwd, remote, http.clone());
         let config = transfer_config_for(cwd, endpoint_url.as_deref().ok());
 
-        // Routing: when the endpoint is SSH-shaped AND
-        // `lfs.<url>.sshtransfer=always` is set, the user has opted
-        // into the pure-SSH transfer protocol (`git-lfs-transfer`).
-        // Build a connection Pool for the Download direction and
-        // hand it to a `Transfer::new_ssh`. Phase 2b only wires the
-        // download path; uploads still need the HTTP fallback path
-        // (which fails over because the API client's
-        // `DisabledSshResolver` refuses to bridge to HTTPS when
-        // `sshtransfer=always`).
-        let ssh_pool = endpoint_info
+        // Routing: when the endpoint is SSH-shaped, dispatch through
+        // `Transfer::new_ssh` with the pure-SSH transfer protocol.
+        // Three sshtransfer modes, mirroring upstream:
+        //   - `always`: pure-SSH only; pool spawn failure surfaces
+        //     to the user.
+        //   - `never`: never try pure-SSH; use the HTTP path
+        //     (`git-lfs-authenticate` over the API client).
+        //   - `negotiate` (default for `ssh://` URLs): try pure-SSH
+        //     first; on pool spawn failure (e.g. remote doesn't have
+        //     `git-lfs-transfer` installed), transparently fall back
+        //     to HTTP per direction.
+        // The SSH backend builds lazily — the master connection
+        // doesn't spawn until the first download or upload actually
+        // runs, so an `LfsFetcher` for a non-LFS-touching command
+        // (e.g. `git lfs env`) doesn't pay for an SSH handshake.
+        let ssh_mode = endpoint_info
             .as_ref()
             .ok()
             .and_then(|info| info.ssh.as_ref().map(|ssh| (info.url.clone(), ssh.clone())))
-            .and_then(
-                |(url, ssh)| match read_sshtransfer_for(cwd, &url).as_deref() {
-                    Some("always") => {
-                        Some(build_ssh_pool(cwd, &ssh, PoolOperation::Download, &config))
+            .map(|(url, ssh)| {
+                let mode = match read_sshtransfer_for(cwd, &url).as_deref() {
+                    Some("always") => SshMode::Always,
+                    Some("never") => SshMode::Never,
+                    _ => SshMode::Negotiate,
+                };
+                (ssh, mode)
+            });
+        let transfer = match ssh_mode {
+            Some((ssh, SshMode::Always)) => {
+                let spawner = ssh_pool_spawner(ssh, config.concurrency.max(1));
+                Ok(Transfer::new_ssh(
+                    SshBackend::new(spawner, None),
+                    store.clone(),
+                    config,
+                ))
+            }
+            Some((ssh, SshMode::Negotiate)) => {
+                // Need both pure-SSH and HTTP fallback ready.
+                let spawner = ssh_pool_spawner(ssh, config.concurrency.max(1));
+                match api.clone() {
+                    Ok(api_client) => {
+                        let fallback = HttpTransport {
+                            api: Box::new(api_client),
+                            http: http.clone(),
+                        };
+                        Ok(Transfer::new_ssh(
+                            SshBackend::new(spawner, Some(fallback)),
+                            store.clone(),
+                            config,
+                        ))
                     }
-                    _ => None,
-                },
-            );
-        let transfer = match ssh_pool {
-            Some(Ok(pool)) => Ok(Transfer::new_ssh(pool, store.clone(), config)),
-            Some(Err(e)) => Err(format!("pure-SSH transfer pool: {e}")),
-            None => api
+                    // No HTTP fallback available — still try pure-SSH
+                    // without one. A spawn failure will surface to
+                    // the user, which is the best we can do.
+                    Err(e) => {
+                        let _ = e;
+                        Ok(Transfer::new_ssh(
+                            SshBackend::new(spawner, None),
+                            store.clone(),
+                            config,
+                        ))
+                    }
+                }
+            }
+            Some((_, SshMode::Never)) | None => api
                 .clone()
                 .map(|c| Transfer::with_http_client(c, store.clone(), config, http)),
         };
@@ -506,36 +545,46 @@ fn build_ssh_resolver(info: SshInfo) -> SharedSshResolver {
     })
 }
 
-/// Build a pure-SSH transfer pool for `(ssh, operation)`. Sized to
-/// match `config.concurrency` so the queue's semaphore never
-/// out-races available connections. Errors propagate the master
-/// connection's spawn or version-handshake failure.
-fn build_ssh_pool(
-    _cwd: &Path,
-    ssh: &SshInfo,
-    operation: PoolOperation,
-    config: &TransferConfig,
-) -> Result<Arc<Pool>, String> {
-    let pool_config = PoolConfig {
-        program: resolve_ssh_program(),
-        // Variant detection (`GIT_SSH_VARIANT`, `ssh.variant`,
-        // autodetect from program name) lands when we wire the
-        // multistage SSH config — for now we assume OpenSSH, which
-        // matches the platforms covered by the upstream tests.
-        variant: PoolVariant::Default,
-        metadata: PoolMetadata {
-            user_and_host: ssh.user_and_host.clone(),
-            port: ssh.port.clone(),
-            path: ssh.path.clone(),
-        },
-        operation,
-        // Matches upstream's `lfs.ssh.automultiplex` default: on
-        // everywhere but Windows.
-        multiplex_enabled: !cfg!(target_os = "windows"),
+/// Build a [`PoolSpawner`] closure for the given SSH endpoint. The
+/// closure is called by [`SshBackend`] at most once per direction,
+/// on first use; the resolved program / variant / metadata are
+/// captured once and shared across both directions.
+fn ssh_pool_spawner(ssh: SshInfo, pool_size: usize) -> git_lfs_transfer::backend::PoolSpawner {
+    let program = resolve_ssh_program();
+    let multiplex_enabled = !cfg!(target_os = "windows");
+    let metadata = PoolMetadata {
+        user_and_host: ssh.user_and_host,
+        port: ssh.port,
+        path: ssh.path,
     };
-    Pool::new(pool_config, config.concurrency.max(1))
-        .map(Arc::new)
-        .map_err(|e| e.to_string())
+    Arc::new(move |operation| {
+        let pool_config = PoolConfig {
+            program: program.clone(),
+            // Variant detection (`GIT_SSH_VARIANT`, `ssh.variant`,
+            // autodetect from program name) lands when we wire the
+            // multistage SSH config — for now we assume OpenSSH,
+            // which matches the platforms covered by the upstream
+            // tests.
+            variant: PoolVariant::Default,
+            metadata: metadata.clone(),
+            operation: operation.into(),
+            // Matches upstream's `lfs.ssh.automultiplex` default:
+            // on everywhere but Windows.
+            multiplex_enabled,
+        };
+        Pool::new(pool_config, pool_size).map(Arc::new)
+    })
+}
+
+/// How to dispatch SSH-shaped endpoints. Mirrors the values of
+/// `lfs.<url>.sshtransfer` upstream: `always` opts out of HTTP
+/// fallback, `never` opts out of pure-SSH entirely,
+/// `negotiate` (the default for `ssh://`) tries pure-SSH first
+/// with HTTP as a fallback.
+enum SshMode {
+    Always,
+    Negotiate,
+    Never,
 }
 
 /// Pick the SSH executable per upstream's order:
