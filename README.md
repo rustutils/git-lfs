@@ -15,7 +15,7 @@ It targets [Git LFS v3.8.1](https://github.com/git-lfs/git-lfs/tree/v3.8.1),
 whose specs and shell tests are included here.
 
 Work in progress, but most of upstream's functionality is implemented and works
-end to end. About 93% of upstream's tests pass (see the
+end to end. About 87% of upstream's tests pass (see the
 [scoreboard](tests/SCOREBOARD.md) for details).
 
 ## Why

@@ -71,13 +71,31 @@ Grouped by area, with the failing tests each one would fix.
   (`lfstest-customadapter` and `lfstest-standalonecustomadapter`) import
   upstream's internal Go packages, so they aren't built here and the tests
   that use them can't pass yet.
-- **SSH URL injection.** `t-ssh`. The pure-SSH code rejects hosts starting
-  with a dash (see `build_argv` in `transfer::sshtransfer::connection`), but
-  `creds::ssh`, which runs `git-lfs-authenticate`, passes them through. Port
-  the same check.
+- **One SSH session for locks and objects.** `t-batch-transfer` tests 6 to
+  9. A push opens two pure-SSH sessions, one for lock verification
+  (`cli/src/lock_client.rs` builds its own pool) and one for transfers.
+  Upstream shares one.
 - **`git-lfs-authenticate` options.** We don't support `lfs.ssh.retries`,
-  connection reuse with `lfs.ssh.automultiplex`, `lfs.defaulttokenttl`, or
-  falling back to HTTP Basic when the command fails.
+  connection reuse with `lfs.ssh.automultiplex`, or `lfs.defaulttokenttl`,
+  and don't fall back to the guessed HTTPS endpoint when the command is
+  missing (`t-ssh` tests 3 to 5).
+- **`lfs.pushurl`** isn't read, so pushes go to the fetch endpoint
+  (`t-ssh` tests 9, 10, 13, 14). Neither are `remote.<name>.pushurl` and
+  `remote.<name>.lfspushurl`.
+- **`remote.pushDefault` and `branch.<name>.pushRemote`** aren't read by
+  the lock commands (`t-lock` 3, `t-locks` 3, `t-unlock` 6 and 7).
+- **`lfs.transfer.maxRetryTime`** isn't implemented, so a long
+  `Retry-After` is waited out instead of failing
+  (`t-batch-retries-ratelimit` 6, `t-batch-storage-retries-ratelimit` 6
+  and 7).
+- **Compressed downloads**: `lfs.transfer.httpDownloadEncoding` (gzip,
+  zstd) isn't implemented (`t-batch-storage-encoding` 1 to 5, and part of
+  `t-progress`).
+- **`GIT_LFS_PROGRESS`**: the progress log isn't written (`t-progress`).
+- **Cookies set by the server** aren't kept between requests
+  (`t-header-redirect` 7).
+- **`git lfs env`** doesn't warn about clashing `git config` values
+  (`t-config` 13).
 - **`core.sshCommand`** isn't read. Only `GIT_SSH_COMMAND` and `GIT_SSH`
   are.
 - **NTLM and Negotiate authentication**, and acting on `LFS-Authenticate`
@@ -92,8 +110,8 @@ Grouped by area, with the failing tests each one would fix.
   request.
 - **Missing commands**: `git lfs completion` (`t-completion`) and
   `git lfs dedup` (`t-dedup`).
-- **Single failing tests**: `t-batch-error-handling`, `t-progress`,
-  `t-batch-storage-encoding`, `t-batch-unknown-oids`.
+- **Single failing tests**: `t-batch-error-handling`,
+  `t-batch-unknown-oids`.
 - **`t-usage`** expects upstream's usage line. Our help output comes from
   clap, so this test stays failing on purpose.
 
@@ -103,12 +121,8 @@ Gaps no test covers:
 - `GIT_SSL_NO_VERIFY` isn't read, so it can't turn off certificate
   verification.
 - `git lfs locks --cached`.
-- `remote.<name>.pushurl` and `remote.<name>.lfspushurl`. Pushes use the
-  fetch URL.
 - `git lfs update` doesn't migrate old `lfs.<url>.access` values.
 - `git lfs fsck` without a ref checks HEAD but not the index.
-- `git lfs migrate export` doesn't download missing objects first. Pointers
-  without a local object are left as they are.
 - `git lfs migrate import`: if the same blob appears at two paths and only
   one matches the filter, the first commit that uses it decides.
 - `git lfs migrate info --fixup` reads `.gitattributes` from the tip commit
@@ -116,11 +130,30 @@ Gaps no test covers:
 
 ## Known bugs
 
-Found during the docs review, not fixed yet. None has a failing test.
+Found during the docs review and the v3.8.1 test update, not fixed yet.
+Where an upstream test fails because of a bug, the entry names it.
 "Confirmed" means reproduced with a test or the built binary. The others
 come from reading the code.
 
 ### Security
+
+- **`.lfsconfig` values can inject keys.** `t-config` 14. Confirmed.
+  `.lfsconfig` is read with `git config --list` without `-z` and split on
+  newlines (`parse_list_output` in `git/src/config.rs`), so a value
+  containing a newline sets another key, such as `lfs.url`. Injected keys
+  still pass `is_safe_key`.
+- **Batch and lock API redirects keep credentials from HTTP to HTTPS.**
+  `t-header-redirect` 3. reqwest drops `Authorization` and `Cookie` only when
+  the host or port changes, not the scheme. Uploads already follow upstream's
+  rule (`redirect_keeps_credentials` in `transfer/src/basic.rs`).
+- **SSH hosts starting with `-` reach ssh as options** in `creds/src/ssh.rs`,
+  which runs `git-lfs-authenticate` (`t-ssh` 1 and 2). The pure-SSH
+  `build_argv` already guards against this. Port the same check.
+- **`.lfsconfig` accepts any key ending in `.access`** (`t-config` 11),
+  because `is_safe_key` only checks the last part.
+- **An action's `Transfer-Encoding: chunked` is sent with `Content-Length`**
+  on uploads (`t-batch-storage-encoding` 6). Sending both is
+  request-smuggling-shaped.
 
 - **TLS settings apply to every host.** `cli/src/http_client.rs` reads
   `http.<url>.sslVerify`, `sslCAInfo`, `sslCert`, and `sslKey` for the LFS
@@ -129,6 +162,20 @@ come from reading the code.
 
 ### Wrong results or failures
 
+- **SSH URLs with escapes or newlines.** The path of an `ssh://` URL isn't
+  percent-decoded (`t-ssh` 8 and 12), and an `href` from
+  `git-lfs-authenticate` containing a newline is accepted, because the `url`
+  crate strips it (`t-ssh` 6). Upstream rejects it.
+- **The `exec:` trace format** differs from upstream's, which quotes each
+  argument and logs embedded newlines on `exec (cont.):` lines (`t-ssh` 7
+  and 11).
+- **Corrupt downloads** report `expected OID X, got Y` instead of
+  upstream's `expected OID X, got Y after N bytes written`
+  (`t-batch-storage-corrupt` 1 and 2).
+- **An invalid `.gitattributes` pattern is ignored** instead of reported
+  (`t-post-checkout` 3).
+- **`t-migrate-export` is flaky**: test 2 or 15 sometimes fails with
+  "Expanded 0 pointer(s)". Not investigated.
 - **`.git/info/attributes` has the lowest precedence instead of the
   highest** (`AttrSet::from_workdir` in `git/src/attr.rs`), and is assumed
   to be under the working tree, which is wrong in linked worktrees.
@@ -242,8 +289,6 @@ come from reading the code.
 - **Faster hooks.** The post-checkout, post-commit, and post-merge hooks
   walk the whole index to set lockable files read-only. Upstream only looks
   at changed paths.
-- **Default concurrency.** `git lfs env` reports upstream's CPU-scaled
-  default, but transfers still default to 8.
 - **Crash logs.** `git lfs logs` reads and manages logs, but no command
   writes one when it fails.
 - **Retries.** No jitter in the backoff, and every HTTP error except decode

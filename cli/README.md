@@ -8,7 +8,7 @@ output and a clean split into libraries.
 
 ## Status
 
-Work in progress, but usable day to day. About 93% of upstream's tests pass
+Work in progress, but usable day to day. About 87% of upstream's tests pass
 (see the [scoreboard] for details). For production use, upstream Git LFS is
 still the safer choice.
 

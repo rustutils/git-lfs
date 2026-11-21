@@ -278,8 +278,8 @@ fn transfer_list(customs: &[String], with_tus: bool) -> String {
     parts.join(",")
 }
 
-/// `lfs.concurrenttransfers` if set, or else upstream's default of three
-/// per CPU and at least 8.
+/// `lfs.concurrenttransfers` if set, or else the default of 8, which is
+/// also what transfers use.
 fn concurrent_transfers(cwd: &Path) -> usize {
     if let Some(v) = git_lfs_git::config::get_effective(cwd, "lfs.concurrenttransfers")
         .ok()
@@ -289,10 +289,7 @@ fn concurrent_transfers(cwd: &Path) -> usize {
     {
         return n;
     }
-    let n = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1);
-    (n * 3).max(8)
+    8
 }
 
 /// The `lfs.<url>.access` value for `url`, or `none`.
