@@ -244,10 +244,6 @@ come from reading the code.
   dropping it.
 - **Non-UTF-8 paths in credential queries.** `Query.path` is a `String`, so
   invalid UTF-8 is replaced. Upstream passes the bytes through.
-- **Flaky test.** `cache_returns_same_response_within_ttl` in
-  `creds/src/ssh.rs` writes a script and runs it, which sometimes fails with
-  "text file busy" when another test forks at the same moment. Run it as
-  `sh <path>`, as the SSH transfer tests do.
 - **Testing.** Port the shell tests to `cargo test`, so they don't need Go
   or `make`. Add an end-to-end test that runs a real `git push` through the
   pre-push hook.

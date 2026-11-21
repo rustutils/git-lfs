@@ -489,15 +489,8 @@ mod tests {
              EOF\n",
         )
         .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&prog).unwrap().permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&prog, perms).unwrap();
-        }
 
-        let client = SshAuthClient::new(prog.to_string_lossy().into_owned());
+        let client = SshAuthClient::new(format!("sh {}", prog.display()));
         let auth = client
             .resolve("git@host", None, "/repo", SshOperation::Upload)
             .unwrap();
@@ -528,15 +521,8 @@ mod tests {
             ),
         )
         .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&prog).unwrap().permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&prog, perms).unwrap();
-        }
 
-        let client = SshAuthClient::new(prog.to_string_lossy().into_owned());
+        let client = SshAuthClient::new(format!("sh {}", prog.display()));
         let _ = client
             .resolve("git@host", None, "/repo", SshOperation::Upload)
             .unwrap();
@@ -566,15 +552,8 @@ mod tests {
             ),
         )
         .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&prog).unwrap().permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&prog, perms).unwrap();
-        }
 
-        let client = SshAuthClient::new(prog.to_string_lossy().into_owned());
+        let client = SshAuthClient::new(format!("sh {}", prog.display()));
         let _ = client
             .resolve("git@host", None, "/repo", SshOperation::Upload)
             .unwrap();
@@ -594,15 +573,8 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let prog = tmp.path().join("fakessh");
         std::fs::write(&prog, "#!/bin/sh\necho 'permission denied' >&2\nexit 255\n").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&prog).unwrap().permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&prog, perms).unwrap();
-        }
 
-        let client = SshAuthClient::new(prog.to_string_lossy().into_owned());
+        let client = SshAuthClient::new(format!("sh {}", prog.display()));
         let err = client
             .resolve("git@host", None, "/repo", SshOperation::Download)
             .unwrap_err();

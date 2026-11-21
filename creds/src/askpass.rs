@@ -180,14 +180,7 @@ mod tests {
              esac\n",
         )
         .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&prog).unwrap().permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&prog, perms).unwrap();
-        }
-        let helper = AskpassHelper::new(prog.to_string_lossy().into_owned());
+        let helper = AskpassHelper::new(format!("sh {}", prog.display()));
         let q = Query {
             protocol: "https".into(),
             host: "h.example".into(),
@@ -203,14 +196,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let prog = tmp.path().join("ask");
         std::fs::write(&prog, "#!/bin/sh\necho\n").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&prog).unwrap().permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&prog, perms).unwrap();
-        }
-        let helper = AskpassHelper::new(prog.to_string_lossy().into_owned());
+        let helper = AskpassHelper::new(format!("sh {}", prog.display()));
         let q = Query {
             protocol: "https".into(),
             host: "h.example".into(),
