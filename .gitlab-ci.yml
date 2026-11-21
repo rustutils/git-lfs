@@ -106,6 +106,11 @@ package:
     - cargo install --locked --version "$CARGO_DEB_VERSION" cargo-deb
     - cargo install --locked --version "$CARGO_GENERATE_RPM_VERSION" cargo-generate-rpm
   script:
+    # Rust newer than 1.94 passes --fix-cortex-a53-843419 when linking for
+    # aarch64 musl, which zig rejects. Build with the rust-version from
+    # Cargo.toml until cargo-zigbuild filters it out.
+    - export RUSTUP_TOOLCHAIN=$(sed -n 's/^rust-version *= *"\(.*\)"/\1/p' Cargo.toml)
+    - rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
     - just package
     - sccache --show-stats || true
   artifacts:
