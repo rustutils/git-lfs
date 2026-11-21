@@ -6,8 +6,8 @@
 use std::sync::Arc;
 
 use git_lfs_api::{
-    ApiError, Auth, BatchRequest, Client, CreateLockError, CreateLockRequest, DeleteLockRequest,
-    ListLocksFilter, ObjectSpec, Operation, Ref, VerifyLocksRequest,
+    ApiError, Auth, BatchRequest, BatchResponse, Client, CreateLockError, CreateLockRequest,
+    DeleteLockRequest, ListLocksFilter, ObjectSpec, Operation, Ref, VerifyLocksRequest,
 };
 use git_lfs_creds::{Credentials, Helper, HelperError, Query};
 use serde_json::json;
@@ -614,6 +614,63 @@ async fn batch_unauthorized_with_no_creds_returns_credentials_not_found() {
     // Helper had nothing to give → no approve, no reject.
     assert_eq!(helper.approve_count(), 0);
     assert_eq!(helper.reject_count(), 0);
+}
+
+/// Batch through `first`, which redirects to `target`, with Basic auth.
+async fn batch_via_redirect(first: &MockServer, target: &str) -> Result<BatchResponse, ApiError> {
+    Mock::given(method("POST"))
+        .and(path("/objects/batch"))
+        .respond_with(ResponseTemplate::new(307).insert_header("Location", target))
+        .mount(first)
+        .await;
+    let endpoint = Url::parse(&first.uri()).unwrap();
+    let auth = Auth::Basic {
+        username: "u".into(),
+        password: "p".into(),
+    };
+    let req = BatchRequest::new(
+        Operation::Download,
+        vec![ObjectSpec {
+            oid: "abc".into(),
+            size: 10,
+        }],
+    );
+    Client::new(endpoint, auth).batch(&req).await
+}
+
+fn batch_ok() -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(json!({"objects": []}))
+}
+
+#[tokio::test]
+async fn redirect_to_another_origin_drops_credentials() {
+    let first = MockServer::start().await;
+    let other = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/objects/batch"))
+        .respond_with(batch_ok())
+        .mount(&other)
+        .await;
+
+    let target = format!("{}/objects/batch", other.uri());
+    batch_via_redirect(&first, &target).await.unwrap();
+    let received = other.received_requests().await.unwrap();
+    assert_eq!(received.len(), 1, "redirect wasn't followed as a POST");
+    assert!(!received[0].headers.contains_key("authorization"));
+}
+
+#[tokio::test]
+async fn redirect_on_the_same_origin_keeps_credentials() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/moved/objects/batch"))
+        .and(header_exists("authorization"))
+        .respond_with(batch_ok())
+        .mount(&server)
+        .await;
+
+    let target = format!("{}/moved/objects/batch", server.uri());
+    batch_via_redirect(&server, &target).await.unwrap();
 }
 
 #[tokio::test]

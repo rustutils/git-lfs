@@ -33,7 +33,8 @@ pub fn build(cwd: &Path, endpoint_url: &str) -> reqwest::Client {
     if let Some(value) = &opts.ssl_verify_invalid {
         warn_invalid_ssl_verify(value);
     }
-    let mut builder = reqwest::ClientBuilder::new();
+    // Redirects are followed by `git_lfs_api::send_with_redirects`.
+    let mut builder = reqwest::ClientBuilder::new().redirect(reqwest::redirect::Policy::none());
 
     if opts.ssl_verify == Some(false) {
         builder = builder.danger_accept_invalid_certs(true);
@@ -50,7 +51,9 @@ pub fn build(cwd: &Path, endpoint_url: &str) -> reqwest::Client {
         builder = builder.cookie_provider(Arc::new(jar));
     }
 
-    builder.build().unwrap_or_else(|_| reqwest::Client::new())
+    builder
+        .build()
+        .unwrap_or_else(|_| git_lfs_api::http_client())
 }
 
 /// Warn, once per process, that `http.sslVerify` isn't a boolean.

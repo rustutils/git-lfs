@@ -46,12 +46,14 @@ impl Transfer {
     /// Build an HTTP transfer queue with a new `reqwest::Client` for the
     /// action URLs.
     pub fn new(api: ApiClient, store: Store, config: TransferConfig) -> Self {
-        Self::with_http_client(api, store, config, reqwest::Client::new())
+        Self::with_http_client(api, store, config, git_lfs_api::http_client())
     }
 
     /// Build an HTTP transfer queue that uses `http` for the action URLs.
     ///
-    /// Use this to share a client's TLS settings and connection pool.
+    /// Use this to share a client's TLS settings and connection pool. The
+    /// client must not follow redirects itself, as with
+    /// [`git_lfs_api::http_client`].
     pub fn with_http_client(
         api: ApiClient,
         store: Store,

@@ -10,6 +10,7 @@ use url::Url;
 
 use crate::auth::{Auth, verbose_header_line};
 use crate::error::ApiError;
+use crate::redirect::send_with_redirects;
 use crate::ssh::{SharedSshResolver, SshAuth, SshOperation};
 
 /// `Content-Type` and `Accept` value for LFS API requests.
@@ -86,13 +87,15 @@ impl Client {
     /// `https://git-server.com/foo/bar.git/info/lfs`. Request paths like
     /// `objects/batch` and `locks` are joined onto it.
     pub fn new(endpoint: Url, auth: Auth) -> Self {
-        Self::with_http_client(endpoint, auth, reqwest::Client::new())
+        Self::with_http_client(endpoint, auth, crate::redirect::http_client())
     }
 
     /// Like [`new`](Self::new), but with a caller-supplied `reqwest::Client`.
     ///
     /// Use it to share a connection pool or to set timeouts, proxies, or
-    /// default headers.
+    /// default headers. The client must not follow redirects itself: build
+    /// it with `redirect::Policy::none()`, as [`http_client`](crate::http_client)
+    /// does, so this client can follow them with upstream's rules.
     pub fn with_http_client(endpoint: Url, auth: Auth, http: reqwest::Client) -> Self {
         Self {
             endpoint,
@@ -223,8 +226,7 @@ impl Client {
             // `http://host:port//repo.git/info/lfs`, because the path we
             // pass to `git-lfs-authenticate` starts with a slash. Go's
             // `http.ServeMux` answers those with a 301 to the cleaned
-            // path, and reqwest follows a 301 to a POST with a GET.
-            // Upstream follows redirects itself and keeps the method.
+            // path. Cleaning it first saves that round trip.
             let path = u.path().to_owned();
             let cleaned = collapse_slashes(&path);
             if cleaned != path {
@@ -423,7 +425,7 @@ impl Client {
                 let mut err = std::io::stderr().lock();
                 let _ = writeln!(err, "> {masked}");
             }
-            let resp = build().send().await?;
+            let resp = send_with_redirects(&self.http, build().build()?).await?;
             let status = resp.status();
 
             if status.is_success() {

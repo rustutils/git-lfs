@@ -8,7 +8,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use futures::StreamExt;
-use git_lfs_api::{Action, Actions, verbose_header_line};
+use git_lfs_api::{
+    Action, Actions, ApiError, is_credential_header, send_with_redirects, verbose_header_line,
+};
 use git_lfs_pointer::Oid;
 use git_lfs_store::Store;
 use reqwest::header::{CONTENT_LENGTH, RANGE};
@@ -89,7 +91,9 @@ pub(crate) async fn download(
     }
     dump_verbose_request(&action.href, range_header.as_deref(), &action.header);
 
-    let resp = req.send().await?;
+    let resp = send_with_redirects(http, req.build()?)
+        .await
+        .map_err(from_api)?;
     dump_verbose_response(&resp);
 
     // The server rejected the range. Without the partial file, the
@@ -463,21 +467,21 @@ fn redirect_keeps_credentials(from: &str, to: &str) -> Result<bool, TransferErro
     let (Ok(from), Ok(to)) = (reqwest::Url::parse(from), reqwest::Url::parse(to)) else {
         return Ok(false);
     };
-    if from.scheme() == "https" && to.scheme() == "http" {
-        return Err(TransferError::InsecureRedirect);
+    git_lfs_api::redirect_keeps_credentials(&from, &to).map_err(|_| TransferError::InsecureRedirect)
+}
+
+/// Convert an error from [`send_with_redirects`].
+fn from_api(err: ApiError) -> TransferError {
+    match err {
+        ApiError::Transport(e) => TransferError::Http(e),
+        ApiError::Redirect(message) => TransferError::Redirect(message),
+        other => TransferError::Io(std::io::Error::other(other.to_string())),
     }
-    Ok(from.origin() == to.origin())
 }
 
 /// The extra headers for a request to `url`.
 fn extra_for(source: Option<&HeaderSource>, url: &str) -> Vec<(String, String)> {
     source.map(|source| source(url)).unwrap_or_default()
-}
-
-/// Whether a header carries credentials that mustn't follow a redirect to
-/// another origin.
-fn is_credential_header(name: &str) -> bool {
-    name.eq_ignore_ascii_case("authorization") || name.eq_ignore_ascii_case("cookie")
 }
 
 /// Detect the content type from the first 512 bytes of `path`.
@@ -531,7 +535,11 @@ async fn verify(
         {
             req = req.header(k, v);
         }
-        match req.json(&VerifyBody { oid, size }).send().await {
+        let sent = match req.json(&VerifyBody { oid, size }).build() {
+            Ok(request) => send_with_redirects(http, request).await.map_err(from_api),
+            Err(e) => Err(TransferError::from(e)),
+        };
+        match sent {
             Ok(resp) => match check_status(&resp, &action.href) {
                 Ok(()) => return Ok(()),
                 Err(e) => {
@@ -541,8 +549,7 @@ async fn verify(
                     last_err = Some(e);
                 }
             },
-            Err(e) => {
-                let err = TransferError::from(e);
+            Err(err) => {
                 if trace_enabled() {
                     eprintln!("tq: verify err: {err}");
                 }

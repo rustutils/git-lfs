@@ -13,6 +13,10 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 - `.lfsconfig` values containing a newline can no longer add other settings,
   such as `lfs.url`. A cloned repository could use this to change where LFS
   objects are sent.
+- Batch, lock, download, and verify requests follow redirects with
+  upstream's rules: credentials aren't sent on after a redirect to another
+  origin, including from HTTP to HTTPS on the same host and port, and
+  redirects from HTTPS to HTTP are refused. Uploads already worked this way.
 
 ## [0.8.0] - 2026-11-21
 

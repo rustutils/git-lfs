@@ -137,10 +137,6 @@ come from reading the code.
 
 ### Security
 
-- **Batch and lock API redirects keep credentials from HTTP to HTTPS.**
-  `t-header-redirect` 3. reqwest drops `Authorization` and `Cookie` only when
-  the host or port changes, not the scheme. Uploads already follow upstream's
-  rule (`redirect_keeps_credentials` in `transfer/src/basic.rs`).
 - **SSH hosts starting with `-` reach ssh as options** in `creds/src/ssh.rs`,
   which runs `git-lfs-authenticate` (`t-ssh` 1 and 2). The pure-SSH
   `build_argv` already guards against this. Port the same check.

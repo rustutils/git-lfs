@@ -70,6 +70,11 @@ pub enum TransferError {
     #[error("refusing insecure redirect: HTTPS to HTTP")]
     InsecureRedirect,
 
+    /// A download or verify request was redirected from HTTPS to HTTP, or
+    /// too many times.
+    #[error("{0}")]
+    Redirect(String),
+
     /// Every verify attempt failed. Holds the last attempt's error.
     ///
     /// Not retried, since verify has its own budget,
@@ -128,6 +133,7 @@ impl TransferError {
             | TransferError::UnsupportedHashAlgo(_)
             | TransferError::ActionExpired { .. }
             | TransferError::InsecureRedirect
+            | TransferError::Redirect(_)
             | TransferError::VerifyExhausted(_) => false,
             TransferError::BatchResponse(e) => e.is_retryable(),
         }

@@ -68,6 +68,7 @@ mod client;
 mod error;
 mod locks;
 mod models;
+mod redirect;
 mod ssh;
 
 pub use auth::{Auth, verbose_header_line};
@@ -81,4 +82,7 @@ pub use locks::{
     VerifyLocksRequest, VerifyLocksResponse,
 };
 pub use models::{Lock, Owner, Ref};
+pub use redirect::{
+    http_client, is_credential_header, redirect_keeps_credentials, send_with_redirects,
+};
 pub use ssh::{SharedSshResolver, SshAuth, SshOperation, SshResolver};

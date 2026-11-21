@@ -73,6 +73,9 @@ pub enum ApiError {
     /// The server kept answering 401 after every allowed auth attempt.
     #[error("too many authentication attempts")]
     AuthAttemptsExceeded,
+    /// A redirect wasn't followed: from HTTPS to HTTP, or one too many.
+    #[error("{0}")]
+    Redirect(String),
 }
 
 /// Render an [`ApiError::Status`] for the user.
