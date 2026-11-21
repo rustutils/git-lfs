@@ -1,11 +1,8 @@
-//! Pure-SSH transfer adapter: batch + download.
+//! Batch requests, downloads, and uploads over a [`Pool`].
 //!
-//! Sits between the transfer queue and the [`Pool`] of SSH
-//! connections. Both entry points are `async` because the queue is
-//! `tokio`-based; internally they `spawn_blocking` to run the
-//! sync-only SSH connection I/O off the runtime thread.
-//!
-//! Wire format reference: `docs/proposals/ssh_adapter.md`.
+//! Each function checks out one connection and runs the blocking protocol
+//! exchange in `tokio::task::spawn_blocking`. A response with a non-2xx
+//! status discards the connection.
 
 use std::sync::Arc;
 
@@ -18,20 +15,17 @@ use crate::error::TransferError;
 use crate::event::Event;
 use crate::sshtransfer::pool::Pool;
 
-/// Run a batch request over the SSH connection pool.
+/// Send a batch request as a `batch` command.
 ///
-/// Translates `BatchRequest` into a `batch` command on the pool's
-/// master connection: serializes each object as `"<oid> <size>"`
-/// data lines, sends `transfer=ssh hash-algo=<algo> refname=<name>`
-/// as text args, and parses the per-object response lines back
-/// into a `BatchResponse`. `Action.href` is left empty (the SSH
-/// transfer doesn't dial a URL); `Action.id` / `Action.token` /
-/// `Action.expires_in` / `Action.expires_at` are populated from
-/// the response's `id=…` / `token=…` / `expires-in=…` /
-/// `expires-at=…` key-value pairs.
+/// Sends the arguments `transfer=ssh`, `hash-algo` (`sha256` unless the
+/// request names one), and `refname` if the request has a ref, then one
+/// `<oid> <size>` line per object. The actions in the response have no
+/// `href`. Their `id`, `token`, `expires_in`, and `expires_at` come from
+/// the response lines.
+///
+/// Errors with [`TransferError::UnsupportedHashAlgo`] if the server
+/// answers with a `hash-algo` other than `sha256`.
 pub async fn batch(pool: Arc<Pool>, req: &BatchRequest) -> Result<BatchResponse, TransferError> {
-    // Build inputs synchronously so the blocking task only has to
-    // do the actual I/O.
     let mut args: Vec<String> = vec!["transfer=ssh".to_owned()];
     let hash = req.hash_algo.clone().unwrap_or_else(|| "sha256".to_owned());
     args.push(format!("hash-algo={hash}"));
@@ -67,7 +61,6 @@ pub async fn batch(pool: Arc<Pool>, req: &BatchRequest) -> Result<BatchResponse,
                 "SSH batch returned status {status}: {detail}"
             ))));
         }
-        // Validate hash algo if the server advertised it.
         let mut server_hash: Option<String> = None;
         for arg in &resp_args {
             if let Some(rest) = arg.strip_prefix("hash-algo=") {
@@ -93,14 +86,13 @@ pub async fn batch(pool: Arc<Pool>, req: &BatchRequest) -> Result<BatchResponse,
     Ok(resp)
 }
 
-/// Parse `batch-oid-line` rows into `ObjectResult`s.
+/// Parse the lines of a `batch` response into one result per object.
 ///
-/// Each line is `"<oid> <size> <action> [key=value]..."`. The same
-/// OID may appear on multiple lines (e.g. upload + verify), so we
-/// sort first then merge consecutive same-OID rows into a single
-/// `ObjectResult.actions`. `noop` action means the server already
-/// has the object — emitted as `ObjectResult.actions = None` to
-/// match the HTTP batch convention.
+/// Each line is `<oid> <size> <action> [key=value...]`. An object appears
+/// once per action, for example `upload` and `verify`, so the lines are
+/// sorted and merged by OID. The results come out in OID order. An object
+/// listed only with `noop` gets no actions, as in the HTTP API. Actions
+/// that don't belong to `operation` are ignored.
 fn parse_oid_lines(
     operation: Operation,
     mut lines: Vec<String>,
@@ -131,7 +123,6 @@ fn parse_oid_lines(
         })?;
         let rest = parts.next().unwrap_or("");
 
-        // Land on or create the ObjectResult for this OID.
         let needs_new = out.last().is_none_or(|o| o.oid != oid);
         if needs_new {
             out.push(ObjectResult {
@@ -145,7 +136,6 @@ fn parse_oid_lines(
         let target = out.last_mut().expect("just pushed");
 
         if action == "noop" {
-            // Server already has it; nothing to do.
             continue;
         }
 
@@ -155,17 +145,15 @@ fn parse_oid_lines(
             (Operation::Download, "download") => actions.download = Some(action_value),
             (Operation::Upload, "upload") => actions.upload = Some(action_value),
             (Operation::Upload, "verify") => actions.verify = Some(action_value),
-            // Mismatched action for the requested operation — skip
-            // silently. Upstream tolerates this for forward
-            // compatibility.
             _ => {}
         }
     }
     Ok(out)
 }
 
-/// Parse the optional `key=value [key=value ...]` tail of a batch
-/// line into an `Action`. Unknown keys are ignored.
+/// Parse the `key=value` pairs that end a batch response line.
+///
+/// Unknown keys, and an `expires-in` that isn't an integer, are ignored.
 fn parse_action_kv(rest: &str) -> Action {
     let mut a = Action::default();
     for kv in rest.split_whitespace() {
@@ -187,9 +175,11 @@ fn parse_action_kv(rest: &str) -> Action {
     a
 }
 
-/// Download one object via the pool. Streams `get-object` body
-/// bytes into the store while computing the SHA-256 hash on the
-/// way; commits only if the hash matches `oid`.
+/// Download one object with `get-object` into the store.
+///
+/// The body must have the size the server states in its `size`
+/// argument, or `size` if it states none. The object is stored only if
+/// its hash matches `oid`. The whole body is held in memory first.
 pub async fn download(
     pool: Arc<Pool>,
     store: Arc<Store>,
@@ -216,7 +206,7 @@ pub async fn download(
             .read_status_until_delim()
             .map_err(|e| TransferError::Io(std::io::Error::other(e.to_string())))?;
         if !(200..300).contains(&status) {
-            // Error path: payload is text lines, not binary.
+            // After an error status, the data is a text message.
             let lines = conn
                 .stream()
                 .read_text_lines_until_flush()
@@ -228,21 +218,12 @@ pub async fn download(
             ))));
         }
 
-        // The server may echo size=<n> in the args. Use it as the
-        // expected total when present, falling back to the size we
-        // already know from the batch request.
         let advertised_size = resp_args
             .iter()
             .find_map(|a| a.strip_prefix("size="))
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(size);
 
-        // Buffer the body in memory while draining packets, then
-        // feed it back to `store.insert_verified` which re-hashes
-        // and rejects on OID mismatch. Memory cost is O(size) per
-        // concurrent download — fine for v0, future polish should
-        // stream straight to disk via the store's incomplete-path
-        // helpers (see `transfer/src/basic.rs`).
         let mut sink = Vec::with_capacity(usize::try_from(advertised_size).unwrap_or(0));
         let written = conn
             .stream()
@@ -275,12 +256,13 @@ pub async fn download(
     }
 }
 
-/// Upload one object via the pool. Streams the on-disk object
-/// bytes through `put-object`, then issues `verify-object` to
-/// confirm the server accepted them. Both commands echo back the
-/// `id` / `token` opaque handles the server returned in the batch
-/// response so the server can correlate the call to the granted
-/// permission.
+/// Upload one object from the store with `put-object`, then confirm it
+/// with `verify-object`.
+///
+/// Both commands send `size`, plus the `id` and `token` from the batch
+/// response's actions: the `upload` action for `put-object`, and the
+/// `verify` action for `verify-object` if there is one, else the
+/// `upload` action.
 pub async fn upload(
     pool: Arc<Pool>,
     store: Arc<Store>,
@@ -293,11 +275,8 @@ pub async fn upload(
         .upload
         .as_ref()
         .ok_or_else(|| TransferError::Io(std::io::Error::other("missing upload action")))?;
-    // `verify-object` is conventionally always done in the SSH
-    // protocol (mirrors upstream's `verifyUpload`), but the action
-    // info comes from the batch response. Use the upload action's
-    // id/token by default; if a verify action was returned with its
-    // own handles, prefer those.
+    // Like upstream, always send `verify-object`, even without a verify
+    // action. Upstream always uses the upload action's `id` and `token`.
     let verify_action_owned = actions
         .verify
         .clone()
@@ -316,7 +295,6 @@ pub async fn upload(
             .map_err(|e| TransferError::Io(std::io::Error::other(e.to_string())))?;
         let conn = guard.connection();
 
-        // Open the object file and stream it.
         let mut file = std::fs::File::open(&object_path).map_err(TransferError::Io)?;
         let put_arg_refs: Vec<&str> = put_args.iter().map(String::as_str).collect();
         let cmd = format!("put-object {oid_owned}");
@@ -335,9 +313,6 @@ pub async fn upload(
             ))));
         }
 
-        // Verify step. The protocol's `verify-object` echoes back
-        // the same `size=<n> id=<id> token=<token>` args; the
-        // server confirms (status 200) it durably has the bytes.
         let verify_arg_refs: Vec<&str> = verify_args.iter().map(String::as_str).collect();
         let verify_cmd = format!("verify-object {oid_owned}");
         conn.stream()
@@ -390,8 +365,8 @@ mod tests {
 
     #[test]
     fn parse_oid_lines_groups_same_oid() {
-        // Upload + verify for the same OID = one ObjectResult with
-        // both upload and verify actions.
+        // Upload and verify lines for the same OID make one
+        // ObjectResult with both actions.
         let lines = vec![
             "abc 100 upload id=u1 token=t1".to_owned(),
             "abc 100 verify id=v1 token=t2".to_owned(),
@@ -430,7 +405,7 @@ mod tests {
     #[test]
     fn parse_oid_lines_drops_mismatched_action_for_operation() {
         // Download batch shouldn't end up with upload actions even
-        // if the server sent them — we skip silently.
+        // if the server sent them.
         let lines = vec!["abc 100 upload id=u1".to_owned()];
         let out = parse_oid_lines(Operation::Download, lines).unwrap();
         assert_eq!(out.len(), 1);

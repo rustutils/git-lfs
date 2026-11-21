@@ -1,59 +1,48 @@
-//! Pure-SSH lock protocol: `lock`, `unlock`, `list-lock`.
+//! The lock commands of the pure-SSH protocol: `lock`, `unlock`, and
+//! `list-lock`.
 //!
-//! Sync command helpers that operate on a borrowed
-//! [`Connection`]. The transfer queue's batch / get-object /
-//! put-object commands live in [`super::adapter`]; locking is
-//! orthogonal (no transfer queue, no `spawn_blocking`) so it lives
-//! here as plain sync calls — callers wrap them in
-//! [`tokio::task::spawn_blocking`] if they need to drive locking from
-//! an async context.
-//!
-//! Wire format reference:
-//! [`docs/proposals/ssh_adapter.md`](https://gitlab.com/rustutils/git-lfs/-/blob/master/docs/proposals/ssh_adapter.md)
-//! "Locks" section.
+//! These are blocking calls on a [`Connection`]. A connection opened for
+//! upload can run all three, and one opened for download only `list-lock`.
+//! The wire format is in the "Locks" section of
+//! [`docs/proposals/ssh_adapter.md`](https://gitlab.com/rustutils/git-lfs/-/blob/master/docs/proposals/ssh_adapter.md).
 
 use std::collections::HashMap;
 
 use crate::sshtransfer::connection::{Connection, ConnectionError};
 
-/// One lock entry. Fields mirror the four `key=value` arguments
-/// servers emit for `lock` / `unlock` responses and the four
-/// `<key> <id> <value>` lock-spec lines emitted by `list-lock`.
+/// A lock as the server describes it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct LockSpec {
     /// Server-assigned lock identifier.
     pub id: String,
-    /// Repo-relative path that's locked.
+    /// Locked path, relative to the repository root.
     pub path: String,
-    /// RFC 3339 timestamp when the lock was created.
+    /// When the lock was created, as the server sent it (RFC 3339 per
+    /// the spec). Not validated.
     pub locked_at: String,
-    /// Lock owner's display name. Absent when the server doesn't
-    /// share owner info (e.g. download-mode listings).
+    /// Display name of the lock's owner, if the server sent one.
     pub ownername: Option<String>,
 }
 
-/// Ownership annotation returned by upload-mode `list-lock`. Used by
-/// `/locks/verify` parity to partition the response into ours vs.
-/// theirs.
+/// Who holds a lock, from the `owner` lines of `list-lock`.
+///
+/// Servers send these on connections opened for upload. They play the role
+/// of the HTTP API's lock verification endpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Owner {
     /// Held by the authenticated user.
     Ours,
     /// Held by someone else.
     Theirs,
-    /// Server didn't supply an `owner <id> ...` line (e.g.
-    /// download-mode listings).
+    /// The server sent no `owner` line for this lock.
     Unknown,
 }
 
-/// Options for [`lock`]. `refname` is the full git ref the lock
-/// scopes to (`refs/heads/main`); the server's contract allows
-/// it to be missing, but scutiger and upstream gitlab both require
-/// it for create.
+/// Options for [`lock`].
 #[derive(Debug, Default, Clone)]
 pub struct LockOptions {
-    /// Git refname scope (`refs/heads/...`). Always emitted when
-    /// `Some`; servers that ignore it tolerate the extra arg.
+    /// Full name of the ref the lock applies to, such as
+    /// `refs/heads/main`. Sent as `refname` if set.
     pub refname: Option<String>,
 }
 
@@ -64,59 +53,52 @@ pub struct UnlockOptions {
     pub refname: Option<String>,
 }
 
-/// Filter for [`list`]. Mirrors `ListLocksFilter` on the HTTP side
-/// plus a `refname` rather than `refspec` (the wire arg differs).
+/// Filter for [`list`]. Each field that is set is sent as an argument
+/// of the same name.
 #[derive(Debug, Default, Clone)]
 pub struct ListFilter {
-    /// Match a specific repo-relative path.
+    /// Only the lock on this path.
     pub path: Option<String>,
-    /// Match a specific lock id.
+    /// Only the lock with this ID.
     pub id: Option<String>,
-    /// Pagination cursor returned by a prior listing's `next-cursor`.
+    /// Where to continue, from a previous [`ListResponse::next_cursor`].
     pub cursor: Option<String>,
-    /// Maximum locks per response.
+    /// Most locks to return.
     pub limit: Option<u32>,
-    /// Refname scope.
+    /// Full name of the ref to list locks for.
     pub refname: Option<String>,
 }
 
 /// Result of a `lock` or `unlock` request.
 ///
-/// On 2xx / 409 the server returns the lock's attributes inline as
-/// command arguments; we parse them into `lock`. On other statuses
-/// the body carries a human-readable message in the first text line;
-/// that lands in `message`.
+/// On a 2xx status the arguments describe the lock, and on 409 the
+/// conflicting lock. Other statuses carry an error message.
 #[derive(Debug, Clone)]
 pub struct LockResponse {
-    /// Raw HTTP-style status code from the `status` line.
+    /// Status code, which has the same meaning as in HTTP.
     pub status: u16,
-    /// Parsed lock attributes when present.
+    /// The lock, on a 2xx or 409 status with `id`, `path`, `locked-at`,
+    /// and `ownername` all present.
     pub lock: Option<LockSpec>,
-    /// Server-supplied error message for non-success statuses.
+    /// First line of the server's message on a non-2xx status. A 409
+    /// without one gets `conflict`.
     pub message: Option<String>,
 }
 
 /// Result of a `list-lock` request.
 #[derive(Debug, Clone, Default)]
 pub struct ListResponse {
-    /// Raw status code from the `status` line.
+    /// Status code, which has the same meaning as in HTTP.
     pub status: u16,
-    /// Locks in the response, in the order the server returned them,
-    /// paired with their owner annotation (`Unknown` for
-    /// download-mode listings).
+    /// Locks in the order the server declared them, with their owners.
     pub locks: Vec<(LockSpec, Owner)>,
-    /// Pagination continuation cursor when present.
+    /// Cursor for the next page, if there is one.
     pub next_cursor: Option<String>,
-    /// Server-supplied error message for non-success statuses.
+    /// First line of the server's message on a non-2xx status.
     pub message: Option<String>,
 }
 
-/// Send the `lock` command and parse the response.
-///
-/// Wire shape: `PKT-LINE("lock")` + `PKT-LINE("path=<path>")` +
-/// optional `PKT-LINE("refname=<refname>")` + flush. Response:
-/// status line + zero or more arg lines + optional delim + zero or
-/// more text lines + flush.
+/// Lock `path` with the `lock` command.
 pub fn lock(
     conn: &mut Connection,
     path: &str,
@@ -130,13 +112,10 @@ pub fn lock(
     send_and_parse_single(conn, "lock", &args)
 }
 
-/// Send the `unlock <id>` command and parse the response.
+/// Remove the lock with ID `id` with the `unlock` command.
 ///
-/// Wire shape: `PKT-LINE("unlock <id>")` + optional
-/// `PKT-LINE("refname=<refname>")` + flush. The spec mentions a
-/// `force` argument but neither scutiger nor upstream's
-/// `sshLockClient.Unlock` emit it — force semantics live entirely on
-/// the server side via auth.
+/// The spec allows a `force` argument, but this never sends it, like
+/// upstream.
 pub fn unlock(
     conn: &mut Connection,
     id: &str,
@@ -150,11 +129,9 @@ pub fn unlock(
     send_and_parse_single(conn, &cmd, &args)
 }
 
-/// Send the `list-lock` command and parse the response.
+/// List locks with the `list-lock` command.
 ///
-/// In upload-mode connections, the server adds `owner <id> ours`
-/// or `owner <id> theirs` lines so the caller can partition the
-/// result (used by `/locks/verify` parity).
+/// Lines that refer to an undeclared lock ID are ignored.
 pub fn list(conn: &mut Connection, filter: &ListFilter) -> Result<ListResponse, ConnectionError> {
     let mut args = Vec::new();
     if let Some(p) = &filter.path {
@@ -210,8 +187,7 @@ fn parse_single_response(status: u16, args: Vec<String>, lines: Vec<String>) -> 
                 seen |= 0b1000;
             }
         }
-        // Require all four fields to consider this a parseable
-        // lock; matches upstream's `len(seen) != 4` guard.
+        // Upstream errors instead if any of the four is missing.
         let lock = if seen == 0b1111 { Some(spec) } else { None };
         let message = if !is_success {
             lines.first().cloned().or_else(|| Some("conflict".into()))
@@ -245,11 +221,8 @@ fn parse_list_response(status: u16, args: Vec<String>, lines: Vec<String>) -> Li
         .iter()
         .find_map(|a| a.strip_prefix("next-cursor=").map(str::to_owned));
 
-    // First pass: build per-id entries from the lock-spec lines.
-    // Server is required to repeat the lock-id on every per-attribute
-    // line, but it isn't required to emit them in `lock` declaration
-    // order — collect by id into a map, track first-seen order
-    // separately to keep the output stable.
+    // Every attribute line names its lock ID, so lines for different
+    // locks may interleave. Collect by ID, and keep declaration order.
     let mut by_id: HashMap<String, (LockSpec, Owner)> = HashMap::new();
     let mut order: Vec<String> = Vec::new();
 
@@ -460,8 +433,8 @@ mod tests {
 
     #[test]
     fn parse_list_ignores_lines_for_unknown_id() {
-        // No `lock id1` declarator — the per-attribute lines for id1
-        // get dropped on the floor rather than spawning a stub entry.
+        // With no `lock id1` line, the attribute lines for id1 are
+        // dropped rather than creating an entry.
         let lines = vec![
             "path id1 a.bin".into(),
             "lock id2".into(),

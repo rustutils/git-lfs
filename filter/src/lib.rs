@@ -1,53 +1,36 @@
 //! Clean and smudge filters and the filter-process protocol for Git LFS.
 //!
-//! Git invokes content filters whenever a file moves between the
-//! working tree and a git blob: a *clean* filter runs on the way
-//! in (`git add`) and a *smudge* filter runs on the way out
-//! (`git checkout`). LFS hooks into both ends. Clean hashes the
-//! working-tree bytes, hands them to the local LFS store, and
-//! emits a small pointer file (which is what git ends up storing);
-//! smudge takes the pointer back from git, looks up the real
-//! bytes (fetching from the server if they're not local), and
-//! writes the content into the working tree.
+//! Git runs a file's content through the clean filter when it's staged and
+//! through the smudge filter when it's checked out. [`clean`] stores the
+//! content in a [`Store`](git_lfs_store::Store) and writes a pointer in its
+//! place. Input that already parses as a pointer is written back unchanged.
+//! [`smudge`] does the reverse: it reads a pointer and writes the object's
+//! content from the store. Input that isn't a pointer passes through. The
+//! [spec] describes how Git LFS hooks into git.
 //!
-//! This crate implements both filters plus the long-running
-//! [filter-process protocol][filter-process], which modern git
-//! uses by default: one subprocess handles many files in a single
-//! session over a pkt-line-framed connection.
+//! [`smudge`] fails with [`SmudgeError::ObjectMissing`] when the store
+//! doesn't have the object. [`smudge_with_fetch`] instead calls a closure the
+//! caller supplies, which downloads the object into the store and returns a
+//! [`FetchError`] if it can't. [`smudge_object_to`] writes the content for a
+//! pointer the caller has already parsed, for commands such as pull and
+//! checkout.
 //!
-//! Three entry points: [`clean`] runs the clean side
-//! ([`CleanOutcome`] reports whether the input was an
-//! already-canonical pointer that passed through verbatim or
-//! content that was hashed and stored), [`smudge`] runs the
-//! smudge side and errors with [`SmudgeError::ObjectMissing`]
-//! when the local store doesn't have the object, and
-//! [`filter_process`] is the long-running variant, multiplexing
-//! many `clean` and `smudge` requests in one pkt-line session.
+//! [`filter_process`] serves git's [long-running filter
+//! protocol][filter-process], handling many clean and smudge requests in one
+//! process. Besides the fetch closure, it takes the switch for
+//! `GIT_LFS_SKIP_SMUDGE` and a path filter (such as `lfs.fetchinclude` and
+//! `lfs.fetchexclude`). Skipped and filtered-out paths get the pointer back
+//! unchanged.
 //!
-//! Pointer extensions chain external programs between the raw
-//! bytes and the stored object. [`CleanExtension`] and
-//! [`SmudgeExtension`] describe one chain stage each (name,
-//! priority, command); a clean run pipes the file through each
-//! registered extension in priority order and records the
-//! per-stage OID in the resulting pointer, and smudge undoes the
-//! chain in reverse. [`build_pointer_with_extensions`] runs the
-//! chain on a preview path that doesn't insert into the store,
-//! used by `git lfs pointer --file=X` to show what `clean` would
-//! emit.
-//!
-//! Two convenience variants on the smudge side:
-//! [`smudge_object_to`] streams an already-parsed pointer's
-//! object content to a writer (used by pull and checkout, which
-//! have the pointer in hand from an index walk and don't need
-//! the pointer-detection front end); [`smudge_with_fetch`]
-//! fetches missing objects via a caller-supplied closure rather
-//! than erroring out.
-//!
-//! See [`docs/spec.md`] § "Intercepting Git" for the protocol
-//! contract.
+//! Pointer extensions pipe content through external programs. Clean runs each
+//! [`CleanExtension`] in the order given (lowest priority first) and records
+//! each stage's input OID in the pointer. Smudge runs the matching
+//! [`SmudgeExtension`]s in reverse and checks each stage's output against
+//! the recorded OID. [`build_pointer_with_extensions`] computes the pointer
+//! without storing anything.
 //!
 //! [filter-process]: https://git-scm.com/docs/gitattributes#_long_running_filter_process
-//! [`docs/spec.md`]: https://gitlab.com/rustutils/git-lfs/-/blob/master/docs/spec.md
+//! [spec]: https://gitlab.com/rustutils/git-lfs/-/blob/master/docs/spec.md
 
 use std::io::{self, Read};
 
@@ -63,25 +46,19 @@ pub use smudge::{
     SmudgeError, SmudgeExtension, SmudgeOutcome, smudge, smudge_object_to, smudge_with_fetch,
 };
 
-/// Boxed error returned by the on-demand fetch closure passed to
-/// [`smudge_with_fetch`] or [`filter_process`].
+/// Error returned by the fetch closure passed to [`smudge_with_fetch`] or
+/// [`filter_process`].
 ///
-/// Kept as a boxed trait object so callers can plug in any error
-/// type (HTTP failures, missing config, custom-transfer breakage, …)
-/// without the filter crate needing to know about it. The typed
-/// [`git_lfs_transfer::TransferError`] is the most common payload;
-/// it converts via `Into` since it implements
-/// `std::error::Error + Send + Sync`.
+/// Boxed so the caller's fetcher can return any error type that is `Send`
+/// and `Sync`. Such errors convert with `?` or `Into`.
 pub type FetchError = Box<dyn std::error::Error + Send + Sync>;
 
 /// Read up to [`MAX_POINTER_SIZE`] bytes from `input` and try to parse them
 /// as a pointer.
 ///
-/// The returned `Vec` is the buffered head: callers that fall through to a
-/// content path need to prepend it to whatever's still in the stream. The
-/// `Option<Pointer>` is `Some` iff the head fit entirely in the buffer (i.e.
-/// total input was strictly less than [`MAX_POINTER_SIZE`]) **and** parsed
-/// as a valid pointer.
+/// Returns the bytes read, which callers that treat the input as content
+/// must prepend to the rest of the stream. The pointer is `Some` only if the
+/// whole input was shorter than [`MAX_POINTER_SIZE`] and parsed.
 fn detect_pointer<R: Read>(input: &mut R) -> io::Result<(Vec<u8>, Option<Pointer>)> {
     let mut head = vec![0u8; MAX_POINTER_SIZE];
     let mut filled = 0;

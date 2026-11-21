@@ -1,18 +1,10 @@
-//! Transport backend the transfer queue dispatches through.
+//! Choice between HTTPS and pure-SSH transport for the transfer queue.
 //!
-//! Two variants today:
-//!
-//! - [`Backend::Http`] — classic HTTP path: batch over the LFS API
-//!   client, per-object via `reqwest::Client` action URLs. The
-//!   only choice when the endpoint isn't SSH-shaped.
-//! - [`Backend::Ssh`] — pure-SSH transfer over a connection
-//!   [`Pool`]. Lazy per-direction: the pool for each operation
-//!   (download/upload) spawns on first use, so an `LfsFetcher`
-//!   that ends up only doing downloads never pays for an
-//!   upload-session SSH handshake. Carries an optional HTTP
-//!   fallback for negotiate mode — when pool spawn fails (e.g.
-//!   the remote doesn't have `git-lfs-transfer` installed), the
-//!   operation transparently reroutes through HTTP.
+//! The SSH backend spawns a connection [`Pool`] for each direction
+//! (download or upload) on first use, so a run that only downloads never
+//! opens an upload session. With an HTTP fallback configured, a direction
+//! whose pool fails to spawn (for example because the remote has no
+//! `git-lfs-transfer`) uses HTTPS instead.
 
 use std::sync::{Arc, Mutex};
 
@@ -21,27 +13,24 @@ use git_lfs_api::{Client as ApiClient, Operation};
 use crate::sshtransfer::connection::ConnectionError;
 use crate::sshtransfer::pool::Pool;
 
-/// Transport backend the queue uses for batch + per-object transfers.
+/// Transport the queue uses for batch requests and object transfers.
 ///
-/// Cloning is cheap — `reqwest::Client` is `Arc`-backed internally
-/// and `Arc<SshBackend>` is a pointer copy. The HTTP variant boxes
-/// `ApiClient` so the enum doesn't bloat to the largest variant's
-/// size (clippy's `large_enum_variant` gate).
+/// The HTTP variant boxes the API client to keep the enum small.
 #[derive(Clone)]
 pub enum Backend {
-    /// HTTP backend: batch over `api`, per-object via `http`.
+    /// Batch requests through `api`, object transfers through `http`.
     Http {
         /// LFS batch API client.
         api: Box<ApiClient>,
         /// `reqwest::Client` for action-URL transfers.
         http: reqwest::Client,
     },
-    /// Pure-SSH backend (with optional HTTP fallback). See [`SshBackend`].
+    /// Pure SSH, with an optional HTTP fallback. See [`SshBackend`].
     Ssh(Arc<SshBackend>),
 }
 
-/// HTTP transport used either as the primary `Backend::Http` or as
-/// the negotiate-mode fallback inside `Backend::Ssh`.
+/// HTTP clients for one endpoint, used as the fallback of an
+/// [`SshBackend`].
 #[derive(Clone)]
 pub struct HttpTransport {
     /// LFS batch API client.
@@ -50,37 +39,24 @@ pub struct HttpTransport {
     pub http: reqwest::Client,
 }
 
-/// Closure that spawns a fresh [`Pool`] for one operation
-/// direction. Stored in `Arc<dyn Fn>` so the resolved program /
-/// variant / metadata only live once even when the backend is
-/// cloned across many concurrent tasks.
+/// Closure that spawns a fresh [`Pool`] for one direction.
 pub type PoolSpawner = Arc<dyn Fn(Operation) -> Result<Arc<Pool>, ConnectionError> + Send + Sync>;
 
-/// Pure-SSH backend with lazy per-direction pool and optional
-/// HTTP fallback for negotiate mode.
+/// Pure-SSH backend with a lazily spawned pool per direction and an
+/// optional HTTP fallback.
 pub struct SshBackend {
-    /// Closure called at most once per direction to bring up an
-    /// SSH connection pool. Errors propagate through
-    /// [`dispatch`](Self::dispatch) — if `fallback` is `Some`, the
-    /// caller transparently falls back; if `None`, the error
-    /// surfaces as `Transport::NoFallback`.
     spawner: PoolSpawner,
-    /// HTTP fallback for negotiate mode. `None` means the user
-    /// opted into `sshtransfer=always` — pure-SSH only, no
-    /// fallback (failure surfaces as an error to the user).
+    /// `None` when pure SSH is required (`sshtransfer=always`).
     fallback: Option<HttpTransport>,
-    /// Lazy transport for download direction.
     download: Mutex<TransportState>,
-    /// Lazy transport for upload direction.
     upload: Mutex<TransportState>,
 }
 
-/// Per-direction lazy state.
+/// Transport chosen for one direction.
 ///
-/// First [`SshBackend::dispatch`] call for a direction transitions
-/// `Untried` → `Pool` on successful spawn, or `Untried` → `Fallback`
-/// when the spawn failed and `fallback` was configured. Subsequent
-/// calls reuse the cached choice without re-attempting the spawn.
+/// A successful spawn moves `Untried` to `Pool`. A failed spawn moves it
+/// to `Fallback` when there is a fallback, and otherwise leaves it
+/// `Untried`, so the next dispatch tries to spawn again.
 enum TransportState {
     Untried,
     Pool(Arc<Pool>),
@@ -88,13 +64,12 @@ enum TransportState {
 }
 
 impl SshBackend {
-    /// Build an SSH backend with the given spawner and optional
-    /// HTTP fallback.
+    /// Build an SSH backend from a pool spawner and an optional HTTP
+    /// fallback.
     ///
-    /// Pass `fallback = Some(_)` for negotiate mode (try pure-SSH
-    /// first, fall back to HTTP on spawn failure); pass `None` for
-    /// `sshtransfer=always` mode (no fallback, pool spawn errors
-    /// surface to the caller).
+    /// Pass a fallback to try pure SSH first and use HTTP when the pool
+    /// fails to spawn (`sshtransfer=negotiate`). Pass `None` to require
+    /// pure SSH (`sshtransfer=always`), so spawn errors reach the caller.
     pub fn new(spawner: PoolSpawner, fallback: Option<HttpTransport>) -> Self {
         Self {
             spawner,
@@ -104,10 +79,10 @@ impl SshBackend {
         }
     }
 
-    /// Pick the transport for `op`, spawning the pool on first use
-    /// and caching the choice for subsequent calls. Holds the
-    /// per-direction lock for the duration of the spawn so two
-    /// concurrent first-callers don't race.
+    /// Pick the transport for `op`, spawning its pool on first use.
+    ///
+    /// The choice is cached for later calls. The direction's lock is held
+    /// during the spawn, so concurrent first calls spawn only one pool.
     pub fn dispatch(&self, op: Operation) -> Transport {
         let slot = match op {
             Operation::Download => &self.download,
@@ -126,7 +101,6 @@ impl SshBackend {
             TransportState::Untried => {}
         }
 
-        // First call for this direction — try to spawn.
         match (self.spawner)(op) {
             Ok(pool) => {
                 *state = TransportState::Pool(pool.clone());
@@ -144,17 +118,10 @@ impl SshBackend {
 }
 
 impl Drop for SshBackend {
-    /// Gracefully quit each direction's pool on backend drop. The
-    /// `terminating pure SSH connection (#N)` trace this emits is
-    /// what `t-batch-transfer.sh::assert_ssh_transfer_sessions`
-    /// counts on the upload path (`min=max=1` for the transfer
-    /// pool's master). Best-effort: pool errors here would just
-    /// noise up unrelated drop chains.
+    /// Quit each direction's pool, best effort.
     ///
-    /// The lock-side pool isn't owned by `SshBackend` — locking
-    /// lives in `cli::lock_client` and intentionally drops its
-    /// pool without `end()`-ing, matching upstream's "control
-    /// socket SSH connection ... never shut down cleanly" quirk.
+    /// This emits the `terminating pure SSH connection` trace lines that
+    /// the upstream tests count.
     fn drop(&mut self) {
         for slot in [&self.download, &self.upload] {
             let mut state = match slot.lock() {
@@ -173,7 +140,8 @@ impl Drop for SshBackend {
 pub enum Transport {
     /// Use the SSH connection pool.
     Pool(Arc<Pool>),
-    /// Use the HTTP fallback (only emitted in negotiate mode).
+    /// Use HTTP: the backend is HTTP, or the SSH pool failed to spawn and
+    /// there is a fallback.
     Http(HttpTransport),
     /// Pool spawn failed and no fallback was configured.
     NoFallback(ConnectionError),

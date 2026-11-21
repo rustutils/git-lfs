@@ -130,13 +130,20 @@ Found during the docs review, not fixed yet. None has a failing test.
 - **Boolean settings:** `get_bool` in `git/src/fetch_prune.rs` returns false
   for an empty value and the default for anything unrecognized. Upstream's
   `config.Bool` does the opposite, and also accepts `t` and `f`.
+- **Redirected uploads send credentials to the new host.** reqwest can't
+  follow redirects for a streamed body, so `upload` in
+  `transfer/src/basic.rs` follows them itself and sends every action
+  header, including `Authorization`, to whatever `Location` says. Upstream
+  drops `Authorization` and `Cookie` when the origin changes, and refuses
+  HTTPS to HTTP. Downloads use reqwest's redirects and aren't affected.
 - **A password in the remote URL can appear in an error.** With a remote
   like `https://alice:s3cret@host/repo.git`, a 401 that no helper can answer
   gives *Git credentials for https://alice:s3cret@host/ not found*
   (`cred_url_string` in `api/src/client.rs`). Strip the password first.
-- **`http.extraHeader` values are printed unmasked under
-  `GIT_CURL_VERBOSE`** (`api/src/client.rs`), so an `Authorization` header
-  set there ends up on stderr. Upstream masks Basic credentials.
+- **`GIT_CURL_VERBOSE` prints credentials.** `http.extraHeader` values
+  (`api/src/client.rs`) and transfer action headers (`transfer/src/basic.rs`)
+  are printed unmasked, so `Authorization` headers end up on stderr. Upstream
+  masks Basic credentials.
 - **SSH remotes can send two `Authorization` headers.** After a 401, the
   client's own credentials are sent alongside the header from
   `git-lfs-authenticate`, because reqwest appends headers. Upstream skips
@@ -160,6 +167,36 @@ Found during the docs review, not fixed yet. None has a failing test.
 - **Failed approves aren't rolled back.** If `git credential approve` fails,
   the in-memory cache keeps the credentials. Upstream rejects them from the
   helpers before the failing one.
+- **Pure SSH: a failed read returns the connection to the pool mid-message.**
+  Only error statuses discard the connection (`sshtransfer/adapter.rs`). A
+  stream error, or a file read error during `put-object`, leaves unread or
+  half-written packets, and the next command on that connection fails.
+- **Pure SSH: the server's object size is trusted for an allocation.**
+  `download` calls `Vec::with_capacity` with the `size=` the server sends, so
+  a huge value aborts the process. Downloads are also buffered in memory
+  rather than streamed.
+- **Pure SSH: ssh's stderr is never read** (`sshtransfer/connection.rs`), so
+  ssh and server error messages are lost, and a chatty ssh could block.
+- **Pure SSH: ending the pool may kill the master first.** `end()` sends
+  `quit` and then kills ssh if it's still running, which for the master
+  likely ends the sessions sharing its socket. Upstream ends the clients
+  first. Not checked with real multiplexing.
+- **Pure SSH: `lfs.ssh.automultiplex` isn't read, and the SSH variant is
+  always the default**, so the PuTTY, TortoisePlink, and simple code paths
+  in `build_argv` are never used (`cli/src/fetcher.rs`,
+  `cli/src/lock_client.rs`).
+- **Extension paths with spaces are split.** `clean.rs` and `smudge.rs` in
+  `filter/` substitute `%f` and then split the command on whitespace, so
+  `a b` becomes two arguments. Upstream splits first.
+- **`git lfs filter-process` ignores `lfs.skipdownloaderrors`** and
+  `GIT_LFS_SKIP_DOWNLOAD_ERRORS`. Only the standalone `git lfs smudge`
+  honors them, so a clone with the setting fails instead of leaving
+  pointers.
+- **`git lfs filter-process` reads each file fully into memory**
+  (`read_payload` in `filter/src/filter_process.rs`). Upstream streams.
+- **Extensions write before they're checked.** Smudge writes the last
+  extension's output before checking its OID, and clean stores it before
+  checking the extension's exit status.
 - **netrc and IPv6:** `strip_port("[::1]:8080")` keeps the brackets, so
   `machine ::1` doesn't match.
 - **`git cat-file` stderr is piped but never read** (`git/src/cat_file.rs`).

@@ -1,4 +1,4 @@
-//! The clean filter: stdin → store + pointer-on-stdout.
+//! The clean filter, which stores content and writes a pointer in its place.
 
 use std::io::{self, Read, Write};
 use std::path::Path;
@@ -16,91 +16,83 @@ const COPY_BUFFER: usize = 64 * 1024;
 /// Result of running the [`clean`] filter on a piece of input.
 #[derive(Debug)]
 pub enum CleanOutcome {
-    /// Input was already a valid pointer; the original bytes were emitted
-    /// to the output stream verbatim and nothing was inserted into the store.
-    /// This is what makes `git lfs clean` idempotent on already-cleaned blobs.
+    /// The input already parsed as a pointer and was written out unchanged.
+    ///
+    /// Nothing was stored. This makes cleaning a pointer a no-op, and keeps
+    /// a non-canonical pointer's exact bytes so its blob hash doesn't change.
     Passthrough(Pointer),
-    /// Input was content; it was hashed and inserted into the store, and the
-    /// canonical encoding of the resulting [`Pointer`] was written to the
-    /// output stream.
+    /// The input was content.
+    ///
+    /// It was inserted into the store and the canonical encoding of the new
+    /// pointer was written out.
     Stored(Pointer),
 }
 
 impl CleanOutcome {
-    /// The pointer associated with this outcome (the parsed pass-through one,
-    /// or the freshly-stored one).
+    /// The pointer that was passed through or created.
     pub fn pointer(&self) -> &Pointer {
         match self {
             Self::Passthrough(p) | Self::Stored(p) => p,
         }
     }
 
-    /// `true` if the input was recognized as an existing pointer.
+    /// Whether the input was already a pointer.
     pub fn was_passthrough(&self) -> bool {
         matches!(self, Self::Passthrough(_))
     }
 }
 
-/// One pointer extension's clean side.
-///
-/// `command` is the raw command string from `lfs.extension.<name>.clean`,
-/// with `%f` placeholders for the working-tree path. Priority is the
-/// order index baked into the extension's pointer line (`ext-{N}-{name}`).
+/// The clean side of one pointer extension.
 #[derive(Debug, Clone)]
 pub struct CleanExtension {
     /// Extension name, as configured under `lfs.extension.<name>`.
     pub name: String,
-    /// Single decimal digit (0-9) determining position in the chain;
-    /// lower priorities run earlier.
+    /// Position in the chain, from 0 to 9.
+    ///
+    /// It's written into the pointer as the `N` in `ext-N-<name>`.
     pub priority: u8,
-    /// Raw shell command from `lfs.extension.<name>.clean`. `%f`
-    /// placeholders are substituted with the working-tree path.
+    /// Command from `lfs.extension.<name>.clean`.
+    ///
+    /// It's split on whitespace into a program and arguments, with no shell
+    /// involved. `%f` is replaced with the working-tree path.
     pub command: String,
 }
 
 /// Things that can go wrong while running [`clean`].
 #[derive(Debug, thiserror::Error)]
 pub enum CleanError {
-    /// Filesystem-level failure: reading the input stream, writing
-    /// the tempfile, etc.
+    /// Reading the input, writing the output, or a temporary file failed.
     #[error(transparent)]
     Io(#[from] io::Error),
-    /// The local LFS store rejected the bytes.
+    /// The store couldn't insert the object.
     #[error(transparent)]
     Store(#[from] StoreError),
-    /// A configured extension was declared with an empty `clean`
-    /// command, so there's nothing to spawn.
+    /// An extension has an empty command.
     #[error("extension {name:?} has no clean command configured")]
     ExtensionMissingCommand { name: String },
-    /// The extension subprocess couldn't be started (typically
-    /// because the binary isn't on `PATH`).
+    /// An extension's program couldn't be started, usually because it isn't
+    /// on `PATH`.
     #[error("failed to spawn extension {name:?}: {source}")]
     ExtensionSpawnFailed {
         name: String,
         #[source]
         source: io::Error,
     },
-    /// The extension subprocess started but exited non-zero.
+    /// An extension exited with a non-zero status.
     #[error("extension {name:?} exited with status {status:?}")]
     ExtensionFailed { name: String, status: Option<i32> },
 }
 
-/// Apply the clean filter to `input`, writing the resulting pointer (or the
-/// pass-through bytes) to `output`.
+/// Run the clean filter on `input` and write the pointer to `output`.
 ///
-/// Algorithm:
-/// 1. Read up to `MAX_POINTER_SIZE` bytes.
-/// 2. If those bytes parse as a valid pointer, emit them verbatim
-///    ([`CleanOutcome::Passthrough`]).
-/// 3. Otherwise stream the buffered head + the rest of `input` through
-///    each configured extension in priority order, hashing the input to
-///    each phase to record `ext-N-<name> sha256:<hash>` lines, and
-///    [`Store::insert`] the final phase's output.
+/// Input shorter than [`MAX_POINTER_SIZE`](git_lfs_pointer::MAX_POINTER_SIZE)
+/// that parses as a pointer is written out unchanged. Anything else is
+/// streamed through `extensions` in the order given, which should be by
+/// priority, and the last stage's output is inserted into the store. Each
+/// stage's input OID goes into the pointer as an `ext-N-<name>` line.
 ///
-/// `path` is the working-tree path (as passed by git on the command
-/// line / filter-process header). It substitutes for `%f` in each
-/// extension's `clean` command. May be empty when no path is known
-/// (e.g. piped invocation `git lfs clean` with no `--` arg).
+/// `path` is the working-tree path, substituted for `%f` in extension
+/// commands. It may be empty when git didn't pass one.
 pub fn clean<R: Read, W: Write>(
     store: &Store,
     input: &mut R,
@@ -134,16 +126,14 @@ pub fn clean<R: Read, W: Write>(
     let tmp_dir = store.tmp_dir();
     std::fs::create_dir_all(&tmp_dir)?;
 
-    // Stage 0: hash the original input while buffering it to a tmp file.
+    // Buffer each stage's input to a temporary file while hashing it.
     let mut combined = head.as_slice().chain(input);
     let mut current_tmp = NamedTempFile::new_in(&tmp_dir)?;
     let orig_oid = hash_and_write(&mut combined, current_tmp.as_file_mut())?;
     let mut input_oids: Vec<Oid> = Vec::with_capacity(extensions.len());
     input_oids.push(orig_oid);
 
-    // Stages 1..=N: for each extension, feed the previous stage's tmp file
-    // as stdin and capture stdout. Final stage streams directly into the
-    // store.
+    // The last extension's output goes straight into the store.
     for (i, ext) in extensions.iter().enumerate() {
         let cmd_str = ext.command.replace("%f", path);
         let mut parts = cmd_str.split_whitespace();
@@ -203,23 +193,16 @@ pub fn clean<R: Read, W: Write>(
         input_oids.push(next_oid);
     }
 
-    // The loop returns on the last extension; if `extensions` is empty
-    // we took the early return above. So this is unreachable.
     unreachable!("clean loop exited without storing")
 }
 
-/// Run `input` through the configured `extensions` chain in priority
-/// order and return the resulting [`Pointer`] without inserting the
-/// final stage's output anywhere.
+/// Compute the pointer [`clean`] would produce for `input`, without storing
+/// anything.
 ///
-/// Used by `git lfs pointer --file=X` to preview what `clean` would
-/// emit, including the `ext-N-<name>` lines, without polluting the
-/// on-disk store.
-///
-/// Mirrors [`clean`]'s extension chain except for the final stage:
-/// instead of `Store::insert`, the post-extension stream is hashed and
-/// counted in-memory and discarded. `tmp_dir` holds the per-stage
-/// scratch files (use `std::env::temp_dir()` if no store is in scope).
+/// Runs the same extension chain and hashes the last stage's output.
+/// Unlike [`clean`], it doesn't check whether the input is already a
+/// pointer. `tmp_dir` holds each stage's intermediate output, for example
+/// the store's [`tmp_dir`](Store::tmp_dir) or [`std::env::temp_dir`].
 pub fn build_pointer_with_extensions<R: Read>(
     input: &mut R,
     path: &str,
@@ -463,9 +446,8 @@ mod tests {
 
     #[test]
     fn non_canonical_pointer_passes_through_verbatim() {
-        // CRLF pointer: parses, marked non-canonical. Pass-through must keep
-        // the CRLFs, *not* re-emit the canonical (LF) encoding — otherwise the
-        // git blob hash would change underneath the user.
+        // A CRLF pointer parses as non-canonical. Pass-through must keep the
+        // CRLFs rather than re-encode it, or the blob hash would change.
         let (_t, store) = fixture();
         let oid_hex = "4d7a214614ab2935c943f9e0ff69d22eadbb8f32b1258daaa5e2ca24d17e2393";
         let crlf = format!("version {VERSION_LATEST}\r\noid sha256:{oid_hex}\r\nsize 12345\r\n");
@@ -501,10 +483,8 @@ mod tests {
 
     // ---------- Extensions ----------
 
-    /// Use `tr a-z A-Z` (POSIX, present everywhere) as a stand-in for the
-    /// case-inverter test extension. Verifies the chained subprocess + OID
-    /// bookkeeping; the upstream Go test driver covers the more elaborate
-    /// case-inverter semantics end-to-end.
+    /// Use `tr a-z A-Z` as the extension, checking the subprocess chain and
+    /// the recorded input OID.
     #[test]
     fn single_extension_records_input_oid() {
         let (_t, store) = fixture();
@@ -547,8 +527,7 @@ mod tests {
 
     #[test]
     fn extensions_skipped_for_passthrough_pointer() {
-        // If the input is already a pointer, extensions are never invoked —
-        // upstream's `clean` short-circuits before doing anything.
+        // If the input is already a pointer, extensions are never invoked.
         let (_t, store) = fixture();
         let oid_hex = "4d7a214614ab2935c943f9e0ff69d22eadbb8f32b1258daaa5e2ca24d17e2393";
         let pointer_text = format!("version {VERSION_LATEST}\noid sha256:{oid_hex}\nsize 12345\n");

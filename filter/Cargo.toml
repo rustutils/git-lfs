@@ -15,7 +15,6 @@ categories             = ["development-tools", "filesystem"]
 [dependencies]
 git-lfs-pointer  = { workspace = true }
 git-lfs-store    = { workspace = true }
-git-lfs-transfer = { workspace = true }
 git-lfs-git      = { workspace = true }
 sha2             = { workspace = true }
 tempfile         = { workspace = true }

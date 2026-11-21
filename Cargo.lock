@@ -569,7 +569,6 @@ dependencies = [
  "git-lfs-git",
  "git-lfs-pointer",
  "git-lfs-store",
- "git-lfs-transfer",
  "sha2",
  "tempfile",
  "thiserror",

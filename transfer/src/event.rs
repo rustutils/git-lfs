@@ -1,36 +1,31 @@
-/// Per-object lifecycle events emitted by
-/// [`Transfer::download`](crate::Transfer::download) and
+/// Progress of one object in a
+/// [`Transfer::download`](crate::Transfer::download) or
 /// [`Transfer::upload`](crate::Transfer::upload).
 ///
-/// Sent on the optional [`tokio::sync::mpsc::UnboundedSender`]
-/// passed in by the caller. Order across objects is unspecified;
-/// events for a single object are ordered (Started → Progress* →
-/// Completed | Failed).
-///
-/// `Failed` carries a stringified error so the typed
-/// [`TransferError`](crate::TransferError) can still be moved into
-/// [`Report`](crate::Report); events are for display, the report is
-/// authoritative.
+/// Events for one object arrive in order: `Started`, any number of
+/// `Progress`, then `Completed` or `Failed`. An object the batch response
+/// marked with an error gets only `Failed`. Events of different objects
+/// interleave. The [`Report`](crate::Report) is the authoritative outcome.
 #[derive(Debug, Clone)]
 pub enum Event {
-    /// Transfer for `oid` is about to start.
+    /// The object's transfer is about to start.
     ///
-    /// `size` is the byte count the server reported (or the local
-    /// size, for uploads).
+    /// `size` comes from the batch response, or from the request when the
+    /// server sent 0.
     Started { oid: String, size: u64 },
 
-    /// `bytes_done` cumulative bytes have moved for this object so far.
+    /// `bytes_done` bytes of the object have moved so far.
     ///
-    /// May fire many times per object; consumers should treat values
-    /// as monotonically non-decreasing.
+    /// A retried attempt starts counting again from zero, or from the
+    /// resume offset of a resumed download, so the value can go down.
     Progress { oid: String, bytes_done: u64 },
 
-    /// Transfer succeeded.
+    /// The transfer succeeded.
     ///
-    /// For downloads, bytes are in the store and hash-verified; for
-    /// uploads, the server's verify callback (if any) has returned 2xx.
+    /// A download is verified and in the store. An upload was accepted and
+    /// verified if the server asked for it, or the server already had it.
     Completed { oid: String },
 
-    /// Transfer failed after exhausting retries.
+    /// The transfer failed, with the error's message.
     Failed { oid: String, error: String },
 }

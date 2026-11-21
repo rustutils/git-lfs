@@ -6,34 +6,24 @@ use git_lfs_store::StoreError;
 
 /// Why a per-object transfer failed.
 ///
-/// Errors with `is_retryable() == true` are retried by the queue up to
-/// [`TransferConfig::max_attempts`](crate::TransferConfig::max_attempts);
-/// everything else fails fast.
+/// Errors for which [`is_retryable`](Self::is_retryable) is true are retried
+/// up to [`TransferConfig::max_attempts`](crate::TransferConfig::max_attempts)
+/// times. Others fail the object at once.
 #[derive(Debug, thiserror::Error)]
 pub enum TransferError {
-    /// The batch endpoint returned a per-object error (404, 410, 422, …).
-    ///
-    /// Not retryable: the server has already classified the object.
+    /// The batch response carried an error for this object.
     #[error("server error for object: {} ({})", .0.message, .0.code)]
     ServerObject(ObjectError),
 
-    /// The batch response listed the object with neither `actions` nor
-    /// `error` for a download.
-    ///
-    /// The spec forbids this, but real servers do it occasionally;
-    /// surfaced here instead of panicking.
+    /// The batch response gave a download no download action and no error.
     #[error("server returned no download action for object")]
     NoDownloadAction,
 
-    /// The action URL responded with a non-success status.
+    /// An action URL answered with a non-success status.
     ///
-    /// The URL is embedded in the [`Display`](std::fmt::Display)
-    /// impl so users can see *which* endpoint failed (in
-    /// particular, what `insteadOf` rewriting did to the original
-    /// batch URL).
-    ///
-    /// `retry_after` carries the parsed `Retry-After` response
-    /// header when present; see [`retry_after`](Self::retry_after).
+    /// `url` has its query string removed, so signed URL parameters don't
+    /// end up in messages. It shows the URL after any `insteadOf`
+    /// rewriting. `retry_after` holds the response's `Retry-After` delay.
     #[error("{}", format_action_status(*.status, .url))]
     ActionStatus {
         status: u16,
@@ -41,68 +31,54 @@ pub enum TransferError {
         retry_after: Option<Duration>,
     },
 
-    /// HTTP transport failure (connection reset, TLS error, …). Retryable.
+    /// HTTP transport failure, such as a reset connection or a TLS error.
     #[error("http error: {0}")]
     Http(#[from] reqwest::Error),
 
-    /// Local I/O while reading the object file (uploads) or the staging
-    /// tempfile (downloads).
+    /// Local I/O failure, or another failure carried as a message, such as
+    /// an SSH transport error.
     #[error("local io error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// The local store rejected the bytes (most importantly, a hash
-    /// mismatch after a download).
-    ///
-    /// Not retryable per attempt: the bytes the server gave us did
-    /// not hash to what they promised.
+    /// The store rejected the bytes, most often because a download didn't
+    /// hash to its OID.
     #[error("store error: {0}")]
     Store(#[from] StoreError),
 
-    /// The OID returned by the server is not valid hex.
+    /// An OID is not valid hex.
     #[error("invalid oid from server: {0}")]
     InvalidOid(#[from] OidParseError),
 
-    /// The batch response advertised a `hash_algo` we don't implement.
-    ///
-    /// Per the spec the only required value is `sha256`; anything
-    /// else would mean recomputing every OID under a different
-    /// digest before trusting the server's actions.
+    /// The batch response named a hash algorithm other than `sha256`.
     #[error("unsupported hash algorithm: {0}")]
     UnsupportedHashAlgo(String),
 
-    /// The batch endpoint itself failed (network, auth, or decode).
+    /// The HTTP batch request failed.
     ///
-    /// Wraps the underlying [`ApiError`] with upstream's `batch
-    /// response:` prefix so a `Display` of this error matches what
-    /// users see in `GIT_TRACE` logs and shell-test grep patterns.
+    /// Displays with upstream's `batch response:` prefix.
     #[error("batch response: {0}")]
     BatchResponse(Box<ApiError>),
 
-    /// The action URL the server returned is already expired (or
-    /// expires within the safety buffer).
+    /// An action expires within 5 seconds, so it wasn't used.
     ///
-    /// Surfacing this before the upload/download avoids hitting an
-    /// action that's guaranteed to fail. Upstream re-requests a
-    /// fresh batch and retries; this crate fails fast for now.
+    /// Upstream requests a fresh batch and retries. This crate fails the
+    /// object instead.
     #[error("action \"{rel}\" expired")]
     ActionExpired { rel: String },
 
-    /// The verify action failed after exhausting `lfs.transfer.maxverifies`
-    /// attempts. Not retryable at the outer queue level because verify
-    /// owns its own retry budget. Carries the last underlying error so
-    /// the user still sees *why* verify failed.
+    /// Every verify attempt failed. Holds the last attempt's error.
+    ///
+    /// Not retried, since verify has its own budget,
+    /// [`TransferConfig::max_verifies`](crate::TransferConfig::max_verifies).
     #[error("{0}")]
     VerifyExhausted(Box<TransferError>),
 }
 
-/// Format the action-URL error message to match upstream's
-/// `lfshttp.defaultError` strings — the test suite greps these
-/// verbatim (e.g. t-pull's `pull with invalid insteadof`).
+/// Format an action status error with upstream's `lfshttp.defaultError`
+/// wording, which the upstream tests match.
 ///
-/// Statuses that upstream wraps with `NewFatalError` (5xx except 501,
-/// 507, 509) format with the `Fatal error:` prefix that
-/// `t-batch-storage-retries.sh` greps for. Everything else uses the
-/// `LFS:` prefix that upstream's wrap-with-empty-message default emits.
+/// Statuses upstream treats as fatal (5xx except 501, 507, and 509) get the
+/// `Fatal error:` prefix. The rest get `LFS:`.
 fn format_action_status(status: u16, url: &str) -> String {
     let (fatal, prefix) = match status {
         400 => (false, "Client error:"),
@@ -126,16 +102,15 @@ fn format_action_status(status: u16, url: &str) -> String {
 }
 
 impl TransferError {
-    /// Worth another attempt?
+    /// Whether the failed attempt is worth repeating.
     ///
-    /// Network blips and 5xx are retryable; spec violations and
-    /// hash mismatches are not.
+    /// True for transport errors, local I/O errors, action statuses 408,
+    /// 429, and 5xx, and batch errors the [`ApiError`] calls retryable.
     pub fn is_retryable(&self) -> bool {
         match self {
             TransferError::Http(e) => {
-                // reqwest::Error doesn't expose enough to be precise — treat
-                // any non-decode transport error as retryable. Hash mismatch
-                // surfaces via Store, not Http.
+                // reqwest::Error doesn't say enough to be precise, so treat
+                // everything but decode and builder errors as transient.
                 !e.is_decode() && !e.is_builder()
             }
             TransferError::ActionStatus { status, .. } => {
@@ -149,19 +124,15 @@ impl TransferError {
             | TransferError::UnsupportedHashAlgo(_)
             | TransferError::ActionExpired { .. }
             | TransferError::VerifyExhausted(_) => false,
-            // Defer to the wrapped ApiError. A 5xx batch response is
-            // worth retrying; a credential-not-found is not.
             TransferError::BatchResponse(e) => e.is_retryable(),
         }
     }
 
-    /// Server-supplied retry delay, if any.
+    /// The delay from an action response's `Retry-After` header.
     ///
-    /// Pulled from the `Retry-After` response header at
-    /// error-construction time. The retry loop uses this in place
-    /// of exponential backoff when `Some`. Mirrors upstream's
-    /// `errors.IsRetriableLaterError` gate. Batch-level
-    /// Retry-After isn't surfaced through `BatchResponse` yet.
+    /// When set, the retry loop waits this long instead of backing off.
+    /// Always `None` for [`BatchResponse`](Self::BatchResponse), whose
+    /// delay is read from the [`ApiError`] directly.
     pub fn retry_after(&self) -> Option<Duration> {
         match self {
             TransferError::ActionStatus { retry_after, .. } => *retry_after,
@@ -174,31 +145,26 @@ impl From<ApiError> for TransferError {
     fn from(value: ApiError) -> Self {
         match value {
             ApiError::Transport(e) => TransferError::Http(e),
-            other => {
-                // Typed Status / Decode / Url. Wrap as Io with the original
-                // message — this only fires on the batch call, which is
-                // upstream of per-object retry, so we never inspect this.
-                TransferError::Io(std::io::Error::other(other.to_string()))
-            }
+            // Other errors keep only their message. Io is retryable, so
+            // this loses the ApiError's own retry classification.
+            other => TransferError::Io(std::io::Error::other(other.to_string())),
         }
     }
 }
 
-/// Aggregate outcome of a transfer batch.
+/// Outcome of a download or upload, by OID.
 ///
-/// Successful OIDs land in `succeeded`; each failing OID gets a
-/// typed [`TransferError`] paired with it in `failed`. The two
-/// vectors together cover every object the caller asked for.
+/// Together the two lists cover every object in the batch response.
 #[derive(Debug, Default)]
 pub struct Report {
     /// OIDs of objects that completed successfully.
     pub succeeded: Vec<String>,
-    /// OIDs and reasons for objects that ultimately failed.
+    /// OIDs of objects that failed, with the reason.
     pub failed: Vec<(String, TransferError)>,
 }
 
 impl Report {
-    /// `true` when every object in the batch transferred without error.
+    /// Whether no object failed.
     pub fn is_complete_success(&self) -> bool {
         self.failed.is_empty()
     }

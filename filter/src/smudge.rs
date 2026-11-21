@@ -1,4 +1,4 @@
-//! The smudge filter: pointer-on-stdin → content-on-stdout.
+//! The smudge filter, which replaces a pointer with its object's content.
 
 use std::fs;
 use std::io::{self, Read, Write};
@@ -15,78 +15,69 @@ use crate::detect_pointer;
 
 const COPY_BUFFER: usize = 64 * 1024;
 
-/// One pointer extension's smudge side.
+/// The smudge side of one pointer extension.
 ///
-/// Mirrors [`crate::CleanExtension`]; the two are separate types
-/// because clean and smudge commands come from distinct config keys
-/// (`lfs.extension.<name>.clean` vs `.smudge`) and are consumed by
-/// different code paths.
+/// It's matched to a pointer's `ext-N-<name>` line by name.
 #[derive(Debug, Clone)]
 pub struct SmudgeExtension {
     /// Extension name, as configured under `lfs.extension.<name>`.
     pub name: String,
-    /// Single decimal digit (0-9) determining position in the chain;
-    /// smudge walks extensions in reverse priority order.
+    /// Position in the chain, from 0 to 9.
+    ///
+    /// Smudge doesn't read it. The order comes from the pointer.
     pub priority: u8,
-    /// Raw shell command from `lfs.extension.<name>.smudge`. `%f`
-    /// placeholders are substituted with the working-tree path.
+    /// Command from `lfs.extension.<name>.smudge`.
+    ///
+    /// It's split on whitespace into a program and arguments, with no shell
+    /// involved. `%f` is replaced with the working-tree path.
     pub command: String,
 }
 
 /// Result of running the [`smudge`] filter on a piece of input.
 #[derive(Debug)]
 pub enum SmudgeOutcome {
-    /// Input wasn't a pointer (or was malformed) and was emitted to
-    /// the output stream verbatim.
-    ///
-    /// Matches upstream's "smudge with invalid pointer" behavior:
-    /// git wraps everything through the filter, and non-LFS content
-    /// has to come out unchanged.
+    /// The input wasn't a pointer and was written out unchanged.
     Passthrough,
-    /// Input was a pointer; its content was streamed from the store
-    /// to the output (or it was the empty pointer, which writes
-    /// nothing).
+    /// The input was a pointer and its content was written out.
+    ///
+    /// The empty pointer writes nothing.
     Resolved(Pointer),
 }
 
 /// Things that can go wrong while running [`smudge`].
 #[derive(Debug, thiserror::Error)]
 pub enum SmudgeError {
-    /// Filesystem-level failure: reading the input, writing the
-    /// output, opening the stored object, etc.
+    /// Reading the input, writing the output, or reading the store failed.
     #[error(transparent)]
     Io(#[from] io::Error),
-    /// The pointer references an object that isn't in the local store.
-    /// [`smudge_with_fetch`] handles this by invoking the caller's fetch
-    /// closure; bare [`smudge`] surfaces it for the caller to react to.
+    /// The store doesn't have the object, or has it with a different size.
     #[error("object {} (size {}) is not present in the local store", .0.oid, .0.size)]
     ObjectMissing(Pointer),
-    /// The fetch closure passed to [`smudge_with_fetch`] failed to produce
-    /// the missing object.
+    /// The fetch closure passed to [`smudge_with_fetch`] failed.
     #[error("fetch failed: {0}")]
     FetchFailed(FetchError),
-    /// Pointer references an extension by name that isn't configured in
-    /// `lfs.extension.<name>.smudge`. Mirrors upstream's
-    /// `extension '%s' is not configured`.
+    /// The pointer names an extension that isn't in the configured list.
     #[error("extension {name:?} is not configured")]
     ExtensionNotConfigured { name: String },
-    /// Configured extension has an empty `smudge` command.
+    /// An extension has an empty command.
     #[error("extension {name:?} has no smudge command configured")]
     ExtensionMissingCommand { name: String },
-    /// Failed to spawn the extension subprocess.
+    /// An extension's program couldn't be started.
     #[error("failed to spawn extension {name:?}: {source}")]
     ExtensionSpawnFailed {
         name: String,
         #[source]
         source: io::Error,
     },
-    /// Extension subprocess exited non-zero.
+    /// An extension exited with a non-zero status.
     #[error("extension {name:?} exited with status {status:?}")]
     ExtensionFailed { name: String, status: Option<i32> },
-    /// An extension's output (or the stored object's content) didn't
-    /// hash to the OID recorded in the pointer. Either the extension
-    /// is non-deterministic, the on-disk object is corrupt, or the
-    /// extension is the wrong implementation for what cleaned the file.
+    /// A stage's output didn't hash to the OID recorded in the pointer.
+    ///
+    /// Only checked for pointers with extensions. The stored object is
+    /// checked against the pointer's OID, and each extension's output
+    /// against the OID that stage had on the clean side. Output from the
+    /// last stage has already been written when this is returned.
     #[error("OID mismatch for {stage}: expected {expected}, got {actual}")]
     OidMismatch {
         stage: String,
@@ -95,18 +86,16 @@ pub enum SmudgeError {
     },
 }
 
-/// Apply the smudge filter to `input`, writing the working-tree content
-/// (or pass-through bytes) to `output`.
+/// Run the smudge filter on `input` and write the content to `output`.
 ///
-/// 1. If `input` parses as a pointer, look the OID up in the store and
-///    stream the bytes out (running configured pointer extensions in
-///    reverse priority order when the pointer carries any).
-/// 2. If `input` doesn't parse as a pointer, pass it through verbatim.
+/// If `input` is a pointer, its object is copied from the store, through
+/// the pointer's extensions in reverse priority order if it has any. Other
+/// input is written out unchanged. Fails with
+/// [`SmudgeError::ObjectMissing`], before writing anything, if the store
+/// doesn't have the object at the pointer's size.
 ///
-/// `path` is the working-tree path passed to git's filter; substituted
-/// for `%f` in each extension's smudge command. `extensions` is the
-/// configured `lfs.extension.<name>` set; its order doesn't matter
-/// (the chain is built from `pointer.extensions` in priority order).
+/// `path` is the working-tree path, substituted for `%f` in extension
+/// commands. `extensions` can be in any order.
 pub fn smudge<R: Read, W: Write>(
     store: &Store,
     input: &mut R,
@@ -117,7 +106,6 @@ pub fn smudge<R: Read, W: Write>(
     let (head, maybe_pointer) = detect_pointer(input)?;
 
     let Some(pointer) = maybe_pointer else {
-        // Not a pointer: pass bytes through unchanged.
         output.write_all(&head)?;
         io::copy(input, output)?;
         return Ok(SmudgeOutcome::Passthrough);
@@ -127,9 +115,8 @@ pub fn smudge<R: Read, W: Write>(
         return Ok(SmudgeOutcome::Resolved(pointer));
     }
 
-    // Treat any size mismatch as "missing": same OID + different size means
-    // a corrupt or partial local copy, and the recovery path is the same
-    // as a real miss — re-download.
+    // A size mismatch means a corrupt or partial local copy, which a
+    // download fixes just like a real miss.
     if !store.contains_with_size(pointer.oid, pointer.size) {
         return Err(SmudgeError::ObjectMissing(pointer));
     }
@@ -138,15 +125,12 @@ pub fn smudge<R: Read, W: Write>(
     Ok(SmudgeOutcome::Resolved(pointer))
 }
 
-/// Like [`smudge`], but on a missing-object miss invokes `fetch` to populate
-/// the store, then streams the freshly-fetched bytes to `output`.
+/// Like [`smudge`], but calls `fetch` to download a missing object.
 ///
-/// `fetch` receives the [`Pointer`] of the missing object; the
-/// caller is expected to download exactly that OID into the local
-/// store. After a successful return, this function re-checks the
-/// store and streams the content; if the store *still* doesn't have
-/// the object, an [`SmudgeError::ObjectMissing`] is surfaced (i.e.
-/// the fetch lied).
+/// `fetch` gets the pointer and must put that object into `store`. Its
+/// error is returned as [`SmudgeError::FetchFailed`]. If it returns `Ok`
+/// and the store still doesn't have the object at the right size, this
+/// fails with [`SmudgeError::ObjectMissing`].
 pub fn smudge_with_fetch<R, W, F>(
     store: &Store,
     input: &mut R,
@@ -173,18 +157,14 @@ where
     }
 }
 
-/// Stream the working-tree content for an already-parsed `pointer` to
-/// `output`.
+/// Write the content for an already-parsed `pointer` to `output`.
 ///
-/// Used by `pull` and `checkout`, which have the pointer in hand
-/// from the index walk. `spawn_cwd` is the working directory each
-/// extension subprocess runs from: pass `Some(work_tree_root)` from
-/// pull or checkout (so a `git lfs pull` invoked from a subdirectory
-/// still finds `.git/`); the smudge filter (called by git from the
-/// work-tree root) can pass `None` to inherit the parent's cwd.
+/// The caller must check [`Store::contains_with_size`] first. This doesn't
+/// fetch, and a missing object fails as [`SmudgeError::Io`].
 ///
-/// The caller must have already verified `store.contains_with_size`;
-/// this function won't fetch.
+/// `spawn_cwd` is the directory extensions run in, or `None` for the
+/// current one. Commands run from a subdirectory pass the work-tree root, so
+/// extensions see the same directory as when git runs the filter.
 pub fn smudge_object_to<W: Write>(
     store: &Store,
     pointer: &Pointer,
@@ -209,9 +189,8 @@ fn apply_smudge_chain<W: Write>(
     extensions: &[SmudgeExtension],
     spawn_cwd: Option<&Path>,
 ) -> Result<(), SmudgeError> {
-    // Match each pointer extension to its registered config by name.
-    // Walk in *reverse* priority order — clean ran ext0 → ext1 → store;
-    // smudge undoes that with ext1 → ext0 → working tree.
+    // `pointer.extensions` is sorted by priority. Clean ran them in that
+    // order, so smudge runs them in reverse.
     let mut chain: Vec<(&SmudgeExtension, Oid)> = Vec::with_capacity(pointer.extensions.len());
     for ptr_ext in &pointer.extensions {
         let registered = extensions
@@ -232,10 +211,8 @@ fn apply_smudge_chain<W: Write>(
     let tmp_dir = store.tmp_dir();
     fs::create_dir_all(&tmp_dir)?;
 
-    // Stage 0: copy the stored object into a tmp file. Verify the
-    // input hash equals `pointer.oid` — should always hold (the store
-    // is content-addressed) but a corrupt object would otherwise
-    // surface as a confusing extension-output mismatch later on.
+    // Check the stored object too, so a corrupt object isn't reported as a
+    // mismatch in some extension's output.
     let mut current_tmp = NamedTempFile::new_in(&tmp_dir)?;
     let mut store_file = store.open(pointer.oid)?;
     let initial_oid = hash_and_write(&mut store_file, current_tmp.as_file_mut())?;
@@ -431,7 +408,8 @@ mod tests {
 
     #[test]
     fn long_non_pointer_passes_through() {
-        // > MAX_POINTER_SIZE bytes — exercises the head buffer + io::copy path.
+        // Longer than MAX_POINTER_SIZE, so both the head and the rest are
+        // copied.
         let (_t, store) = fixture();
         let content: Vec<u8> = (0..2048u32).map(|i| (i ^ (i >> 3)) as u8).collect();
         let (outcome, out) = run(&store, &content);
@@ -461,7 +439,7 @@ mod tests {
     fn size_mismatch_treated_as_missing() {
         let (_t, store) = fixture();
         let pointer_text = clean_into(&store, b"abc"); // size = 3
-        // Replace "size 3" with "size 99" — parses fine, but won't match the
+        // Replace "size 3" with "size 99". It parses fine, but won't match the
         // 3-byte object on disk.
         let tampered = String::from_utf8(pointer_text)
             .unwrap()
@@ -479,11 +457,8 @@ mod tests {
     fn fetch_populates_store_then_streams() {
         let (_t, store) = fixture();
         let content = b"to be fetched\n";
-        // Build the pointer text without inserting the object — the store
-        // is "empty" from the smudge's perspective. The fetch closure will
-        // be the one to actually populate it.
         let pointer_text = clean_into(&store, content);
-        // Wipe the just-inserted object to simulate a true miss.
+        // Remove the object so the fetch closure has to put it back.
         let parsed = git_lfs_pointer::Pointer::parse(&pointer_text).unwrap();
         std::fs::remove_file(store.object_path(parsed.oid)).unwrap();
         assert!(!store.contains(parsed.oid));
@@ -532,7 +507,7 @@ mod tests {
 
     #[test]
     fn fetch_returning_ok_but_not_inserting_still_errors() {
-        // Closure lies — claims success but didn't populate the store.
+        // The closure claims success but doesn't populate the store.
         let (_t, store) = fixture();
         let unknown = "0000000000000000000000000000000000000000000000000000000000000001";
         let pointer_text = format!("version {VERSION_LATEST}\noid sha256:{unknown}\nsize 5\n");
@@ -579,10 +554,8 @@ mod tests {
 
     // ---------- Extensions ----------
 
-    /// Round-trip clean → smudge through `tr a-z A-Z` (the lower-case-
-    /// inverter stand-in we use for cli tests too). Verifies the chained
-    /// subprocess + OID bookkeeping. The upstream Go tests exercise the
-    /// case-inverter end-to-end — this is the unit-level analog.
+    /// Round-trip clean and smudge through `tr`, checking the subprocess
+    /// chain and the OID bookkeeping.
     #[test]
     fn single_extension_round_trips() {
         let (_t, store) = fixture();
@@ -635,11 +608,8 @@ mod tests {
         );
         let mut out = Vec::new();
         let err = smudge(&store, &mut pointer_text.as_bytes(), &mut out, "x", &[]).unwrap_err();
-        // We hit ObjectMissing first because the store doesn't have the
-        // referenced OID; ExtensionNotConfigured would surface only
-        // after the object is present. Fine for this test — the goal
-        // is just to confirm we no longer error with an "unsupported"
-        // shaped variant.
+        // The store doesn't have the object, so ObjectMissing comes first.
+        // ExtensionNotConfigured would only surface once it's present.
         assert!(matches!(err, SmudgeError::ObjectMissing(_)));
     }
 }

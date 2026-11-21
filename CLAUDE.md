@@ -29,7 +29,7 @@ rates, and `NOTES.md` has the known gaps, open questions, and the path to 1.0.
 | `creds/`    | `git-lfs-creds`    | Credential helpers                                       |                               |
 | `api/`      | `git-lfs-api`      | Batch and locking HTTP client (`docs/api/`)              | creds                         |
 | `transfer/` | `git-lfs-transfer` | Transfer queue, HTTPS and pure-SSH adapters              | api, store, pointer           |
-| `filter/`   | `git-lfs-filter`   | Clean and smudge filters, filter-process                 | pointer, store, transfer, git |
+| `filter/`   | `git-lfs-filter`   | Clean and smudge filters, filter-process                 | pointer, store, git           |
 | `cli/`      | `git-lfs` (binary) | The CLI, wiring the crates together                      | all of the above              |
 
 Two more workspace members aren't published: `xtask/` (doc generation and

@@ -1,44 +1,34 @@
-//! Concurrent transfer queue with HTTPS and pure-SSH adapters for Git LFS uploads and downloads.
+//! Concurrent transfer queue for Git LFS uploads and downloads.
 //!
-//! When Git LFS wants to transfer files between a client and a
-//! server, it first asks the server's batch endpoint with a list
-//! of OIDs and sizes for the files involved, and the server
-//! returns one URL per object (typically a presigned link to S3
-//! or a CDN, plus auth headers and an expiry window); the client
-//! then PUTs or GETs the bytes against those URLs.
+//! A [`Transfer`] sends a batch request for a list of objects, then moves
+//! each object's bytes between the server and the local
+//! [`Store`](git_lfs_store::Store), several at once. Downloads are hashed
+//! and only committed to the store when they match their OID.
 //!
-//! This crate implements the client side of that dance. It sits
-//! between [`git_lfs_api`] and [`git_lfs_store`]: given a list of
-//! `(oid, size)` pairs, [`Transfer`] negotiates the batch, drives
-//! the per-object byte movement concurrently, and streams
-//! [`Event`]s back to the caller.
+//! Build a [`Transfer`] from an API client, a store, and a
+//! [`TransferConfig`], then call [`Transfer::download`] or
+//! [`Transfer::upload`] with the objects. The config sets how many objects
+//! are in flight at once, the retry budget and backoff, the batch size, and
+//! optional rewriters for action URLs. Network errors, local I/O errors,
+//! and 408, 429, or 5xx responses are retried with exponential backoff, or
+//! after the server's `Retry-After` delay. Interrupted downloads resume from
+//! the partial file with a `Range` request.
 //!
-//! [`Transfer`] runs at most [`TransferConfig::concurrency`]
-//! transfers in flight at once. Each transfer uses its own retry
-//! loop with exponential backoff per [`TransferConfig`]. Outcomes
-//! land in a [`Report`] keyed by OID; per-object [`TransferError`]s
-//! sit alongside successful OIDs so partial failures don't tear
-//! down the queue.
+//! The [`backend::Backend`] picks how bytes move. [`Transfer::new`] uses
+//! HTTPS: batch requests go through the [`git_lfs_api`] client and objects
+//! go to the action URLs the server returns. [`Transfer::new_ssh`] uses the
+//! pure-SSH protocol in [`sshtransfer`] (see the [SSH transfer
+//! spec][ssh-spec]), which runs batch requests and transfers over a pool of
+//! SSH connections. Its [`SshBackend`](backend::SshBackend) can carry an
+//! HTTPS fallback, used when the SSH connection can't be set up (for
+//! example when the server has no `git-lfs-transfer`).
 //!
-//! [`git_lfs_store::Store`] is a synchronous API while transfers
-//! are async. Downloads pipe HTTP body bytes through
-//! `tokio_util::io::SyncIoBridge` into a `spawn_blocking` task
-//! that calls `store.insert_verified`, so the full object is
-//! never buffered in memory and the async runtime isn't blocked
-//! while a multi-gigabyte object lands.
+//! Pass a channel to receive [`Event`]s as objects start, make progress,
+//! and finish. The returned [`Report`] lists every object as succeeded or
+//! failed with its [`TransferError`], so one bad object doesn't stop the
+//! rest. The call itself returns an error only when the batch as a whole
+//! fails, such as a failed batch request.
 //!
-//! Two transfer methods are implemented: the `basic` HTTPS
-//! transfer (see the [basic-transfers spec][spec]) and the
-//! pure-SSH protocol in [`sshtransfer`] (see the
-//! [SSH transfer spec][ssh-spec]), which carries batch requests,
-//! object transfers, and locks over a pool of multiplexed SSH
-//! connections. [`backend::Backend`] picks between them per
-//! remote. The `tus` and custom-transfer-agent adapters are not
-//! implemented yet.
-//!
-//! [`git_lfs_api`]: https://docs.rs/git-lfs-api
-//! [`git_lfs_store`]: https://docs.rs/git-lfs-store
-//! [spec]: https://gitlab.com/rustutils/git-lfs/-/blob/master/docs/api/basic-transfers.md
 //! [ssh-spec]: https://gitlab.com/rustutils/git-lfs/-/blob/master/docs/proposals/ssh_adapter.md
 
 pub mod backend;

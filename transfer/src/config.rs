@@ -1,62 +1,56 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Optional URL transform applied to every action `href` returned by the
-/// batch endpoint before the transfer adapter dials it.
+/// Rewrites an action URL from the batch response before it's used.
 ///
-/// Used to plumb `lfs.transfer.enablehrefrewrite` + `url.<base>.insteadOf`
-/// from the caller (which has the git-config context) down into the queue.
+/// Lets the caller apply `url.<base>.insteadOf` rules when
+/// `lfs.transfer.enablehrefrewrite` is set.
 pub type UrlRewriter = Arc<dyn Fn(&str) -> String + Send + Sync>;
 
-/// Tunables for the transfer queue.
-///
-/// Defaults aim at "sensible for a developer laptop on a corporate
-/// VPN": not too aggressive on concurrency, generous retries for
-/// flaky links. Upstream Git LFS scales `concurrency` to CPU count;
-/// this crate hard-codes 8 and lets callers override.
+/// Settings for the transfer queue.
 #[derive(Clone)]
 pub struct TransferConfig {
-    /// Max number of concurrent in-flight transfers.
-    pub concurrency: usize,
-    /// Total attempts per object, including the first.
+    /// Maximum number of objects transferring at once.
     ///
-    /// 9 means "try once, then up to 8 retries". Matches upstream's
-    /// `defaultMaxRetries = 8` (upstream counts retries; we count
-    /// attempts, hence +1).
+    /// Default 8. Upstream Git LFS scales its default with the CPU count.
+    pub concurrency: usize,
+    /// Total attempts per object and per HTTP batch request, including
+    /// the first.
+    ///
+    /// Default 9, which is upstream's 8 retries plus the first attempt.
     pub max_attempts: u32,
-    /// Sleep before the first retry. Doubled before each subsequent retry,
-    /// capped at [`backoff_max`](Self::backoff_max).
+    /// Delay before the first retry.
+    ///
+    /// Doubled after each retry that wasn't given a `Retry-After` delay,
+    /// up to [`backoff_max`](Self::backoff_max). Default 100 ms.
     pub initial_backoff: Duration,
-    /// Upper bound for exponential backoff between retries.
+    /// Upper bound for the backoff delay. Default 30 s.
     pub backoff_max: Duration,
-    /// Optional rewriter applied to download action URLs before
-    /// transfer. Carries `url.<base>.insteadOf` when
-    /// `lfs.transfer.enablehrefrewrite=true`. `None` ⇒ no rewriting.
+    /// Rewriter for download action URLs.
     pub url_rewriter: Option<UrlRewriter>,
-    /// Optional rewriter applied to upload + verify action URLs. Carries
-    /// `url.<base>.pushInsteadOf` (falling back to `insteadOf`) when
-    /// `lfs.transfer.enablehrefrewrite=true`. `None` ⇒ no push-direction
-    /// rewriting, in which case the upload-side falls back to
-    /// `url_rewriter`.
+    /// Rewriter for upload and verify action URLs.
+    ///
+    /// Typically applies `url.<base>.pushInsteadOf`. When `None`,
+    /// [`url_rewriter`](Self::url_rewriter) is used instead.
     pub upload_url_rewriter: Option<UrlRewriter>,
-    /// Max objects per `POST /objects/batch` call. The transfer queue
-    /// chunks the input list into runs of this size and issues one
-    /// batch API call per chunk. Default: 100 (matches upstream's
-    /// `lfs.transfer.batchSize` default). Values < 1 are clamped to 1.
+    /// Maximum objects per batch request.
+    ///
+    /// Larger lists are split into chunks of this size, sent one after
+    /// another. Default 100, as for upstream's `lfs.transfer.batchSize`.
+    /// Zero is treated as 1.
     pub batch_size: usize,
-    /// `lfs.<url>.contenttype` — when `true` (default), the basic
-    /// upload adapter sniffs the first 512 bytes of each object and
-    /// sets the `Content-Type` header on the action PUT to the
-    /// detected MIME type. When `false`, the adapter sends
-    /// `application/octet-stream` so a misconfigured CDN can't reject
-    /// the upload based on its content sniffing. Honored only when
-    /// the batch response didn't already set a `Content-Type` in
-    /// `action.header`.
+    /// Whether HTTP uploads detect the `Content-Type` from the object.
+    ///
+    /// Follows `lfs.<url>.contenttype`. When `true` (the default), the
+    /// first 512 bytes pick the type. When `false`, uploads send
+    /// `application/octet-stream`. A `Content-Type` in the upload action's
+    /// headers always wins.
     pub detect_content_type: bool,
-    /// `lfs.transfer.maxverifies` — total attempts against the verify
-    /// action URL after a successful upload (when the batch response
-    /// included one). Default 3; values below 3 fall back to the
-    /// default, matching upstream's `tq/verify.go` clamp.
+    /// Total attempts at the verify action after an HTTP upload.
+    ///
+    /// Follows `lfs.transfer.maxverifies`. Default 3. The value is used as
+    /// given: upstream's minimum of 3 is applied by the caller, and 0
+    /// fails every verify without sending it.
     pub max_verifies: u32,
 }
 

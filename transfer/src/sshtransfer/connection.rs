@@ -1,28 +1,23 @@
-//! Persistent SSH subprocess that speaks the pure-SSH transfer
-//! protocol.
+//! One SSH subprocess speaking the pure-SSH transfer protocol.
 //!
-//! Each [`Connection`] owns one long-lived `ssh user@host
-//! git-lfs-transfer <path> <op>` subprocess, with pkt-line framed
-//! stdin/stdout. On spawn the connection performs the version
-//! handshake (`version=1` capability → `version 1` → `status 200`);
-//! [`Connection::end`] sends `quit`, drains the response, closes
-//! the pipes, and waits for the child.
+//! A [`Connection`] runs `ssh [options] <user@host> "git-lfs-transfer
+//! <path> <operation>"` and speaks pkt-line over its stdin and stdout.
+//! [`Connection::spawn`] does the version handshake, and
+//! [`Connection::end`] sends `quit`.
 //!
-//! Multiplexing follows upstream's `ssh/connection.go` pattern: the
-//! first connection in a transfer session creates a control socket
-//! (`-oControlMaster=yes -oControlPath=<sock>`); later connections
-//! to the same endpoint reuse that socket
-//! (`-oControlMaster=no -oControlPath=<sock>`) so each subsequent
-//! SSH spawn skips the handshake. Disabled on Windows by default
-//! (matches `lfs.ssh.automultiplex` upstream default) and when the
-//! user picks a non-OpenSSH variant.
+//! With OpenSSH, connections can share one TCP connection. The first one
+//! is started with `-oControlMaster=yes -oControlPath=<socket>` and later
+//! ones with `-oControlMaster=no` and the same path, so they skip the SSH
+//! handshake. The caller picks the role with [`Multiplex`].
 //!
-//! Trace lines emitted at the `GIT_TRACE` level — `t-batch-transfer.sh`
-//! greps them by name:
+//! When `GIT_TRACE` is set, these lines go to stderr. The upstream shell
+//! tests match on them:
+//!
 //! - `spawning pure SSH connection (#N)`
-//! - `pure SSH connection successful (#N)` / `... unsuccessful (#N)`
+//! - `exec: <program> <args>`
+//! - `pure SSH connection successful (#N)` or
+//!   `pure SSH connection unsuccessful (#N)`
 //! - `terminating pure SSH connection (#N)`
-//! - `exec: <prog> <args>` (mirrors `subprocess.ExecCommand`)
 
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
@@ -30,14 +25,13 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use crate::sshtransfer::pktline::{self, Packet, Reader, TextPacket, Writer};
 
-/// The two SSH-transfer operations. Mirrors
-/// [`creds::SshOperation`](https://docs.rs/git-lfs-creds) so callers
-/// that already pick a `SshOperation` upstack don't have to translate.
+/// The operation a connection is opened for, passed to the remote
+/// `git-lfs-transfer` command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Operation {
-    /// `git-lfs-transfer <path> upload` — push side.
+    /// `upload`, for pushing objects.
     Upload,
-    /// `git-lfs-transfer <path> download` — fetch side.
+    /// `download`, for fetching objects.
     Download,
 }
 
@@ -59,26 +53,22 @@ impl From<git_lfs_api::Operation> for Operation {
     }
 }
 
-/// SSH client variant. Drives port-flag selection (`-p` vs `-P`),
-/// the dash-leading user-and-host defense, and whether multiplexing
-/// is supported.
+/// SSH client variant, which decides how the command line is built.
 ///
-/// Putty / TortoisePlink are accepted for argv shaping but multiplexing
-/// is disabled for them (matching upstream).
+/// Only [`Variant::Default`] supports multiplexing and the `--`
+/// separator. The others ignore [`Multiplex`] and strip leading dashes
+/// from the host instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Variant {
-    /// OpenSSH `ssh`. Default. Supports `--` separator and
-    /// `-oControlMaster` multiplexing.
+    /// OpenSSH `ssh`.
     #[default]
     Default,
-    /// "Simple" SSH (e.g. busybox `dropbear`). Doesn't support `--`,
-    /// so leading-dash user-and-host is sanitized by stripping the
-    /// dashes.
+    /// Git's `simple` SSH variant, for clients that take no options
+    /// beyond `-p`.
     Simple,
-    /// PuTTY `plink`. Uses `-P` for port; no `--` support; no
-    /// multiplexing.
+    /// PuTTY `plink`, which takes `-P` for the port.
     Putty,
-    /// TortoisePlink. Same as PuTTY but prepends `-batch`.
+    /// TortoisePlink. Like PuTTY, plus `-batch`.
     Tortoise,
 }
 
@@ -102,13 +92,14 @@ impl Variant {
 /// Endpoint addressing for the SSH command.
 #[derive(Debug, Clone)]
 pub struct Metadata {
-    /// `user@host` form (or just `host`). The bit that goes onto
-    /// the ssh command line after any flags.
+    /// `user@host`, or just `host`.
     pub user_and_host: String,
-    /// Optional port; emitted as `-p N` (or `-P N` for PuTTY).
+    /// Port, passed as `-p` (or `-P` for PuTTY and TortoisePlink).
     pub port: Option<String>,
-    /// Server-side path. Becomes the first positional argument to
-    /// the remote `git-lfs-transfer` command.
+    /// Repository path on the server.
+    ///
+    /// It is pasted into the remote command line as is, without shell
+    /// quoting.
     pub path: String,
 }
 
@@ -119,8 +110,8 @@ pub enum ConnectionError {
     /// Failed to spawn or talk to the ssh subprocess.
     #[error("io error talking to ssh: {0}")]
     Io(#[from] io::Error),
-    /// SSH protocol-level error — the subprocess started but the
-    /// handshake or a subsequent command failed.
+    /// The server sent something the protocol doesn't allow, or the
+    /// handshake failed.
     #[error("ssh protocol error: {0}")]
     Protocol(String),
     /// SSH subprocess exited non-zero with the given stderr.
@@ -128,48 +119,43 @@ pub enum ConnectionError {
     Failed(String),
 }
 
-/// Configuration for a single connection spawn. `program` is the
-/// resolved SSH command (e.g. from `GIT_SSH_COMMAND` /
-/// `GIT_SSH` / `ssh`); `variant` controls argv shaping; `multiplex`
-/// chooses control-master role.
+/// How to spawn one [`Connection`].
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// Connection sequence number for trace lines (`#0`, `#1`, …).
+    /// Connection number shown in trace lines as `#N`.
     pub id: u32,
-    /// SSH executable. Split on whitespace — first token is the
-    /// program, remainder are pre-arguments (matches the
-    /// `GIT_SSH_COMMAND` shape that upstream parses with
-    /// `tools.QuotedFields`).
+    /// SSH command, such as the value of `GIT_SSH_COMMAND`.
+    ///
+    /// It is split on whitespace: the first word is the program and the
+    /// rest are arguments placed before any others. Quotes are not
+    /// honored and no shell is involved.
     pub program: String,
-    /// SSH client variant. See [`Variant`].
+    /// SSH client variant.
     pub variant: Variant,
-    /// Endpoint addressing.
+    /// Where to connect.
     pub metadata: Metadata,
-    /// Transfer operation. Forwarded to `git-lfs-transfer` as the
-    /// second positional argument.
+    /// Operation passed to the remote command.
     pub operation: Operation,
-    /// Multiplexing role for this connection. See [`Multiplex`].
+    /// Multiplexing role.
     pub multiplex: Multiplex,
-    /// Remote command name. Defaults to `"git-lfs-transfer"` in
-    /// [`Config::new`]; tests can swap in a stub.
+    /// Command run on the server. [`Config::new`] sets
+    /// `git-lfs-transfer`.
     pub remote_command: String,
 }
 
 /// Role this connection plays in SSH multiplexing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Multiplex {
-    /// Not multiplexing — plain SSH connection. Used for non-OpenSSH
-    /// variants and when the user disabled `lfs.ssh.automultiplex`.
+    /// A plain SSH connection.
     Disabled,
-    /// First connection in the session; creates a new control
-    /// socket at `path`. Subsequent connections share it.
+    /// Create the control socket at `path` for later connections.
     Master { path: PathBuf },
-    /// Reuse an existing control socket created by a master.
+    /// Connect through the control socket at `path`.
     Client { path: PathBuf },
 }
 
 impl Config {
-    /// Build a config with `remote_command = "git-lfs-transfer"`.
+    /// Build a config for the default variant, without multiplexing.
     pub fn new(
         id: u32,
         program: impl Into<String>,
@@ -188,18 +174,18 @@ impl Config {
     }
 }
 
-/// Pkt-line framed request/response layer, independent of the
-/// underlying I/O. Connection wraps it over a child process's
-/// stdio; tests can substitute in-memory pipes (`Cursor<Vec<u8>>` +
-/// `Vec<u8>`) to exercise the read/write primitives without
-/// spawning a subprocess.
+/// Request and response messages of the protocol, over any reader and
+/// writer pair.
+///
+/// [`Connection`] runs it over the SSH subprocess's stdout and stdin.
+/// Each `send_*` method writes one whole request and flushes the writer.
 pub struct ProtoStream<R: Read, W: Write> {
     reader: Reader<R>,
     writer: Writer<W>,
 }
 
 impl<R: Read, W: Write> ProtoStream<R, W> {
-    /// Wrap an existing read + write pair.
+    /// Wrap a reader for responses and a writer for requests.
     pub fn new(reader: R, writer: W) -> Self {
         Self {
             reader: Reader::new(reader),
@@ -207,8 +193,7 @@ impl<R: Read, W: Write> ProtoStream<R, W> {
         }
     }
 
-    /// Send a command + optional arguments terminated by a flush
-    /// packet (no delim, no data).
+    /// Send a command and its arguments, then a flush packet.
     pub fn send_command(&mut self, command: &str, args: &[&str]) -> io::Result<()> {
         self.writer.write_text(command)?;
         for arg in args {
@@ -218,9 +203,11 @@ impl<R: Read, W: Write> ProtoStream<R, W> {
         self.writer.get_mut().flush()
     }
 
-    /// Send a command + arguments, then a delim packet, then a list
-    /// of text lines, then a flush. Used for `batch` requests where
-    /// the `<oid> <size>` rows go after the delim.
+    /// Send a command and its arguments, a delim packet, text lines, and
+    /// a flush packet.
+    ///
+    /// This is the shape of a `batch` request, whose `<oid> <size>`
+    /// lines follow the delim.
     pub fn send_command_with_lines(
         &mut self,
         command: &str,
@@ -239,14 +226,14 @@ impl<R: Read, W: Write> ProtoStream<R, W> {
         self.writer.get_mut().flush()
     }
 
-    /// Send a command + arguments, then a delim packet, then the
-    /// contents of `data` chunked into max-size pkt-line packets,
-    /// then a flush. Used for `put-object` uploads.
+    /// Send a command and its arguments, a delim packet, everything
+    /// read from `data`, and a flush packet.
     ///
-    /// Reads from `data` until EOF, sizing each packet at
-    /// [`pktline::MAX_DATA`] (65515 bytes). Final flush goes out
-    /// even if the data reader is empty — that's the signal to the
-    /// server that the body is complete.
+    /// This is the shape of a `put-object` request. `data` is read until
+    /// EOF into packets of at most [`pktline::MAX_DATA`] bytes. An empty
+    /// `data` sends the delim and flush with nothing between.
+    ///
+    /// If reading `data` fails, the request is left half sent.
     pub fn send_command_with_data<D: Read>(
         &mut self,
         command: &str,
@@ -270,8 +257,10 @@ impl<R: Read, W: Write> ProtoStream<R, W> {
         self.writer.get_mut().flush()
     }
 
-    /// Read packets until the next flush, returning them as text
-    /// strings. Used for capability advertisements (server hello).
+    /// Read text packets up to a flush, such as the server's capability
+    /// advertisement.
+    ///
+    /// A delim packet is an error.
     pub fn read_packet_list(&mut self) -> Result<Vec<String>, ConnectionError> {
         let mut out = Vec::new();
         loop {
@@ -287,10 +276,10 @@ impl<R: Read, W: Write> ProtoStream<R, W> {
         }
     }
 
-    /// Read a `status <code>` line followed by a flush. Used after
-    /// commands that return no other data (`version`, `quit`,
-    /// `verify-object` success). Returns the parsed code plus any
-    /// intermediate args.
+    /// Read a response made of `status <code>`, arguments, and a flush.
+    ///
+    /// Returns the code and the arguments. This is the response to
+    /// `quit`. A delim packet is an error.
     pub fn read_status(&mut self) -> Result<(u16, Vec<String>), ConnectionError> {
         let mut status: Option<u16> = None;
         let mut args = Vec::new();
@@ -315,13 +304,13 @@ impl<R: Read, W: Write> ProtoStream<R, W> {
         }
     }
 
-    /// Read `status <code>`, optional args, until the delim packet.
-    /// Used as the prelude of `get-object` / `batch` responses where
-    /// the payload after the delim is binary or text and the caller
-    /// drains it separately.
+    /// Read `status <code>` and arguments up to a delim packet.
     ///
-    /// Errors on EOF before the delim arrives, on an unexpected flush
-    /// (no delim seen), or on a malformed status line.
+    /// Returns the code and the arguments, leaving the rest of the
+    /// response for the caller. A `get-object` reply continues with
+    /// [`copy_data_until_flush`](Self::copy_data_until_flush) on success
+    /// and [`read_text_lines_until_flush`](Self::read_text_lines_until_flush)
+    /// on error. A flush before the delim is an error.
     pub fn read_status_until_delim(&mut self) -> Result<(u16, Vec<String>), ConnectionError> {
         let mut status: Option<u16> = None;
         let mut args = Vec::new();
@@ -348,13 +337,10 @@ impl<R: Read, W: Write> ProtoStream<R, W> {
         }
     }
 
-    /// Drain pkt-line data packets to `writer` until the flush
-    /// packet, returning the number of bytes written. Used after
-    /// [`read_status_until_delim`](Self::read_status_until_delim) to
-    /// stream a `get-object` body to disk.
+    /// Copy data packets to `writer` up to a flush, returning the number
+    /// of bytes copied.
     ///
-    /// Errors if a delim packet appears mid-stream (the protocol
-    /// disallows that within the payload section).
+    /// A delim packet is an error.
     pub fn copy_data_until_flush<O: Write>(
         &mut self,
         writer: &mut O,
@@ -376,10 +362,9 @@ impl<R: Read, W: Write> ProtoStream<R, W> {
         }
     }
 
-    /// Drain text packets until the flush packet, returning them as
-    /// strings with the trailing LF stripped. Used to read an error
-    /// message after a non-2xx `read_status_until_delim` and to
-    /// collect `list-lock` data rows.
+    /// Read text packets up to a flush.
+    ///
+    /// A delim packet is an error.
     pub fn read_text_lines_until_flush(&mut self) -> Result<Vec<String>, ConnectionError> {
         let mut lines = Vec::new();
         loop {
@@ -395,9 +380,12 @@ impl<R: Read, W: Write> ProtoStream<R, W> {
         }
     }
 
-    /// Read `status <code>`, optional args, delim, optional
-    /// follow-up text lines, flush. Used for `version`, `batch`
-    /// (error path), and `list-lock`.
+    /// Read a response made of `status <code>`, arguments, an optional
+    /// delim packet, text lines, and a flush.
+    ///
+    /// Returns the code, the arguments, and the lines after the delim.
+    /// Most responses have this shape, including those to `version`,
+    /// `batch`, `put-object`, `verify-object`, and the lock commands.
     pub fn read_status_with_lines(
         &mut self,
     ) -> Result<(u16, Vec<String>, Vec<String>), ConnectionError> {
@@ -434,12 +422,10 @@ impl<R: Read, W: Write> ProtoStream<R, W> {
 
 /// One SSH subprocess speaking the pure-SSH transfer protocol.
 ///
-/// Holds the [`Child`] handle plus the pkt-line framed protocol
-/// stream over its stdio. Drop semantics: the inner pipes are
-/// closed when the struct drops, which signals the remote
-/// `git-lfs-transfer` process to exit; callers should normally
-/// invoke [`Connection::end`] instead so the protocol's `quit`
-/// handshake completes cleanly.
+/// Dropping a connection kills the subprocess if it is still running and
+/// waits for it. Use [`Connection::end`] to send `quit` first.
+///
+/// The subprocess's stderr is piped but never read.
 pub struct Connection {
     id: u32,
     child: Child,
@@ -449,10 +435,7 @@ pub struct Connection {
 impl Connection {
     /// Spawn the SSH subprocess and complete the version handshake.
     ///
-    /// Emits the `exec:` and `spawning pure SSH connection (#N)`
-    /// trace lines before the spawn, and `pure SSH connection
-    /// successful (#N)` / `... unsuccessful (#N)` after the
-    /// handshake outcome.
+    /// On failure the subprocess is killed.
     pub fn spawn(config: &Config) -> Result<Self, ConnectionError> {
         let argv = build_argv(config);
         let (prog, args) = argv.split_first().expect("argv is non-empty");
@@ -495,25 +478,20 @@ impl Connection {
         }
     }
 
-    /// Sequence number assigned at spawn time (used in trace lines).
+    /// The connection number from [`Config::id`].
     pub fn id(&self) -> u32 {
         self.id
     }
 
-    /// Borrow the underlying protocol stream so callers can drive
-    /// the send/read primitives directly (e.g. for `batch`,
-    /// `get-object`, `put-object`).
+    /// Borrow the protocol stream to send commands and read responses.
     pub fn stream(&mut self) -> &mut ProtoStream<ChildStdout, ChildStdin> {
         &mut self.stream
     }
 
-    /// Send `quit`, read the success response, and tear down the
-    /// subprocess.
+    /// Send `quit`, check for `status 200`, and end the subprocess.
     ///
-    /// Emits `terminating pure SSH connection (#N)` before sending
-    /// the quit packet. Errors during the protocol exchange are
-    /// surfaced, but the subprocess is always reaped before
-    /// returning so we don't leave zombies.
+    /// Whether or not the exchange succeeds, the subprocess is then
+    /// killed if still running, and reaped.
     pub fn end(mut self) -> Result<(), ConnectionError> {
         trace(format_args!(
             "terminating pure SSH connection (#{id})",
@@ -526,27 +504,22 @@ impl Connection {
                 "quit returned status {status}"
             )));
         }
-        // Drop runs as `self` falls out of scope: closes the inner
-        // pipes (signaling EOF to the child) and reaps via kill+wait.
+        // Dropping `self` reaps the child, killing it if it is still
+        // running.
         Ok(())
     }
 }
 
 impl Drop for Connection {
-    /// Kill the SSH subprocess if it's still running. `std::process::Child`
-    /// doesn't reap on drop by default — it just abandons the child, which
-    /// leaks file descriptors and (for long-lived multiplex masters) keeps
-    /// SSH connections open. We send SIGKILL and reap so the OS frees the
-    /// resources before the next test runs in the same `make test` session.
+    /// Kill the subprocess if it is still running, and reap it.
     ///
-    /// No trace emission — the `terminating pure SSH connection (#N)`
-    /// line is reserved for [`end()`](Self::end) (clean quit). Connections
-    /// that get dropped without going through `end()` (e.g. the lock-pool
-    /// master that upstream's tests expect to "never shut down cleanly")
-    /// stay silent here so the `assert_ssh_transfer_sessions` counts work.
+    /// [`Child`] does neither on drop, which would leave a multiplexing
+    /// master running. This emits no trace line: the upstream tests count
+    /// `terminating pure SSH connection` lines, and expect none for
+    /// connections that are dropped without [`end`](Connection::end),
+    /// such as the one used for locks.
     fn drop(&mut self) {
-        // try_wait first — if the child already exited (e.g. after
-        // `quit`), the kill is a no-op and wait reaps the zombie.
+        // `try_wait` reaps a child that has already exited.
         if let Ok(Some(_)) = self.child.try_wait() {
             return;
         }
@@ -586,9 +559,10 @@ fn parse_status(line: &str) -> Result<u16, ConnectionError> {
         .map_err(|_| ConnectionError::Protocol(format!("malformed status code in {line:?}")))
 }
 
-/// Assemble the argv for the `ssh ... git-lfs-transfer <path>
-/// <op>` invocation. Mirrors upstream's `GetLFSExeAndArgs` in
-/// `ssh/ssh.go`.
+/// Build the ssh command line, following upstream's `GetLFSExeAndArgs`.
+///
+/// Unlike upstream, the remote command is not shell-quoted and the
+/// program is split on whitespace instead of being run through a shell.
 fn build_argv(config: &Config) -> Vec<String> {
     let mut parts = config.program.split_whitespace();
     let prog = parts.next().unwrap_or("ssh").to_owned();
@@ -619,12 +593,10 @@ fn build_argv(config: &Config) -> Vec<String> {
         argv.push(port.clone());
     }
 
-    // Defense against `ssh://-oProxyCommand=...` style URLs that
-    // would otherwise inject SSH options via the user-and-host
-    // slot. Default variant uses `--` to mark end-of-options;
-    // simple/putty/tortoise don't support that, so we strip the
-    // leading dashes instead — matches upstream's
-    // `sshOptPrefixRE.ReplaceAllString` in `ssh/ssh.go`.
+    // A host like `-oProxyCommand=...` from an `ssh://` URL would be
+    // read as an option. OpenSSH takes `--` to end the options. The
+    // other variants don't, so the leading dashes are stripped, as
+    // upstream does.
     let user_and_host = config.metadata.user_and_host.as_str();
     if user_and_host.starts_with('-') {
         if config.variant.supports_dash_separator() {
@@ -758,7 +730,7 @@ mod tests {
 
     #[test]
     fn argv_multiplex_ignored_for_non_default_variant() {
-        // PuTTY / Tortoise don't speak OpenSSH multiplexing, so the
+        // PuTTY and TortoisePlink don't speak OpenSSH multiplexing, so the
         // -oControl* options would error out. Builder drops them.
         let mut c = Config::new(0, "plink", meta("git@host"), Operation::Upload);
         c.variant = Variant::Putty;
@@ -791,7 +763,7 @@ mod tests {
         );
         c.variant = Variant::Simple;
         let argv = build_argv(&c);
-        // Dashes stripped; no `--` separator added.
+        // Dashes stripped, and no `--` separator added.
         assert!(argv.iter().any(|a| a == "oProxyCommand=evil"));
         assert!(!argv.iter().any(|a| a == "--"));
         assert!(!argv.iter().any(|a| a == "-oProxyCommand=evil"));
@@ -799,7 +771,7 @@ mod tests {
 
     #[test]
     fn argv_program_split_passes_extra_args() {
-        // `GIT_SSH_COMMAND="ssh -i mykey -v"` style — split on
+        // `GIT_SSH_COMMAND="ssh -i mykey -v"` style: split on
         // whitespace, first token is the program, rest are
         // pre-arguments.
         let c = Config::new(0, "ssh -i mykey -v", meta("git@host"), Operation::Upload);
@@ -860,7 +832,7 @@ mod tests {
         let mut s = stream(&[]);
         s.send_command("ping", &[]).unwrap();
         let bytes = into_writer_bytes(s);
-        // 0008 + "ping\n" + 0000
+        // "ping\n" is 5 bytes, so the header is 0009. Then a flush.
         assert_eq!(bytes, b"0009ping\n0000");
     }
 
@@ -870,12 +842,10 @@ mod tests {
         s.send_command("batch", &["transfer=ssh", "hash-algo=sha256"])
             .unwrap();
         let bytes = into_writer_bytes(s);
-        // 000a batch\n
-        // 0011 transfer=ssh\n (16+4 = 0014?)... Let me compute precisely.
-        // "batch\n" = 6 bytes → header 000a (10 bytes total)
-        // "transfer=ssh\n" = 13 bytes → header 0011 (17 bytes total)
-        // "hash-algo=sha256\n" = 17 bytes → header 0015 (21 bytes total)
-        // flush = 0000
+        // "batch\n" is 6 bytes, so header 000a.
+        // "transfer=ssh\n" is 13 bytes, so header 0011.
+        // "hash-algo=sha256\n" is 17 bytes, so header 0015.
+        // Then a flush.
         assert_eq!(
             bytes,
             b"000abatch\n0011transfer=ssh\n0015hash-algo=sha256\n0000",
@@ -888,7 +858,8 @@ mod tests {
         s.send_command_with_lines("batch", &["transfer=ssh"], &["abc123 100", "def456 200"])
             .unwrap();
         let bytes = into_writer_bytes(s);
-        // batch\n(10) + transfer=ssh\n(17) + 0001 + abc123 100\n(15) + def456 200\n(15) + 0000
+        // batch\n(10), transfer=ssh\n(17), 0001, abc123 100\n(15),
+        // def456 200\n(15), 0000
         assert_eq!(
             bytes,
             b"000abatch\n0011transfer=ssh\n0001000fabc123 100\n000fdef456 200\n0000",
@@ -902,7 +873,7 @@ mod tests {
         s.send_command_with_data("put-object abc", &["size=11"], &mut data)
             .unwrap();
         let bytes = into_writer_bytes(s);
-        // put-object abc\n(19) + size=11\n(12) + 0001 + hello world(15) + 0000
+        // put-object abc\n(19), size=11\n(12), 0001, hello world(15), 0000
         assert_eq!(
             bytes,
             b"0013put-object abc\n000csize=11\n0001000fhello world0000",
@@ -912,20 +883,19 @@ mod tests {
     #[test]
     fn send_command_with_data_handles_empty_payload() {
         // A reader that immediately yields 0 bytes should still
-        // produce a well-formed delim + flush envelope — that's how
-        // we signal an empty body to the server.
+        // still send the delim and the flush. That is an empty body.
         let mut s = stream(&[]);
         let mut data = Cursor::new(Vec::<u8>::new());
         s.send_command_with_data("put-object abc", &[], &mut data)
             .unwrap();
         let bytes = into_writer_bytes(s);
-        // put-object abc\n(19) + 0001 + 0000
+        // put-object abc\n(19), 0001, 0000
         assert_eq!(bytes, b"0013put-object abc\n00010000");
     }
 
     #[test]
     fn read_status_until_delim_parses_status_then_args() {
-        // status 200\n(15) + arg=1\n(10) + 0001
+        // status 200\n(15), arg=1\n(10), 0001
         let canned = b"000fstatus 200\n000aarg=1\n0001";
         let mut s = stream(canned);
         let (status, args) = s.read_status_until_delim().unwrap();
@@ -935,7 +905,7 @@ mod tests {
 
     #[test]
     fn read_status_until_delim_errors_on_unexpected_flush() {
-        // status 200\n + flush (no delim) → error
+        // status 200\n and a flush with no delim is an error.
         let canned = b"000fstatus 200\n0000";
         let mut s = stream(canned);
         match s.read_status_until_delim() {
@@ -959,7 +929,7 @@ mod tests {
 
     #[test]
     fn copy_data_until_flush_handles_immediate_flush() {
-        // Empty payload — just a flush
+        // Empty payload, just a flush
         let mut s = stream(b"0000");
         let mut out = Vec::new();
         let n = s.copy_data_until_flush(&mut out).unwrap();
@@ -1000,16 +970,16 @@ mod tests {
 
     #[test]
     fn round_trip_get_object_shape() {
-        // Drive both directions: client sends `get-object <oid>` +
-        // `size=...` + flush; server replies with status 200 + delim
-        // + binary payload + flush.
+        // Drive both directions. The client sends `get-object <oid>`,
+        // `size=...`, and a flush. The server replies with status 200, a
+        // delim, the binary payload, and a flush.
         let server_reply = b"000fstatus 200\n000bsize=4\n00010008abcd0000";
         let mut s = stream(server_reply);
 
         // Client side: send `get-object <oid>` with one size arg.
         s.send_command("get-object abc123", &["size=4"]).unwrap();
 
-        // Server side: read status + args + payload.
+        // Read the server's status, arguments, and payload.
         let (status, args) = s.read_status_until_delim().unwrap();
         assert_eq!(status, 200);
         assert_eq!(args, vec!["size=4"]);
@@ -1017,7 +987,8 @@ mod tests {
         s.copy_data_until_flush(&mut out).unwrap();
         assert_eq!(out, b"abcd");
 
-        // Inspect what the client sent: `get-object abc123\n` + `size=4\n` + flush
+        // Inspect what the client sent: `get-object abc123\n`,
+        // `size=4\n`, and a flush.
         let sent = into_writer_bytes(s);
         assert_eq!(sent, b"0016get-object abc123\n000bsize=4\n0000");
     }
@@ -1028,15 +999,14 @@ mod tests {
     /// parallel test execution (ETXTBSY between chmod and exec).
     /// The `program` field is set to `"sh"`, and the script path
     /// goes through as a pre-argument via whitespace splitting on
-    /// the program string — same wire shape as `GIT_SSH_COMMAND="sh
-    /// /path/to/script"`.
+    /// the program string, as with `GIT_SSH_COMMAND="sh /path/to/script"`.
     ///
-    /// Wire dimensions:
-    /// - client → server "version 1": 4 + len("version 1\n") = 14, + flush(4) = 18
-    /// - client → server "quit":      4 + len("quit\n") = 9,        + flush(4) = 13
-    /// - server → client "version=1" cap + flush: 14 + 4 = 18
-    /// - server → client status 200 + delim + flush: 15 + 4 + 4 = 23
-    /// - server → client status 200 + flush: 15 + 4 = 19
+    /// Wire sizes in bytes, including the flush:
+    /// - client "version 1": 4 + len("version 1\n") + 4 = 18
+    /// - client "quit": 4 + len("quit\n") + 4 = 13
+    /// - server "version=1" capability: 14 + 4 = 18
+    /// - server status 200, delim, flush: 15 + 4 + 4 = 23
+    /// - server status 200, flush: 15 + 4 = 19
     #[test]
     #[cfg(unix)]
     fn handshake_against_stub_server() {
@@ -1044,15 +1014,15 @@ mod tests {
         let script = tmp.path().join("fakessh.sh");
         std::fs::write(
             &script,
-            "# 1. capability advertisement + flush\n\
+            "# 1. capability advertisement and flush\n\
              printf '000eversion=1\\n0000'\n\
-             # 2. drain client's `version 1` + flush (18 bytes)\n\
+             # 2. drain client's `version 1` and flush (18 bytes)\n\
              dd bs=1 count=18 of=/dev/null 2>/dev/null\n\
-             # 3. version response: status 200 + delim + flush\n\
+             # 3. version response: status 200, delim, flush\n\
              printf '000fstatus 200\\n00010000'\n\
-             # 4. drain client's `quit` + flush (13 bytes)\n\
+             # 4. drain client's `quit` and flush (13 bytes)\n\
              dd bs=1 count=13 of=/dev/null 2>/dev/null\n\
-             # 5. quit response: status 200 + flush\n\
+             # 5. quit response: status 200 and flush\n\
              printf '000fstatus 200\\n0000'\n",
         )
         .unwrap();
@@ -1063,8 +1033,7 @@ mod tests {
             meta("git@host"),
             Operation::Upload,
         );
-        // Stub treats argv as garbage past the script path; clear
-        // multiplex flags to keep the argv minimal.
+        // The stub ignores its arguments. Keep the argv minimal.
         config.multiplex = Multiplex::Disabled;
         let conn = Connection::spawn(&config).expect("handshake should succeed");
         conn.end().expect("quit should succeed");

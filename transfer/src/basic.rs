@@ -1,5 +1,5 @@
-//! Basic transfer adapter — direct GET/PUT/POST against the action URLs
-//! the batch endpoint hands back.
+//! The basic HTTP transfer adapter, which uses the action URLs from the
+//! batch response directly.
 //!
 //! See `docs/api/basic-transfers.md`.
 
@@ -21,11 +21,7 @@ use tokio_util::io::{ReaderStream, StreamReader, SyncIoBridge};
 use crate::error::TransferError;
 use crate::event::Event;
 
-/// Fallback Content-Type for raw object uploads — used when the action
-/// response didn't set one and the file's content didn't match any
-/// signature we sniff for. Also the value we send unconditionally when
-/// `lfs.<url>.contenttype=false`. Servers/CDNs may override per-action
-/// via `action.header` regardless.
+/// Upload `Content-Type` when detection is off or finds nothing.
 const OCTET_STREAM: &str = "application/octet-stream";
 
 #[derive(Debug, Serialize)]
@@ -36,22 +32,14 @@ struct VerifyBody<'a> {
 
 /// Stream-download `oid` from `action.href` into `store`.
 ///
-/// Writes go to `<lfs_dir>/incomplete/<oid>.part` and only rename into
-/// the object store once the bytes hash to `expected`. The partial
-/// file persists across retry attempts: a previous interrupted download
-/// becomes the resume point for the next call (which sends a `Range:`
-/// header). Mirrors upstream's `tq/basic_download.go`.
+/// Bytes go to the store's `incomplete/<oid>.part` file, which moves into
+/// the store only once it hashes to `oid`. A partial file left by an
+/// earlier attempt is resumed with a `Range` request, as in upstream's
+/// `tq/basic_download.go`:
 ///
-/// Status-code handling:
-/// - 200 OK without a Range request → fresh download, overwrites any
-///   stale partial.
-/// - 200 OK with a Range request → server ignored the Range; same as
-///   a fresh download (truncate, write full body).
-/// - 206 Partial Content → append to the existing partial; the bytes
-///   from the prior attempt remain at the front of the file.
-/// - 416 Requested Range Not Satisfiable → clear the partial and
-///   recursively retry without `Range:` (`xfer: server rejected
-///   resume … re-downloading from start`).
+/// - 206 appends to the partial file.
+/// - 200 means the server ignored the range, so the file is rewritten.
+/// - 416 deletes the partial file and downloads again from the start.
 pub(crate) async fn download(
     http: &reqwest::Client,
     store: Arc<Store>,
@@ -63,12 +51,8 @@ pub(crate) async fn download(
     let expected = Oid::from_hex(oid)?;
     let partial_path = store.incomplete_path(expected);
 
-    // A partial whose size meets or exceeds the expected total is
-    // useless as a resume point — the bytes might be corrupt and
-    // `bytes=<size>-<size-1>` is an invalid Range (the upstream
-    // gitserver rejects with 400). Drop it before deciding whether to
-    // resume. t-batch-storage-retries.sh test 5 part B asserts no
-    // Range / 400 line in this case.
+    // A partial file at least `size` long can't be resumed: it may be
+    // corrupt, and `bytes=<size>-<size-1>` is not a valid range.
     if let Ok(m) = std::fs::metadata(&partial_path)
         && m.len() >= size
     {
@@ -79,22 +63,17 @@ pub(crate) async fn download(
         .map(|m| m.len())
         .filter(|&n| n > 0 && n < size);
 
-    // Build the GET. Action headers (auth tokens, etc.) ride along on
-    // every attempt; Range only when resuming.
     let mut req = http.request(Method::GET, &action.href);
     for (k, v) in &action.header {
         req = req.header(k, v);
     }
     let range_header = resume_offset.map(|offset| {
-        // RFC 7233 closed range: end byte is inclusive.
+        // The end byte is inclusive.
         format!("bytes={offset}-{}", size.saturating_sub(1))
     });
     if let Some(range) = &range_header {
         req = req.header(RANGE, range);
         if trace_enabled() {
-            // Upstream's `xfer: Attempting to resume download of %q
-            // from byte %d` in basic_download.go:105. Test grep is
-            // just the substring with the quoted oid.
             eprintln!(
                 "xfer: Attempting to resume download of {oid:?} from byte {}",
                 resume_offset.unwrap()
@@ -106,10 +85,8 @@ pub(crate) async fn download(
     let resp = req.send().await?;
     dump_verbose_response(&resp);
 
-    // 416 + we sent Range → server rejected the resume. Clear and
-    // restart without Range. Upstream's
-    // `xfer: server rejected resume … re-downloading from start`
-    // trace at basic_download.go:182.
+    // The server rejected the range. Without the partial file, the
+    // second call sends no range, so this recurses at most once.
     if let Some(offset) = resume_offset
         && resp.status().as_u16() == 416
     {
@@ -124,9 +101,6 @@ pub(crate) async fn download(
 
     check_status(&resp, &action.href)?;
 
-    // 206 only counts as "server accepted resume" when we actually
-    // asked. A 200 to a Range request means the server ignored it —
-    // treat like a fresh download.
     let server_resumed = matches!((resume_offset, resp.status().as_u16()), (Some(_), 206),);
     if let Some(offset) = resume_offset
         && server_resumed
@@ -179,19 +153,19 @@ pub(crate) async fn download(
     Ok(total)
 }
 
-/// Returns true when the user asked for `GIT_TRACE`. Kept in sync with
-/// the same gate in `transfer.rs` — both files use this signal.
+/// Whether `GIT_TRACE` is set to something other than empty or `0`.
 fn trace_enabled() -> bool {
     std::env::var_os("GIT_TRACE").is_some_and(|v| !v.is_empty() && v != "0")
 }
 
-/// Returns true when the user asked for `GIT_CURL_VERBOSE`.
+/// Whether `GIT_CURL_VERBOSE` is set to something other than empty or `0`.
 fn verbose_enabled() -> bool {
     std::env::var_os("GIT_CURL_VERBOSE").is_some_and(|v| !v.is_empty() && v != "0")
 }
 
-/// Emit the outgoing request line + selected headers in curl-verbose
-/// shape so `t-batch-storage-retries.sh` can grep `Range: bytes=`.
+/// Log a download request in curl's verbose format.
+///
+/// Action headers are printed as they are, credentials included.
 fn dump_verbose_request(
     url: &str,
     range: Option<&str>,
@@ -211,14 +185,11 @@ fn dump_verbose_request(
     let _ = writeln!(err);
 }
 
-/// Emit the response status line + headers. Tests grep for the curl-
-/// style verbose output (`206 Partial Content`, `416 Requested Range
-/// Not Satisfiable`, `Content-Range: bytes …`), so headers go through
-/// `title_case_header` to undo the http crate's lowercase
-/// normalization, and 416 is forced to the RFC 2616 reason phrase
-/// `Requested Range Not Satisfiable` rather than RFC 7233's renamed
-/// `Range Not Satisfiable` — that's what the upstream test suite is
-/// written against.
+/// Log a download response in curl's verbose format.
+///
+/// Header names are title-cased and 416 uses its older reason phrase,
+/// `Requested Range Not Satisfiable`, because the upstream tests match
+/// curl's output.
 fn dump_verbose_response(resp: &Response) {
     if !verbose_enabled() {
         return;
@@ -238,10 +209,7 @@ fn dump_verbose_response(resp: &Response) {
     let _ = writeln!(err);
 }
 
-/// Title-case a hyphen-separated header name: `content-range` →
-/// `Content-Range`. The http crate normalizes to lowercase, but the
-/// vendored shell tests grep for capitalized header names (the form
-/// curl emits in `-v` output).
+/// Title-case a header name, such as `content-range` to `Content-Range`.
 fn title_case_header(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     let mut at_start = true;
@@ -259,10 +227,7 @@ fn title_case_header(name: &str) -> String {
     out
 }
 
-/// Write `src`'s contents into `path`. `append == true` (server-accepted
-/// resume): open with O_APPEND so the prior partial bytes stay at the
-/// front. `append == false`: truncate first — either a fresh download
-/// or the server ignored our `Range`.
+/// Copy `src` into `path`, appending or replacing the existing content.
 fn write_partial(path: &Path, append: bool, src: &mut impl std::io::Read) -> std::io::Result<()> {
     let mut opts = std::fs::OpenOptions::new();
     opts.create(true).write(true);
@@ -284,9 +249,7 @@ fn write_partial(path: &Path, append: bool, src: &mut impl std::io::Read) -> std
     Ok(())
 }
 
-/// Compute the SHA-256 of `path` in 64 KiB chunks. Called after a
-/// successful stream to decide whether the assembled bytes match what
-/// the batch endpoint promised.
+/// Compute the SHA-256 of the file at `path`.
 fn hash_file(path: &Path) -> std::io::Result<Oid> {
     let mut file = std::fs::File::open(path)?;
     let mut hasher = Sha256::new();
@@ -302,14 +265,11 @@ fn hash_file(path: &Path) -> std::io::Result<Oid> {
     Ok(Oid::from_bytes(bytes))
 }
 
-/// Stream-upload the local copy of `oid` to `action.href`, then call the
-/// verify callback if present.
+/// Stream the stored copy of `oid` to the upload action, then call the
+/// verify action if there is one.
 ///
-/// `detect_content_type` follows `lfs.<url>.contenttype` (default
-/// `true`). When `true` and the batch response didn't already pin a
-/// `Content-Type`, sniff the file's first 512 bytes; when `false`,
-/// send `application/octet-stream` unconditionally. Mirrors upstream's
-/// `tq/basic_upload.go::setContentTypeFor`.
+/// [`TransferConfig::detect_content_type`](crate::TransferConfig::detect_content_type)
+/// says how the `Content-Type` is chosen.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn upload(
     http: &reqwest::Client,
@@ -329,11 +289,6 @@ pub(crate) async fn upload(
     let oid_parsed = Oid::from_hex(oid)?;
     let path = store.object_path(oid_parsed);
 
-    // Sniff before opening the stream — `tokio::fs::File::open` consumes
-    // the path once and the sniff needs its own read. Cheap: at most
-    // 512 bytes off the disk. Only runs when detection is enabled AND
-    // the batch response didn't already set a Content-Type (we still
-    // need to know that before deciding whether to sniff).
     let action_has_content_type = upload_action
         .header
         .keys()
@@ -354,11 +309,9 @@ pub(crate) async fn upload(
         Some(sniffed_content_type.unwrap_or(OCTET_STREAM).to_owned())
     };
 
-    // Manual redirect loop: reqwest can't auto-follow because the body
-    // is a one-shot `ReaderStream` (non-cloneable). On 3xx with Location,
-    // log `api: redirect PUT <old> to <new>` (gated on GIT_TRACE), open a
-    // fresh file stream, and retry against the new URL. Matches upstream
-    // `lfshttp/client.go::newRequestForRetry`.
+    // reqwest can't follow redirects for a streamed body, so follow them
+    // here, reopening the file for each request. All action headers go
+    // to the new URL, even on another host.
     let mut href = upload_action.href.clone();
     let mut verbose_logged = false;
     let mut redirects = 0u32;
@@ -394,13 +347,8 @@ pub(crate) async fn upload(
             );
         }
 
-        // GIT_CURL_VERBOSE: dump the request line + headers so shell tests
-        // like `t-content-type.sh` can grep for the chosen Content-Type.
-        // Only emit on the first attempt — redirect retries would
-        // duplicate the dump.
-        if !verbose_logged
-            && std::env::var_os("GIT_CURL_VERBOSE").is_some_and(|v| !v.is_empty() && v != "0")
-        {
+        // Log only the first request, not the redirected ones.
+        if !verbose_logged && verbose_enabled() {
             let mut err = std::io::stderr().lock();
             let _ = writeln!(err, "> PUT {href}");
             let _ = writeln!(err, "> Content-Length: {size}");
@@ -430,11 +378,8 @@ pub(crate) async fn upload(
 
     let status = resp.status();
     if status.as_u16() == 422 {
-        // 422 = "Unprocessable Entity" — typically a CDN rejecting the
-        // Content-Type we sniffed. Print upstream's three-line hint so
-        // the user knows the disable knob exists. Stays best-effort:
-        // we still propagate the failure, the message just nudges
-        // toward a fix. `t-content-type.sh` test 3 greps for these.
+        // Usually a server rejecting the detected Content-Type. Print
+        // upstream's hint on how to turn detection off.
         let mut err = std::io::stderr().lock();
         let _ = writeln!(
             err,
@@ -453,10 +398,10 @@ pub(crate) async fn upload(
     Ok(())
 }
 
-/// If `resp` is a 3xx with a usable Location, return the next href and
-/// emit upstream's `api: redirect PUT <old> to <new>` trace (gated on
-/// `GIT_TRACE`). Returns None for non-redirect responses or unparseable
-/// Location values.
+/// The URL `resp` redirects to, if it's a redirect with a valid
+/// `Location`.
+///
+/// Logs `api: redirect PUT <old> to <new>` under `GIT_TRACE`.
 fn follow_redirect(resp: &Response, current: &str) -> Option<String> {
     if !resp.status().is_redirection() {
         return None;
@@ -478,12 +423,9 @@ fn follow_redirect(resp: &Response, current: &str) -> Option<String> {
     Some(new)
 }
 
-/// Minimal content-type sniffing. Read the first 512 bytes of `path`
-/// and match against a small magic-number table — extend as future
-/// tests demand. Returns `None` if the file can't be read; the caller
-/// falls back to `application/octet-stream`, which is also what we
-/// return for any content that doesn't match a known signature
-/// (matches Go's `http.DetectContentType` fall-through).
+/// Detect the content type from the first 512 bytes of `path`.
+///
+/// Returns `None` if the file can't be read.
 async fn sniff_content_type(path: &std::path::Path) -> Option<&'static str> {
     use tokio::io::AsyncReadExt;
     let mut file = tokio::fs::File::open(path).await.ok()?;
@@ -492,19 +434,11 @@ async fn sniff_content_type(path: &std::path::Path) -> Option<&'static str> {
     Some(detect_content_type_bytes(&buf[..n]))
 }
 
-/// Magic-number sniff for `bytes`. Returns the same MIME strings Go's
-/// `net/http.DetectContentType` produces — `t-content-type.sh` grep
-/// patterns are written against those.
+/// Detect the content type of `bytes`, using Go's
+/// `http.DetectContentType` names.
 ///
-/// Only a handful of signatures are recognized today (the test suite
-/// only exercises gzip); broader coverage is deferred until a new
-/// test forces it. The default is `application/octet-stream`, same
-/// as upstream's fall-through.
+/// Only gzip is recognized. Everything else is `application/octet-stream`.
 fn detect_content_type_bytes(bytes: &[u8]) -> &'static str {
-    // Gzip: `1f 8b` magic. Go labels this `application/x-gzip` (with
-    // the `x-` prefix, not the RFC 6713 `application/gzip` form);
-    // matching that exactly is what `t-content-type.sh` test 1
-    // greps for.
     if bytes.len() >= 2 && bytes[0] == 0x1f && bytes[1] == 0x8b {
         return "application/x-gzip";
     }
@@ -575,10 +509,8 @@ fn check_status(resp: &Response, url: &str) -> Result<(), TransferError> {
     }
 }
 
-/// Strip the query string from `url`. Mirrors upstream's
-/// `strings.SplitN(url, "?", 2)[0]` in `lfshttp.defaultError` —
-/// auth tokens / signed-URL params shouldn't leak into error
-/// messages or test grep patterns.
+/// Strip the query string from `url`, so signed URL parameters stay out
+/// of error messages.
 fn strip_query(url: &str) -> &str {
     url.split_once('?').map_or(url, |(base, _)| base)
 }

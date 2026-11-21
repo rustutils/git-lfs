@@ -1,10 +1,7 @@
-//! The git filter-process protocol.
+//! Git's long-running filter protocol.
 //!
-//! Implements the long-running-filter side of git's `gitprotocol-common`(5)
-//! framing: a one-time handshake + capability negotiation, then a loop of
-//! request/response pairs over packet-line framing on stdin/stdout. Same
-//! business logic as per-invocation `clean`/`smudge`, just batched in one
-//! subprocess for the duration of a checkout/commit.
+//! After a handshake, git sends clean and smudge requests over pkt-line
+//! framing, and each one is answered with [`clean`] or [`smudge_with_fetch`].
 
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
@@ -18,36 +15,41 @@ use crate::{CleanExtension, FetchError, SmudgeExtension, SmudgeOutcome, clean, s
 /// Things that can go wrong while running [`filter_process`].
 #[derive(Debug, thiserror::Error)]
 pub enum FilterProcessError {
-    /// Underlying pipe I/O failed (typically because git closed its
-    /// end mid-session).
+    /// Reading from or writing to git failed.
     #[error(transparent)]
     Io(#[from] io::Error),
-    /// The initial capability-negotiation handshake didn't match
-    /// what the filter-process protocol expects.
+    /// Git's handshake was malformed, or didn't offer version 2 or both the
+    /// clean and smudge capabilities.
     #[error("filter-process handshake: {0}")]
     Handshake(String),
-    /// A request was missing a required header (`command`, etc.).
+    /// A request had no `command` header.
     #[error("filter-process: missing required header {0:?}")]
     MissingHeader(&'static str),
-    /// Git asked for a command we don't recognize.
+    /// A request's command wasn't `clean` or `smudge`.
     #[error("filter-process: unknown command {0:?}")]
     UnknownCommand(String),
 }
 
-/// Run the filter-process protocol against `input`/`output` (typically
-/// stdin/stdout). Returns when git closes its end of the pipe.
+/// Serve git's long-running filter protocol on `input` and `output`.
 ///
-/// `fetch` is called when a smudge request hits an object that isn't in
-/// the local store; see [`smudge_with_fetch`] for semantics. If fetching
-/// is not supported in the caller's context, pass a closure that always
-/// errors — the protocol will then surface those smudges as `status=error`
-/// to git, same as if [`smudge`](crate::smudge) hit `ObjectMissing`.
+/// `input` and `output` are usually stdin and stdout. Returns when git
+/// closes its end. Each request's content is read fully into memory before
+/// it's processed. A failed clean or smudge is reported to git as
+/// `status=error` and the session continues. A malformed request ends it
+/// with an error.
 ///
-/// `skip_smudge` reflects the upstream `GIT_LFS_SKIP_SMUDGE` env var.
-/// When true, smudge requests pass the pointer text through
-/// unchanged: the working-tree file ends up holding pointer text
-/// and `git lfs pull` (or another smudge run) is the recovery
-/// path. Clean requests are unaffected.
+/// `fetch` downloads missing objects, as for [`smudge_with_fetch`]. A
+/// closure that always fails makes every missing object a `status=error`.
+///
+/// When `skip_smudge` is set (as by `GIT_LFS_SKIP_SMUDGE`), smudge requests
+/// get the pointer back unchanged. So do paths for which
+/// `smudge_path_filter` returns false. Clean requests are unaffected by
+/// either.
+///
+/// Smudge requests whose content isn't a pointer are passed through, and
+/// their paths are listed on stderr at the end of the session as files that
+/// should have been pointers. The protocol's `delay` capability isn't
+/// supported.
 #[allow(clippy::too_many_arguments)]
 pub fn filter_process<R, W, F>(
     store: &Store,
@@ -72,8 +74,7 @@ where
     let mut malformed: Vec<String> = Vec::new();
 
     loop {
-        // A read error here at packet-boundary normally means git closed the
-        // pipe — that's the protocol's "we're done" signal, not a real error.
+        // EOF between requests is how git ends the session.
         let headers = match read_headers(&mut reader) {
             Ok(Some(h)) => h,
             Ok(None) => break,
@@ -93,11 +94,6 @@ where
         match command.as_str() {
             "clean" => process_clean(store, &mut writer, &payload, pathname, clean_extensions)?,
             "smudge" if skip_smudge => process_smudge_passthrough(&mut writer, &payload)?,
-            // `lfs.fetchinclude` / `lfs.fetchexclude` excluded the
-            // path: pass the pointer text through unchanged. Mirrors
-            // upstream's clone-time include/exclude (test 2 of
-            // t-filter-process); the user can run `git lfs pull`
-            // later to materialize.
             "smudge" if !smudge_path_filter(pathname) => {
                 process_smudge_passthrough(&mut writer, &payload)?;
             }
@@ -149,7 +145,6 @@ fn handshake<R: Read, W: Write>(
     reader: &mut pktline::Reader<R>,
     writer: &mut pktline::Writer<W>,
 ) -> Result<(), FilterProcessError> {
-    // Welcome.
     let welcome = reader
         .read_text()?
         .ok_or_else(|| FilterProcessError::Handshake("expected welcome, got flush".into()))?;
@@ -171,22 +166,14 @@ fn handshake<R: Read, W: Write>(
     writer.write_text("version=2")?;
     writer.write_flush()?;
 
-    // Send our capabilities *before* reading the client's. The protocol
-    // doc reads as if the client speaks first ("capability=…" then a
-    // flush, then server replies), but real git serializes the two
-    // exchanges and won't send its capabilities until it has seen the
-    // server's. Upstream Go's filter-process advertises preemptively for
-    // the same reason — diverging from that reordering deadlocks any
-    // shell-test that does `git add` of an LFS-tracked path.
+    // Git sends its capabilities only after reading our version reply, so
+    // that has to be flushed before we read them. Ours go out with it,
+    // ahead of git's, which git accepts.
     writer.write_text("capability=clean")?;
     writer.write_text("capability=smudge")?;
     writer.write_flush()?;
     writer.flush()?;
 
-    // Drain the client's advertised capabilities (informational — we
-    // don't gate on them). We *do* require clean + smudge to be in the
-    // set so that misconfigured callers get a clear error rather than
-    // silent "command not understood" later.
     let mut caps = Vec::new();
     while let Some(line) = reader.read_text()? {
         caps.push(line);
@@ -207,7 +194,7 @@ fn read_headers<R: Read>(
 ) -> Result<Option<HashMap<String, String>>, FilterProcessError> {
     let first = reader.read_text()?;
     let Some(first) = first else {
-        // Bare flush at top of loop is unexpected from git; treat as shutdown.
+        // Git doesn't send a bare flush here. Treat it as the end.
         return Ok(None);
     };
     let mut map = HashMap::new();
@@ -232,8 +219,10 @@ fn read_payload<R: Read>(reader: &mut pktline::Reader<R>) -> Result<Vec<u8>, Fil
     Ok(payload)
 }
 
-/// Run one clean request through the protocol envelope:
-/// `status=success` + flush, content packets + flush, final `status=...` + flush.
+/// Answer one clean request.
+///
+/// The reply is `status=success` and a flush, the content and a flush, then
+/// the final status and a flush.
 fn process_clean<W: Write>(
     store: &Store,
     writer: &mut pktline::Writer<W>,
@@ -251,7 +240,7 @@ fn process_clean<W: Write>(
     Ok(())
 }
 
-/// `GIT_LFS_SKIP_SMUDGE=1` mode: emit the pointer payload unchanged.
+/// Answer a smudge request with the pointer unchanged.
 fn process_smudge_passthrough<W: Write>(
     writer: &mut pktline::Writer<W>,
     payload: &[u8],
@@ -277,9 +266,7 @@ where
     write_initial_status(writer)?;
     let mut outcome: Option<SmudgeOutcome> = None;
     let result = run_through_sink(writer, |sink| {
-        // The protocol only differentiates success vs. error at this layer;
-        // the specific reason (ObjectMissing, FetchFailed, ExtensionFailed,
-        // …) is logged by the caller's stderr if they care.
+        // Git only learns success or error. The specific error is dropped.
         match smudge_with_fetch(
             store,
             &mut { payload },
@@ -305,16 +292,15 @@ fn write_initial_status<W: Write>(writer: &mut pktline::Writer<W>) -> io::Result
 }
 
 fn write_final_status<W: Write>(writer: &mut pktline::Writer<W>, ok: bool) -> io::Result<()> {
-    // End-of-content flush comes from the sink runner; this is the
-    // post-content "trailer" status that tells git "all done, no errors"
-    // (or "I lied, error happened").
+    // Sent after the content, this overrides the initial `status=success`.
     writer.write_text(if ok { "status=success" } else { "status=error" })?;
     writer.write_flush()
 }
 
-/// Runs `f` with a packet-line sink, then flushes the sink and emits the
-/// end-of-content flush regardless of `f`'s result. The result of `f` is
-/// returned for the caller's status decision.
+/// Run `f` with a pkt-line sink, then write the end-of-content flush.
+///
+/// The flush is written whether or not `f` fails, and `f`'s result is
+/// returned for the final status.
 fn run_through_sink<W, F>(writer: &mut pktline::Writer<W>, f: F) -> io::Result<()>
 where
     W: Write,
@@ -407,8 +393,7 @@ mod tests {
             .flush()
     }
 
-    /// Fetcher that always errors — the right default for tests where
-    /// we don't expect any miss. Lies surface as `status=error` to git.
+    /// Fetcher that always errors, for tests that expect no miss.
     fn no_fetch(_p: &Pointer) -> Result<(), FetchError> {
         Err("test: no fetcher configured".into())
     }
@@ -434,7 +419,7 @@ mod tests {
         let (_t, store) = fixture();
         let output = run(&store, handshake_input().build());
         let toks = decode(&output);
-        // Server welcome + 2 caps + their respective flushes.
+        // Server welcome and version, two capabilities, each with a flush.
         assert_eq!(
             toks,
             vec![
@@ -520,7 +505,7 @@ mod tests {
         let rest = &toks[6..];
         assert_eq!(rest[0], Tok::Text("status=success".into())); // initial
         assert_eq!(rest[1], Tok::Flush);
-        // No content was written; next is end-of-content flush, then error trailer.
+        // No content, just the end-of-content flush and the error status.
         assert_eq!(rest[2], Tok::Flush);
         assert_eq!(rest[3], Tok::Text("status=error".into()));
         assert_eq!(rest[4], Tok::Flush);
@@ -552,7 +537,7 @@ mod tests {
             Cursor::new(input),
             &mut output,
             |p: &Pointer| {
-                // Stand in for a real download — re-insert the bytes.
+                // Stand in for a real download by re-inserting the bytes.
                 store_ref.insert(&mut { &content[..] }).unwrap();
                 assert_eq!(p.oid, parsed.oid);
                 Ok(())
@@ -591,7 +576,7 @@ mod tests {
             .build();
         let output = run(&store, input);
         let toks = decode(&output);
-        // Handshake is 6 tokens; each clean response is 6 tokens.
+        // Handshake is 6 tokens, and so is each clean response.
         // (status=success, flush, content, flush, status=success, flush)
         assert_eq!(toks.len(), 6 + 6 + 6, "got tokens: {toks:?}");
     }

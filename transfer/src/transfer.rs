@@ -1,4 +1,4 @@
-//! Top-level transfer orchestrator: batch + concurrent per-object transfer.
+//! The transfer queue: batch request, then concurrent object transfers.
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -18,8 +18,7 @@ use crate::error::{Report, TransferError};
 use crate::event::Event;
 use crate::sshtransfer::adapter as ssh;
 
-/// Direction of a single transfer batch — used internally to share the
-/// fan-out machinery between [`Transfer::download`] and [`Transfer::upload`].
+/// Direction of a transfer batch.
 #[derive(Debug, Clone, Copy)]
 enum Dir {
     Download,
@@ -35,8 +34,7 @@ impl From<Dir> for Operation {
     }
 }
 
-/// Concurrent transfer queue. One [`Transfer`] is bound to one LFS endpoint
-/// (the backend) and one local store; create more if you need more.
+/// Concurrent transfer queue for one LFS endpoint and one local store.
 #[derive(Clone)]
 pub struct Transfer {
     backend: Backend,
@@ -45,21 +43,15 @@ pub struct Transfer {
 }
 
 impl Transfer {
-    /// Build a transfer queue with the HTTP backend. The
-    /// `reqwest::Client` used for the action-URL transfers is
-    /// created fresh; if you need to share a connection pool, use
-    /// [`with_http_client`](Self::with_http_client).
+    /// Build an HTTP transfer queue with a new `reqwest::Client` for the
+    /// action URLs.
     pub fn new(api: ApiClient, store: Store, config: TransferConfig) -> Self {
         Self::with_http_client(api, store, config, reqwest::Client::new())
     }
 
-    /// Build a transfer queue with the HTTP backend around an
-    /// existing `reqwest::Client`.
+    /// Build an HTTP transfer queue that uses `http` for the action URLs.
     ///
-    /// Use this when the caller already has an HTTP client wired up
-    /// for the LFS endpoint (with custom TLS config, headers,
-    /// cookies, etc.) and wants the transfer queue to reuse its
-    /// connection pool rather than spawn a fresh one.
+    /// Use this to share a client's TLS settings and connection pool.
     pub fn with_http_client(
         api: ApiClient,
         store: Store,
@@ -76,10 +68,7 @@ impl Transfer {
         }
     }
 
-    /// Build a transfer queue with the pure-SSH backend. The
-    /// `SshBackend` carries the per-direction lazy pool spawner
-    /// (and optional HTTP fallback for negotiate mode) — see
-    /// [`SshBackend::new`].
+    /// Build a pure-SSH transfer queue. See [`SshBackend::new`].
     pub fn new_ssh(backend: SshBackend, store: Store, config: TransferConfig) -> Self {
         Self {
             backend: Backend::Ssh(Arc::new(backend)),
@@ -88,9 +77,10 @@ impl Transfer {
         }
     }
 
-    /// Download the given objects into the local store. Each object is
-    /// hash-verified by the store before being committed; corrupt downloads
-    /// are surfaced in [`Report::failed`].
+    /// Download the given objects into the local store.
+    ///
+    /// Each object is hashed before it's committed. One that doesn't match
+    /// its OID is listed in [`Report::failed`].
     pub async fn download(
         &self,
         objects: Vec<ObjectSpec>,
@@ -100,9 +90,10 @@ impl Transfer {
         self.run(Dir::Download, objects, r#ref, events).await
     }
 
-    /// Upload the given objects from the local store. Objects the server
-    /// already has are reported in [`Report::succeeded`] without any byte
-    /// transfer.
+    /// Upload the given objects from the local store.
+    ///
+    /// Objects the server already has are listed in [`Report::succeeded`]
+    /// without being sent.
     pub async fn upload(
         &self,
         objects: Vec<ObjectSpec>,
@@ -112,14 +103,13 @@ impl Transfer {
         self.run(Dir::Upload, objects, r#ref, events).await
     }
 
-    /// Run just the batch dispatch for `op` and return the server's
-    /// response. Routes through the same backend as
-    /// [`download`](Self::download) / [`upload`](Self::upload): SSH
-    /// goes via the pure-SSH pool (with HTTP fallback in negotiate
-    /// mode), HTTP goes via the API client with retry. Used by
-    /// callers that want to inspect the batch response without
-    /// kicking off any byte transfers (e.g. `push`'s "server already
-    /// has?" check).
+    /// Send only the batch request and return the server's response.
+    ///
+    /// Uses the same backend as [`download`](Self::download) and
+    /// [`upload`](Self::upload), so callers can see what the server wants
+    /// without transferring anything. HTTP batch requests are retried.
+    /// Neither the request nor the response is split or rewritten
+    /// according to the config.
     pub async fn batch(
         &self,
         op: Operation,
@@ -152,10 +142,6 @@ impl Transfer {
         if objects.is_empty() {
             return Ok(Report::default());
         }
-        // Chunk the input into `batch_size`-sized runs so an
-        // `lfs.transfer.batchSize` of 1 produces one batch API call
-        // per object, etc. Each chunk goes through the existing
-        // batch + concurrent-transfer machinery; reports are merged.
         let batch_size = self.config.batch_size.max(1);
         if objects.len() > batch_size {
             let mut report = Report::default();
@@ -168,18 +154,14 @@ impl Transfer {
             return Ok(report);
         }
 
-        // Index the request's sizes by oid so we can fill them back in
-        // for servers that omit `size` from the response (the upstream
-        // test fixture, plus at least one production server, drop it).
+        // Some servers, including the upstream test server, omit `size`
+        // from the response. Fill it back in from the request.
         let req_sizes: std::collections::HashMap<String, u64> =
             objects.iter().map(|o| (o.oid.clone(), o.size)).collect();
 
-        // Sort the batch by descending object size. Larger blobs get
-        // their action URLs first, which gives the bigger uploads /
-        // downloads a head start on the parallel-transfer semaphore
-        // — short small transfers can complete in the tail while the
-        // big one is still streaming. Matches upstream's `tq` queue
-        // ordering (t-batch-transfer test 2 asserts the JSON order).
+        // Largest objects first, so they start early and small ones fill
+        // in around them. Upstream sends the batch in the same order, and
+        // its tests check it.
         let mut objects = objects;
         objects.sort_by_key(|o| std::cmp::Reverse(o.size));
 
@@ -189,11 +171,8 @@ impl Transfer {
         }
         let resp: BatchResponse = match &self.backend {
             Backend::Http { api, .. } => self.batch_with_retry(api, &req).await?,
-            // SSH batch doesn't go through `batch_with_retry` — the
-            // pool's master connection is the retry boundary, and a
-            // failure there means the whole transfer session is
-            // dead anyway. In negotiate mode, fall back to HTTP via
-            // the cached fallback api client when pool spawn fails.
+            // SSH batch requests aren't retried: a failure there means
+            // the SSH session itself is broken.
             Backend::Ssh(ssh_backend) => match ssh_backend.dispatch(dir.into()) {
                 Transport::Pool(pool) => ssh::batch(pool, &req).await?,
                 Transport::Http(http) => self.batch_with_retry(&http.api, &req).await?,
@@ -203,11 +182,8 @@ impl Transfer {
             },
         };
 
-        // The spec requires `sha256` and treats an absent/empty
-        // `hash_algo` as that default. Anything else means the server
-        // would expect us to recompute every OID under a different
-        // digest before its action URLs could be trusted — bail
-        // before any per-object work runs.
+        // An absent or empty `hash_algo` means sha256, the only one
+        // supported.
         if let Some(h) = resp.hash_algo.as_deref()
             && !h.is_empty()
             && !h.eq_ignore_ascii_case("sha256")
@@ -230,12 +206,6 @@ impl Transfer {
                 {
                     d.href = rewriter(&d.href);
                 }
-                // Uploads and the verify step that follows go through
-                // `pushInsteadOf` (with `insteadOf` as fallback) when
-                // `lfs.transfer.enablehrefrewrite=true`. When no
-                // push-direction rewriter is configured, fall back to
-                // the download rewriter so the existing `insteadOf`
-                // behavior keeps working for upload paths.
                 let up_rewriter = self
                     .config
                     .upload_url_rewriter
@@ -289,16 +259,11 @@ impl Transfer {
         Ok(report)
     }
 
-    /// Call the batch endpoint with retry. Wraps `api.batch()` in the
-    /// same retry shape as per-object transfers: honor `Retry-After`
-    /// when the server pinned a delay, exponential backoff otherwise.
-    /// Emits `tq: sending batch of size N` on every attempt (so
-    /// t-alternates can still grep it) and, on each retry, one
-    /// `tq: enqueue retry #N after <secs>s for "<oid>" (size: N): <err>`
-    /// per object in the batch — that's the per-object format
-    /// `t-batch-retries-ratelimit.sh` greps for, since upstream's
-    /// transfer queue routes each object through `enqueueRetry` even
-    /// though the failure is at the batch layer.
+    /// Send a batch request, retrying like an object transfer.
+    ///
+    /// Under `GIT_TRACE`, logs `tq: sending batch of size N` on every
+    /// attempt, and on each retry one `tq: enqueue retry` line per object,
+    /// as upstream does.
     async fn batch_with_retry(
         &self,
         api: &ApiClient,
@@ -324,10 +289,7 @@ impl Transfer {
                     if trace_enabled() {
                         let secs = delay.as_secs_f64();
                         for obj in &req.objects {
-                            // Upstream's `%q` Go-quotes the oid (adds
-                            // quotes + Go escapes); a pure hex OID
-                            // round-trips through Rust's {:?} the same
-                            // way.
+                            // For a hex OID, {:?} quotes like Go's %q.
                             eprintln!(
                                 "tq: enqueue retry #{retry_count} after {secs:.2}s for {:?} (size: {}): {e}",
                                 obj.oid, obj.size
@@ -348,15 +310,14 @@ impl Transfer {
     }
 }
 
-/// Returns true when the user asked for `GIT_TRACE`. Cheap gate around
-/// the per-retry `eprintln!` calls.
+/// Whether `GIT_TRACE` is set to something other than empty or `0`.
 fn trace_enabled() -> bool {
     std::env::var_os("GIT_TRACE").is_some_and(|v| !v.is_empty() && v != "0")
 }
 
-/// Handle one [`ObjectResult`]: emit Started, run with retry, return final
-/// outcome. Completed/Failed events are emitted by the caller so we can
-/// move the error into the Report without cloning.
+/// Transfer one object from the batch response, with retries.
+///
+/// Emits `Started`. The caller emits `Completed` or `Failed`.
 async fn process_object(
     dir: Dir,
     backend: &Backend,
@@ -376,9 +337,6 @@ async fn process_object(
         });
     }
 
-    // Pick the transport for this object's direction. In negotiate
-    // mode this may transparently fall back to HTTP if the SSH pool
-    // failed to spawn for this direction.
     let transport = resolve_transport(backend, dir);
 
     match (dir, &obj.actions) {
@@ -459,17 +417,12 @@ async fn process_object(
             })
             .await
         }
-        (Dir::Upload, None) => {
-            // Server already has it — no actions means no-op, treated as success.
-            Ok(())
-        }
+        // No actions: the server already has the object.
+        (Dir::Upload, None) => Ok(()),
     }
 }
 
-/// Resolve a [`Transport`] for `dir` from the backend. HTTP backends
-/// always produce a `Transport::Http` (no negotiate ambiguity); SSH
-/// backends consult their cached per-direction dispatch state and
-/// may fall back to HTTP transparently.
+/// Pick the transport for `dir`.
 fn resolve_transport(backend: &Backend, dir: Dir) -> Transport {
     match backend {
         Backend::Http { api, http } => Transport::Http(HttpTransport {
@@ -480,8 +433,8 @@ fn resolve_transport(backend: &Backend, dir: Dir) -> Transport {
     }
 }
 
-/// Match upstream's `objectExpirationToTransfer = 5 * time.Second`
-/// safety buffer.
+/// How long an action must stay valid to be used, as upstream's
+/// `objectExpirationToTransfer`.
 const ACTION_EXPIRATION_BUFFER: Duration = Duration::from_secs(5);
 
 fn check_not_expired(rel: &str, action: &git_lfs_api::Action) -> Result<(), TransferError> {
@@ -493,18 +446,11 @@ fn check_not_expired(rel: &str, action: &git_lfs_api::Action) -> Result<(), Tran
     Ok(())
 }
 
-/// Run `op` with retry. Two paths: when the server sent a `Retry-After`
-/// header, sleep for that long (the "delayed re-queue" path in
-/// upstream); otherwise fall back to exponential backoff with the
-/// configured initial / cap. Trace breadcrumbs match upstream's
-/// `tq/transfer_queue.go` formats so `t-batch-storage-retries*` greps
-/// keep matching:
+/// Run `op` until it succeeds, fails with an error that isn't retryable,
+/// or uses up `max_attempts`.
 ///
-/// - `tq: retrying object <oid> after <secs>s` (Retry-After path), or
-/// - `tq: retrying object <oid>: <err>` (exponential path); plus
-/// - `tq: enqueue retry #<n> after <secs>s for "<oid>" (size: <n>): <err>`
-///
-/// Stops on non-retryable errors or when `max_attempts` is reached.
+/// Waits for the error's `Retry-After` delay when it has one, and
+/// otherwise for the exponential backoff.
 async fn with_retry<F, Fut>(
     config: &TransferConfig,
     oid: &str,
@@ -532,9 +478,7 @@ where
                 emit_retry_trace(oid, size, retry_count, delay, &e);
                 last_err = Some(e);
                 tokio::time::sleep(delay).await;
-                // Only grow the exponential window when we're falling back
-                // to it. A server-supplied Retry-After resets the clock —
-                // upstream uses an independent timer per retry batch.
+                // A Retry-After delay doesn't advance the backoff.
                 if last_err
                     .as_ref()
                     .and_then(TransferError::retry_after)
@@ -548,17 +492,11 @@ where
     Err(last_err.expect("loop ran at least once"))
 }
 
-/// Emit upstream-format trace lines for a single retry. Two lines per
-/// retry, both gated on `GIT_TRACE` so we don't pay the format cost
-/// when nobody's watching:
+/// Log a retry under `GIT_TRACE` in upstream's format.
 ///
-/// - `tq: retrying object …` — what handleTransferResult logs in
-///   `tq/transfer_queue.go:819` / `:835`.
-/// - `tq: enqueue retry #N …` — what enqueueRetry logs at `:564`.
-///
-/// We emit both per retry because the upstream tests treat them as
-/// independent grep targets even though they fire on the same retry
-/// in our (simpler, inline) retry model.
+/// Upstream logs `tq: retrying object` and `tq: enqueue retry` from
+/// separate steps of its queue, and its tests match both, so each retry
+/// prints both lines.
 fn emit_retry_trace(oid: &str, size: u64, count: u32, delay: Duration, err: &TransferError) {
     if !trace_enabled() {
         return;
@@ -569,7 +507,6 @@ fn emit_retry_trace(oid: &str, size: u64, count: u32, delay: Duration, err: &Tra
     } else {
         eprintln!("tq: retrying object {oid}: {err}");
     }
-    // Upstream uses Go's `%q` for the oid (adds quotes + Go escapes); a
-    // pure hex OID round-trips through Rust's {:?} the same way.
+    // For a hex OID, {:?} quotes like Go's %q.
     eprintln!("tq: enqueue retry #{count} after {secs:.2}s for {oid:?} (size: {size}): {err}");
 }

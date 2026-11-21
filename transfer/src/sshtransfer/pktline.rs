@@ -1,33 +1,24 @@
 //! Git pkt-line framing for the pure-SSH transfer protocol.
 //!
-//! Wire format: each packet is a 4-byte ASCII hex length prefix
-//! followed by the payload. The length value includes the 4-byte
-//! header itself, so a packet carrying N bytes of payload encodes
-//! as `printf("%04x", N + 4)`.
+//! Each packet is a 4-digit hex length followed by the payload. The length
+//! counts its own 4 bytes, so a packet with N bytes of payload starts with
+//! `format!("{:04x}", N + 4)`.
 //!
-//! Three reserved length values carry no payload:
+//! Two lengths carry no payload: `0000` is a flush packet, which ends a
+//! message, and `0001` is a delim packet, which separates a command and its
+//! arguments from the data that follows. The reader rejects `0002` and
+//! `0003`.
 //!
-//! - `0000` — flush packet. Ends a message.
-//! - `0001` — delim packet. Separates sections within a message
-//!   (e.g. status + args from data).
-//! - `0002`, `0003` — reserved; the SSH transfer protocol doesn't
-//!   use them.
-//!
-//! Payload length is bounded by [`MAX_DATA`] (65515 bytes), matching
-//! the upstream `git-lfs/pktline` Go library.
-//!
-//! Two text helpers ([`Writer::write_text`], [`Reader::read_text`])
-//! handle the LF-terminator convention from the protocol spec:
-//! text commands like `"version 1"` are written with an implicit
-//! trailing LF, and the matching read strips it back off.
+//! Text packets end in LF on the wire. [`Writer::write_text`] adds it and
+//! [`Reader::read_text`] strips it.
 
 use std::io::{self, Read, Write};
 
-/// Maximum payload size of a single pkt-line packet. The wire-format
-/// length value is 4 ASCII hex digits, which would top out at 65535,
-/// but the upstream `git-lfs/pktline` Go library caps at 65519
-/// (header included), so payload max is 65515. We match that cap to
-/// stay byte-for-byte compatible.
+/// The largest payload of one packet.
+///
+/// The protocol spec caps the length at 65519 including the 4 header
+/// bytes. Git itself allows one byte more. The reader rejects anything
+/// larger than this.
 pub const MAX_DATA: usize = 65515;
 
 const FLUSH: u16 = 0;
@@ -37,18 +28,15 @@ const HEADER: usize = 4;
 /// A single pkt-line packet read off the wire.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Packet {
-    /// Flush packet (`0000`) — end of message.
+    /// Flush packet (`0000`), which ends a message.
     Flush,
-    /// Delim packet (`0001`) — section boundary within a message.
+    /// Delim packet (`0001`), which separates sections of a message.
     Delim,
-    /// Data packet (length ≥ 4) with the payload bytes.
+    /// Data packet with its payload.
     Data(Vec<u8>),
 }
 
-/// Streaming pkt-line reader. Reads one packet at a time off the
-/// underlying byte stream; the wrapped reader is borrowed by each
-/// `read_*` call so callers can interleave packet reads with raw
-/// reads if a sub-protocol requires it.
+/// Reads pkt-line packets from an underlying `Read`.
 pub struct Reader<R: Read> {
     inner: R,
 }
@@ -59,10 +47,12 @@ impl<R: Read> Reader<R> {
         Self { inner }
     }
 
-    /// Read the next packet. Surfaces an I/O error with
-    /// [`io::ErrorKind::UnexpectedEof`] when the stream closes
-    /// mid-packet, and `InvalidData` for malformed length headers
-    /// or out-of-range payloads.
+    /// Read the next packet.
+    ///
+    /// Errors with [`io::ErrorKind::UnexpectedEof`] if the stream ends
+    /// before or within a packet, and with [`io::ErrorKind::InvalidData`]
+    /// for a malformed length, `0002` or `0003`, or a payload over
+    /// [`MAX_DATA`].
     pub fn read_packet(&mut self) -> io::Result<Packet> {
         let mut header = [0u8; HEADER];
         self.inner.read_exact(&mut header)?;
@@ -89,10 +79,10 @@ impl<R: Read> Reader<R> {
         }
     }
 
-    /// Read a text packet, stripping a single trailing LF if
-    /// present. Returns `None` on flush, the empty string on delim,
-    /// and `Some(text)` on a data packet. Errors if the payload is
-    /// not valid UTF-8.
+    /// Read the next packet, decoding a data packet as UTF-8 text.
+    ///
+    /// Strips one trailing LF, if present. Errors with
+    /// [`io::ErrorKind::InvalidData`] if the payload is not UTF-8.
     pub fn read_text(&mut self) -> io::Result<TextPacket> {
         match self.read_packet()? {
             Packet::Flush => Ok(TextPacket::Flush),
@@ -113,22 +103,21 @@ impl<R: Read> Reader<R> {
     }
 }
 
-/// Text-flavored packet result. Mirrors [`Packet`] but with the
-/// data payload decoded as UTF-8 and the trailing LF stripped.
+/// A packet read by [`Reader::read_text`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TextPacket {
     /// Flush packet (`0000`).
     Flush,
     /// Delim packet (`0001`).
     Delim,
-    /// Data packet with payload decoded as UTF-8 (trailing LF, if
-    /// any, stripped).
+    /// Data packet decoded as UTF-8, without its trailing LF.
     Text(String),
 }
 
-/// Streaming pkt-line writer. Each `write_*` call frames its
-/// argument into a single packet and forwards to the underlying
-/// `Write`; no buffering beyond what the inner writer provides.
+/// Writes pkt-line packets to an underlying `Write`.
+///
+/// Each `write_*` call writes exactly one packet. Nothing is buffered
+/// here, so callers flush the inner writer after a complete message.
 pub struct Writer<W: Write> {
     inner: W,
 }
@@ -139,9 +128,7 @@ impl<W: Write> Writer<W> {
         Self { inner }
     }
 
-    /// Borrow the underlying writer. Used to call `flush` after
-    /// a request to push pending bytes through the OS-level pipe
-    /// buffer to the SSH subprocess.
+    /// Borrow the underlying writer, for example to flush it.
     pub fn get_mut(&mut self) -> &mut W {
         &mut self.inner
     }
@@ -156,8 +143,10 @@ impl<W: Write> Writer<W> {
         self.inner.write_all(b"0001")
     }
 
-    /// Write a binary data packet. Errors if `data.len()` exceeds
-    /// [`MAX_DATA`].
+    /// Write a binary data packet.
+    ///
+    /// Errors with [`io::ErrorKind::InvalidInput`] if `data` is empty or
+    /// longer than [`MAX_DATA`].
     pub fn write_data(&mut self, data: &[u8]) -> io::Result<()> {
         if data.is_empty() {
             return Err(io::Error::new(
@@ -177,16 +166,13 @@ impl<W: Write> Writer<W> {
         self.inner.write_all(data)
     }
 
-    /// Write a text packet, appending a trailing LF if the input
-    /// doesn't already end in one. Matches upstream's
-    /// `WritePacketText` semantics: callers write `"version 1"`
-    /// and the LF terminator is added on the wire.
+    /// Write a text packet, appending an LF unless `text` already ends in
+    /// one.
     pub fn write_text(&mut self, text: &str) -> io::Result<()> {
         if text.ends_with('\n') {
             self.write_data(text.as_bytes())
         } else {
-            // Concatenate into one buffer so we send a single
-            // pkt-line with the LF included (not two packets).
+            // The LF belongs inside the same packet.
             let mut buf = Vec::with_capacity(text.len() + 1);
             buf.extend_from_slice(text.as_bytes());
             buf.push(b'\n');
@@ -364,8 +350,9 @@ mod tests {
 
     #[test]
     fn round_trip_sequence() {
-        // version handshake-ish: server sends "version=1", flush;
-        // client sends "version 1", flush; server sends "status 200", flush.
+        // A handshake: the server sends "version=1" and a flush, the
+        // client "version 1" and a flush, the server "status 200" and a
+        // flush.
         let mut buf = Vec::new();
         {
             let mut w = Writer::new(&mut buf);
