@@ -93,6 +93,40 @@ Gaps no test covers:
 - `git lfs migrate info --fixup` reads `.gitattributes` from the tip commit
   only, not from each commit.
 
+## Known bugs
+
+Found during the docs review, not fixed yet. None has a failing test.
+
+- **`http.sslVerify` typos disable TLS verification.** `parse_bool` in
+  `git/src/http_options.rs` reads any value other than true, 1, yes, or on
+  as false, so `http.sslVerify = ture` turns certificate checks off
+  (`cli/src/http_client.rs`). Git rejects such values. Only false, 0, no,
+  and off should mean false. `lfs_url_bool` has the same problem.
+- **`.git/info/attributes` has the lowest precedence instead of the
+  highest.** `AttrSet::from_workdir` in `git/src/attr.rs` adds it first, and
+  gix-attributes searches the last list first, so any `.gitattributes` wins.
+  With `*.bin -filter` in `.git/info/attributes` and `*.bin filter=lfs` in
+  `.gitattributes`, Git says `a.bin` isn't filtered, but `is_lfs_tracked`
+  says it is. Add the file last instead.
+- **`.git/info/attributes` is assumed to be under the working tree.**
+  `from_workdir` and `list_lfs_patterns` use `<root>/.git/info/attributes`,
+  which is wrong in linked worktrees and with a separate Git directory.
+- **`git lfs prune` fails with a linked worktree on an unborn branch.**
+  `git worktree list` reports its HEAD as all zeros, and `cli/src/prune.rs`
+  passes that to `scan_tree`, where `git ls-tree` fails with *not a tree
+  object*. Not checked yet.
+- **SSH URL parsing:** IPv6 hosts are split at the wrong colon
+  (`ssh://git@[::1]:22/repo` gives the host `[`), and `ssh://host:/path`
+  gives an empty port (`parse_ssh_url` and `ssh_to_https` in
+  `git/src/endpoint.rs`).
+- **`FETCH_HEAD`:** `read_fetch_head_url` takes the first line containing
+  " of ", where upstream only reads the first line.
+- **Boolean settings:** `get_bool` in `git/src/fetch_prune.rs` returns false
+  for an empty value and the default for anything unrecognized. Upstream's
+  `config.Bool` does the opposite, and also accepts `t` and `f`.
+- **`git cat-file` stderr is piped but never read** (`git/src/cat_file.rs`).
+  If Git writes more than a pipe buffer to it, the process blocks.
+
 ## Deferred improvements
 
 - **Batched smudge downloads.** Supporting the filter protocol's `delay`
