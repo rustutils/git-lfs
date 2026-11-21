@@ -121,10 +121,6 @@ come from reading the code.
 
 ### Data loss
 
-- **`git lfs migrate import --fixup` discards uncommitted changes.**
-  Confirmed. It skips the dirty-tree check and then runs
-  `git checkout -f HEAD`. `--no-rewrite` also skips the check. Upstream
-  checks in every mode.
 - **`git lfs migrate import` corrupts non-ASCII file names.** Confirmed.
   `unquote_path` in `migrate/fast_export.rs` doesn't decode octal escapes,
   so `café.bin` becomes a file named `caf\303\251.bin` in the rewritten

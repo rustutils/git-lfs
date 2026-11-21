@@ -66,6 +66,9 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- `git lfs migrate import --fixup` and `--no-rewrite` refuse to run with
+  uncommitted changes unless `--yes` is given, like the other modes and
+  upstream. `--fixup` used to discard them.
 - Hooks go where Git runs them when `core.hooksPath` is set in the global or
   system config. Before, they went to `.git/hooks`, so the pre-push hook
   never ran and pushes left LFS objects behind. A relative `core.hooksPath`

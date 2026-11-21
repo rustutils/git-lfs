@@ -2668,6 +2668,35 @@ fn install_then_real_git_checkout_does_not_fail_via_post_checkout_hook() {
     );
 }
 
+// ---------- migrate --------------------------------------------------------
+
+#[test]
+fn migrate_import_fixup_refuses_a_dirty_working_tree() {
+    // `--fixup` rewrites history and then checks out HEAD with `-f`, which
+    // would throw away uncommitted changes.
+    let repo = fresh_repo_with_identity();
+    std::fs::write(
+        repo.path().join(".gitattributes"),
+        "*.bin filter=lfs diff=lfs merge=lfs -text\n",
+    )
+    .unwrap();
+    std::fs::write(repo.path().join("x.bin"), b"raw content, not a pointer\n").unwrap();
+    std::fs::write(repo.path().join("note.txt"), b"committed\n").unwrap();
+    git_in(repo.path(), &["add", "."]);
+    git_in(repo.path(), &["commit", "-q", "-m", "init"]);
+    std::fs::write(repo.path().join("note.txt"), b"uncommitted edit\n").unwrap();
+
+    for args in [
+        &["migrate", "import", "--fixup"][..],
+        &["migrate", "import", "--no-rewrite", "x.bin"][..],
+    ] {
+        let out = run_in(repo.path(), args, b"");
+        assert!(!out.status.success(), "{args:?} should refuse");
+        let note = std::fs::read_to_string(repo.path().join("note.txt")).unwrap();
+        assert_eq!(note, "uncommitted edit\n", "{args:?} discarded the edit");
+    }
+}
+
 // ---------- core.hooksPath ----------------------------------------------
 
 /// Run `git-lfs <args>` in `cwd` with `global` as the global Git config.

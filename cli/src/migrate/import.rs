@@ -9,6 +9,9 @@
 //!
 //! `--no-rewrite` leaves history alone: it converts the given working
 //! tree files to pointers and commits them on top of HEAD.
+//!
+//! Every mode refuses to run with uncommitted changes unless `--yes` is
+//! given.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -69,20 +72,21 @@ pub fn import(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateError> {
         ));
     }
 
-    // Neither `--no-rewrite` nor `--fixup` checks for a dirty working
-    // tree, unlike upstream.
+    // Every mode checks first, as upstream's `ensureWorkingCopyClean` does.
+    // Rewriting history ends with `git checkout -f`, which would discard
+    // uncommitted changes.
+    if !opts.yes && working_tree_dirty(cwd)? {
+        return Err(MigrateError::Other(
+            "working tree has uncommitted changes; commit or stash first".into(),
+        ));
+    }
+
     if opts.no_rewrite {
         return import_no_rewrite(cwd, opts);
     }
 
     if opts.fixup {
         return import_fixup(cwd, opts);
-    }
-
-    if !opts.yes && working_tree_dirty(cwd)? {
-        return Err(MigrateError::Other(
-            "working tree has uncommitted changes; commit or stash first".into(),
-        ));
     }
 
     if let Some(remote) = opts.remote.as_deref()
