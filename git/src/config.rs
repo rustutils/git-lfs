@@ -285,7 +285,13 @@ fn read_lfsconfig_file(root: &Path) -> Result<LfsConfigEntries, Error> {
     let out = Command::new("git")
         .arg("-C")
         .arg(root)
-        .args(["config", "--includes", "--file=.lfsconfig", "--list"])
+        .args([
+            "config",
+            "--includes",
+            "--file=.lfsconfig",
+            "--list",
+            "--null",
+        ])
         .output()?;
     if !out.status.success() {
         return Err(Error::Failed(format!(
@@ -306,7 +312,7 @@ fn read_lfsconfig_blob(cwd: &Path, revision: &str) -> Result<Option<LfsConfigEnt
     let out = Command::new("git")
         .arg("-C")
         .arg(cwd)
-        .args(["config", "--includes", &blob_arg, "--list"])
+        .args(["config", "--includes", &blob_arg, "--list", "--null"])
         .output()?;
     match out.status.code() {
         Some(0) => Ok(Some(parse_list_output(&out.stdout))),
@@ -349,16 +355,18 @@ fn repo_root(cwd: &Path) -> Option<PathBuf> {
     Some(PathBuf::from(s))
 }
 
-/// Parse the `key=value` lines of `git config --list`.
+/// Parse the output of `git config --list --null`.
 ///
-/// Each line splits at its first `=`, since values such as URLs can
-/// contain more. Git already prints keys in canonical case. Repeated keys
-/// keep every value, in order.
+/// Each entry ends with a NUL, and its key and value are separated by the
+/// first newline, so a value containing a newline can't start another
+/// entry, as in upstream's `ParseConfigEntries`. A key without a value is
+/// skipped. Git already prints keys in canonical case. Repeated keys keep
+/// every value, in order.
 fn parse_list_output(bytes: &[u8]) -> LfsConfigEntries {
     let s = String::from_utf8_lossy(bytes);
     let mut entries: LfsConfigEntries = HashMap::new();
-    for line in s.lines() {
-        if let Some((k, v)) = line.split_once('=') {
+    for entry in s.split('\0') {
+        if let Some((k, v)) = entry.split_once('\n') {
             entries.entry(k.to_owned()).or_default().push(v.to_owned());
         }
     }
@@ -480,7 +488,7 @@ mod tests {
 
     #[test]
     fn parse_list_handles_values_with_equals() {
-        let raw = b"lfs.url=http://example.com/path?x=1\nremote.origin.lfsurl=http://a\n";
+        let raw = b"lfs.url\nhttp://example.com/path?x=1\0remote.origin.lfsurl\nhttp://a\0";
         let parsed = parse_list_output(raw);
         assert_eq!(
             parsed["lfs.url"],
@@ -491,10 +499,12 @@ mod tests {
 
     #[test]
     fn parse_list_collects_repeated_keys_in_order() {
-        let raw = b"url.http://a/.insteadof=alias\nurl.http://b/.insteadof=alias\n";
+        let raw = b"lfs.fetchinclude\na\0lfs.fetchinclude\nb\0";
         let parsed = parse_list_output(raw);
-        assert_eq!(parsed["url.http://a/.insteadof"], vec!["alias".to_owned()]);
-        assert_eq!(parsed["url.http://b/.insteadof"], vec!["alias".to_owned()]);
+        assert_eq!(
+            parsed["lfs.fetchinclude"],
+            vec!["a".to_owned(), "b".to_owned()]
+        );
     }
 
     #[test]
@@ -572,5 +582,24 @@ mod tests {
         assert!(!safe.contains_key("lfs.extension.e.clean"));
         // Sorted for deterministic warning output.
         assert_eq!(ignored, vec!["core.askpass", "lfs.extension.e.clean"]);
+    }
+
+    #[test]
+    fn lfsconfig_value_with_newline_does_not_inject_a_key() {
+        let repo = init_repo();
+        let set = |key: &str, value: &str| {
+            let status = Command::new("git")
+                .arg("-C")
+                .arg(repo.path())
+                .args(["config", "--file=.lfsconfig", key, value])
+                .status()
+                .unwrap();
+            assert!(status.success());
+        };
+        set("lfs.url", "http://real-endpoint");
+        set("lfs.fetchinclude", "x\nlfs.url=http://injected-endpoint");
+
+        let url = get_from_lfsconfig(repo.path(), "lfs.url").unwrap();
+        assert_eq!(url.as_deref(), Some("http://real-endpoint"));
     }
 }

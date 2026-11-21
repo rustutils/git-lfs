@@ -137,11 +137,6 @@ come from reading the code.
 
 ### Security
 
-- **`.lfsconfig` values can inject keys.** `t-config` 14. Confirmed.
-  `.lfsconfig` is read with `git config --list` without `-z` and split on
-  newlines (`parse_list_output` in `git/src/config.rs`), so a value
-  containing a newline sets another key, such as `lfs.url`. Injected keys
-  still pass `is_safe_key`.
 - **Batch and lock API redirects keep credentials from HTTP to HTTPS.**
   `t-header-redirect` 3. reqwest drops `Authorization` and `Cookie` only when
   the host or port changes, not the scheme. Uploads already follow upstream's

@@ -8,6 +8,12 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ## [Unreleased]
 
+### Security
+
+- `.lfsconfig` values containing a newline can no longer add other settings,
+  such as `lfs.url`. A cloned repository could use this to change where LFS
+  objects are sent.
+
 ## [0.8.0] - 2026-11-21
 
 ### Security
