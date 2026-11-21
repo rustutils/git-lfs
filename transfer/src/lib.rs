@@ -29,15 +29,17 @@
 //!
 //! Two transfer methods are implemented: the `basic` HTTPS
 //! transfer (see the [basic-transfers spec][spec]) and the
-//! pure-SSH protocol in [`sshtransfer`], which carries batch
-//! requests, object transfers, and locks over a pool of
-//! multiplexed SSH connections. [`backend::Backend`] picks
-//! between them per remote. The `tus` and custom-transfer-agent
-//! adapters are not implemented yet.
+//! pure-SSH protocol in [`sshtransfer`] (see the
+//! [SSH transfer spec][ssh-spec]), which carries batch requests,
+//! object transfers, and locks over a pool of multiplexed SSH
+//! connections. [`backend::Backend`] picks between them per
+//! remote. The `tus` and custom-transfer-agent adapters are not
+//! implemented yet.
 //!
 //! [`git_lfs_api`]: https://docs.rs/git-lfs-api
 //! [`git_lfs_store`]: https://docs.rs/git-lfs-store
 //! [spec]: https://gitlab.com/rustutils/git-lfs/-/blob/master/docs/api/basic-transfers.md
+//! [ssh-spec]: https://gitlab.com/rustutils/git-lfs/-/blob/master/docs/proposals/ssh_adapter.md
 
 pub mod backend;
 mod basic;

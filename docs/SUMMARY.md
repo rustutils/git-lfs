@@ -14,6 +14,7 @@
   - [Batch](api/batch.md)
   - [Basic transfers](api/basic-transfers.md)
   - [Locking](api/locking.md)
+- [SSH transfer protocol](proposals/ssh_adapter.md)
 
 # Commands
 

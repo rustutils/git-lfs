@@ -32,13 +32,18 @@ Useful entry points in the upstream tree:
 - `docs/custom-transfers.md` — custom transfer agent protocol. Third-party
   contract; must match exactly.
 - `docs/extensions.md` — extension protocol.
+- `docs/proposals/ssh_adapter.md` — pure-SSH transfer protocol
+  (`git-lfs-transfer`). Still titled a proposal upstream, but it's the
+  only written spec for the protocol upstream and scutiger implement.
+  Authoritative for `transfer::sshtransfer`.
 - `t/` — shell integration tests + fixtures + helpers. These drive the binary
   via its CLI, so they port for free if we keep CLI compatibility. Strongest
   safety net.
 
 ## What we deliberately skipped
 
-- `docs/proposals/` — historical, mostly superseded.
+- `docs/proposals/` (except `ssh_adapter.md`, above) — historical, mostly
+  superseded.
 - `docs/howto/` — user-facing docs; we'll write our own.
 - `docs/man/` — generated from the upstream CLI; copying locks us into their
   `--help` output, which is what we're trying to fix.
