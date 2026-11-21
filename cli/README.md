@@ -14,9 +14,9 @@ The bulk of upstream's test suite passes; see the [scoreboard]
 for the current breakdown. For production workloads, the
 upstream Go `git-lfs` is still the answer.
 
-The major gaps are custom transfer adapters, TUS uploads,
-pure-SSH transfer (`git-lfs-transfer`), the `dedup` subcommand,
-encrypted client certificate keys, and NTLM and Negotiate auth.
+The major gaps are custom transfer adapters, TUS uploads, the
+`dedup` subcommand, encrypted client certificate keys, and NTLM
+and Negotiate auth.
 
 ## Installing
 

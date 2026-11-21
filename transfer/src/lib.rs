@@ -1,4 +1,4 @@
-//! Concurrent transfer queue and basic adapter for Git LFS uploads and downloads.
+//! Concurrent transfer queue with HTTPS and pure-SSH adapters for Git LFS uploads and downloads.
 //!
 //! When Git LFS wants to transfer files between a client and a
 //! server, it first asks the server's batch endpoint with a list
@@ -27,10 +27,13 @@
 //! never buffered in memory and the async runtime isn't blocked
 //! while a multi-gigabyte object lands.
 //!
-//! Only the `basic` HTTPS transfer is implemented at the moment
-//! (see the [basic-transfers spec][spec]). The `tus`,
-//! custom-transfer-agent, and pure-SSH adapters are not
-//! implemented yet.
+//! Two transfer methods are implemented: the `basic` HTTPS
+//! transfer (see the [basic-transfers spec][spec]) and the
+//! pure-SSH protocol in [`sshtransfer`], which carries batch
+//! requests, object transfers, and locks over a pool of
+//! multiplexed SSH connections. [`backend::Backend`] picks
+//! between them per remote. The `tus` and custom-transfer-agent
+//! adapters are not implemented yet.
 //!
 //! [`git_lfs_api`]: https://docs.rs/git-lfs-api
 //! [`git_lfs_store`]: https://docs.rs/git-lfs-store

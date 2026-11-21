@@ -1,6 +1,6 @@
 [package]
 name                 = "git-lfs-transfer"
-description          = "Concurrent transfer queue and basic adapter for Git LFS uploads and downloads"
+description          = "Concurrent transfer queue with HTTPS and pure-SSH adapters for Git LFS uploads and downloads"
 version.workspace    = true
 edition.workspace    = true
 license.workspace    = true

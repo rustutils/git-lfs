@@ -23,7 +23,11 @@ What's implemented today:
   `git credential fill / approve / reject` bridge plus netrc and
   askpass; `git::endpoint` for the full URL priority chain;
   `transfer/` for the concurrent queue with the basic adapter
-  (upload, download, verify, Retry-After, range-resume).
+  (upload, download, verify, Retry-After, range-resume) and the
+  pure-SSH adapter (`transfer/src/sshtransfer/`: batch, objects,
+  and locks over `git-lfs-transfer`, negotiated per remote via
+  `transfer::backend`). Multi-stage auth (`wwwauth[]`, `state[]`,
+  authtype credentials) lives in `api/` + `creds/`.
 - Git interop — `git/` ships the scanner (`rev_list`, `cat-file
   --batch[-check]`, `scan_pointers`, `scan_tree`), `diff_index`,
   refspec resolution, and a `.gitattributes` parser + matcher
@@ -44,9 +48,8 @@ What's implemented today:
   testtools. Lives in its own `lfstest` crate (publish=false), so
   `cargo install git-lfs` installs only the production binary.
 
-What's still gapped: custom transfer adapters + tus, pure-SSH
-transfer (`git-lfs-transfer`), NTLM / Kerberos / mTLS, multi-stage
-auth (`wwwauth[]` / `state[]`), `dedup`, `completion`, full
+What's still gapped: custom transfer adapters + tus,
+NTLM / Kerberos / mTLS, `dedup`, `completion`, full
 fetch-recent / prune retention semantics. See `NOTES.md` for the
 ranked gap list, per-command deferred polish, and
 `tests/SCOREBOARD.md` for the live per-suite pass rate.
