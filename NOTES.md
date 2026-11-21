@@ -130,6 +130,19 @@ Found during the docs review, not fixed yet. None has a failing test.
 - **Boolean settings:** `get_bool` in `git/src/fetch_prune.rs` returns false
   for an empty value and the default for anything unrecognized. Upstream's
   `config.Bool` does the opposite, and also accepts `t` and `f`.
+- **A password in the remote URL can appear in an error.** With a remote
+  like `https://alice:s3cret@host/repo.git`, a 401 that no helper can answer
+  gives *Git credentials for https://alice:s3cret@host/ not found*
+  (`cred_url_string` in `api/src/client.rs`). Strip the password first.
+- **`http.extraHeader` values are printed unmasked under
+  `GIT_CURL_VERBOSE`** (`api/src/client.rs`), so an `Authorization` header
+  set there ends up on stderr. Upstream masks Basic credentials.
+- **SSH remotes can send two `Authorization` headers.** After a 401, the
+  client's own credentials are sent alongside the header from
+  `git-lfs-authenticate`, because reqwest appends headers. Upstream skips
+  its own auth when the request already has some.
+- **`create_lock` drops `Retry-After`** on rate-limit and server errors,
+  unlike the other API calls (`api/src/locks.rs`).
 - **The SSH program is split on whitespace.** `GIT_SSH=/opt/my tools/ssh`
   runs `/opt/my`, and quoted arguments in `GIT_SSH_COMMAND` break. Upstream
   runs `GIT_SSH_COMMAND` through a shell and treats `GIT_SSH` as one path.

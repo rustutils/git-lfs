@@ -1,6 +1,8 @@
-//! Locking API: create, list, verify, and delete file locks.
+//! Create, list, verify, and delete file locks.
 //!
-//! See `docs/api/locking.md` for the wire-protocol contract.
+//! The [locking spec] defines the format.
+//!
+//! [locking spec]: https://gitlab.com/rustutils/git-lfs/-/blob/master/docs/api/locking.md
 
 use serde::{Deserialize, Serialize};
 
@@ -10,12 +12,12 @@ use crate::models::{Lock, Ref};
 
 // ---- create ---------------------------------------------------------------
 
-/// POST `/locks` body.
+/// Request body for `POST /locks`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CreateLockRequest {
-    /// Repo-relative path to lock.
+    /// Path to lock, relative to the repository root.
     pub path: String,
-    /// Optional ref scope for the lock.
+    /// Ref the lock belongs to, for servers that authorize by ref.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub r#ref: Option<Ref>,
 }
@@ -29,7 +31,7 @@ impl CreateLockRequest {
         }
     }
 
-    /// Set the ref scope for the lock.
+    /// Set the ref the lock belongs to.
     pub fn with_ref(mut self, r: Ref) -> Self {
         self.r#ref = Some(r);
         self
@@ -41,12 +43,10 @@ struct LockEnvelope {
     lock: Lock,
 }
 
-/// Flexible POST `/locks` response decoder. The reference test server
-/// returns `{"message": "lock already created"}` at HTTP 200 for the
-/// "path is already locked" case (no `lock` field, no 409 status), so a
-/// strict envelope deserialize would blow up with a missing-field
-/// error. We accept `lock` and `message` independently and let
-/// [`Client::create_lock`] interpret which arrived.
+/// Response body from `POST /locks`, with both fields optional.
+///
+/// Upstream's test server answers an already locked path with HTTP 200 and
+/// only `{"message": "lock already created"}`, so `lock` can't be required.
 #[derive(Debug, Deserialize)]
 struct CreateLockResponse {
     #[serde(default)]
@@ -55,107 +55,103 @@ struct CreateLockResponse {
     message: Option<String>,
 }
 
-/// Errors specific to [`Client::create_lock`].
-///
-/// Wraps [`ApiError`] but adds a typed `Conflict` for the in-band
-/// "already locked" case. `existing` is `Some` for servers that return
-/// HTTP 409 with the conflicting lock attached; `None` for servers that
-/// only ship a message.
+/// Errors returned by [`Client::create_lock`].
 #[derive(Debug, thiserror::Error)]
 pub enum CreateLockError {
-    /// The path is already locked. `existing` carries the
-    /// conflicting lock when the server returned one.
+    /// The path is already locked.
+    ///
+    /// Servers report this with a 409, or with a 2xx response that has a
+    /// `message` but no `lock`.
     #[error("lock conflict: {message}")]
     Conflict {
+        /// The existing lock, if the server sent it.
         existing: Option<Lock>,
+        /// The server's message, or `lock conflict` if it sent none.
         message: String,
     },
 
-    /// Anything else (transport, auth, decode, non-409 server error).
+    /// Any other failure.
     #[error(transparent)]
     Api(#[from] ApiError),
 }
 
 // ---- list -----------------------------------------------------------------
 
-/// Filter for `GET /locks`. All fields are optional; absent ones are not
-/// sent on the wire.
+/// Query parameters for `GET /locks`.
+///
+/// Fields left as `None` are not sent.
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct ListLocksFilter {
-    /// Return only the lock matching this repo-relative path.
+    /// Only the lock on this path.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
-    /// Return only the lock with this server-assigned ID.
+    /// Only the lock with this ID.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    /// Pagination cursor returned by a prior listing's `next_cursor`.
+    /// Where to continue, from a previous [`LockList::next_cursor`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
     /// Maximum number of locks to return.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
-    /// Refspec scope. Some servers partition locks by ref.
+    /// Only locks on this fully qualified ref.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refspec: Option<String>,
 }
 
-/// Response body from `GET /locks`. A page of locks plus an optional
-/// continuation cursor.
+/// Response body from `GET /locks`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LockList {
-    /// Locks on this page.
-    ///
-    /// Go LFS servers serialize an empty result as `"locks": null`
-    /// rather than `"locks": []`; treat null as the empty list.
+    /// Locks on this page. A `null` from the server reads as empty.
     #[serde(default, deserialize_with = "deserialize_null_as_default")]
     pub locks: Vec<Lock>,
-    /// Opaque cursor; pass back as `cursor` in the next request to continue.
+    /// Cursor for the next page, if there is one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
 }
 
 // ---- verify ---------------------------------------------------------------
 
-/// POST `/locks/verify` body. Asks the server to partition known locks
-/// into ours and theirs.
+/// Request body for `POST /locks/verify`.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VerifyLocksRequest {
-    /// Optional ref scope.
+    /// Ref the locks belong to, for servers that authorize by ref.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub r#ref: Option<Ref>,
-    /// Pagination cursor returned by a prior verify's `next_cursor`.
+    /// Where to continue, from a previous
+    /// [`VerifyLocksResponse::next_cursor`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
-    /// Maximum number of locks per partition.
+    /// Maximum number of locks to return.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
 }
 
-/// Response body from `POST /locks/verify`. Locks split by owner.
+/// Response body from `POST /locks/verify`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VerifyLocksResponse {
-    /// Locks owned by the authenticated user. Servers may serialize an
-    /// empty list as `null`; `deserialize_null_as_default` normalizes
-    /// that to `Vec::new()`.
+    /// Locks held by the authenticated user. A `null` reads as empty.
     #[serde(default, deserialize_with = "deserialize_null_as_default")]
     pub ours: Vec<Lock>,
-    /// Locks owned by other users. Same null-handling as `ours`.
+    /// Locks held by other users. A `null` reads as empty.
     #[serde(default, deserialize_with = "deserialize_null_as_default")]
     pub theirs: Vec<Lock>,
-    /// Opaque cursor; pass back as `cursor` in the next request to continue.
+    /// Cursor for the next page, if there is one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
 }
 
 // ---- delete ---------------------------------------------------------------
 
-/// POST `/locks/{id}/unlock` body. Requests deletion of a single lock.
+/// Request body for `POST /locks/{id}/unlock`.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DeleteLockRequest {
-    /// True to delete a lock owned by another user. Server enforces auth.
+    /// Delete the lock even if another user holds it.
+    ///
+    /// The server decides whether the caller may do that.
     #[serde(default, skip_serializing_if = "is_false")]
     pub force: bool,
-    /// Optional ref scope, mirroring the lock's original ref.
+    /// Ref the lock belongs to, for servers that authorize by ref.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub r#ref: Option<Ref>,
 }
@@ -164,11 +160,10 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
-/// Treat a JSON `null` as `T::default()`. Go's `encoding/json` serializes
-/// a `nil` slice as `null` rather than `[]`, and the LFS reference server
-/// (and lfstest-gitserver) inherits that — so a request that legitimately
-/// returns "no locks" looks like `{"ours": null}`. Without this, our
-/// `Vec<Lock>` deserialize bombs on the null.
+/// Deserialize a JSON `null` as `T::default()`.
+///
+/// Go encodes an empty slice as `null`, so Go servers, including upstream's
+/// test server, can send `{"ours": null}` where the spec wants `[]`.
 fn deserialize_null_as_default<'de, D, T>(d: D) -> Result<T, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -181,21 +176,18 @@ where
 // ---- client ---------------------------------------------------------------
 
 impl Client {
-    /// POST `/locks` to create a new lock.
+    /// Lock a path with `POST /locks`.
     ///
-    /// Body decoding is flexible to accommodate both spec'd 409 → existing
-    /// lock responses and the reference test server's "200 with `message`
-    /// but no `lock`" in-band-conflict pattern.
+    /// Returns the new lock, or [`CreateLockError::Conflict`] if the path is
+    /// already locked.
     pub async fn create_lock(&self, req: &CreateLockRequest) -> Result<Lock, CreateLockError> {
-        // SSH resolution defaults to "upload" for POST-style mutations,
-        // matching upstream's `endpointOperation` (POST → upload).
+        // Over SSH, POST requests use upload-scoped auth, as upstream does.
         let (base, ssh) = self
             .resolve_ssh(crate::ssh::SshOperation::Upload)
             .map_err(CreateLockError::Api)?;
         let url = Client::join(&base, "locks").map_err(CreateLockError::Api)?;
-        // Serialize once so the closure (which may run twice — once
-        // with current auth, once after a 401 → fill) doesn't re-encode
-        // the body each time.
+        // Serialize once, since the auth retry loop may build the request
+        // several times.
         let body_bytes = serde_json::to_vec(req)
             .map_err(|e| CreateLockError::Api(ApiError::Decode(e.to_string())))?;
         let resp = self
@@ -214,9 +206,7 @@ impl Client {
             .await
             .map_err(|e| CreateLockError::Api(ApiError::Transport(e)))?;
 
-        // 409 = standard conflict, with the existing lock spelled out in
-        // the body. Decode flexibly: server may or may not include a
-        // `message` alongside the lock.
+        // The spec's conflict response, with the existing lock in the body.
         if status.as_u16() == 409 {
             let parsed: CreateLockResponse = serde_json::from_slice(&bytes)
                 .map_err(|e| CreateLockError::Api(ApiError::Decode(e.to_string())))?;
@@ -226,7 +216,6 @@ impl Client {
             });
         }
 
-        // Other non-success statuses fall through as plain ApiError::Status.
         if !status.is_success() {
             let body: Option<crate::error::ServerError> = serde_json::from_slice(&bytes).ok();
             return Err(CreateLockError::Api(ApiError::Status {
@@ -238,8 +227,7 @@ impl Client {
             }));
         }
 
-        // 2xx — could be {lock: ...} success or {message: ...}
-        // in-band conflict.
+        // A 2xx carries either the new lock or an in-band conflict message.
         let parsed: CreateLockResponse = serde_json::from_slice(&bytes)
             .map_err(|e| CreateLockError::Api(ApiError::Decode(e.to_string())))?;
         if let Some(lock) = parsed.lock {
@@ -256,36 +244,34 @@ impl Client {
         )))
     }
 
-    /// GET `/locks` with optional filters. SSH-resolved as a download
-    /// operation (read-only listing).
+    /// List locks with `GET /locks`.
     pub async fn list_locks(&self, filter: &ListLocksFilter) -> Result<LockList, ApiError> {
+        // Over SSH, GET requests use download-scoped auth.
         self.get_json("locks", filter, crate::ssh::SshOperation::Download)
             .await
     }
 
-    /// POST `/locks/verify` to list locks partitioned into ours/theirs.
+    /// List locks split into ours and theirs with `POST /locks/verify`.
     ///
-    /// Per the spec, servers that don't implement locking can return 404
-    /// here; that surfaces as `ApiError::Status { status: 404, .. }`. The
-    /// caller (typically push) should treat that as "no locks to verify"
-    /// rather than a hard failure — see `is_not_found()`.
+    /// A server without locking support answers 404, which the spec says
+    /// must not stop a push. Check for it with [`ApiError::is_not_found`].
     pub async fn verify_locks(
         &self,
         req: &VerifyLocksRequest,
     ) -> Result<VerifyLocksResponse, ApiError> {
-        // POST default = upload, matching upstream's `endpointOperation`.
-        // verify_locks is called pre-push (upload context), so this also
-        // matches the caller's intent.
+        // Over SSH, POST requests use upload-scoped auth, as upstream does.
         self.post_json("locks/verify", req, crate::ssh::SshOperation::Upload)
             .await
     }
 
-    /// POST `/locks/{id}/unlock` to delete a lock.
+    /// Delete the lock with ID `id` using `POST /locks/{id}/unlock`.
+    ///
+    /// Returns the deleted lock.
     pub async fn delete_lock(&self, id: &str, req: &DeleteLockRequest) -> Result<Lock, ApiError> {
-        // Percent-encode the id to keep nested path segments safe.
+        // Percent-encode so an ID with a `/` stays one path segment.
         let encoded = url_path_segment(id);
         let path = format!("locks/{encoded}/unlock");
-        // POST → upload SSH operation (matches `endpointOperation`).
+        // Over SSH, POST requests use upload-scoped auth, as upstream does.
         let (base, ssh) = self.resolve_ssh(crate::ssh::SshOperation::Upload)?;
         let url = Client::join(&base, &path)?;
         let body_bytes = serde_json::to_vec(req).map_err(|e| ApiError::Decode(e.to_string()))?;
@@ -301,8 +287,9 @@ impl Client {
     }
 }
 
-/// Minimal percent-encoder for one URL path segment. Encodes anything that
-/// isn't an unreserved character per RFC 3986.
+/// Percent-encode one URL path segment.
+///
+/// Everything except RFC 3986 unreserved characters is encoded.
 fn url_path_segment(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
@@ -322,9 +309,8 @@ mod tests {
 
     #[test]
     fn list_filter_omits_none_fields() {
-        // serde_json round-trip keeps only the fields we actually want on
-        // the wire — same omission rule reqwest applies when building the
-        // query string.
+        // serde_urlencoded, which builds the query string, honors the same
+        // skip rules as serde_json.
         let f = ListLocksFilter {
             path: Some("a.bin".into()),
             ..Default::default()

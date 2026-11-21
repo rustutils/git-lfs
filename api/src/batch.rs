@@ -1,6 +1,8 @@
-//! Batch API: request the ability to transfer LFS objects.
+//! Request transfer actions for LFS objects.
 //!
-//! See `docs/api/batch.md` for the wire-protocol contract.
+//! The [batch spec] defines the format.
+//!
+//! [batch spec]: https://gitlab.com/rustutils/git-lfs/-/blob/master/docs/api/batch.md
 
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
@@ -11,9 +13,9 @@ use crate::client::Client;
 use crate::error::ApiError;
 use crate::models::Ref;
 
-/// Deserialize a size field as `u64`, but reject negative values with the
-/// exact wording upstream's `git-lfs` emits so test fixtures keyed on it
-/// (notably `t-push.sh::push (with invalid object size)`) keep matching.
+/// Deserialize an object size, rejecting negative values.
+///
+/// The error wording matches upstream, which `t-push.sh` checks.
 fn deserialize_object_size<'de, D: Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
     use serde::de::Error;
     let v = i64::deserialize(d)?;
@@ -23,62 +25,51 @@ fn deserialize_object_size<'de, D: Deserializer<'de>>(d: D) -> Result<u64, D::Er
     Ok(v as u64)
 }
 
-/// `ObjectResult.size` is missing entirely from some servers (see the
-/// `serde(default)` comment), so the deserializer must also tolerate
-/// absence. `#[serde(default, deserialize_with = ...)]` requires the
-/// `deserialize_with` to handle the present case only — defaulting
-/// happens before this runs — so this is structurally the same as
-/// `deserialize_object_size` but kept separate to keep the call sites
-/// self-documenting.
-fn deserialize_optional_object_size<'de, D: Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
-    deserialize_object_size(d)
-}
-
 /// Operation requested from the batch endpoint.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Operation {
-    /// Fetching objects from the server.
+    /// Fetch objects from the server.
     Download,
-    /// Sending objects to the server.
+    /// Send objects to the server.
     Upload,
 }
 
 /// One object the client wants to transfer.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ObjectSpec {
-    /// SHA-256 of the object's content, as 64-character lowercase hex.
+    /// Object ID, the SHA-256 of the content as lowercase hex.
     pub oid: String,
     /// Size of the object in bytes.
     pub size: u64,
 }
 
-/// A POST body for `/objects/batch`.
+/// Request body for `POST /objects/batch`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BatchRequest {
-    /// Whether this batch is for uploading or downloading objects.
+    /// Whether to upload or download the objects.
     pub operation: Operation,
-    /// Transfer adapter identifiers the client supports. If empty, the spec
-    /// says the server MUST assume `basic`. We send the field unconditionally
-    /// so the server's preferred adapter is well-defined.
+    /// Transfer adapters the client supports.
+    ///
+    /// Omitted from the request when empty, in which case the server assumes
+    /// `basic`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub transfers: Vec<String>,
-    /// Optional ref scope for the batch. Some servers grant or deny
-    /// access based on the ref being pushed or fetched.
+    /// Ref the objects belong to, for servers that authorize by ref.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub r#ref: Option<Ref>,
     /// The objects to transfer.
     pub objects: Vec<ObjectSpec>,
-    /// Optional hash algorithm. Defaults to `sha256` per the spec.
+    /// Hash algorithm naming the objects. The server assumes `sha256` when
+    /// it is absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hash_algo: Option<String>,
 }
 
 impl BatchRequest {
-    /// Build a request for `operation` over the given `objects`.
+    /// Build a request for `operation` over `objects`.
     ///
-    /// `transfers`, `r#ref`, and `hash_algo` are left empty; set them
-    /// via the builder methods below.
+    /// `transfers`, `ref`, and `hash_algo` start empty.
     pub fn new(operation: Operation, objects: Vec<ObjectSpec>) -> Self {
         Self {
             operation,
@@ -89,148 +80,133 @@ impl BatchRequest {
         }
     }
 
-    /// Set the list of supported transfer-adapter identifiers.
+    /// Set the transfer adapters the client supports.
     pub fn with_transfers(mut self, transfers: impl IntoIterator<Item = String>) -> Self {
         self.transfers = transfers.into_iter().collect();
         self
     }
 
-    /// Set the ref scope for the batch.
+    /// Set the ref the objects belong to.
     pub fn with_ref(mut self, r: Ref) -> Self {
         self.r#ref = Some(r);
         self
     }
 }
 
-/// Response body from `/objects/batch`.
+/// Response body from `POST /objects/batch`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BatchResponse {
-    /// Transfer adapter the server picked. `None` means the server omitted
-    /// it; per the spec the client should assume `basic`.
+    /// Transfer adapter the server picked. `None` means `basic`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transfer: Option<String>,
-    /// Per-object results, one per [`ObjectSpec`] in the request.
+    /// One result per object in the request.
     pub objects: Vec<ObjectResult>,
-    /// Hash algorithm the server expects. Absent means `sha256` per the spec.
+    /// Hash algorithm naming the objects. `None` means `sha256`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hash_algo: Option<String>,
 }
 
-/// Per-object result inside a batch response.
+/// Result for one object in a batch response.
 ///
-/// Either `actions` or `error` is populated; both being absent means
-/// "server already has this object" (an upload no-op).
+/// Holds either `actions` or `error`. Neither means the server already has
+/// the object, which happens on uploads.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ObjectResult {
-    /// Echo of the OID from the corresponding [`ObjectSpec`].
+    /// OID of the matching [`ObjectSpec`].
     pub oid: String,
     /// Size in bytes.
     ///
-    /// Per the spec this is required, but the upstream
-    /// `lfstest-gitserver` (and at least one production server in
-    /// the wild) omit it on the action path: they assume the client
-    /// already knows. Defaults to 0 so we don't refuse the response;
-    /// callers that need the real size should look it up from the
-    /// matching request entry.
-    #[serde(default, deserialize_with = "deserialize_optional_object_size")]
+    /// The spec requires it, but some servers (including upstream's test
+    /// server) omit it. It is then 0, and callers that need the size should
+    /// take it from the request.
+    #[serde(default, deserialize_with = "deserialize_object_size")]
     pub size: u64,
-    /// `Some(true)` if the server authenticated this response (and
-    /// the action URLs are pre-signed). Optional in the spec.
+    /// Whether the action requests are already authenticated.
+    ///
+    /// When absent or false, the client should find credentials for the
+    /// action URLs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authenticated: Option<bool>,
-    /// The transfer URLs to use. `None` when `error` is set or when
-    /// the server already has the object.
+    /// What to do next for this object. Also accepted as `_links`, the name
+    /// used by older servers.
     #[serde(default, alias = "_links", skip_serializing_if = "Option::is_none")]
     pub actions: Option<Actions>,
-    /// Per-object error from the server. `None` on the success path.
+    /// Why the server can't transfer this object.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<ObjectError>,
 }
 
-/// Per-object error inside a batch response.
+/// Error for one object in a batch response.
 ///
-/// Codes mirror HTTP status codes per the batch spec: 404 = not
-/// found, 409 = hash-algo mismatch, 410 = removed, 422 = invalid.
+/// The spec uses these codes: 404 (not found), 409 (hash algorithm
+/// mismatch), 410 (removed by the owner), and 422 (validation error).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ObjectError {
-    /// HTTP-style status code classifying the error.
+    /// HTTP status code classifying the error.
     pub code: u32,
-    /// Human-readable error description.
+    /// Human-readable description.
     pub message: String,
 }
 
-/// The set of next-step actions the server returned for one object.
+/// Next actions the server returned for one object.
 ///
-/// Field set depends on `operation`: `download` populates `download`;
-/// `upload` populates `upload` and optionally `verify`.
+/// Download batches set `download`. Upload batches set `upload` and
+/// optionally `verify`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Actions {
-    /// Action to GET the object bytes. Populated on download batches.
+    /// Where to fetch the object.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub download: Option<Action>,
-    /// Action to PUT the object bytes. Populated on upload batches.
+    /// Where to send the object.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upload: Option<Action>,
-    /// Optional callback to POST after a successful upload. Lets the
-    /// server confirm the bytes landed before declaring the upload
-    /// complete.
+    /// Where to confirm an upload after it completes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verify: Option<Action>,
 }
 
-/// One concrete next-step the transfer adapter should perform.
+/// One request the transfer adapter should make.
 ///
-/// For the HTTP basic adapter, this is an HTTP request: `href` is the
-/// URL and `header` carries the auth. For the pure-SSH transfer
-/// adapter, `href` is unused (the connection is already open) and
-/// `id` / `token` carry the opaque session handles the server hands
-/// back from the SSH `batch` response — they're echoed on subsequent
-/// `get-object` / `put-object` / `verify-object` calls so the server
-/// can correlate. Both fields are `None` on HTTP responses.
+/// Over HTTP, `href` is the URL and `header` holds the headers to send. Over
+/// the pure SSH transfer protocol, `href` is empty and `id` and `token`
+/// identify the granted action in follow-up commands.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Action {
-    /// Absolute URL to dial. Empty when the transfer happens over a
-    /// non-HTTP channel (pure-SSH).
+    /// URL to request. Empty over pure SSH.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub href: String,
-    /// Headers to include with the request (typically `Authorization`).
+    /// Headers to send with the request, typically `Authorization`.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub header: HashMap<String, String>,
-    /// Seconds until the action URL stops being valid. Preferred over
-    /// `expires_at` when both are given. Per the spec, range is roughly
-    /// ±2^31 seconds.
+    /// Seconds from now until the action expires.
+    ///
+    /// Takes precedence over `expires_at` when both are set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_in: Option<i64>,
-    /// Absolute uppercase RFC 3339 timestamp at which the action URL
-    /// stops being valid. Carried as a string (see [`Lock`](crate::Lock)).
+    /// RFC 3339 timestamp at which the action expires.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<String>,
-    /// Pure-SSH only: opaque session identifier returned by the
-    /// server's `batch` response. Echoed back on follow-up commands
-    /// (`get-object`, `put-object`, `verify-object`) so the server
-    /// can match the call to a granted permission. Always `None`
-    /// on HTTP responses.
+    /// Pure SSH only: identifier the server gave this action.
+    ///
+    /// Sent back with `get-object`, `put-object`, and `verify-object` so the
+    /// server can match the command to the action it granted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    /// Pure-SSH only: opaque auth token paired with [`id`](Self::id).
+    /// Pure SSH only: token sent back along with [`id`](Self::id).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
 }
 
 impl Action {
-    /// Has this action expired (or will it within `buffer`)?
+    /// Whether the action has expired, or will within `buffer` of `now`.
     ///
-    /// Mirrors upstream's `tq.Action.IsExpiredWithin` /
-    /// `tools.IsExpiredAtOrIn`: `expires_in` is taken relative to
-    /// `now` (preferred when non-zero), otherwise `expires_at` is
-    /// parsed as RFC 3339. An action without either field never
-    /// expires. The check is `expiration < now + buffer` — i.e. the
-    /// action must have at least `buffer` of validity left.
+    /// A nonzero `expires_in` counts from `now` and takes precedence.
+    /// Otherwise `expires_at` is used. An action with neither, or with an
+    /// `expires_at` that doesn't parse, never expires.
     pub fn is_expired_within(&self, now: SystemTime, buffer: Duration) -> bool {
         let expiration = match (self.expires_in, self.expires_at.as_deref()) {
             (Some(secs), _) if secs != 0 => {
-                // Negative `expires_in` means "already expired" — saturate
-                // at UNIX_EPOCH so the comparison below trivially fires.
+                // Negative means already expired.
                 if secs < 0 {
                     SystemTime::UNIX_EPOCH
                 } else {
@@ -248,9 +224,10 @@ impl Action {
     }
 }
 
-/// Minimal RFC 3339 parser — accepts `YYYY-MM-DDThh:mm:ss[.fff][Z|±hh:mm]`.
-/// Pre-epoch / malformed → `None` (treated as "no expiration set" by
-/// callers, matching upstream's `IsZero` short-circuit).
+/// Parse an RFC 3339 timestamp of the form
+/// `YYYY-MM-DDThh:mm:ss[.fff](Z|±hh:mm)`.
+///
+/// Returns `None` for malformed input and for times before the Unix epoch.
 fn parse_rfc3339(s: &str) -> Option<SystemTime> {
     let bytes = s.as_bytes();
     if bytes.len() < 20
@@ -296,7 +273,8 @@ fn parse_rfc3339(s: &str) -> Option<SystemTime> {
     Some(SystemTime::UNIX_EPOCH + Duration::from_secs(unix as u64))
 }
 
-/// Days since 1970-01-01 for the proleptic Gregorian date `(y, m, d)`.
+/// Days since 1970-01-01 for a proleptic Gregorian date.
+///
 /// Howard Hinnant's days-from-civil algorithm.
 fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
     let y = (if month <= 2 { year - 1 } else { year }) as i64;
@@ -309,11 +287,13 @@ fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
 }
 
 impl Client {
-    /// POST `/objects/batch` to negotiate transfer URLs.
+    /// Send a batch request to `POST /objects/batch`.
+    ///
+    /// A failure for a single object comes back as
+    /// [`ObjectResult::error`], not as an `Err`.
     pub async fn batch(&self, req: &BatchRequest) -> Result<BatchResponse, ApiError> {
-        // Match the SSH `git-lfs-authenticate` operation to the batch
-        // operation: an upload batch needs upload-scoped auth, a
-        // download batch needs download-scoped auth.
+        // Over SSH, an upload batch needs upload-scoped auth and a download
+        // batch needs download-scoped auth.
         let op = match req.operation {
             Operation::Upload => crate::ssh::SshOperation::Upload,
             Operation::Download => crate::ssh::SshOperation::Download,
@@ -378,9 +358,6 @@ mod tests {
     #[test]
     fn action_with_no_expiry_never_expires() {
         let action = Action::default();
-        // Default is `expires_in: None`, `expires_at: None` (after
-        // adding manual construction); a SystemTime in the distant
-        // future doesn't matter either way.
         let action = Action {
             href: "x".into(),
             ..action

@@ -1,61 +1,65 @@
-//! HTTP client for the Git LFS batch and locking APIs.
+//! Async client for the Git LFS batch and locking APIs.
 //!
-//! Git LFS speaks to a server over HTTPS using two endpoints.
-//! The batch endpoint (`POST /objects/batch`) takes a list of
-//! OIDs and sizes and returns one transfer URL per object
-//! (plus any auth headers and an expiry window); the locking
-//! endpoint suite (`/locks`, `/locks/verify`,
-//! `/locks/{id}/unlock`, …) lets clients claim files to
-//! coordinate edits across users. See the [batch spec][batch]
-//! and [locking spec][locking] for the wire-protocol contract.
+//! A [`Client`] talks to one LFS endpoint, such as
+//! `https://git-server.com/foo/bar.git/info/lfs`. [`Client::batch`] sends a
+//! [`BatchRequest`] (an [`Operation`] and a list of [`ObjectSpec`]s) and
+//! returns a [`BatchResponse`] with one [`ObjectResult`] per object. Each
+//! result holds [`Actions`] that say where to send or fetch the bytes, or an
+//! [`ObjectError`], or neither when the server already has an uploaded
+//! object. Moving the bytes is the job of [`git-lfs-transfer`][transfer].
 //!
-//! [`Client`] is the entry point. Construct one per endpoint
-//! URL with an initial [`Auth`] (None, Basic, or Bearer),
-//! optionally attach a credential helper via
-//! [`Client::with_credential_helper`] and an [`SshResolver`]
-//! via [`Client::with_ssh_resolver`], then invoke the
-//! per-operation methods. `Client` is cheap to clone and shares
-//! an underlying connection pool.
+//! The locking calls are [`Client::create_lock`], [`Client::list_locks`],
+//! [`Client::verify_locks`], and [`Client::delete_lock`]. They exchange
+//! [`Lock`] records. The [batch spec][batch] and [locking spec][locking]
+//! define the wire format.
 //!
-//! Request and response types are split by operation. Batch
-//! uses [`BatchRequest`] and [`BatchResponse`], with
-//! [`ObjectResult`] carrying either [`Actions`] or an
-//! [`ObjectError`] per object. Lock operations use
-//! [`CreateLockRequest`], [`ListLocksFilter`],
-//! [`VerifyLocksRequest`], and [`DeleteLockRequest`], with
-//! [`Lock`], [`Owner`], and [`Ref`] as the shared model types.
+//! The [`Auth`] given to [`Client::new`] is sent with every request. To
+//! handle 401 responses, attach a credential
+//! [`Helper`](git_lfs_creds::Helper) from [`git-lfs-creds`][creds] with
+//! [`Client::with_credential_helper`]. On a 401 the client rejects the
+//! credentials it sent, fills new ones from the helper, and retries, a few
+//! times at most. Credentials that succeed are approved and reused for
+//! later requests. For SSH remotes, an
+//! [`SshResolver`] attached with [`Client::with_ssh_resolver`] supplies
+//! headers, and optionally a replacement endpoint URL, for each request.
 //!
-//! On a 401 the client queries the attached credential helper,
-//! retries once, and reports `approve` or `reject` based on the
-//! outcome. Successful fills are cached for the lifetime of the
-//! `Client`. SSH-mediated endpoints (via [`SshResolver`]) can
-//! swap in a replacement HTTPS URL and auth headers per request.
+//! Calls fail with [`ApiError`], except [`Client::create_lock`], whose
+//! [`CreateLockError`] adds a case for a path that is already locked.
+//! [`ApiError::is_retryable`] and [`ApiError::retry_after`] tell the caller
+//! whether and when to try again.
 //!
-//! Failures surface as [`ApiError`], with predicates
-//! ([`is_unauthorized`](ApiError::is_unauthorized),
-//! [`is_retryable`](ApiError::is_retryable), …) for dispatch
-//! without matching on the variant. Server-supplied
-//! `Retry-After` (on 429 or 5xx responses) reaches callers via
-//! [`ApiError::retry_after`]; [`parse_retry_after`] is exported
-//! for reuse on other response paths.
+//! ```no_run
+//! use git_lfs_api::{ApiError, Auth, BatchRequest, Client, ObjectSpec, Operation};
 //!
-//! Byte transfer against action URLs lives in
-//! [`git-lfs-transfer`][transfer-crate]; credential resolution
-//! lives in [`git-lfs-creds`][creds-crate]; server URL
-//! discovery from a git remote lives in
-//! [`git-lfs-git`][git-crate].
+//! # async fn run() -> Result<(), ApiError> {
+//! let endpoint = url::Url::parse("https://git-server.com/foo/bar.git/info/lfs")?;
+//! let client = Client::new(endpoint, Auth::None);
+//!
+//! let object = ObjectSpec {
+//!     oid: "4d7a214614ab2935c943f9e0ff69d22eadbb8f32b1258daaa5e2ca24d17e2393".into(),
+//!     size: 12345,
+//! };
+//! let request = BatchRequest::new(Operation::Download, vec![object])
+//!     .with_transfers(["basic".to_owned()]);
+//!
+//! for result in client.batch(&request).await?.objects {
+//!     if let Some(download) = result.actions.and_then(|a| a.download) {
+//!         println!("{} at {}", result.oid, download.href);
+//!     }
+//! }
+//! # Ok(())
+//! # }
+//! ```
 //!
 //! [batch]: https://gitlab.com/rustutils/git-lfs/-/blob/master/docs/api/batch.md
 //! [locking]: https://gitlab.com/rustutils/git-lfs/-/blob/master/docs/api/locking.md
-//! [transfer-crate]: https://docs.rs/git-lfs-transfer
-//! [creds-crate]: https://docs.rs/git-lfs-creds
-//! [git-crate]: https://docs.rs/git-lfs-git
+//! [transfer]: https://docs.rs/git-lfs-transfer
+//! [creds]: https://docs.rs/git-lfs-creds
 
 // ApiError::Status carries enough context (URL, body, LFS-Authenticate,
-// Retry-After) that it crosses clippy's default 128-byte threshold for
-// the Err arm. Boxing the variant would cascade through every match
-// site; for an error type used only on failure paths the size is not
-// worth chasing.
+// Retry-After) to exceed clippy's 128-byte threshold for the Err arm.
+// Boxing it would touch every match site, which isn't worth it for an error
+// type used only on failure paths.
 #![allow(clippy::result_large_err)]
 
 mod auth;

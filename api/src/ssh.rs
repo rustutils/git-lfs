@@ -1,37 +1,33 @@
-//! SSH-based endpoint resolution hook.
+//! Hook for LFS endpoints reached over SSH.
 //!
-//! When the LFS endpoint is reached via SSH (e.g. `lfs.url =
-//! ssh://...`, or a `git@host:repo` remote without a separate
-//! `lfs.url`), upstream Git LFS shells out to `git-lfs-authenticate` to
-//! obtain a replacement HTTPS URL plus auth headers. This crate is
-//! transport-agnostic, so it expresses the hook as a [`SshResolver`]
-//! trait — the actual `ssh` invocation lives in `git-lfs-creds`.
+//! For an SSH remote, Git LFS runs `git-lfs-authenticate` over SSH to get an
+//! HTTPS URL and headers for the API. This crate doesn't run SSH itself.
+//! Instead, the [`Client`](crate::Client) asks an [`SshResolver`] once per API
+//! call. A non-empty [`SshAuth::href`] replaces the endpoint for that call,
+//! and [`SshAuth::headers`] are added to the request.
 //!
-//! The [`Client`](crate::Client) consults the resolver once per
-//! request: a non-empty [`SshAuth::href`] overrides the endpoint URL
-//! prefix for that call, and [`SshAuth::headers`] are merged into the
-//! outgoing request. Caching is the resolver's responsibility — see
-//! `git_lfs_creds::SshAuthClient` for the production implementation.
+//! Caching is up to the resolver. [`git_lfs_creds::SshAuthClient`] runs the
+//! command and caches the responses.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::error::ApiError;
 
-/// `git-lfs-authenticate <path> <op>` operation argument. Wire form is
-/// lowercase `upload` or `download`.
+/// The operation passed to `git-lfs-authenticate`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SshOperation {
-    /// Auth scope needed to push objects to the server.
+    /// Write access: uploads and lock changes.
     Upload,
-    /// Auth scope needed to fetch objects from the server.
+    /// Read access: downloads and lock listing.
     Download,
 }
 
 impl SshOperation {
-    /// Default mirrors upstream's `endpointOperation`: GET/HEAD →
-    /// download, anything else → upload. Used as the fallback when a
-    /// caller doesn't pass an explicit operation.
+    /// The operation for an HTTP method.
+    ///
+    /// GET and HEAD map to download, anything else to upload, like
+    /// upstream's `endpointOperation`.
     pub fn from_http_method(method: &reqwest::Method) -> Self {
         if matches!(*method, reqwest::Method::GET | reqwest::Method::HEAD) {
             Self::Download
@@ -41,32 +37,31 @@ impl SshOperation {
     }
 }
 
-/// Resolved auth from a `git-lfs-authenticate` call.
+/// Response from `git-lfs-authenticate`.
 #[derive(Debug, Clone, Default)]
 pub struct SshAuth {
-    /// Replacement endpoint URL prefix.
+    /// Endpoint URL to use instead of the configured one.
     ///
-    /// Empty (`""`) when the server expects the original URL to be used as-is.
+    /// Empty means keep the configured endpoint.
     pub href: String,
-    /// Headers to merge into the outgoing request.
+    /// Headers to add to the request.
     ///
-    /// Typically a single `Authorization` entry, but the schema lets servers
-    /// set arbitrary keys (e.g. `X-RemoteAuth-Provider` for vendor extensions).
+    /// Usually a single `Authorization` header.
     pub headers: HashMap<String, String>,
 }
 
-/// Hook called once per LFS API request to resolve SSH-mediated auth.
+/// Supplies SSH auth for each API call.
 ///
-/// Implementations are typically backed by a `git-lfs-authenticate`
-/// invocation with a small in-memory cache keyed on `(host, path,
-/// operation)` so the SSH command runs at most once per cache TTL.
+/// Implementations usually cache responses, so the SSH command doesn't run
+/// on every call.
 pub trait SshResolver: Send + Sync {
-    /// Return the auth response for `operation`. `Ok(default)` (empty
-    /// `href`, empty `headers`) means "no SSH override — use the
-    /// configured endpoint with whatever auth is already on the
-    /// request".
+    /// Resolve auth for `operation`.
+    ///
+    /// `SshAuth::default()` means no override: the client uses the
+    /// configured endpoint and its own auth.
     fn resolve(&self, operation: SshOperation) -> Result<SshAuth, ApiError>;
 }
 
-/// Type alias for the boxed-resolver field on [`Client`](crate::Client).
+/// A shared [`SshResolver`], as taken by
+/// [`Client::with_ssh_resolver`](crate::Client::with_ssh_resolver).
 pub type SharedSshResolver = Arc<dyn SshResolver>;

@@ -3,11 +3,10 @@ use reqwest::header::{AUTHORIZATION, HeaderValue};
 
 /// Authentication to attach to API requests.
 ///
-/// Populated by the caller (typically from a credential helper).
-/// Resolving credentials (git-credential, keychain, etc.) is
-/// deliberately not this crate's job; see [`git-lfs-creds`][creds].
-///
-/// [creds]: https://docs.rs/git-lfs-creds
+/// The value passed to [`Client::new`](crate::Client::new) is where a client
+/// starts. A client with a credential helper replaces it with filled
+/// credentials after a 401. Finding credentials is the job of
+/// [`git_lfs_creds`].
 #[derive(Debug, Clone)]
 pub enum Auth {
     /// No `Authorization` header.
@@ -16,11 +15,11 @@ pub enum Auth {
     Basic { username: String, password: String },
     /// Bearer token, sent as `Authorization: Bearer <token>`.
     Bearer(String),
-    /// Arbitrary auth scheme returned by a credential helper that
-    /// advertised `capability[]=authtype` on its input. Sent as a
-    /// literal `Authorization: <authtype> <credential>` header.
-    /// Used for Bearer-on-non-bearer schemes (NTLM, Negotiate,
-    /// Multistage) where the helper picks the scheme and value.
+    /// A scheme chosen by a credential helper that supports
+    /// `capability[]=authtype`.
+    ///
+    /// Sent as `Authorization: <authtype> <credential>`. A value that isn't
+    /// a valid header value is not sent at all.
     Custom {
         authtype: String,
         credential: String,
@@ -37,11 +36,6 @@ impl Auth {
                 authtype,
                 credential,
             } => {
-                // Format as `<scheme> <credential>`. Invalid header
-                // bytes (newlines, NULs) would have been rejected by
-                // the credential helper validator upstream; we still
-                // defer to reqwest's HeaderValue::try_from to skip
-                // anything reqwest itself can't serialize.
                 let raw = format!("{authtype} {credential}");
                 match HeaderValue::try_from(raw) {
                     Ok(v) => req.header(AUTHORIZATION, v),
@@ -51,12 +45,11 @@ impl Auth {
         }
     }
 
-    /// Rendering of the `Authorization:` header for `GIT_CURL_VERBOSE`
-    /// dumps. Mirrors upstream's `lfshttp/verbose.go::traceHTTPDump`:
-    /// `Basic` is masked (the base64 user:pass is a credential), but
-    /// `Bearer` and custom schemes emit the literal value. Multistage
-    /// shell tests grep the literal `Authorization: Multistage <cred>`
-    /// line, so masking those would break them.
+    /// The `Authorization` line for the `GIT_CURL_VERBOSE` dump.
+    ///
+    /// Only Basic is masked, as in upstream's `traceHTTPDump`. Bearer and
+    /// custom values print as they are, and the multistage shell tests grep
+    /// for them.
     pub(crate) fn masked_header(&self) -> Option<String> {
         match self {
             Auth::None => None,
