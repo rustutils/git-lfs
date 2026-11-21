@@ -22,6 +22,9 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 - `http.<url>.extraHeader` values are only sent to URLs they match. Before,
   headers scoped to the LFS server were also sent to the storage hosts that
   uploads and downloads go to.
+- An `http.sslVerify` value that isn't a boolean, such as a typo, no longer
+  turns off certificate verification. A warning names the value. Upstream
+  turns verification off in this case.
 
 ### Added
 

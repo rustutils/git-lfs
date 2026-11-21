@@ -92,6 +92,8 @@ Grouped by area, with the failing tests each one would fix.
 Gaps no test covers:
 
 - `git lfs install --manual` (`git lfs update --manual` works).
+- `GIT_SSL_NO_VERIFY` isn't read, so it can't turn off certificate
+  verification.
 - `git lfs locks --cached`.
 - `remote.<name>.pushurl` and `remote.<name>.lfspushurl`. Pushes use the
   fetch URL.
@@ -116,10 +118,6 @@ come from reading the code.
   `http.<url>.sslVerify`, `sslCAInfo`, `sslCert`, and `sslKey` for the LFS
   endpoint and uses them for storage hosts too. Upstream looks them up per
   request URL.
-- **`http.sslVerify` typos disable TLS verification.** `parse_bool` in
-  `git/src/http_options.rs` reads anything other than true, 1, yes, or on
-  as false, so `http.sslVerify = ture` turns checks off. Only false, 0, no,
-  and off should. `lfs_url_bool` has the same problem.
 - **A password in the remote URL can appear in an error.** Confirmed. With
   `https://alice:s3cret@host/repo.git`, a 401 that no helper can answer
   gives *Git credentials for https://alice:s3cret@host/ not found*
@@ -208,8 +206,9 @@ come from reading the code.
   expiry.
 - **Boolean environment variables and settings.** `GIT_LFS_SKIP_PUSH=false`
   skips the push, and `GIT_LFS_SKIP_SMUDGE=no` skips smudging. `get_bool`
-  in `git/src/fetch_prune.rs`, `lfs.allowincompletepush`, and
-  `lfs.locksverify` each parse booleans differently from Git and upstream.
+  in `git/src/fetch_prune.rs`, `lfs_url_bool` in `git/src/http_options.rs`,
+  `lfs.allowincompletepush`, and `lfs.locksverify` each parse booleans
+  differently from Git and upstream.
 - **A relative `core.hooksPath` in a bare repository** resolves outside it.
   Confirmed.
 - **`git lfs uninstall` stops at the first config error** and leaves the
@@ -288,6 +287,10 @@ come from reading the code.
   dropping it.
 - **Non-UTF-8 paths in credential queries.** `Query.path` is a `String`, so
   invalid UTF-8 is replaced. Upstream passes the bytes through.
+- **Flaky test.** `cache_returns_same_response_within_ttl` in
+  `creds/src/ssh.rs` writes a script and runs it, which sometimes fails with
+  "text file busy" when another test forks at the same moment. Run it as
+  `sh <path>`, as the SSH transfer tests do.
 - **Testing.** Port the shell tests to `cargo test`, so they don't need Go
   or `make`. Add an end-to-end test that runs a real `git push` through the
   pre-push hook.

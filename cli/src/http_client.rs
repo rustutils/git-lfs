@@ -30,6 +30,9 @@ use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 /// commands that never use the network.
 pub fn build(cwd: &Path, endpoint_url: &str) -> reqwest::Client {
     let opts = HttpOptions::for_url(cwd, endpoint_url).unwrap_or_default();
+    if let Some(value) = &opts.ssl_verify_invalid {
+        warn_invalid_ssl_verify(value);
+    }
     let mut builder = reqwest::ClientBuilder::new();
 
     if opts.ssl_verify == Some(false) {
@@ -48,6 +51,18 @@ pub fn build(cwd: &Path, endpoint_url: &str) -> reqwest::Client {
     }
 
     builder.build().unwrap_or_else(|_| reqwest::Client::new())
+}
+
+/// Warn, once per process, that `http.sslVerify` isn't a boolean.
+///
+/// Commands build more than one client, so this would otherwise repeat.
+fn warn_invalid_ssl_verify(value: &str) {
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        eprintln!(
+            "warning: http.sslVerify has the invalid value {value:?}, so certificates are still verified"
+        );
+    }
 }
 
 /// Load a Netscape-format cookie file, as written by curl.

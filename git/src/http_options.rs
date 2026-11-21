@@ -24,9 +24,14 @@ pub struct HttpOptions {
     pub ssl_ca_info: Option<String>,
     /// `http.sslVerify`: whether to verify the server's certificate.
     ///
-    /// `None` when unset, which git treats as true. Any value other than
-    /// `true`, `1`, `yes` or `on` reads as false.
+    /// `None` when unset or not a boolean, which means verify. Only `false`,
+    /// `no`, `off`, `0`, and `f` turn verification off. Upstream also turns
+    /// it off for a global value it doesn't recognize, such as a typo.
     pub ssl_verify: Option<bool>,
+    /// The `http.sslVerify` value, when it's set but isn't a boolean.
+    ///
+    /// Verification stays on. The caller can warn about it.
+    pub ssl_verify_invalid: Option<String>,
     /// `http.sslCert`: path to a PEM client certificate, used with
     /// [`Self::ssl_key`].
     pub ssl_cert: Option<String>,
@@ -44,14 +49,17 @@ impl HttpOptions {
     /// from `http.<key>` when none matches.
     pub fn for_url(cwd: &Path, url: &str) -> Result<Self, Error> {
         let scoped = scoped_keys(cwd, url)?;
+        let ssl_verify_raw = scoped
+            .lookup("sslverify")
+            .or_else(|| get_global(cwd, "http.sslVerify").ok().flatten());
+        let ssl_verify = ssl_verify_raw.as_deref().and_then(parse_ssl_verify);
+        let ssl_verify_invalid = ssl_verify_raw.filter(|v| !v.is_empty() && ssl_verify.is_none());
         Ok(Self {
             ssl_ca_info: scoped
                 .lookup("sslcainfo")
                 .or_else(|| get_global(cwd, "http.sslcainfo").ok().flatten()),
-            ssl_verify: scoped
-                .lookup("sslverify")
-                .or_else(|| get_global(cwd, "http.sslVerify").ok().flatten())
-                .map(|v| parse_bool(&v)),
+            ssl_verify,
+            ssl_verify_invalid,
             ssl_cert: scoped
                 .lookup("sslcert")
                 .or_else(|| get_global(cwd, "http.sslCert").ok().flatten()),
@@ -298,6 +306,18 @@ fn url_matches(prefix: &str, url: &str) -> bool {
     u == p || u.starts_with(&format!("{p}/"))
 }
 
+/// Parse an `http.sslVerify` value.
+///
+/// Returns `None` for anything that isn't one of Git's boolean spellings, so
+/// a typo can't turn verification off.
+fn parse_ssl_verify(s: &str) -> Option<bool> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "true" | "yes" | "on" | "1" | "t" => Some(true),
+        "false" | "no" | "off" | "0" | "f" => Some(false),
+        _ => None,
+    }
+}
+
 /// Whether `s` is `true`, `1`, `yes` or `on`, in any case.
 fn parse_bool(s: &str) -> bool {
     matches!(
@@ -309,6 +329,42 @@ fn parse_bool(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
+
+    /// A new repository with `git config <key> <value>` set.
+    fn repo_with(key: &str, value: &str) -> TempDir {
+        let tmp = TempDir::new().unwrap();
+        let git = |args: &[&str]| {
+            let status = Command::new("git")
+                .arg("-C")
+                .arg(tmp.path())
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        };
+        git(&["init", "--quiet"]);
+        git(&["config", key, value]);
+        tmp
+    }
+
+    #[test]
+    fn invalid_ssl_verify_keeps_verification_on() {
+        for key in ["http.sslVerify", "http.https://lfs.test.sslVerify"] {
+            let repo = repo_with(key, "ture");
+            let opts = HttpOptions::for_url(repo.path(), "https://lfs.test/x").unwrap();
+            assert_ne!(opts.ssl_verify, Some(false), "{key}");
+        }
+    }
+
+    #[test]
+    fn ssl_verify_false_values_turn_verification_off() {
+        for value in ["false", "no", "off", "0", "f", "FALSE"] {
+            let repo = repo_with("http.sslVerify", value);
+            let opts = HttpOptions::for_url(repo.path(), "https://lfs.test/x").unwrap();
+            assert_eq!(opts.ssl_verify, Some(false), "{value}");
+        }
+    }
 
     fn pairs(v: &[(&str, &str)]) -> Vec<(String, String)> {
         v.iter()
