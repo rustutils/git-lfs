@@ -121,9 +121,6 @@ come from reading the code.
 
 ### Data loss
 
-- **`lfs.fetchinclude` makes prune delete objects HEAD needs.** Confirmed.
-  Prune filters retained objects with both include and exclude. Upstream
-  uses only `lfs.fetchexclude`.
 - **`git lfs prune --verify-remote` asks the wrong remote.** It checks the
   default remote, not `lfs.pruneremotetocheck`.
 - **Prune can try to delete `/dev/null`** when an object file named after

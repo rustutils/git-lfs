@@ -18,8 +18,8 @@
 //! since it can't tell what that worktree needs. Upstream fails there too.
 //!
 //! `--recent` drops 2 and 3. `--force` also drops 1. Sources 1 to 4 skip
-//! pointers whose paths are all filtered out by `lfs.fetchinclude` and
-//! `lfs.fetchexclude`. Upstream applies only `lfs.fetchexclude` here.
+//! pointers whose paths all match `lfs.fetchexclude`, as in upstream.
+//! `lfs.fetchinclude` isn't applied.
 //!
 //! `--verify-remote` asks the server, with a download batch, which
 //! prunable objects it still has. An object it doesn't have stops the
@@ -267,13 +267,14 @@ fn scan_reachable_pointers(cwd: &Path) -> Result<HashSet<Oid>, PruneError> {
 /// docs.
 fn build_retain_set(cwd: &Path, opts: &Options) -> Result<HashSet<Oid>, PruneError> {
     let cfg = FetchPruneConfig::from_repo(cwd);
-    let include_set = fetch_filter_set(cwd, "lfs.fetchinclude")?;
+    // Only `lfs.fetchexclude`, as in upstream. Applying `lfs.fetchinclude`
+    // would delete objects that HEAD needs but fetch doesn't download.
     let exclude_set = fetch_filter_set(cwd, "lfs.fetchexclude")?;
 
     // Pointers without a path always pass the filter.
     let mut retained: HashSet<Oid> = HashSet::new();
     let keep = |entry: git_lfs_git::scanner::PointerEntry, retained: &mut HashSet<Oid>| {
-        if paths_pass_filter(&entry.paths, &include_set, &exclude_set) {
+        if paths_pass_filter(&entry.paths, &None, &exclude_set) {
             retained.insert(entry.oid);
         }
     };

@@ -2913,6 +2913,33 @@ fn prune_refuses_on_an_unborn_branch() {
 }
 
 #[test]
+fn prune_ignores_fetchinclude_for_retained_objects() {
+    // `lfs.fetchinclude` limits what fetch downloads, not what HEAD needs.
+    let repo = fresh_repo_with_identity();
+    let oid = put_object_in_store(repo.path(), b"hello world\n");
+    commit_pointer_at(repo.path(), "x.bin", &pointer_text(&oid, 12));
+    git_in(
+        repo.path(),
+        &["update-ref", "refs/remotes/origin/main", "HEAD"],
+    );
+    git_in(repo.path(), &["config", "lfs.fetchinclude", "other/**"]);
+
+    let out = run_in(repo.path(), &["prune"], b"");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let path = repo
+        .path()
+        .join(".git/lfs/objects")
+        .join(&oid[0..2])
+        .join(&oid[2..4])
+        .join(&oid);
+    assert!(path.is_file(), "object used by HEAD was deleted");
+}
+
+#[test]
 fn prune_dry_run_does_not_delete() {
     let repo = fresh_repo_with_identity();
     std::fs::write(repo.path().join("plain.txt"), b"hi").unwrap();
