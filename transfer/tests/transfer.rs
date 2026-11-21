@@ -358,6 +358,65 @@ async fn upload_happy_path_streams_object_bytes() {
     assert!(report.is_complete_success(), "{:?}", report.failed);
 }
 
+/// Accept one HTTP request on a raw socket, answer 200, and return the
+/// request head as sent, before any HTTP parsing.
+async fn capture_request_head(listener: tokio::net::TcpListener) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let (mut sock, _) = listener.accept().await.unwrap();
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 4096];
+    while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+        let n = sock.read(&mut chunk).await.unwrap();
+        assert!(n > 0, "connection closed before the request head");
+        buf.extend_from_slice(&chunk[..n]);
+    }
+    // Let the body arrive, then answer without reading it all.
+    let _ =
+        tokio::time::timeout(std::time::Duration::from_millis(100), sock.read(&mut chunk)).await;
+    sock.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    let end = buf.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+    String::from_utf8_lossy(&buf[..end]).to_lowercase()
+}
+
+#[tokio::test]
+async fn chunked_upload_has_no_content_length() {
+    let server = MockServer::start().await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upload_url = format!(
+        "http://{}/storage/{ABC_OID}",
+        listener.local_addr().unwrap()
+    );
+    let head = tokio::spawn(capture_request_head(listener));
+    Mock::given(method("POST"))
+        .and(path("/objects/batch"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "transfer": "basic",
+            "objects": [{
+                "oid": ABC_OID, "size": 3,
+                "actions": { "upload": {
+                    "href": upload_url,
+                    "header": { "Transfer-Encoding": "chunked" }
+                } }
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    let (_tmp, store, transfer) = make_transfer(&server);
+    store.insert(&mut ABC_BYTES.to_vec().as_slice()).unwrap();
+    let spec = ObjectSpec {
+        oid: ABC_OID.into(),
+        size: 3,
+    };
+    transfer.upload(vec![spec], None, None).await.unwrap();
+
+    let head = head.await.unwrap();
+    assert!(head.contains("\r\ntransfer-encoding: chunked"), "{head}");
+    assert!(!head.contains("content-length"), "{head}");
+}
+
 /// Run an upload whose action sends `Authorization: Bearer SECRET` to
 /// `upload_url` on `server`.
 async fn upload_with_auth(server: &MockServer, upload_url: &str) -> bool {

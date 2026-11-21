@@ -29,6 +29,11 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 - `exec:` lines in `GIT_TRACE` output quote each argument, like upstream, so
   they show exactly what was run.
 
+### Fixed
+
+- `GIT_CURL_VERBOSE` output no longer shows a `Content-Length` for uploads
+  the server asked to be chunked. None was sent.
+
 ## [0.8.0] - 2026-11-21
 
 ### Security

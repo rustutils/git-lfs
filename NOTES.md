@@ -137,10 +137,6 @@ come from reading the code.
 
 ### Security
 
-- **An action's `Transfer-Encoding: chunked` is sent with `Content-Length`**
-  on uploads (`t-batch-storage-encoding` 6). Sending both is
-  request-smuggling-shaped.
-
 - **TLS settings apply to every host.** `cli/src/http_client.rs` reads
   `http.<url>.sslVerify`, `sslCAInfo`, `sslCert`, and `sslKey` for the LFS
   endpoint and uses them for storage hosts too. Upstream looks them up per

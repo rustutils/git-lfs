@@ -330,6 +330,13 @@ pub(crate) async fn upload(
         Some(sniffed_content_type.unwrap_or(OCTET_STREAM).to_owned())
     };
 
+    // An action can ask for a chunked upload, which has no `Content-Length`.
+    // hyper drops it anyway, but the verbose trace should match.
+    let chunked = upload_action
+        .header
+        .iter()
+        .any(|(k, v)| k.eq_ignore_ascii_case("transfer-encoding") && v == "chunked");
+
     // reqwest can't follow redirects for a streamed body, so follow them
     // here, reopening the file for each request. All action headers go
     // to the new URL, even on another host.
@@ -359,9 +366,10 @@ pub(crate) async fn upload(
         });
         let body = Body::wrap_stream(stream);
 
-        let mut req = http
-            .request(Method::PUT, &href)
-            .header(CONTENT_LENGTH, size);
+        let mut req = http.request(Method::PUT, &href);
+        if !chunked {
+            req = req.header(CONTENT_LENGTH, size);
+        }
         for (k, v) in upload_action
             .header
             .iter()
@@ -383,7 +391,9 @@ pub(crate) async fn upload(
         if !verbose_logged && verbose_enabled() {
             let mut err = std::io::stderr().lock();
             let _ = writeln!(err, "> PUT {href}");
-            let _ = writeln!(err, "> Content-Length: {size}");
+            if !chunked {
+                let _ = writeln!(err, "> Content-Length: {size}");
+            }
             if let Some(ct) = &effective_content_type {
                 let _ = writeln!(err, "> Content-Type: {ct}");
             }
