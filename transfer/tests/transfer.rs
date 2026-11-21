@@ -358,6 +358,83 @@ async fn upload_happy_path_streams_object_bytes() {
     assert!(report.is_complete_success(), "{:?}", report.failed);
 }
 
+/// Run an upload whose action sends `Authorization: Bearer SECRET` to
+/// `upload_url` on `server`.
+async fn upload_with_auth(server: &MockServer, upload_url: &str) -> bool {
+    Mock::given(method("POST"))
+        .and(path("/objects/batch"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "transfer": "basic",
+            "objects": [{
+                "oid": ABC_OID, "size": 3,
+                "actions": { "upload": {
+                    "href": upload_url,
+                    "header": { "Authorization": "Bearer SECRET" }
+                } }
+            }]
+        })))
+        .mount(server)
+        .await;
+
+    let (_tmp, store, transfer) = make_transfer(server);
+    store.insert(&mut ABC_BYTES.to_vec().as_slice()).unwrap();
+    let spec = ObjectSpec {
+        oid: ABC_OID.into(),
+        size: 3,
+    };
+    let report = transfer.upload(vec![spec], None, None).await.unwrap();
+    report.is_complete_success()
+}
+
+#[tokio::test]
+async fn upload_redirect_to_another_host_drops_credentials() {
+    let server = MockServer::start().await;
+    let other = MockServer::start().await;
+    let target = format!("{}/storage/{ABC_OID}", other.uri());
+
+    Mock::given(method("PUT"))
+        .and(path(format!("/storage/{ABC_OID}")))
+        .respond_with(ResponseTemplate::new(307).insert_header("Location", target.as_str()))
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(format!("/storage/{ABC_OID}")))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&other)
+        .await;
+
+    let upload_url = format!("{}/storage/{ABC_OID}", server.uri());
+    assert!(upload_with_auth(&server, &upload_url).await);
+
+    let received = other.received_requests().await.unwrap();
+    assert_eq!(received.len(), 1);
+    assert!(
+        !received[0].headers.contains_key("authorization"),
+        "credentials sent to the redirect target"
+    );
+}
+
+#[tokio::test]
+async fn upload_redirect_on_the_same_host_keeps_credentials() {
+    let server = MockServer::start().await;
+    let target = format!("{}/moved/{ABC_OID}", server.uri());
+
+    Mock::given(method("PUT"))
+        .and(path(format!("/storage/{ABC_OID}")))
+        .respond_with(ResponseTemplate::new(307).insert_header("Location", target.as_str()))
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(format!("/moved/{ABC_OID}")))
+        .and(wiremock::matchers::header("Authorization", "Bearer SECRET"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+
+    let upload_url = format!("{}/storage/{ABC_OID}", server.uri());
+    assert!(upload_with_auth(&server, &upload_url).await);
+}
+
 #[tokio::test]
 async fn upload_with_verify_callback_posts_oid_and_size() {
     let server = MockServer::start().await;

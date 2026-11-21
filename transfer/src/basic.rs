@@ -315,6 +315,8 @@ pub(crate) async fn upload(
     let mut href = upload_action.href.clone();
     let mut verbose_logged = false;
     let mut redirects = 0u32;
+    // Cleared once a redirect leaves the original origin.
+    let mut send_credentials = true;
     let resp = loop {
         let file = tokio::fs::File::open(&path).await?;
         let oid_owned = oid.to_owned();
@@ -338,6 +340,9 @@ pub(crate) async fn upload(
             .request(Method::PUT, &href)
             .header(CONTENT_LENGTH, size);
         for (k, v) in &upload_action.header {
+            if !send_credentials && is_credential_header(k) {
+                continue;
+            }
             req = req.header(k, v);
         }
         if !action_has_content_type {
@@ -369,6 +374,9 @@ pub(crate) async fn upload(
         if redirects < 10
             && let Some(new_href) = follow_redirect(&resp, &href)
         {
+            if !redirect_keeps_credentials(&href, &new_href)? {
+                send_credentials = false;
+            }
             redirects += 1;
             href = new_href;
             continue;
@@ -421,6 +429,27 @@ fn follow_redirect(resp: &Response, current: &str) -> Option<String> {
         let _ = writeln!(err, "api: redirect PUT {old_no_q} to {new_no_q}");
     }
     Some(new)
+}
+
+/// Check a redirect, like upstream's `newRequestForRetry`.
+///
+/// Fails on a redirect from HTTPS to HTTP. Otherwise returns whether
+/// credentials may still be sent, which is only when the scheme, host, and
+/// port stay the same.
+fn redirect_keeps_credentials(from: &str, to: &str) -> Result<bool, TransferError> {
+    let (Ok(from), Ok(to)) = (reqwest::Url::parse(from), reqwest::Url::parse(to)) else {
+        return Ok(false);
+    };
+    if from.scheme() == "https" && to.scheme() == "http" {
+        return Err(TransferError::InsecureRedirect);
+    }
+    Ok(from.origin() == to.origin())
+}
+
+/// Whether a header carries credentials that mustn't follow a redirect to
+/// another origin.
+fn is_credential_header(name: &str) -> bool {
+    name.eq_ignore_ascii_case("authorization") || name.eq_ignore_ascii_case("cookie")
 }
 
 /// Detect the content type from the first 512 bytes of `path`.
@@ -513,4 +542,34 @@ fn check_status(resp: &Response, url: &str) -> Result<(), TransferError> {
 /// of error messages.
 fn strip_query(url: &str) -> &str {
     url.split_once('?').map_or(url, |(base, _)| base)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redirect_on_the_same_origin_keeps_credentials() {
+        let keep = redirect_keeps_credentials("https://a.test/x", "https://a.test/y?z");
+        assert!(keep.unwrap());
+    }
+
+    #[test]
+    fn redirect_to_another_origin_drops_credentials() {
+        for (from, to) in [
+            ("https://a.test/x", "https://b.test/x"),
+            ("https://a.test/x", "https://a.test:8443/x"),
+            // Upgrading to HTTPS still changes the origin, as upstream treats it.
+            ("http://a.test/x", "https://a.test/x"),
+        ] {
+            let keep = redirect_keeps_credentials(from, to).unwrap();
+            assert!(!keep, "{from} to {to}");
+        }
+    }
+
+    #[test]
+    fn redirect_from_https_to_http_is_refused() {
+        let err = redirect_keeps_credentials("https://a.test/x", "http://a.test/x");
+        assert!(matches!(err, Err(TransferError::InsecureRedirect)));
+    }
 }

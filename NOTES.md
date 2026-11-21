@@ -106,11 +106,6 @@ come from reading the code.
 
 ### Security
 
-- **Redirected uploads send credentials to the new host.** Confirmed.
-  `upload` in `transfer/src/basic.rs` follows redirects itself and sends
-  every action header, including `Authorization`, to the new `Location`.
-  Upstream drops `Authorization` and `Cookie` when the origin changes, and
-  refuses HTTPS to HTTP.
 - **`http.<url>.extraHeader` goes to every host.** `cli/src/http_client.rs`
   installs extra headers as client-wide defaults, so a token meant for the
   LFS server is also sent to the storage hosts in action URLs. Upstream

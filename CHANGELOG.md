@@ -16,6 +16,9 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 - SSH remotes quote the repository path for the server's shell, as upstream
   does. Before, a path containing shell syntax, which a cloned repository's
   `.lfsconfig` can set through `lfs.url`, could run commands on the server.
+- When an upload is redirected to another host, the upload's credentials are
+  no longer sent there, and redirects from HTTPS to HTTP are refused, as in
+  upstream.
 
 ### Added
 

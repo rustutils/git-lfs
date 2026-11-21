@@ -66,6 +66,10 @@ pub enum TransferError {
     #[error("action \"{rel}\" expired")]
     ActionExpired { rel: String },
 
+    /// An upload was redirected from HTTPS to HTTP.
+    #[error("refusing insecure redirect: HTTPS to HTTP")]
+    InsecureRedirect,
+
     /// Every verify attempt failed. Holds the last attempt's error.
     ///
     /// Not retried, since verify has its own budget,
@@ -123,6 +127,7 @@ impl TransferError {
             | TransferError::InvalidOid(_)
             | TransferError::UnsupportedHashAlgo(_)
             | TransferError::ActionExpired { .. }
+            | TransferError::InsecureRedirect
             | TransferError::VerifyExhausted(_) => false,
             TransferError::BatchResponse(e) => e.is_retryable(),
         }
