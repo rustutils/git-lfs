@@ -1,7 +1,7 @@
 //! Read git's `http.<key>` and `http.<url>.<key>` settings.
 //!
 //! [`HttpOptions`] holds the TLS settings and `http.cookieFile`.
-//! [`extra_headers_for`] collects `http.extraHeader` values, and
+//! [`ExtraHeaders`] gives the `http.extraHeader` values for a URL, and
 //! [`lfs_url_bool`] reads URL-scoped `lfs.<url>.<key>` booleans.
 //!
 //! A URL-scoped key applies when its URL equals the request URL or is a
@@ -80,8 +80,18 @@ impl Scoped {
     }
 }
 
-/// Read the `http.<url>.<key>` entries that match `url`.
+/// Read the `http.<url>.<key>` entries that match `url`, longest URL first.
 fn scoped_keys(cwd: &Path, url: &str) -> Result<Scoped, Error> {
+    let mut entries: Vec<_> = read_scoped_entries(cwd)?
+        .into_iter()
+        .filter(|(prefix, _, _)| url_matches(prefix, url))
+        .collect();
+    entries.sort_by_key(|e| std::cmp::Reverse(e.0.len()));
+    Ok(Scoped(entries))
+}
+
+/// Read every `http.<url>.<key>` entry as `(url, key, value)`.
+fn read_scoped_entries(cwd: &Path) -> Result<Vec<(String, String, String)>, Error> {
     let out = Command::new("git")
         .arg("-C")
         .arg(cwd)
@@ -96,7 +106,7 @@ fn scoped_keys(cwd: &Path, url: &str) -> Result<Scoped, Error> {
     if !out.status.success() {
         // Exit 1 means nothing matched. Other failures are treated the
         // same.
-        return Ok(Scoped(Vec::new()));
+        return Ok(Vec::new());
     }
     let raw = String::from_utf8_lossy(&out.stdout);
     let mut entries: Vec<(String, String, String)> = Vec::new();
@@ -119,12 +129,9 @@ fn scoped_keys(cwd: &Path, url: &str) -> Result<Scoped, Error> {
         }
         let prefix = &rest[..last_dot];
         let subkey = &rest[last_dot + 1..];
-        if url_matches(prefix, url) {
-            entries.push((prefix.to_owned(), subkey.to_owned(), value.to_owned()));
-        }
+        entries.push((prefix.to_owned(), subkey.to_owned(), value.to_owned()));
     }
-    entries.sort_by_key(|e| std::cmp::Reverse(e.0.len()));
-    Ok(Scoped(entries))
+    Ok(entries)
 }
 
 /// Read `key` from git's merged config.
@@ -161,31 +168,52 @@ fn get_all_global(cwd: &Path, key: &str) -> Vec<String> {
     }
 }
 
-/// Collect the `http.extraHeader` values that apply to `url`, as
-/// `(name, value)` pairs.
+/// `http.extraHeader` settings, looked up per request URL.
 ///
-/// Values from matching `http.<url>.extraHeader` keys come first, longest
-/// URL first, then those from `http.extraHeader`, as in upstream's
-/// `extraHeaders` in `lfshttp/client.go`. Values without a `:` are
-/// skipped. Header names are returned as written.
-pub fn extra_headers_for(cwd: &Path, url: &str) -> Vec<(String, String)> {
-    let mut out: Vec<(String, String)> = Vec::new();
-    if let Ok(scoped) = scoped_keys(cwd, url) {
-        for (_prefix, subkey, value) in &scoped.0 {
-            if !subkey.eq_ignore_ascii_case("extraheader") {
-                continue;
-            }
-            if let Some(pair) = parse_header_line(value) {
-                out.push(pair);
-            }
-        }
+/// [`ExtraHeaders::load`] reads the config once. Upstream applies these to
+/// every request, including those to storage hosts in action URLs, so look
+/// them up for each request's own URL.
+#[derive(Debug, Clone, Default)]
+pub struct ExtraHeaders {
+    /// `(url, header line)` for each `http.<url>.extraHeader` value.
+    scoped: Vec<(String, String)>,
+    /// Each `http.extraHeader` value.
+    global: Vec<String>,
+}
+
+impl ExtraHeaders {
+    /// Read the `http.extraHeader` and `http.<url>.extraHeader` values.
+    pub fn load(cwd: &Path) -> Self {
+        let scoped = read_scoped_entries(cwd)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(_, subkey, _)| subkey.eq_ignore_ascii_case("extraheader"))
+            .map(|(prefix, _, value)| (prefix, value))
+            .collect();
+        let global = get_all_global(cwd, "http.extraHeader");
+        Self { scoped, global }
     }
-    for value in get_all_global(cwd, "http.extraHeader") {
-        if let Some(pair) = parse_header_line(&value) {
-            out.push(pair);
-        }
+
+    /// The headers for a request to `url`, as `(name, value)` pairs.
+    ///
+    /// Values from matching `http.<url>.extraHeader` keys come first,
+    /// longest URL first, then those from `http.extraHeader`, as in
+    /// upstream's `extraHeaders` in `lfshttp/client.go`. Values without a `:`
+    /// are skipped. Header names are returned as written.
+    pub fn for_url(&self, url: &str) -> Vec<(String, String)> {
+        let mut scoped: Vec<&(String, String)> = self
+            .scoped
+            .iter()
+            .filter(|(prefix, _)| url_matches(prefix, url))
+            .collect();
+        scoped.sort_by_key(|(prefix, _)| std::cmp::Reverse(prefix.len()));
+        scoped
+            .into_iter()
+            .map(|(_, line)| line)
+            .chain(&self.global)
+            .filter_map(|line| parse_header_line(line))
+            .collect()
     }
-    out
 }
 
 /// Split `Name: Value` at the first `:` and trim both halves.
@@ -276,4 +304,35 @@ fn parse_bool(s: &str) -> bool {
         s.trim().to_ascii_lowercase().as_str(),
         "true" | "1" | "yes" | "on"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pairs(v: &[(&str, &str)]) -> Vec<(String, String)> {
+        v.iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn extra_headers_follow_the_request_url() {
+        let headers = ExtraHeaders {
+            scoped: vec![
+                ("https://lfs.test".into(), "X-Host: lfs".into()),
+                ("https://lfs.test/repo".into(), "X-Repo: repo".into()),
+                ("https://other.test".into(), "X-Other: other".into()),
+            ],
+            global: vec!["X-All: all".into(), "not a header".into()],
+        };
+        assert_eq!(
+            headers.for_url("https://lfs.test/repo/info/lfs/objects/batch"),
+            pairs(&[("X-Repo", "repo"), ("X-Host", "lfs"), ("X-All", "all")])
+        );
+        assert_eq!(
+            headers.for_url("https://storage.test/object"),
+            pairs(&[("X-All", "all")])
+        );
+    }
 }

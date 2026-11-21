@@ -24,6 +24,9 @@ pub(crate) const LFS_MEDIA_TYPE: &str = "application/vnd.git-lfs+json";
 /// Matches upstream's `defaultMaxAuthAttempts` in `lfsapi/auth.go`.
 const MAX_AUTH_ATTEMPTS: u32 = 3;
 
+/// Gives the extra headers for a request URL, as `(name, value)` pairs.
+pub type HeaderSource = Arc<dyn Fn(&str) -> Vec<(String, String)> + Send + Sync>;
+
 /// HTTP client for one LFS endpoint.
 ///
 /// Cheap to clone. Clones share the connection pool, the current auth, and
@@ -59,11 +62,8 @@ pub struct Client {
     pub(crate) cred_url: Option<Url>,
     /// Resolver for SSH remotes, asked once per API call.
     pub(crate) ssh_resolver: Option<SharedSshResolver>,
-    /// The `http.<url>.extraHeader` values, for the `GIT_CURL_VERBOSE` dump.
-    ///
-    /// They are sent as the reqwest client's default headers, which can't
-    /// be read back.
-    pub(crate) extra_headers: Vec<(String, String)>,
+    /// Extra headers for each request, looked up by URL.
+    pub(crate) extra_headers: Option<HeaderSource>,
     /// Whether to leave authenticate headers out of credential fills
     /// (`credential.<url>.skipwwwauth`).
     pub(crate) skip_wwwauth: bool,
@@ -103,20 +103,27 @@ impl Client {
             use_http_path: false,
             cred_url: None,
             ssh_resolver: None,
-            extra_headers: Vec::new(),
+            extra_headers: None,
             skip_wwwauth: false,
         }
     }
 
-    /// Set the `http.<url>.extraHeader` values to echo under
-    /// `GIT_CURL_VERBOSE`.
+    /// Add headers to each request, looked up for the request's URL.
     ///
-    /// Doesn't change what's sent. Install the headers as the reqwest
-    /// client's default headers for that.
+    /// The CLI passes the `http.extraHeader` settings. The headers also
+    /// appear in the `GIT_CURL_VERBOSE` dump.
     #[must_use]
-    pub fn with_extra_headers_for_verbose(mut self, headers: Vec<(String, String)>) -> Self {
-        self.extra_headers = headers;
+    pub fn with_extra_headers(mut self, source: HeaderSource) -> Self {
+        self.extra_headers = Some(source);
         self
+    }
+
+    /// The extra headers for a request to `url`.
+    pub(crate) fn extra_headers_for(&self, url: &str) -> Vec<(String, String)> {
+        self.extra_headers
+            .as_ref()
+            .map(|source| source(url))
+            .unwrap_or_default()
     }
 
     /// Attach an SSH auth resolver.
@@ -243,6 +250,14 @@ impl Client {
         let auth = self.auth.lock().unwrap().clone();
         let mut headers = HeaderMap::new();
         headers.insert(ACCEPT, HeaderValue::from_static(LFS_MEDIA_TYPE));
+        for (k, v) in self.extra_headers_for(url.as_str()) {
+            if let (Ok(name), Ok(value)) = (
+                HeaderName::try_from(k.as_str()),
+                HeaderValue::try_from(v.as_str()),
+            ) {
+                headers.append(name, value);
+            }
+        }
         let req = self.http.request(method, url).headers(headers);
         let mut req = auth.apply(req);
         for (k, v) in &ssh.headers {
@@ -302,7 +317,7 @@ impl Client {
             let _ = writeln!(err, "> POST {url}");
             let _ = writeln!(err, "> Content-Type: {LFS_MEDIA_TYPE}");
             // `t-extra-header.sh` greps for lines like `> X-Foo: bar`.
-            for (name, value) in &self.extra_headers {
+            for (name, value) in self.extra_headers_for(url.as_str()) {
                 let _ = writeln!(err, "> {name}: {value}");
             }
             // The retry loop prints the `Authorization` line, once per

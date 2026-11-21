@@ -74,7 +74,7 @@ pub use auth::Auth;
 pub use batch::{
     Action, Actions, BatchRequest, BatchResponse, ObjectError, ObjectResult, ObjectSpec, Operation,
 };
-pub use client::Client;
+pub use client::{Client, HeaderSource};
 pub use error::{ApiError, ServerError, parse_retry_after};
 pub use locks::{
     CreateLockError, CreateLockRequest, DeleteLockRequest, ListLocksFilter, LockList,

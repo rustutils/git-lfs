@@ -372,15 +372,12 @@ fn build_api_client_with(
                 && gu.port() == url.port()
         });
     let cred_url_for_helper = resolved_cred_url.clone().unwrap_or_else(|| url.clone());
-    // The HTTP client already sends `http.extraHeader` values as default
-    // headers. This copy is only for the `GIT_CURL_VERBOSE` dump.
-    let extras = git_lfs_git::extra_headers_for(cwd, url.as_str());
     let skip_wwwauth = url_scoped_credential_bool(cwd, &cred_url_for_helper, "skipwwwauth", false);
     let mut client = ApiClient::with_http_client(url.clone(), initial_auth, http)
         .with_credential_helper(default_helper_chain(cwd, &cred_url_for_helper))
         .with_use_http_path(use_http_path)
         .with_skip_wwwauth(skip_wwwauth)
-        .with_extra_headers_for_verbose(extras);
+        .with_extra_headers(extra_header_source(cwd));
     if let Some(git_url) = resolved_cred_url {
         client = client.with_cred_url(git_url);
     }
@@ -590,8 +587,17 @@ fn take_url_basic_auth(url: &mut url::Url) -> Auth {
 /// are loaded once here, not per URL. Also reads `lfs.transfer.batchSize`,
 /// `lfs.concurrenttransfers`, `lfs.transfer.maxverifies`, and
 /// `lfs.<endpoint_url>.contenttype`.
+/// The `http.extraHeader` settings, looked up for each request's URL.
+fn extra_header_source(cwd: &Path) -> git_lfs_api::HeaderSource {
+    let headers = git_lfs_git::ExtraHeaders::load(cwd);
+    Arc::new(move |url: &str| headers.for_url(url))
+}
+
 fn transfer_config_for(cwd: &Path, endpoint_url: Option<&str>) -> TransferConfig {
-    let mut config = TransferConfig::default();
+    let mut config = TransferConfig {
+        extra_headers: Some(extra_header_source(cwd)),
+        ..TransferConfig::default()
+    };
     if href_rewrite_enabled(cwd) {
         let aliases = git_lfs_git::aliases::load_aliases(cwd).unwrap_or_default();
         let push_aliases = git_lfs_git::aliases::load_push_aliases(cwd).unwrap_or_default();

@@ -435,6 +435,120 @@ async fn upload_redirect_on_the_same_host_keeps_credentials() {
     assert!(upload_with_auth(&server, &upload_url).await);
 }
 
+/// A transfer against the LFS server `server` whose extra headers give
+/// `name: value` only for URLs on `scope`.
+fn transfer_with_extra_header(
+    server: &MockServer,
+    scope: &MockServer,
+    name: &'static str,
+    value: &'static str,
+) -> (TempDir, Store, Transfer) {
+    let tmp = TempDir::new().unwrap();
+    let store = Store::new(tmp.path().join("lfs"));
+    let api = ApiClient::new(Url::parse(&server.uri()).unwrap(), Auth::None);
+    let prefix = scope.uri();
+    let source: git_lfs_transfer::HeaderSource = Arc::new(move |url: &str| {
+        if url.starts_with(&prefix) {
+            vec![(name.to_owned(), value.to_owned())]
+        } else {
+            Vec::new()
+        }
+    });
+    let config = TransferConfig {
+        extra_headers: Some(source),
+        ..fast_config()
+    };
+    let transfer = Transfer::new(api, store.clone(), config);
+    (tmp, store, transfer)
+}
+
+#[tokio::test]
+async fn extra_headers_are_looked_up_for_each_action_url() {
+    let server = MockServer::start().await;
+    let storage = MockServer::start().await;
+    let href = format!("{}/storage/{ABC_OID}", storage.uri());
+
+    Mock::given(method("POST"))
+        .and(path("/objects/batch"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "transfer": "basic",
+            "objects": [{
+                "oid": ABC_OID, "size": 3,
+                "actions": { "download": { "href": href } }
+            }]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(ABC_BYTES))
+        .mount(&storage)
+        .await;
+
+    // Scoped to the LFS server, so it must not reach the storage host.
+    let (_tmp, _store, transfer) =
+        transfer_with_extra_header(&server, &server, "X-Token", "secret");
+    let spec = ObjectSpec {
+        oid: ABC_OID.into(),
+        size: 3,
+    };
+    let report = transfer.download(vec![spec], None, None).await.unwrap();
+    assert!(report.is_complete_success(), "{:?}", report.failed);
+    let received = storage.received_requests().await.unwrap();
+    assert!(!received[0].headers.contains_key("x-token"));
+
+    // Scoped to the storage host, so it must be sent there.
+    let (_tmp, _store, transfer) =
+        transfer_with_extra_header(&server, &storage, "X-Token", "secret");
+    let spec = ObjectSpec {
+        oid: ABC_OID.into(),
+        size: 3,
+    };
+    transfer.download(vec![spec], None, None).await.unwrap();
+    let received = storage.received_requests().await.unwrap();
+    assert_eq!(received.last().unwrap().headers["x-token"], "secret");
+}
+
+#[tokio::test]
+async fn upload_redirect_drops_extra_header_credentials() {
+    let server = MockServer::start().await;
+    let other = MockServer::start().await;
+    let target = format!("{}/storage/{ABC_OID}", other.uri());
+    let href = format!("{}/storage/{ABC_OID}", server.uri());
+
+    Mock::given(method("POST"))
+        .and(path("/objects/batch"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "transfer": "basic",
+            "objects": [{
+                "oid": ABC_OID, "size": 3,
+                "actions": { "upload": { "href": href } }
+            }]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(format!("/storage/{ABC_OID}")))
+        .respond_with(ResponseTemplate::new(307).insert_header("Location", target.as_str()))
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&other)
+        .await;
+
+    let (_tmp, store, transfer) =
+        transfer_with_extra_header(&server, &server, "Authorization", "Bearer EXTRA");
+    store.insert(&mut ABC_BYTES.to_vec().as_slice()).unwrap();
+    let spec = ObjectSpec {
+        oid: ABC_OID.into(),
+        size: 3,
+    };
+    let report = transfer.upload(vec![spec], None, None).await.unwrap();
+    assert!(report.is_complete_success(), "{:?}", report.failed);
+    let received = other.received_requests().await.unwrap();
+    assert!(!received[0].headers.contains_key("authorization"));
+}
+
 #[tokio::test]
 async fn upload_with_verify_callback_posts_oid_and_size() {
     let server = MockServer::start().await;

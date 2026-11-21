@@ -7,6 +7,8 @@ use std::time::Duration;
 /// `lfs.transfer.enablehrefrewrite` is set.
 pub type UrlRewriter = Arc<dyn Fn(&str) -> String + Send + Sync>;
 
+pub use git_lfs_api::HeaderSource;
+
 /// Settings for the transfer queue.
 #[derive(Clone)]
 pub struct TransferConfig {
@@ -52,6 +54,10 @@ pub struct TransferConfig {
     /// given: upstream's minimum of 3 is applied by the caller, and 0
     /// fails every verify without sending it.
     pub max_verifies: u32,
+    /// Extra headers for each HTTP transfer request, looked up for its URL.
+    ///
+    /// The CLI passes the `http.extraHeader` settings.
+    pub extra_headers: Option<HeaderSource>,
 }
 
 impl Default for TransferConfig {
@@ -66,6 +72,7 @@ impl Default for TransferConfig {
             batch_size: 100,
             detect_content_type: true,
             max_verifies: 3,
+            extra_headers: None,
         }
     }
 }
@@ -85,6 +92,10 @@ impl std::fmt::Debug for TransferConfig {
             .field("batch_size", &self.batch_size)
             .field("detect_content_type", &self.detect_content_type)
             .field("max_verifies", &self.max_verifies)
+            .field(
+                "extra_headers",
+                &self.extra_headers.as_ref().map(|_| "<fn>"),
+            )
             .finish()
     }
 }

@@ -18,6 +18,7 @@ use sha2::{Digest as _, Sha256};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::io::{ReaderStream, StreamReader, SyncIoBridge};
 
+use crate::config::HeaderSource;
 use crate::error::TransferError;
 use crate::event::Event;
 
@@ -46,6 +47,7 @@ pub(crate) async fn download(
     oid: &str,
     size: u64,
     action: &Action,
+    extra_headers: Option<&HeaderSource>,
     events: Option<&UnboundedSender<Event>>,
 ) -> Result<u64, TransferError> {
     let expected = Oid::from_hex(oid)?;
@@ -64,7 +66,12 @@ pub(crate) async fn download(
         .filter(|&n| n > 0 && n < size);
 
     let mut req = http.request(Method::GET, &action.href);
-    for (k, v) in &action.header {
+    let extra = extra_for(extra_headers, &action.href);
+    for (k, v) in action
+        .header
+        .iter()
+        .chain(extra.iter().map(|(k, v)| (k, v)))
+    {
         req = req.header(k, v);
     }
     let range_header = resume_offset.map(|offset| {
@@ -96,7 +103,16 @@ pub(crate) async fn download(
             );
         }
         let _ = std::fs::remove_file(&partial_path);
-        return Box::pin(download(http, store, oid, size, action, events)).await;
+        return Box::pin(download(
+            http,
+            store,
+            oid,
+            size,
+            action,
+            extra_headers,
+            events,
+        ))
+        .await;
     }
 
     check_status(&resp, &action.href)?;
@@ -279,6 +295,7 @@ pub(crate) async fn upload(
     actions: &Actions,
     detect_content_type: bool,
     max_verifies: u32,
+    extra_headers: Option<&HeaderSource>,
     events: Option<&UnboundedSender<Event>>,
 ) -> Result<(), TransferError> {
     let upload_action = actions
@@ -317,6 +334,8 @@ pub(crate) async fn upload(
     let mut redirects = 0u32;
     // Cleared once a redirect leaves the original origin.
     let mut send_credentials = true;
+    // Looked up for the action URL and kept across redirects, like upstream.
+    let extra = extra_for(extra_headers, &upload_action.href);
     let resp = loop {
         let file = tokio::fs::File::open(&path).await?;
         let oid_owned = oid.to_owned();
@@ -339,7 +358,11 @@ pub(crate) async fn upload(
         let mut req = http
             .request(Method::PUT, &href)
             .header(CONTENT_LENGTH, size);
-        for (k, v) in &upload_action.header {
+        for (k, v) in upload_action
+            .header
+            .iter()
+            .chain(extra.iter().map(|(k, v)| (k, v)))
+        {
             if !send_credentials && is_credential_header(k) {
                 continue;
             }
@@ -401,7 +424,7 @@ pub(crate) async fn upload(
     check_status(&resp, &upload_action.href)?;
 
     if let Some(verify_action) = &actions.verify {
-        verify(http, oid, size, verify_action, max_verifies).await?;
+        verify(http, oid, size, verify_action, max_verifies, extra_headers).await?;
     }
     Ok(())
 }
@@ -446,6 +469,11 @@ fn redirect_keeps_credentials(from: &str, to: &str) -> Result<bool, TransferErro
     Ok(from.origin() == to.origin())
 }
 
+/// The extra headers for a request to `url`.
+fn extra_for(source: Option<&HeaderSource>, url: &str) -> Vec<(String, String)> {
+    source.map(|source| source(url)).unwrap_or_default()
+}
+
 /// Whether a header carries credentials that mustn't follow a redirect to
 /// another origin.
 fn is_credential_header(name: &str) -> bool {
@@ -480,6 +508,7 @@ async fn verify(
     size: u64,
     action: &Action,
     max_attempts: u32,
+    extra_headers: Option<&HeaderSource>,
 ) -> Result<(), TransferError> {
     let short = oid.get(..7).unwrap_or(oid);
     let mut last_err: Option<TransferError> = None;
@@ -494,7 +523,12 @@ async fn verify(
                 reqwest::header::CONTENT_TYPE,
                 "application/vnd.git-lfs+json",
             );
-        for (k, v) in &action.header {
+        let extra = extra_for(extra_headers, &action.href);
+        for (k, v) in action
+            .header
+            .iter()
+            .chain(extra.iter().map(|(k, v)| (k, v)))
+        {
             req = req.header(k, v);
         }
         match req.json(&VerifyBody { oid, size }).send().await {

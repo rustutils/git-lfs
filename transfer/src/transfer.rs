@@ -354,6 +354,7 @@ async fn process_object(
                         &obj.oid,
                         obj.size,
                         action,
+                        config.extra_headers.as_ref(),
                         events,
                     )
                     .await
@@ -395,6 +396,7 @@ async fn process_object(
                             actions,
                             config.detect_content_type,
                             config.max_verifies,
+                            config.extra_headers.as_ref(),
                             events,
                         )
                         .await

@@ -1,9 +1,10 @@
 //! Builds the `reqwest::Client` shared by the API client and transfers.
 //!
-//! The client gets the `http.*` settings for the endpoint URL:
-//! `sslVerify`, `sslCAInfo`, `sslCert`, `sslKey`, `extraHeader`, and
-//! `cookieFile`. It uses them for every request, including action URLs on
-//! other hosts. Upstream looks the settings up for each request's URL.
+//! The client gets the `http.*` settings for the endpoint URL: `sslVerify`,
+//! `sslCAInfo`, `sslCert`, `sslKey`, and `cookieFile`. It uses them for every
+//! request, including action URLs on other hosts. Upstream looks the settings
+//! up for each request's URL. `http.extraHeader` is looked up per request,
+//! by the API client and the transfer adapter.
 //!
 //! With `http.sslCAInfo`, a server certificate is accepted only if it's
 //! byte for byte one of the certificates in the file. That accepts the
@@ -14,9 +15,8 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use git_lfs_git::{HttpOptions, extra_headers_for};
+use git_lfs_git::HttpOptions;
 use reqwest::cookie::Jar;
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::WebPkiSupportedAlgorithms;
 use rustls::{DigitallySignedStruct, SignatureScheme};
@@ -39,23 +39,6 @@ pub fn build(cwd: &Path, endpoint_url: &str) -> reqwest::Client {
             pinned_cert_config(path, opts.ssl_cert.as_deref(), opts.ssl_key.as_deref())
     {
         builder = builder.use_preconfigured_tls(config);
-    }
-
-    let extras = extra_headers_for(cwd, endpoint_url);
-    if !extras.is_empty() {
-        let mut headers = HeaderMap::new();
-        for (name, value) in extras {
-            // `append` keeps every value of a header set more than once.
-            if let (Ok(n), Ok(v)) = (
-                HeaderName::try_from(name.as_str()),
-                HeaderValue::try_from(value.as_str()),
-            ) {
-                headers.append(n, v);
-            }
-        }
-        if !headers.is_empty() {
-            builder = builder.default_headers(headers);
-        }
     }
 
     if let Some(path) = opts.cookie_file.as_deref()

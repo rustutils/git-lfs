@@ -19,6 +19,9 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 - When an upload is redirected to another host, the upload's credentials are
   no longer sent there, and redirects from HTTPS to HTTP are refused, as in
   upstream.
+- `http.<url>.extraHeader` values are only sent to URLs they match. Before,
+  headers scoped to the LFS server were also sent to the storage hosts that
+  uploads and downloads go to.
 
 ### Added
 

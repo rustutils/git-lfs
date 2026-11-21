@@ -106,10 +106,10 @@ come from reading the code.
 
 ### Security
 
-- **`http.<url>.extraHeader` goes to every host.** `cli/src/http_client.rs`
-  installs extra headers as client-wide defaults, so a token meant for the
-  LFS server is also sent to the storage hosts in action URLs. Upstream
-  looks them up per request URL. TLS settings are also endpoint-wide.
+- **TLS settings apply to every host.** `cli/src/http_client.rs` reads
+  `http.<url>.sslVerify`, `sslCAInfo`, `sslCert`, and `sslKey` for the LFS
+  endpoint and uses them for storage hosts too. Upstream looks them up per
+  request URL.
 - **`http.sslVerify` typos disable TLS verification.** `parse_bool` in
   `git/src/http_options.rs` reads anything other than true, 1, yes, or on
   as false, so `http.sslVerify = ture` turns checks off. Only false, 0, no,
