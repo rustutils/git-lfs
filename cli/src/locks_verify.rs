@@ -1,30 +1,20 @@
-//! Pre-flight `/locks/verify` for `push` / `pre-push`.
+//! The lock check that push and pre-push run before uploading.
 //!
-//! Before uploading, ask the server which locks are held against the
-//! refs being pushed. Three setting states drive behavior:
+//! It asks the server for the locks on the ref being pushed, split into
+//! ours and theirs. The caller then refuses to push files someone else has
+//! locked.
 //!
-//! - `lfs.<endpoint>.locksverify=true` (or `lfs.locksverify=true`):
-//!   verify is required; any non-success status aborts the push.
-//! - `…=false`: skip the verify call entirely.
-//! - unset: best-effort. On 200 we suggest enabling the config; on 5xx
-//!   /501/403 we warn and proceed; on 501 we additionally disable the
-//!   config (matches upstream's "this server doesn't implement
-//!   locking" auto-disable).
+//! `lfs.<endpoint>.locksverify`, falling back to `lfs.locksverify`, decides
+//! what happens:
 //!
-//! When verify *succeeds*, returned ours/theirs lists let the caller
-//! gate the push on whether any pushed path is held by another user.
-//! That second-stage check (path intersection) lives in the caller.
+//! - false: the check is skipped.
+//! - true: a 5xx other than 501, a 401, or a 403 aborts the push.
+//! - unset: those errors print a message and the push goes ahead. A
+//!   successful check suggests turning the setting on.
 //!
-//! See `t-pre-push.sh` "pre-push locks verify {200, 5xx, 501, 403}
-//! with verification {enabled, unset, disabled}" for the matrix.
-//!
-//! Configuration keys mirror upstream:
-//! - `lfs.<endpoint>.locksverify` — per-endpoint
-//! - `lfs.locksverify` — global default
-//!
-//! `<endpoint>` is the LFS URL (e.g. `http://host/repo.git/info/lfs`)
-//! used as a git config subsection — git handles the dot-laden URL
-//! parsing for us when the same string is passed to `--get`.
+//! Either way, a 501 sets `lfs.<endpoint>.locksverify` to false, and any
+//! other error, including a 404 or an SSH failure, lets the push go ahead
+//! without lock data. `t-pre-push.sh` checks each status with each setting.
 
 use std::path::Path;
 
@@ -34,36 +24,32 @@ use git_lfs_git::ConfigScope;
 use crate::lock_client::{LockClient, LockClientError};
 use crate::push::PushCommandError;
 
-/// Effective `locksverify` setting for `endpoint`. Falls back from
-/// per-endpoint to the global default; defaults to [`Setting::Unset`]
-/// when neither is configured.
+/// The effective `locksverify` setting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Setting {
-    /// Explicit `true`.
+    /// True, 1, yes, or on.
     Enabled,
-    /// Explicit `false`.
+    /// False, 0, no, off, or empty.
     Disabled,
-    /// Neither key is set.
+    /// Not set, or set to anything else.
     Unset,
 }
 
-/// Outcome of the pre-flight verify.
+/// Result of the lock check.
 pub enum Outcome {
-    /// Verify wasn't run (config disabled, or transport-level skip).
-    /// Caller proceeds without lock data.
+    /// No lock data, because the check was turned off or failed without
+    /// aborting. The push goes ahead.
     Skipped,
-    /// Verify succeeded. Caller may compare `theirs` against the paths
-    /// being pushed and abort if any match.
+    /// The server's locks, for the caller to compare with the pushed paths.
     Verified { ours: Vec<Lock>, theirs: Vec<Lock> },
-    /// Verify failed and the setting requires we abort the push.
+    /// The check failed and the push must stop.
     Aborted,
 }
 
-/// Pre-flight check called by `push` / `pre-push` before any byte
-/// transfer. `client` carries the transport choice (HTTP, SSH, or
-/// negotiate); when SSH is in play the lock pool master spawns here,
-/// which is the connection upstream's test suite expects under the
-/// `-oControlMaster=yes` count on upload.
+/// Run the lock check for `endpoint`.
+///
+/// With an SSH endpoint the lock pool's master connection starts here,
+/// which `t-batch-transfer.sh` expects.
 pub fn run(
     client: &LockClient,
     cwd: &Path,
@@ -97,9 +83,6 @@ pub fn run(
             return Ok(Outcome::Skipped);
         }
     };
-    // Successful verify. If the user hasn't opted in yet, give them a
-    // one-line nudge — they need to know locking is available so they
-    // can decide whether to enforce it.
     if matches!(setting, Setting::Unset) {
         eprintln!(
             "Locking support detected on remote \"{remote_label}\". \
@@ -113,16 +96,18 @@ pub fn run(
     })
 }
 
-/// Translate an HTTP-side verify failure into an [`Outcome`], applying
-/// upstream's quirks per status code:
+/// Turn an HTTP error from the check into an [`Outcome`].
 ///
-/// - 501 ⇒ auto-disable `lfs.<endpoint>.locksverify` and skip.
-/// - 5xx other than 501 ⇒ "no locking API" message; abort if verify
-///   is explicitly enabled, else skip with a warning.
-/// - 401 / 403 ⇒ "Authentication error" with the same enabled-vs-not
-///   gating, mirroring `lockverifier.go`.
-/// - 404 ⇒ silently skip (no locking endpoint at all).
-/// - anything else ⇒ warn and skip.
+/// - 501: set `lfs.<endpoint>.locksverify` to false and skip.
+/// - Other 5xx: say the server has no locking API, and abort if the
+///   setting is on.
+/// - 401 or 403: an authentication error, which aborts if the setting is
+///   on.
+/// - 404: skip without a message.
+/// - Anything else: warn and skip.
+///
+/// Upstream's `lockVerifier.Verify` aborts on every error except a 501
+/// when the setting is on.
 fn handle_api_error(
     e: ApiError,
     setting: Setting,
@@ -168,8 +153,7 @@ fn handle_api_error(
     }
 }
 
-/// Resolve `lfs.<endpoint>.locksverify` then `lfs.locksverify`,
-/// defaulting to [`Setting::Unset`].
+/// Read `lfs.<endpoint>.locksverify`, falling back to `lfs.locksverify`.
 fn read_setting(cwd: &Path, endpoint: &str) -> Result<Setting, PushCommandError> {
     let endpoint_key = format!("lfs.{endpoint}.locksverify");
     if let Some(v) = git_lfs_git::config::get_effective(cwd, &endpoint_key)? {

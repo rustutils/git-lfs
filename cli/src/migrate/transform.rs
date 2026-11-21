@@ -1,35 +1,15 @@
-//! Stream transform that converts plain blobs into LFS pointers and
-//! rewrites `.gitattributes` so the resulting history is properly
-//! filter=lfs-tracked.
+//! The blob rewriting between `git fast-export` and `git fast-import`.
 //!
-//! Operates on a Reader → Writer pipeline:
+//! A blob's path is only known once a commit references it, so blobs
+//! are buffered by mark and written out, converted or not, just before
+//! the first commit that uses them. Each blob is converted at most once,
+//! so if the same content is at two paths and only one matches the
+//! filter, the first commit to use it decides for both.
 //!
-//! ```text
-//! git fast-export --full-tree
-//!     | <Transform::run reads Commands, emits Commands>
-//!     | git fast-import --force
-//! ```
-//!
-//! Two state-tracking nuances worth knowing:
-//!
-//! 1. **Blob buffering.** `git fast-export` emits every blob before any
-//!    commit references it. We can't decide whether to convert a blob
-//!    until we know its path, which only arrives via a commit's `M`
-//!    directive. So we buffer blob contents indexed by mark and emit
-//!    them lazily on first reference.
-//!
-//! 2. **Per-commit `.gitattributes`.** With `--full-tree`, commits
-//!    re-state every file every time. Each commit gets a freshly
-//!    emitted `.gitattributes` blob with the patterns accumulated *so
-//!    far* — matching upstream's behavior where early commits don't
-//!    yet know about later ones' file types.
-//!
-//! ## First-commit-wins for shared blobs
-//!
-//! If the same blob OID appears at two paths with conflicting filter
-//! outcomes (e.g. one matches `--include` and the other doesn't), the
-//! first commit to reference it wins. v0 behavior; documented in
-//! NOTES.md.
+//! In import and export mode, each commit also gets a rewritten
+//! top-level `.gitattributes`: its own lines, minus the lines being
+//! removed, plus the patterns added so far. As in upstream, early
+//! commits don't get patterns for files that only appear later.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::{self, Read, Write};
@@ -41,25 +21,26 @@ use sha2::{Digest, Sha256};
 
 use super::fast_export::{Blob, Command, Commit, DataRef, FileChange, Reader};
 use super::fast_import::Writer;
+use super::path_matches;
 
 const ATTRS_PATH: &str = ".gitattributes";
 
-/// Marks we emit for our own freshly-created blobs (the rewritten
-/// `.gitattributes`). Set high enough that a real `git fast-export`
-/// stream won't collide — fast-export starts at :1 and increments.
+/// The first mark for the rewritten `.gitattributes` blobs.
+///
+/// fast-export numbers its marks up from 1, so these don't collide.
 const FRESH_MARK_BASE: u32 = 1 << 30;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
-    /// Plain blob → LFS pointer. `--above` threshold respected.
+    /// Convert matching blobs to pointers.
     Import,
-    /// LFS pointer → raw content from local store. `--above` ignored
-    /// since pointer files are tiny by definition.
+    /// Replace matching pointers with their objects from the local store.
     Export,
-    /// Per-commit `.gitattributes` evaluation: convert any plain blob
-    /// whose path the commit's attrs declare LFS-tracked. The
-    /// `.gitattributes` content itself is passed through unchanged.
-    /// Used by `migrate import --fixup`.
+    /// Convert blobs that the commit's own attributes say are LFS files,
+    /// for `migrate import --fixup`.
+    ///
+    /// `.gitattributes` is left as it is, and the include and exclude
+    /// patterns aren't used.
     Fixup,
 }
 
@@ -67,33 +48,27 @@ pub enum Mode {
 pub struct Options {
     pub include: Option<GlobSet>,
     pub exclude: Option<GlobSet>,
-    /// Only consulted in [`Mode::Import`].
+    /// Minimum blob size to convert, in [`Mode::Import`] only.
     pub above: u64,
-    /// `.gitattributes` lines to add up-front, before any per-blob
-    /// transformation runs. Used by [`Mode::Export`] to seed the
-    /// rewritten attributes from the user's `--include`/`--exclude`
-    /// CLI patterns (see `migrate/export.rs`).
+    /// `.gitattributes` lines to add to every commit, built from the
+    /// `--include` and `--exclude` patterns.
     pub attrs_add_initial: Vec<String>,
-    /// `.gitattributes` lines to drop up-front. Same use as
-    /// `attrs_add_initial`.
+    /// `.gitattributes` lines to remove from every commit.
     pub attrs_remove_initial: Vec<String>,
-    /// Print one `  commit <sha>: <path>` line per converted blob to
-    /// stderr. Wired in from `--verbose` on import / export.
+    /// Print `  commit <sha>: <path>` to stderr for each converted blob.
     pub verbose: bool,
-    /// When true, skip the per-path attribute derivation in import
-    /// mode (`*.<ext> filter=lfs ...`) and rely solely on
-    /// `attrs_add_initial`. Set when the caller already pre-built
-    /// the include lines from explicit `--include` CLI patterns —
-    /// otherwise we'd duplicate or drift from the user's wording
-    /// (e.g. `--include "a file.txt"` becoming `*.txt`).
+    /// Don't add a `.gitattributes` line for each converted path.
+    ///
+    /// Set when `attrs_add_initial` already has the user's patterns, so
+    /// `--include "a file.txt"` doesn't also add `*.txt`.
     pub skip_path_derived_attrs: bool,
-    /// Contents of `.git/info/attributes`, if present. Layered on
-    /// top of per-commit `.gitattributes` during [`Mode::Fixup`]
-    /// evaluation — Git's precedence rule has info/attributes win
-    /// over per-directory .gitattributes.
+    /// The repository's `info/attributes`, for [`Mode::Fixup`].
+    ///
+    /// It takes precedence over every `.gitattributes`.
     pub info_attrs: Vec<u8>,
-    /// Contents of `core.attributesFile` (or its XDG default), if
-    /// present. Lowest precedence in the [`Mode::Fixup`] chain.
+    /// The global attributes file, for [`Mode::Fixup`].
+    ///
+    /// It has the lowest precedence.
     pub global_attrs: Vec<u8>,
 }
 
@@ -103,9 +78,10 @@ pub struct Stats {
     pub bytes_converted: u64,
     pub commits_seen: u64,
     pub patterns: BTreeSet<String>,
-    /// `(mark, original_oid)` for each commit we forwarded. Pairs with
-    /// fast-import's `--export-marks` output to build the
-    /// `--object-map` file.
+    /// `(mark, original commit SHA)` for each commit.
+    ///
+    /// With fast-import's exported marks, this maps old commits to new
+    /// ones.
     pub commit_marks: Vec<(u32, String)>,
 }
 
@@ -113,28 +89,18 @@ pub struct Transform<'a> {
     store: &'a Store,
     opts: Options,
     mode: Mode,
-    /// Buffered blobs keyed by their input mark, awaiting the first
-    /// commit to reveal their path.
+    /// Blobs not written out yet, by mark.
     blob_buffer: HashMap<u32, Vec<u8>>,
-    /// Marks for which we've emitted output. Subsequent references
-    /// pass through unchanged (the blob is already in the output
-    /// stream).
+    /// Marks of blobs already written out.
     emitted: HashSet<u32>,
-    /// Next free mark for our own injected blobs.
+    /// Next free mark for a rewritten `.gitattributes`.
     next_fresh: u32,
-    /// `.gitattributes` lines derived from per-path conversion (e.g.
-    /// `*.<ext> filter=lfs diff=lfs merge=lfs -text` for each blob
-    /// the import pass converts). Sorted alphabetically by `BTreeSet`
-    /// for stable output.
+    /// `.gitattributes` lines for the paths converted so far, in
+    /// [`Mode::Import`].
     attrs_add: BTreeSet<String>,
-    /// `.gitattributes` lines from the caller's CLI options
-    /// (`Options::attrs_add_initial`). Emitted *after* the derived
-    /// lines in `build_attrs` so include-style markers appear before
-    /// the user's CLI excludes — matches upstream's
-    /// per-commit `.gitattributes` ordering for `--exclude`.
+    /// [`Options::attrs_add_initial`].
     attrs_add_initial: Vec<String>,
-    /// `.gitattributes` lines to drop. Only populated in
-    /// [`Mode::Export`] — those patterns are no longer LFS-tracked.
+    /// [`Options::attrs_remove_initial`].
     attrs_remove: BTreeSet<String>,
     pub stats: Stats,
 }
@@ -160,8 +126,8 @@ impl<'a> Transform<'a> {
         }
     }
 
-    /// Drive the full pipeline: read every command from `r`, transform,
-    /// write to `w`. Consumes `self`.
+    /// Read a fast-export stream from `r` and write the rewritten stream
+    /// to `w`.
     pub fn run<R: Read, W: Write>(mut self, r: R, w: W) -> io::Result<Stats> {
         let mut reader = Reader::new(r);
         let mut writer = Writer::new(w);
@@ -182,8 +148,7 @@ impl<'a> Transform<'a> {
                 if let Some(mark) = b.mark {
                     self.blob_buffer.insert(mark, b.data);
                 } else {
-                    // Mark-less blobs can't be referenced; just pass
-                    // through (rare but valid).
+                    // Nothing can refer to a blob without a mark.
                     writer.write(&Command::Blob(b))?;
                 }
                 Ok(())
@@ -196,14 +161,13 @@ impl<'a> Transform<'a> {
         }
     }
 
-    /// Per-commit `.gitattributes` evaluation pass. For each commit,
-    /// build a fresh [`AttrSet`] from the commit's tree's
-    /// `.gitattributes` blobs (top-level + nested); for each
-    /// non-attrs blob the attrs say should be LFS-tracked, convert
-    /// plain content into a pointer. `.gitattributes` itself is
-    /// passed through unchanged — the user already wrote the
-    /// tracking lines, fixup is just bringing the bytes in line with
-    /// what they declared.
+    /// Convert the commit's new blobs that its attributes say are LFS
+    /// files.
+    ///
+    /// The attributes come from the commit's `.gitattributes` files that
+    /// are still in the blob buffer. One already written out for an
+    /// earlier commit is missing, so files added after the commit that
+    /// added `.gitattributes` aren't converted.
     fn process_commit_fixup<W: Write>(
         &mut self,
         c: Commit,
@@ -214,10 +178,6 @@ impl<'a> Transform<'a> {
             self.stats.commit_marks.push((mark, oid.clone()));
         }
 
-        // Collect this commit's `.gitattributes` blobs. Inline
-        // (`ModifyInline`) and mark-referenced both legal — the
-        // upstream test fixtures only emit mark form, but we handle
-        // both for safety.
         let mut attrs_dirs: Vec<(String, Vec<u8>)> = Vec::new();
         for ch in &c.file_changes {
             match ch {
@@ -236,15 +196,10 @@ impl<'a> Transform<'a> {
                 _ => {}
             }
         }
-        // Shallow → deep so deeper dirs win (gix-attributes iterates
-        // pattern lists in reverse, last-added matches first).
+        // The last list added takes precedence, so add from lowest to
+        // highest: the global file, `.gitattributes` from shallow to
+        // deep, then `info/attributes`.
         attrs_dirs.sort_by_key(|(d, _)| d.matches('/').count());
-
-        // Source precedence (highest at top, but gix-attributes' last-
-        // added wins, so we add lowest first):
-        //   1. core.attributesFile — global / XDG defaults
-        //   2. .gitattributes (per-commit, shallow → deep)
-        //   3. .git/info/attributes — per-repo, overrides everything
         let mut attrs = git_lfs_git::AttrSet::empty();
         if !self.opts.global_attrs.is_empty() {
             attrs.add_buffer_at(&self.opts.global_attrs, "");
@@ -256,8 +211,9 @@ impl<'a> Transform<'a> {
             attrs.add_buffer_at(&self.opts.info_attrs, "");
         }
 
-        // Pass: for each non-attrs M directive, decide conversion.
-        // Symlinks (mode 120000) are never LFS pointers; skip them.
+        // A symlink's blob is its target, never an LFS file. It's
+        // skipped here and never written out, so fast-import fails on a
+        // commit with a symlink.
         for change in &c.file_changes {
             if let FileChange::Modify {
                 dataref: DataRef::Mark(m),
@@ -287,7 +243,6 @@ impl<'a> Transform<'a> {
             }
         }
 
-        // Pass-through `.gitattributes` blobs as-is.
         for change in &c.file_changes {
             if let FileChange::Modify {
                 dataref: DataRef::Mark(m),
@@ -320,11 +275,9 @@ impl<'a> Transform<'a> {
             self.stats.commit_marks.push((mark, oid.clone()));
         }
 
-        // Pass 1: emit any buffered blobs this commit references at
-        // non-`.gitattributes` paths, deciding conversion based on
-        // path. Symlinks (mode 120000) are never LFS pointers — git
-        // stores the link target as the blob content and we must not
-        // touch it.
+        // The original top-level `.gitattributes` is never written out:
+        // it's replaced below. A symlink's blob is its target, so it's
+        // written out unchanged afterwards.
         for change in &c.file_changes {
             if let FileChange::Modify {
                 dataref: DataRef::Mark(m),
@@ -353,9 +306,6 @@ impl<'a> Transform<'a> {
                 }
             }
         }
-        // Pass 1b: pass-through any symlink blobs unchanged (we
-        // skipped them in pass 1 to avoid running them through the
-        // pointer/conversion logic).
         for change in &c.file_changes {
             if let FileChange::Modify {
                 dataref: DataRef::Mark(m),
@@ -375,9 +325,6 @@ impl<'a> Transform<'a> {
             }
         }
 
-        // Pass 2: rewrite `.gitattributes` for this commit. The new
-        // content is the existing content with the `attrs_remove`
-        // lines stripped, then any `attrs_add` lines appended.
         let existing_attrs = self.read_existing_attrs(&c);
         let new_attrs = build_attrs(
             &existing_attrs,
@@ -385,23 +332,21 @@ impl<'a> Transform<'a> {
             &self.attrs_add_initial,
             &self.attrs_remove,
         );
-        let needs_attrs = !new_attrs.is_empty();
-        if needs_attrs {
+        if !new_attrs.is_empty() {
             let attrs_mark = self.alloc_fresh();
             writer.write(&Command::Blob(Blob {
                 mark: Some(attrs_mark),
                 original_oid: None,
                 data: new_attrs.into_bytes(),
             }))?;
-            // Replace existing M directive or insert a new one.
             replace_or_insert_attrs(&mut c.file_changes, attrs_mark);
         }
 
         writer.write(&Command::Commit(c))
     }
 
-    /// Decide whether to convert a blob given its path, and run the
-    /// conversion if so. Returns `(content_to_emit, was_converted)`.
+    /// Convert a blob if its path matches, returning the content to write
+    /// and whether it was converted.
     fn transform_blob(&mut self, path: &str, content: Vec<u8>) -> io::Result<(Vec<u8>, bool)> {
         if !path_matches(path, &self.opts.include, &self.opts.exclude) {
             return Ok((content, false));
@@ -409,15 +354,13 @@ impl<'a> Transform<'a> {
         match self.mode {
             Mode::Import => self.import_blob(path, content),
             Mode::Export => self.export_blob(path, content),
-            // Mode::Fixup uses its own per-commit dispatch in
-            // `process_commit_fixup`; this path never sees it.
+            // Fixup commits go through `process_commit_fixup`.
             Mode::Fixup => Ok((content, false)),
         }
     }
 
     fn import_blob(&mut self, _path: &str, content: Vec<u8>) -> io::Result<(Vec<u8>, bool)> {
         let size = content.len() as u64;
-        // Don't re-convert blobs that already encode an LFS pointer.
         if Pointer::parse(&content).is_ok() {
             return Ok((content, false));
         }
@@ -436,15 +379,11 @@ impl<'a> Transform<'a> {
     }
 
     fn export_blob(&mut self, _path: &str, content: Vec<u8>) -> io::Result<(Vec<u8>, bool)> {
-        // Only pointer-encoded blobs convert; everything else passes
-        // through (matching upstream's `IsNotAPointerError` skip).
         let pointer = match Pointer::parse(&content) {
             Ok(p) => p,
             Err(_) => return Ok((content, false)),
         };
-        // Resolve the LFS object's bytes from the local store. If
-        // we can't find them we can't expand — leave the pointer in
-        // place so the user can re-fetch and try again.
+        // Without the object, the pointer stays. Nothing is downloaded.
         let mut file = match self.store.open(pointer.oid) {
             Ok(f) => f,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -481,22 +420,15 @@ impl<'a> Transform<'a> {
     }
 
     fn add_pattern_for_path(&mut self, path: &str) {
-        // Export mode pre-seeds attrs from the user's include/exclude
-        // CLI patterns (see `migrate/export.rs::build_export_attrs`),
-        // so per-path derivation is import-only.
         if !matches!(self.mode, Mode::Import) {
             return;
         }
         if self.opts.skip_path_derived_attrs {
             return;
         }
-        // `--above` selects on size, not extension — track the exact
-        // path so unrelated files of the same extension don't pick up
-        // the LFS filter just because one big sibling tripped the
-        // threshold. t-migrate-import's `above` tests assert lines
-        // like `/a.md filter=lfs ...`. Special characters (spaces,
-        // glob metas) need escaping so the attribute matcher reads
-        // the path literally.
+        // With `--above`, track the exact path, not every file with
+        // its extension. t-migrate-import checks for lines like
+        // `/a.md filter=lfs ...`.
         if self.opts.above > 0 {
             let escaped = super::import::escape_attr_path(path);
             self.attrs_add
@@ -520,44 +452,27 @@ impl<'a> Transform<'a> {
     }
 }
 
-/// True if `path` names a `.gitattributes` file (top-level or any
-/// directory under the tree).
-fn is_attrs_path(path: &str) -> bool {
+/// Whether `path` is a `.gitattributes` file in any directory.
+pub(super) fn is_attrs_path(path: &str) -> bool {
     path == ATTRS_PATH
         || path
             .rsplit_once('/')
             .is_some_and(|(_, leaf)| leaf == ATTRS_PATH)
 }
 
-/// Directory portion of a tree path, with no trailing slash. Empty
-/// for top-level paths. Forward slashes only — fast-export paths are
-/// already POSIX.
-fn dir_of(path: &str) -> String {
+/// The directory of a tree path, or an empty string at the top level.
+pub(super) fn dir_of(path: &str) -> String {
     match path.rsplit_once('/') {
         Some((parent, _)) => parent.to_owned(),
         None => String::new(),
     }
 }
 
-fn path_matches(path: &str, include: &Option<GlobSet>, exclude: &Option<GlobSet>) -> bool {
-    if let Some(ex) = exclude
-        && ex.is_match(path)
-    {
-        return false;
-    }
-    match include {
-        Some(inc) => inc.is_match(path),
-        None => true,
-    }
-}
-
-/// Combine the existing `.gitattributes` content with our accumulated
-/// `add` / `remove` policy.
+/// Build a commit's new `.gitattributes`.
 ///
-/// - Lines whose trimmed form matches anything in `remove` are dropped.
-/// - Lines in `add` are appended after the surviving existing content,
-///   preserving alphabetical order from the input `BTreeSet`. Lines
-///   already present in the existing content are not duplicated.
+/// Drops the existing lines that are in `remove` (ignoring surrounding
+/// whitespace), then appends `add` and then `add_initial`, skipping
+/// lines already present.
 fn build_attrs(
     existing: &str,
     add: &BTreeSet<String>,
@@ -581,10 +496,8 @@ fn build_attrs(
             out.push('\n');
         }
     }
-    // CLI-supplied lines (e.g. `--exclude` markers in import) come
-    // last so the per-extension include lines stay grouped at the
-    // top — matches upstream's per-commit `.gitattributes` ordering
-    // and keeps test 21's diff stable.
+    // The user's patterns go last, after the per-extension lines, as in
+    // upstream. t-migrate-import compares the whole file.
     for p in add_initial {
         if have.insert(p.clone()) {
             out.push_str(p);
@@ -604,13 +517,9 @@ fn replace_or_insert_attrs(changes: &mut Vec<FileChange>, attrs_mark: u32) {
                 ..
             } if path == ATTRS_PATH => {
                 *dataref = DataRef::Mark(attrs_mark);
-                // Normalize: `.gitattributes` is a config file, not an
-                // executable. Strip the +x bit if the source happened
-                // to commit it as 0755 (t-migrate-export's permissions
-                // test asserts the rewritten attrs is non-executable).
-                // Symlinks (120000) drop here too — we always emit a
-                // regular file because the upfront symlink check at the
-                // CLI rejected the input long before this.
+                // Always a regular, non-executable file.
+                // t-migrate-export checks that an executable one loses
+                // its executable bit.
                 *mode = "100644".into();
                 return;
             }
@@ -720,10 +629,8 @@ mod tests {
                 .contains("*.bin filter=lfs diff=lfs merge=lfs -text")
         );
 
-        // The output should re-parse cleanly. The blob with mark :1
-        // now contains pointer text; a fresh blob (high mark) carries
-        // .gitattributes; the commit's M for data.bin still references
-        // :1, and a new M for .gitattributes is appended.
+        // Blob :1 now holds pointer text, a new blob holds the
+        // `.gitattributes`, and the commit gains an M line for it.
         let s = String::from_utf8(out).expect("utf-8 stream");
         assert!(s.contains("oid sha256:"), "expected pointer text: {s}");
         assert!(
@@ -738,7 +645,7 @@ mod tests {
 
     #[test]
     fn respects_above_threshold() {
-        // 5-byte blob, threshold 100 → leave alone.
+        // A 5-byte blob is below the threshold of 100.
         let input = b"blob\n\
                       mark :1\n\
                       data 5\n\
@@ -778,7 +685,7 @@ mod tests {
             ..Default::default()
         };
         let (_, stats) = run_transform(input.as_bytes(), opts);
-        // Already a pointer → not re-converted.
+        // Already a pointer, so not converted again.
         assert_eq!(stats.blobs_converted, 0);
     }
 
@@ -872,9 +779,8 @@ mod tests {
             include: Some(glob("*.bin")),
             exclude: None,
             above: 0,
-            // CLI seeds these from `--include`/`--exclude` patterns —
-            // see `migrate/export.rs::build_export_attrs`. The transform
-            // itself doesn't derive them in export mode.
+            // `build_export_attrs` makes these from the patterns. The
+            // transform doesn't add lines in export mode.
             attrs_add_initial: vec!["*.bin !text !filter !merge !diff".into()],
             ..Default::default()
         };

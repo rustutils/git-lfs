@@ -1,11 +1,14 @@
-//! `git lfs env` — show LFS environment for the current repo.
+//! `git lfs env`: print the Git LFS settings for the current repository.
 //!
-//! Output matches upstream's line set so the t-env / t-config shell tests
-//! can grep for specific lines (`Endpoint=...`, `LocalMediaDir=...`, etc.)
-//! and the sorted-comparison tests find every key. Most values are static
-//! defaults — fetch-recent / prune / access / transfer-method config aren't
-//! wired up yet (NOTES.md), but the lines need to be present so the
-//! comparison passes.
+//! It prints the same keys as upstream, since `t-env.sh` compares the whole
+//! output. Some values are fixed rather than read from config: the
+//! `FetchRecent*` and `Prune*` lines always show the defaults, and
+//! `AccessDownload` and `AccessUpload` always show `none`. The
+//! `FetchInclude`, `FetchExclude`, and `Extension[N]` lines upstream adds
+//! when those are set are never printed.
+//!
+//! Endpoint URLs are printed as resolved, so a password in a remote URL
+//! appears in the output, as it does upstream.
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -13,12 +16,10 @@ use std::process::Command;
 
 use git_lfs_git::endpoint::{SshInfo, resolve_endpoint};
 
-/// `filter.lfs.*` keys we emit. The value comes straight from git
-/// config — empty string when unset or unreadable — to match upstream's
-/// raw `cfg.Git.Get(key)` semantics. Tests like
-/// `t-env::env with environment variables` distinguish between
-/// "configured" (defaults from `git lfs install --skip-repo`) and
-/// "unconfigured" (literal `""`), so we can't synthesize defaults here.
+/// The filter settings printed at the end, as their raw config values.
+///
+/// An unset key prints as `""`, which tests tell apart from the values
+/// `git lfs install` writes.
 const FILTER_KEYS: &[&str] = &[
     "filter.lfs.process",
     "filter.lfs.smudge",
@@ -41,9 +42,7 @@ pub fn run(cwd: &Path) -> Result<(), EnvError> {
 
     if let Some(git_dir) = git_dir.as_ref() {
         emit_endpoints(cwd);
-        // Fall back to the per-worktree git-dir if common-dir lookup
-        // fails for any reason — non-worktree repos give the same
-        // path either way, so the fallback is correct in practice.
+        // The two only differ in linked worktrees.
         let common = common_dir.as_deref().unwrap_or(git_dir);
         emit_paths_in_repo(cwd, git_dir, common);
     } else {
@@ -58,23 +57,14 @@ pub fn run(cwd: &Path) -> Result<(), EnvError> {
     println!("DownloadTransfers={}", transfer_list(&customs, false));
     println!("UploadTransfers={}", transfer_list(&customs, tus));
 
-    if git_dir.is_some() {
-        // In-repo we listed `LfsStorageDir` alongside the other paths;
-        // outside a repo we still want the line, with the relative
-        // form upstream emits.
-    } else {
+    // In a repository this line was printed with the other paths.
+    if git_dir.is_none() {
         println!("LfsStorageDir=lfs");
     }
 
-    // GIT_-prefixed env vars, one per line. Upstream dumps all of
-    // them (the test framework greps `^GIT_` from its own env to
-    // build the expected list). The harness filters out
-    // `GIT_EXEC_PATH=` itself before diffing, so emitting it is fine.
-    //
-    // Path-shaped vars (GIT_DIR / GIT_WORK_TREE / …) get rewritten to
-    // absolute form at process startup so subprocess invocations work;
-    // here we restore the *original* value via `original_path_env` so
-    // the dump matches what the user actually set in their shell.
+    // Every `GIT_` environment variable, like upstream. Path variables
+    // like `GIT_DIR` were made absolute at startup, so print the values
+    // the user set instead.
     println!();
     let mut vars: Vec<(String, String)> = std::env::vars()
         .filter(|(k, _)| k.starts_with("GIT_"))
@@ -90,11 +80,8 @@ pub fn run(cwd: &Path) -> Result<(), EnvError> {
         println!("{k}={v}");
     }
 
-    // Filter config dump. We always go through `get_effective` —
-    // outside a repo, `--local` errors out but `--global`/`--system`
-    // still produce values when the user has run `git lfs install`.
-    // Truly unconfigured (or unreachable, e.g. `GIT_WORK_TREE` points
-    // at a missing path) keys come back as `""`.
+    // Outside a repository this still finds global and system values. A
+    // config that can't be read prints `""`.
     println!();
     for key in FILTER_KEYS {
         let value = git_lfs_git::config::get_effective(cwd, key)
@@ -107,11 +94,12 @@ pub fn run(cwd: &Path) -> Result<(), EnvError> {
     Ok(())
 }
 
-/// Emit the `Endpoint=` and `Endpoint (R)=` lines. The unqualified
-/// form only appears when the *default* resolution doesn't fall back
-/// to "the only remote" — i.e. when `origin` exists or `lfs.url` /
-/// `GIT_LFS_URL` is set. With just a single non-origin remote,
-/// upstream shows only `Endpoint (R)=URL`.
+/// Print the `Endpoint=` line and an `Endpoint (<remote>)=` line for each
+/// remote other than `origin`.
+///
+/// `Endpoint=` is only printed when `origin` exists or `lfs.url` or
+/// `GIT_LFS_URL` is set. With a single remote of another name, upstream
+/// prints only that remote's line.
 fn emit_endpoints(cwd: &Path) {
     let remotes = remotes(cwd);
     let has_origin = remotes.iter().any(|r| r == "origin");
@@ -139,10 +127,8 @@ fn emit_endpoints(cwd: &Path) {
     }
 }
 
-/// Emit the indented `  SSH=<user_and_host>:<path>` line `git lfs env`
-/// shows below an `Endpoint=` line when the underlying URL was SSH-
-/// shaped. Path comes through as already-formatted by [`SshInfo`] (with
-/// or without leading slash, matching upstream's per-source behavior).
+/// Print the `  SSH=<user@host>:<path>` line that follows an endpoint
+/// resolved from an SSH URL.
 fn print_ssh_line(ssh: &Option<SshInfo>) {
     if let Some(info) = ssh {
         println!("  SSH={}:{}", info.user_and_host, info.path);
@@ -158,21 +144,17 @@ fn emit_paths_in_repo(cwd: &Path, git_dir: &Path, common_dir: &Path) {
     if let Some(wd) = working_dir {
         println!("LocalWorkingDir={}", wd.display());
     } else {
-        // Bare repos: emit empty rather than omitting the line.
+        // A bare repository.
         println!("LocalWorkingDir=");
     }
     println!("LocalGitDir={}", git_dir.display());
-    // The two paths diverge only in linked worktrees: GitDir is
-    // `.git/worktrees/<name>/` (this worktree's HEAD/index/info),
-    // GitStorageDir is the shared `.git/` (objects, packs, LFS cache).
+    // In a linked worktree, the Git directory is
+    // `.git/worktrees/<name>` and the storage directory is the shared
+    // `.git`.
     println!("LocalGitStorageDir={}", common_dir.display());
     println!("LocalMediaDir={}", media_dir.display());
     println!("LocalReferenceDirs=");
     println!("TempDir={}", tmp_dir.display());
-    // (`LfsStorageDir` is in the same logical group; emitting it
-    // alongside the other paths keeps the in-repo output ordered the
-    // way upstream's t-env tests expect when read top-to-bottom,
-    // although the comparison is sort-based anyway.)
     println!("LfsStorageDir={}", lfs_dir.display());
 }
 
@@ -180,9 +162,7 @@ fn emit_paths_outside_repo() {
     println!("LocalWorkingDir=");
     println!("LocalGitDir=");
     println!("LocalGitStorageDir=");
-    // Relative paths — there's no repo to anchor them to. Upstream
-    // emits these literal forms, and `t-env outside a repository`
-    // checks for them.
+    // Upstream prints these relative paths outside a repository.
     println!(
         "LocalMediaDir={}",
         PathBuf::from("lfs").join("objects").display()
@@ -191,9 +171,7 @@ fn emit_paths_outside_repo() {
     println!("TempDir={}", PathBuf::from("lfs").join("tmp").display());
 }
 
-/// Settings that have a config-or-default story. Keep in sync with
-/// upstream's `git lfs env` so the shell tests find every key; reads
-/// fall back to documented defaults when the config isn't set.
+/// Print the transfer settings and the fixed fetch and prune defaults.
 fn emit_static_defaults(cwd: &Path) {
     println!("ConcurrentTransfers={}", concurrent_transfers(cwd));
     println!("TusTransfers={}", bool_config(cwd, "lfs.tustransfers"));
@@ -212,18 +190,16 @@ fn emit_static_defaults(cwd: &Path) {
     println!("PruneRemoteName=origin");
 }
 
-/// `true` if `lfs.skipdownloaderrors` (config) or
-/// `GIT_LFS_SKIP_DOWNLOAD_ERRORS` (env) selects the
-/// download-failure-tolerant smudge path. Used by the smudge filter
-/// to fall back to pointer-passthrough on fetch errors instead of
-/// failing the checkout.
+/// Whether `lfs.skipdownloaderrors` or `GIT_LFS_SKIP_DOWNLOAD_ERRORS` is
+/// true.
+///
+/// When it is, `git lfs smudge` writes the pointer instead of failing
+/// when a download fails.
 pub(crate) fn skip_download_errors(cwd: &Path) -> bool {
     bool_config(cwd, "lfs.skipdownloaderrors") || bool_env("GIT_LFS_SKIP_DOWNLOAD_ERRORS")
 }
 
-/// `true` if the named git config key is set to a truthy value
-/// (`true`, `1`, `yes`, `on`). Anything else (unset / empty / explicit
-/// false) is `false`.
+/// Whether config `key` is exactly `true`, `1`, `yes`, or `on`.
 fn bool_config(cwd: &Path, key: &str) -> bool {
     matches!(
         git_lfs_git::config::get_effective(cwd, key)
@@ -241,9 +217,8 @@ fn bool_env(name: &str) -> bool {
     )
 }
 
-/// Custom transfer adapter names registered via
-/// `lfs.customtransfer.<name>.path`. Returned in alphabetical order
-/// for stable output.
+/// The names of the custom transfer adapters with a
+/// `lfs.customtransfer.<name>.path`, sorted.
 fn custom_transfer_methods(cwd: &Path) -> Vec<String> {
     let out = std::process::Command::new("git")
         .arg("-C")
@@ -272,10 +247,10 @@ fn custom_transfer_methods(cwd: &Path) -> Vec<String> {
     names
 }
 
-/// Build `DownloadTransfers` / `UploadTransfers` value. Built-ins
-/// (`basic`, `lfs-standalone-file`, `ssh`) always come first. Custom
-/// adapters from `lfs.customtransfer.<name>` follow. Upload-only:
-/// when `lfs.tustransfers=true`, append `tus` last.
+/// The value of `DownloadTransfers` or `UploadTransfers`.
+///
+/// The built-in adapters come first, then the custom ones, then `tus` if
+/// `with_tus` is set.
 fn transfer_list(customs: &[String], with_tus: bool) -> String {
     let mut parts: Vec<&str> = vec!["basic", "lfs-standalone-file", "ssh"];
     for c in customs {
@@ -287,9 +262,8 @@ fn transfer_list(customs: &[String], with_tus: bool) -> String {
     parts.join(",")
 }
 
-/// `lfs.concurrenttransfers` if set, else upstream's default
-/// (`max(8, num_cpus * 3)`). Matches `setup_expected_concurrent_transfers`
-/// in the test harness.
+/// `lfs.concurrenttransfers` if set, or else upstream's default of three
+/// per CPU and at least 8.
 fn concurrent_transfers(cwd: &Path) -> usize {
     if let Some(v) = git_lfs_git::config::get_effective(cwd, "lfs.concurrenttransfers")
         .ok()
@@ -305,9 +279,7 @@ fn concurrent_transfers(cwd: &Path) -> usize {
     (n * 3).max(8)
 }
 
-/// Resolve the `lfs.<url>.access` value for `url`, falling back to
-/// `none`. Looks at both `.lfsconfig` and the standard git config
-/// scopes via `config::get_effective`.
+/// The `lfs.<url>.access` value for `url`, or `none`.
 fn access_for(cwd: &Path, url: &str) -> String {
     let key = format!("lfs.{url}.access");
     git_lfs_git::config::get_effective(cwd, &key)

@@ -1,9 +1,11 @@
-//! Subprocess plumbing shared by `migrate import` and `migrate export`.
+//! The `git fast-export` to `git fast-import` pipeline behind
+//! `migrate import` and `migrate export`, plus the working tree checks
+//! around it.
 //!
-//! Spawns `git fast-export --full-tree` and `git fast-import --force`,
-//! drains their stderr concurrently (so neither blocks on a full pipe
-//! buffer), runs the [`Transform`] on this thread, and reports
-//! per-child errors on failure.
+//! The [`Transform`] runs on the calling thread between the two
+//! processes. Their stderr is drained on separate threads so neither
+//! blocks on a full pipe, and echoed with a `[fast-export]` or
+//! `[fast-import]` prefix.
 
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
@@ -15,6 +17,9 @@ use git_lfs_store::Store;
 use super::MigrateError;
 use super::transform::{Mode, Options as TransformOptions, Stats, Transform};
 
+/// Rewrite the history between `include_refs` and `exclude_refs`.
+///
+/// fast-import updates each ref fast-export names, with `--force`.
 pub fn run_pipeline(
     cwd: &Path,
     include_refs: &[String],
@@ -34,9 +39,11 @@ pub fn run_pipeline(
     )
 }
 
-/// Like [`run_pipeline`], but additionally writes fast-import's
-/// `--export-marks` to `marks_path`. Used by `migrate export` /
-/// `import` when the caller wants an old→new commit OID map.
+/// Like [`run_pipeline`], and also has fast-import write its marks to
+/// `marks_path`.
+///
+/// With [`Stats::commit_marks`], the marks map each old commit to its
+/// rewritten one.
 pub fn run_pipeline_with_export_marks(
     cwd: &Path,
     include_refs: &[String],
@@ -46,9 +53,7 @@ pub fn run_pipeline_with_export_marks(
     store: &Store,
     marks_path: Option<&Path>,
 ) -> Result<Stats, MigrateError> {
-    // For `--fixup`, the per-commit `.gitattributes` evaluation needs
-    // to layer in the runtime-only attribute sources (info/attributes
-    // and core.attributesFile) that aren't part of the commit itself.
+    // Fixup also applies the attribute files that aren't in commits.
     if mode == Mode::Fixup {
         transform_opts.info_attrs = read_info_attrs(cwd).unwrap_or_default();
         transform_opts.global_attrs = read_global_attrs(cwd).unwrap_or_default();
@@ -94,19 +99,18 @@ fn spawn_fast_export(
     include: &[String],
     exclude: &[String],
 ) -> Result<Child, MigrateError> {
-    // --full-tree: every commit re-states its full tree, so we don't
-    // need to chase inheritance.
-    // --reference-excluded-parents: keeps from/merge references valid
-    // when the user excluded a parent.
+    // `--full-tree` lists every file in every commit, so the transform
+    // never has to look at a parent. `--reference-excluded-parents`
+    // refers to excluded parents by SHA so their commits aren't
+    // rewritten.
     let mut cmd = Command::new("git");
     cmd.arg("-C").arg(cwd).args([
         "fast-export",
         "--full-tree",
         "--reencode=yes",
         "--reference-excluded-parents",
-        // `original-oid <sha>` lines are required so the transform
-        // can pair fast-import marks back to pre-rewrite commit OIDs
-        // for `migrate export --object-map`.
+        // The transform pairs these with fast-import's marks to map
+        // old commits to new ones.
         "--show-original-ids",
     ]);
     for r in include {
@@ -147,6 +151,7 @@ fn drain_stderr<R: Read + Send + 'static>(label: &'static str, r: R) -> thread::
     })
 }
 
+/// Print each ref's current value to stderr, so the user can undo.
 pub fn print_pre_migrate_refs(cwd: &Path, refs: &[String]) {
     eprintln!("Pre-migrate ref values (record these for manual rollback):");
     for r in refs {
@@ -165,11 +170,14 @@ pub fn print_pre_migrate_refs(cwd: &Path, refs: &[String]) {
     }
 }
 
+/// Force-checkout HEAD so the working tree matches the rewritten history.
+///
+/// This overwrites uncommitted changes to tracked files. Does nothing in
+/// a bare repository or with no HEAD.
 pub fn refresh_working_tree(cwd: &Path) -> Result<(), MigrateError> {
     if !super::head_exists(cwd) {
         return Ok(());
     }
-    // Bare repos have no working tree to refresh.
     let bare = Command::new("git")
         .arg("-C")
         .arg(cwd)
@@ -194,8 +202,10 @@ pub fn refresh_working_tree(cwd: &Path) -> Result<(), MigrateError> {
     Ok(())
 }
 
+/// Whether tracked files have uncommitted changes.
+///
+/// Always false in a bare repository.
 pub fn working_tree_dirty(cwd: &Path) -> Result<bool, MigrateError> {
-    // Bare repositories don't have a working tree to be dirty.
     let bare_out = Command::new("git")
         .arg("-C")
         .arg(cwd)
@@ -208,9 +218,8 @@ pub fn working_tree_dirty(cwd: &Path) -> Result<bool, MigrateError> {
     let out = Command::new("git")
         .arg("-C")
         .arg(cwd)
-        // Untracked files don't count: tests routinely tee output into
-        // `migrate.log` before invoking migrate, and that's not a
-        // "tree dirty" state from upstream's perspective.
+        // Untracked files don't count, as upstream. The shell tests
+        // often write a log file into the working tree first.
         .args(["status", "--porcelain", "--untracked-files=no"])
         .output()
         .map_err(MigrateError::Io)?;
@@ -223,9 +232,8 @@ pub fn working_tree_dirty(cwd: &Path) -> Result<bool, MigrateError> {
     Ok(!out.stdout.trim_ascii().is_empty())
 }
 
-/// Read `.git/info/attributes` for the repo at `cwd`. Returns an
-/// empty buffer if the file is missing or unreadable — the fixup
-/// caller treats empty as "no info-attrs source".
+/// Read the repository's `info/attributes`, or `None` if it's missing
+/// or unreadable.
 fn read_info_attrs(cwd: &Path) -> Option<Vec<u8>> {
     let out = Command::new("git")
         .arg("-C")
@@ -248,9 +256,12 @@ fn read_info_attrs(cwd: &Path) -> Option<Vec<u8>> {
     std::fs::read(path).ok()
 }
 
-/// Read `core.attributesFile` content. Falls back to the XDG default
-/// (`$XDG_CONFIG_HOME/git/attributes`, or `$HOME/.config/git/attributes`)
-/// when the config key is unset, matching git's lookup chain.
+/// Read the global attributes file, or `None` if it's missing or
+/// unreadable.
+///
+/// That's `core.attributesFile`, or as in Git
+/// `$XDG_CONFIG_HOME/git/attributes` or `$HOME/.config/git/attributes`
+/// when it's unset.
 fn read_global_attrs(cwd: &Path) -> Option<Vec<u8>> {
     let configured = Command::new("git")
         .arg("-C")

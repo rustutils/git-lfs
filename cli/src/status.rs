@@ -1,16 +1,11 @@
-//! `git lfs status` — show staged + unstaged LFS-tracked changes.
+//! `git lfs status`: show staged and unstaged changes, and which side of
+//! each is an LFS pointer.
 //!
-//! Output mirrors upstream's three modes:
-//! - default: human-readable, one section per (committed | not staged), each
-//!   line classifying its blobs as LFS / Git / File with a short content-hash
-//!   prefix.
-//! - `--porcelain`: one line per change, deduplicated.
-//! - `--json`: stable structured output for scripts; only LFS entries are
-//!   reported.
-//!
-//! For v0 we omit the "Objects to be pushed to <remote/branch>" section that
-//! upstream prints; that's a separate scan against the upstream tracking ref
-//! and is deferred — see NOTES.md.
+//! The default output lists the LFS objects to push to the upstream branch,
+//! then the staged and unstaged changes. Each side of a change is shown as
+//! LFS (the pointer's OID), Git (the SHA-256 of the blob), or File (the
+//! SHA-256 of the working-tree file), as upstream does. `--porcelain` prints
+//! one line per path, and `--json` lists only changes to LFS files.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -30,13 +25,10 @@ pub enum StatusError {
     Io(#[from] std::io::Error),
     #[error("could not serialize JSON: {0}")]
     Json(#[from] serde_json::Error),
-    /// Command was run outside any git repo. Caller should print the
-    /// message and exit 128 (mirrors `git lfs fetch` / `pull`).
+    /// Run outside any repository. The caller exits 128.
     #[error("Not in a Git repository.")]
     NotInRepo,
-    /// Command was run inside a bare repo. Status needs a work tree
-    /// to compare against; mirror upstream's exact wording so the
-    /// `t-status` "without a working copy" test grep matches.
+    /// Run inside a bare repository. t-status.sh checks this message.
     #[error("This operation must be run in a work tree.")]
     NotInWorkTree,
 }
@@ -53,9 +45,8 @@ enum BlobKind {
     Lfs,
     Git,
     File,
-    /// Blob referenced by the diff but missing from the local object
-    /// database (e.g. a partial clone, or the user `rm`'d
-    /// `.git/objects/...`). Renders as `?: <missing>`.
+    /// A blob missing from the object database, such as in a partial
+    /// clone.
     Missing,
 }
 
@@ -70,19 +61,17 @@ impl BlobKind {
     }
 }
 
-/// One blob's classification + a short content-hash prefix for display.
+/// One side of a change, as shown in the default output.
 #[derive(Debug, Clone)]
 struct BlobInfo {
     kind: BlobKind,
-    /// `Some` with a 7-char hex prefix, or the literal string `"deleted"`
-    /// for the working-tree deletion sentinel. `None` is reserved for
-    /// the unusual case where neither applies.
+    /// The first seven hex digits of the hash, or a word such as
+    /// `deleted` in its place.
     sha7: Option<String>,
 }
 
 impl BlobInfo {
-    /// Working-tree file is missing. Upstream formats this as
-    /// `File: deleted` rather than a hex prefix.
+    /// The working-tree file is missing.
     fn deleted() -> Self {
         Self {
             kind: BlobKind::File,
@@ -91,16 +80,10 @@ impl BlobInfo {
     }
 }
 
-/// Git's well-known empty-tree hash. Used as a stand-in for HEAD when
-/// the repo has no commits yet, so `diff-index` can still tell us which
-/// files have been staged.
+/// Git's empty tree, which stands in for HEAD before the first commit.
 const EMPTY_TREE_SHA: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 pub fn run(cwd: &Path, format: Format) -> Result<(), StatusError> {
-    // Disambiguate three states for clean error messages:
-    //   1. not inside a repo at all   → "Not in a Git repository." (128)
-    //   2. inside a bare repo         → "This operation must be run in a work tree."
-    //   3. inside a regular repo with a worktree → proceed
     if !is_in_git_repo(cwd) {
         return Err(StatusError::NotInRepo);
     }
@@ -108,20 +91,15 @@ pub fn run(cwd: &Path, format: Format) -> Result<(), StatusError> {
         return Err(StatusError::NotInWorkTree);
     };
     let head = current_head(cwd);
-    // No HEAD yet: diff against the empty tree so freshly-staged files
-    // surface as additions. Upstream does the same — its "before
-    // initial commit" test expects the normal section layout
-    // populated with the staged blobs.
+    // Before the first commit, every staged file is an addition.
     let has_head = head.is_some();
     let refname: &str = head.as_deref().unwrap_or(EMPTY_TREE_SHA);
     let staged = diff_index(cwd, refname, true)?;
     let combined = diff_index(cwd, refname, false)?;
     let unstaged = subtract(&combined, &staged);
 
-    // "Objects to be pushed" only appears in the default format and
-    // only when the current branch tracks an upstream that we can
-    // resolve. Failures here are non-fatal — upstream omits the
-    // section if it can't compute the diff cleanly.
+    // Without an upstream branch the section is left out, as upstream
+    // does. A failed scan also leaves it out, where upstream fails.
     let push = if has_head && format == Format::Default {
         upstream_tracking_ref(cwd).and_then(|upstream| {
             scan_pointers(&repo_root, &["HEAD"], &[upstream.full_ref.as_str()])
@@ -147,13 +125,11 @@ pub fn run(cwd: &Path, format: Format) -> Result<(), StatusError> {
     }
 }
 
-/// The upstream-tracking ref for the current branch, both as the
-/// human-readable `<remote>/<branch>` form (for the section header) and
-/// the full ref name (for `scan_pointers`'s exclude list).
+/// The current branch's upstream (`@{u}`).
 struct UpstreamRef {
-    /// e.g. `"origin/main"`.
+    /// Short name, such as `origin/main`.
     display: String,
-    /// e.g. `"refs/remotes/origin/main"`.
+    /// Full name, such as `refs/remotes/origin/main`.
     full_ref: String,
 }
 
@@ -195,24 +171,18 @@ fn emit_default(
     unstaged: &[DiffEntry],
     push: Option<&(String, Vec<PointerEntry>)>,
 ) -> Result<(), StatusError> {
-    // Branch / detached HEAD line is suppressed before the initial
-    // commit — upstream omits any header in that case so the output
-    // starts with a blank line and goes straight into sections.
+    // Like upstream, there's no header line before the first commit.
     if has_head {
         if let Some(branch) = current_branch(cwd) {
             println!("On branch {branch}");
         } else {
-            // Detached or otherwise; show the ref we resolved against.
             println!("HEAD detached at {}", &refname[..refname.len().min(7)]);
         }
     }
 
     let mut batch = CatFileBatch::spawn(cwd)?;
 
-    // "Objects to be pushed to <remote>/<branch>:" comes first when
-    // present. No leading blank — upstream butts it against the
-    // branch header. Each entry uses the full LFS OID, not a 7-char
-    // prefix (matches t-status expected output).
+    // Entries here show the full OID, unlike the sections below.
     if let Some((remote_branch, pointers)) = push {
         println!("Objects to be pushed to {remote_branch}:");
         println!();
@@ -226,8 +196,6 @@ fn emit_default(
         }
     }
 
-    // Sections always have a blank line between header and entries
-    // (upstream layout). Empty sections still get the blank.
     println!();
     println!("Objects to be committed:");
     println!();
@@ -257,17 +225,14 @@ fn format_entry_line(
     let render_to = render_blob(&to);
 
     let info = if e.status == 'A' {
-        // For pure additions, the "from" side is empty. Show only the
-        // dst classification, sourced via blob_info_from (which falls
-        // back to dst_sha when src is zero).
+        // An addition has one side, which `blob_info_from` takes from
+        // the destination.
         format!("({render_from})")
     } else {
         format!("({render_from} -> {render_to})")
     };
 
-    // diff-index always emits repo-relative paths; for display we want
-    // them relative to the user's cwd so a `git lfs status` from a
-    // subdirectory matches what `git status` would show.
+    // diff-index paths are repo-relative. Show them relative to `cwd`.
     let display_src = display_path(cwd, repo_root, &e.src_name);
     let path_part = match e.status {
         'R' | 'C' => format!(
@@ -288,10 +253,8 @@ fn render_blob(b: &BlobInfo) -> String {
 }
 
 fn emit_porcelain(staged: &[DiffEntry], unstaged: &[DiffEntry]) -> Result<(), StatusError> {
-    // Order: unstaged first, then staged, deduping by name. Matches
-    // upstream: a file present in both surfaces under its unstaged
-    // entry, so a `git mv` followed by an edit reads as the unstaged
-    // form. Test 2 is the canonical example.
+    // Like upstream, a path that is both staged and unstaged is shown
+    // with its unstaged change.
     let mut seen: HashSet<String> = HashSet::new();
     for e in unstaged.iter().chain(staged.iter()) {
         let name = e.dst_name.as_deref().unwrap_or(&e.src_name).to_owned();
@@ -336,7 +299,6 @@ fn emit_json(
     let mut batch = CatFileBatch::spawn(repo_root)?;
     let mut files = std::collections::BTreeMap::new();
     for e in unstaged.iter().chain(staged.iter()) {
-        // Upstream JSON output only reports LFS-related entries.
         let from = blob_info_from(repo_root, &mut batch, e)?;
         if from.kind != BlobKind::Lfs {
             continue;
@@ -358,8 +320,8 @@ fn emit_json(
     Ok(())
 }
 
-/// Subtract `b` from `a` by the (src_sha, dst_sha, name) key upstream
-/// uses. Preserves the order of `a`.
+/// Remove the entries of `b` from `a`, keyed on both blob IDs and the
+/// path, as upstream does.
 fn subtract(a: &[DiffEntry], b: &[DiffEntry]) -> Vec<DiffEntry> {
     let key = |e: &DiffEntry| {
         format!(
@@ -403,9 +365,11 @@ fn repo_root(cwd: &Path) -> Option<std::path::PathBuf> {
     }
 }
 
-/// Convert a repo-relative path to one relative to `cwd` for display.
-/// Falls back to the repo-relative form on canonicalization errors —
-/// the path will still be readable, just less convenient.
+/// Make a repo-relative path relative to `cwd`.
+///
+/// Climbs to the root with one `..` per level below it, so a file under
+/// `cwd` shows as `../dir/file`. Falls back to the repo-relative path if
+/// either directory can't be canonicalized.
 fn display_path(cwd: &Path, repo_root: &Path, repo_rel: &str) -> String {
     let (Ok(cwd_abs), Ok(root_abs)) = (cwd.canonicalize(), repo_root.canonicalize()) else {
         return repo_rel.to_owned();
@@ -413,9 +377,6 @@ fn display_path(cwd: &Path, repo_root: &Path, repo_rel: &str) -> String {
     let Ok(rel_in_repo) = cwd_abs.strip_prefix(&root_abs) else {
         return repo_rel.to_owned();
     };
-    // How many components of cwd live under the repo root? That's the
-    // number of `..` steps we need to climb back to the root before
-    // descending to the file.
     let depth = rel_in_repo.components().count();
     if depth == 0 {
         return repo_rel.to_owned();
@@ -455,9 +416,10 @@ fn current_branch(cwd: &Path) -> Option<String> {
     if s.is_empty() { None } else { Some(s) }
 }
 
-/// Classify the "from" side of a diff entry. For additions (src zero) we
-/// fall back to the dst sha; this matches upstream so additions report
-/// their content classification on the single line they emit.
+/// Classify the source side of a change.
+///
+/// For an addition, whose source is all zeros, the destination is used,
+/// as upstream does.
 fn blob_info_from(
     repo_root: &Path,
     batch: &mut CatFileBatch,
@@ -471,9 +433,9 @@ fn blob_info_from(
     blob_info(repo_root, batch, blob_sha, &e.src_name)
 }
 
-/// Classify the "to" side. Falls back to the working-tree file when
-/// dst_sha is zero (e.g. unstaged modifications, where the new content
-/// isn't yet in any git object).
+/// Classify the destination side of a change.
+///
+/// An all-zero destination means the working-tree file.
 fn blob_info_to(
     repo_root: &Path,
     batch: &mut CatFileBatch,
@@ -491,27 +453,18 @@ fn blob_info(
 ) -> Result<BlobInfo, StatusError> {
     if !is_zero_sha(sha) {
         let Some(blob) = batch.read(sha)? else {
-            // Object referenced by the diff but absent from the local
-            // object database (e.g. partial clone, or
-            // `.git/objects/<aa>/<rest>` was deleted). Surface as
-            // `?: <missing>` so users know the source content can't
-            // be inspected.
             return Ok(BlobInfo {
                 kind: BlobKind::Missing,
                 sha7: Some("<missing>".to_owned()),
             });
         };
         if let Ok(p) = Pointer::parse(&blob.content) {
-            // Pointer's OID is the LFS content sha; matches what
-            // upstream reports as ContentsSha for pointer blobs.
             return Ok(BlobInfo {
                 kind: BlobKind::Lfs,
                 sha7: Some(short(&p.oid.to_string())),
             });
         }
-        // Non-pointer blob — use sha256 of the blob's bytes for display
-        // so we have something stable that doesn't depend on the git
-        // object hash format (sha1 vs sha256 repos).
+        // Upstream shows the content's SHA-256, not the blob ID.
         let mut hasher = Sha256::new();
         hasher.update(&blob.content);
         let sha = hex32(hasher.finalize().into());
@@ -521,9 +474,7 @@ fn blob_info(
         });
     }
 
-    // Zero src/dst sha: read the working-tree file directly. `name`
-    // is repo-relative, so resolve from the repo root regardless of
-    // where the user invoked status.
+    // An all-zero ID means the working-tree file.
     let path = repo_root.join(name);
     match std::fs::read(&path) {
         Ok(bytes) => {
@@ -537,9 +488,7 @@ fn blob_info(
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BlobInfo::deleted()),
         Err(e) if e.kind() == std::io::ErrorKind::IsADirectory => {
-            // The working-tree path is now a directory (test 16:
-            // `git rm test && mkdir test`). Upstream classifies this
-            // as deleted for the file's perspective.
+            // Replaced by a directory. Upstream shows this as deleted.
             Ok(BlobInfo::deleted())
         }
         Err(e) => Err(e.into()),

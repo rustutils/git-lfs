@@ -1,17 +1,14 @@
-//! `git lfs merge-driver` — the LFS-aware Git merge driver.
+//! `git lfs merge-driver`: a Git merge driver for LFS files.
 //!
-//! Git wires this in through `[merge "lfs"] driver = git lfs
-//! merge-driver --ancestor %O --current %A --other %B --marker-size %L
-//! --output %A`. For each of `%O` / `%A` / `%B`, Git supplies a path to
-//! a temp file containing that side of the merge. If the file is a
-//! pointer we smudge it (fetching on demand); otherwise we treat the
-//! bytes as already-merged content. The three resolved files plus a
-//! fresh tempfile for `%D` are substituted into the merge program
-//! (default `git merge-file --stdout --marker-size=%L %A %O %B >%D`)
-//! and run via `sh -c`. The merged content is cleaned back into a
-//! pointer and written to `--output` (which is the same path Git will
-//! pick up). A non-zero exit from the merge program means conflicts —
-//! that exit code is propagated.
+//! It's configured as `merge.lfs.driver`, with Git's `%O`, `%A`, and `%B`
+//! files passed as `--ancestor`, `--current`, and `--other`. Each input
+//! that is a pointer is smudged into a temporary file, downloading the
+//! object if needed. Other inputs are copied as they are. The merge
+//! program runs under `sh -c` on those files and writes to a fourth one,
+//! `%D`, which is then cleaned into a pointer at `--output`.
+//!
+//! The merge program's exit code is returned, since a nonzero code means
+//! there were conflicts.
 
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -69,8 +66,7 @@ pub fn run(cwd: &Path, opts: &MergeDriverOpts<'_>) -> Result<u8, MergeDriverErro
     let tmp_dir = store.tmp_dir();
     fs::create_dir_all(&tmp_dir)?;
 
-    // Each NamedTempFile guard outlives the `sh -c` invocation below;
-    // the path is what we substitute into the program template.
+    // The temporary files are deleted when these guards drop.
     let a_tmp = resolve_input(&tmp_dir, "A", current, &store, &fetcher, &smudge_extensions)?;
     let o_tmp = resolve_input(
         &tmp_dir,
@@ -94,16 +90,15 @@ pub fn run(cwd: &Path, opts: &MergeDriverOpts<'_>) -> Result<u8, MergeDriverErro
     let formatted = format_percent_sequences(program, &specifiers);
 
     let status = Command::new("sh").args(["-c", &formatted]).status()?;
-    // Non-zero from the merge program signals conflicts; we still
-    // process the (partial) output file and propagate the exit code.
+    // A nonzero exit means conflicts. The output, conflict markers and
+    // all, is still cleaned and written.
     let exit_status = status.code().unwrap_or(1) as u8;
 
     let mut input = File::open(d_tmp.path())?;
     let out_file = File::create(output)?;
     let mut output_writer = BufWriter::new(out_file);
-    // %A's path stands in for the original file path in extension
-    // %f substitutions — that's what the file is going to be saved
-    // back to from Git's perspective.
+    // Extensions get the `--current` path as `%f`, since that's the file
+    // Git writes the result to.
     clean(
         &store,
         &mut input,
@@ -117,11 +112,8 @@ pub fn run(cwd: &Path, opts: &MergeDriverOpts<'_>) -> Result<u8, MergeDriverErro
     Ok(exit_status)
 }
 
-/// Read `path` (one of the three Git-supplied temp files), decide
-/// whether it's a pointer or already-merged plain content, and stage
-/// the bytes in a fresh tempfile under `<lfs>/tmp/` whose path is
-/// returned. The returned [`NamedTempFile`] owns the lifetime — drop
-/// it after `sh -c` completes.
+/// Copy one of Git's merge inputs into a temporary file in `tmp_dir`,
+/// smudging it first if it's a pointer.
 fn resolve_input(
     tmp_dir: &Path,
     tag: &str,
@@ -134,14 +126,8 @@ fn resolve_input(
         .prefix(&format!("merge-driver-{tag}-"))
         .tempfile_in(tmp_dir)?;
 
-    // Smudge handles both branches: if the input parses as a pointer,
-    // it fetches and writes content; otherwise it pass-throughs the
-    // bytes. Either way the tempfile ends up holding the
-    // working-tree-shaped content.
+    // Smudge copies content that isn't a pointer as it is.
     let mut src = File::open(path)?;
-    // `tempfile_in` already opened the file for writing, but
-    // `NamedTempFile::as_file_mut` borrows immutably from the path
-    // call site; reopening for write avoids the lifetime tangle.
     let mut dst = File::create(tmp.path())?;
     let res = smudge_with_fetch(
         store,
@@ -161,10 +147,10 @@ fn resolve_input(
     Ok(tmp)
 }
 
-/// Walk `pattern` substituting `%X` from `replacements` (shell-quoted),
-/// `%%` for a literal `%`. Mirrors upstream's
-/// `subprocess.FormatPercentSequences`. Unrecognized `%X` sequences
-/// are silently dropped.
+/// Replace each `%X` in `pattern` with the shell-quoted `replacements[X]`.
+///
+/// `%%` becomes `%`, and an unknown `%X` is dropped, like upstream's
+/// `subprocess.FormatPercentSequences`.
 fn format_percent_sequences(pattern: &str, replacements: &HashMap<char, String>) -> String {
     let mut out = String::with_capacity(pattern.len());
     let mut state = 0;
@@ -180,7 +166,6 @@ fn format_percent_sequences(pattern: &str, replacements: &HashMap<char, String>)
             } else if let Some(val) = replacements.get(&c) {
                 out.push_str(&shell_quote_single(val));
             }
-            // unrecognized %X: drop the X, matching upstream.
             continue;
         }
         out.push(c);
@@ -188,9 +173,9 @@ fn format_percent_sequences(pattern: &str, replacements: &HashMap<char, String>)
     out
 }
 
-/// Wrap `s` in single-quotes for sh, escaping embedded `'` as `'\''`.
-/// Skips quoting for strings consisting only of `[A-Za-z0-9_@/.-]`,
-/// matching upstream's `shellWordRe`.
+/// Quote `s` for sh, unless it only has characters in `[A-Za-z0-9_@/.-]`.
+///
+/// Like upstream's `ShellQuoteSingle`.
 fn shell_quote_single(s: &str) -> String {
     let is_simple = !s.is_empty()
         && s.chars()

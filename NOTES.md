@@ -96,111 +96,185 @@ Gaps no test covers:
 ## Known bugs
 
 Found during the docs review, not fixed yet. None has a failing test.
+"Confirmed" means reproduced with a test or the built binary. The others
+come from reading the code.
 
+### Security
+
+- **`http.sslCAInfo` doesn't check handshake signatures.**
+  `PinnedCertVerifier` in `cli/src/http_client.rs` returns success from
+  `verify_tls12_signature` and `verify_tls13_signature` without checking
+  anything, so a server presenting a copy of the pinned certificate is
+  accepted without proving it has the key. Use rustls's own signature
+  checks. Upstream adds the file to a normal certificate pool.
 - **The SSH path isn't shell-quoted.** `creds/src/ssh.rs` runs
   `git-lfs-authenticate {path} {operation}` on the server with the path as
   given, and `build_argv` in `transfer/src/sshtransfer/connection.rs` does
   the same for `git-lfs-transfer`. A path like `/repo;touch x` runs extra
-  commands on the server. A cloned repository can set this through
-  `lfs.url` in `.lfsconfig`. Upstream quotes it with `ShellQuote`.
+  commands, and a cloned repository can set it through `lfs.url` in
+  `.lfsconfig`. Upstream quotes it with `ShellQuote`.
+- **Redirected uploads send credentials to the new host.** Confirmed.
+  `upload` in `transfer/src/basic.rs` follows redirects itself and sends
+  every action header, including `Authorization`, to the new `Location`.
+  Upstream drops `Authorization` and `Cookie` when the origin changes, and
+  refuses HTTPS to HTTP.
+- **`http.<url>.extraHeader` goes to every host.** `cli/src/http_client.rs`
+  installs extra headers as client-wide defaults, so a token meant for the
+  LFS server is also sent to the storage hosts in action URLs. Upstream
+  looks them up per request URL. TLS settings are also endpoint-wide.
 - **`http.sslVerify` typos disable TLS verification.** `parse_bool` in
-  `git/src/http_options.rs` reads any value other than true, 1, yes, or on
-  as false, so `http.sslVerify = ture` turns certificate checks off
-  (`cli/src/http_client.rs`). Git rejects such values. Only false, 0, no,
-  and off should mean false. `lfs_url_bool` has the same problem.
-- **`.git/info/attributes` has the lowest precedence instead of the
-  highest.** `AttrSet::from_workdir` in `git/src/attr.rs` adds it first, and
-  gix-attributes searches the last list first, so any `.gitattributes` wins.
-  With `*.bin -filter` in `.git/info/attributes` and `*.bin filter=lfs` in
-  `.gitattributes`, Git says `a.bin` isn't filtered, but `is_lfs_tracked`
-  says it is. Add the file last instead.
-- **`.git/info/attributes` is assumed to be under the working tree.**
-  `from_workdir` and `list_lfs_patterns` use `<root>/.git/info/attributes`,
-  which is wrong in linked worktrees and with a separate Git directory.
-- **`git lfs prune` fails with a linked worktree on an unborn branch.**
-  `git worktree list` reports its HEAD as all zeros, and `cli/src/prune.rs`
-  passes that to `scan_tree`, where `git ls-tree` fails with *not a tree
-  object*. Not checked yet.
-- **SSH URL parsing:** IPv6 hosts are split at the wrong colon
-  (`ssh://git@[::1]:22/repo` gives the host `[`), and `ssh://host:/path`
-  gives an empty port (`parse_ssh_url` and `ssh_to_https` in
-  `git/src/endpoint.rs`).
-- **`FETCH_HEAD`:** `read_fetch_head_url` takes the first line containing
-  " of ", where upstream only reads the first line.
-- **Boolean settings:** `get_bool` in `git/src/fetch_prune.rs` returns false
-  for an empty value and the default for anything unrecognized. Upstream's
-  `config.Bool` does the opposite, and also accepts `t` and `f`.
-- **Redirected uploads send credentials to the new host.** reqwest can't
-  follow redirects for a streamed body, so `upload` in
-  `transfer/src/basic.rs` follows them itself and sends every action
-  header, including `Authorization`, to whatever `Location` says. Upstream
-  drops `Authorization` and `Cookie` when the origin changes, and refuses
-  HTTPS to HTTP. Downloads use reqwest's redirects and aren't affected.
-- **A password in the remote URL can appear in an error.** With a remote
-  like `https://alice:s3cret@host/repo.git`, a 401 that no helper can answer
+  `git/src/http_options.rs` reads anything other than true, 1, yes, or on
+  as false, so `http.sslVerify = ture` turns checks off. Only false, 0, no,
+  and off should. `lfs_url_bool` has the same problem.
+- **A password in the remote URL can appear in an error.** Confirmed. With
+  `https://alice:s3cret@host/repo.git`, a 401 that no helper can answer
   gives *Git credentials for https://alice:s3cret@host/ not found*
-  (`cred_url_string` in `api/src/client.rs`). Strip the password first.
+  (`cred_url_string` in `api/src/client.rs`). `git lfs env` also prints the
+  password, as upstream does.
 - **`GIT_CURL_VERBOSE` prints credentials.** `http.extraHeader` values
   (`api/src/client.rs`) and transfer action headers (`transfer/src/basic.rs`)
-  are printed unmasked, so `Authorization` headers end up on stderr. Upstream
-  masks Basic credentials.
-- **SSH remotes can send two `Authorization` headers.** After a 401, the
-  client's own credentials are sent alongside the header from
-  `git-lfs-authenticate`, because reqwest appends headers. Upstream skips
-  its own auth when the request already has some.
-- **`create_lock` drops `Retry-After`** on rate-limit and server errors,
-  unlike the other API calls (`api/src/locks.rs`).
-- **The SSH program is split on whitespace.** `GIT_SSH=/opt/my tools/ssh`
-  runs `/opt/my`, and quoted arguments in `GIT_SSH_COMMAND` break. Upstream
-  runs `GIT_SSH_COMMAND` through a shell and treats `GIT_SSH` as one path.
-  Same in `creds/src/ssh.rs` and the pure-SSH `build_argv`. The askpass
-  program is split the same way (`creds/src/askpass.rs`).
-- **`expires_in: 0` from `git-lfs-authenticate` means expired at once**, so
-  ssh runs again before every request. Upstream treats 0 as no expiry, and
-  prefers `expires_in` over `expires_at` where we take the earlier one.
-- **The askpass trace line always prints.** `creds/src/askpass.rs` writes
-  *creds: filling with GIT_ASKPASS* to stderr on every prompt, without
-  checking `GIT_TRACE`.
-- **Askpass differs from upstream:** an empty username returns no
-  credentials without asking for a password, and an empty password is
-  rejected. Upstream accepts both.
-- **Failed approves aren't rolled back.** If `git credential approve` fails,
-  the in-memory cache keeps the credentials. Upstream rejects them from the
-  helpers before the failing one.
-- **Pure SSH: a failed read returns the connection to the pool mid-message.**
-  Only error statuses discard the connection (`sshtransfer/adapter.rs`). A
-  stream error, or a file read error during `put-object`, leaves unread or
-  half-written packets, and the next command on that connection fails.
-- **Pure SSH: the server's object size is trusted for an allocation.**
-  `download` calls `Vec::with_capacity` with the `size=` the server sends, so
-  a huge value aborts the process. Downloads are also buffered in memory
-  rather than streamed.
-- **Pure SSH: ssh's stderr is never read** (`sshtransfer/connection.rs`), so
-  ssh and server error messages are lost, and a chatty ssh could block.
-- **Pure SSH: ending the pool may kill the master first.** `end()` sends
-  `quit` and then kills ssh if it's still running, which for the master
-  likely ends the sessions sharing its socket. Upstream ends the clients
-  first. Not checked with real multiplexing.
-- **Pure SSH: `lfs.ssh.automultiplex` isn't read, and the SSH variant is
-  always the default**, so the PuTTY, TortoisePlink, and simple code paths
-  in `build_argv` are never used (`cli/src/fetcher.rs`,
-  `cli/src/lock_client.rs`).
-- **Extension paths with spaces are split.** `clean.rs` and `smudge.rs` in
-  `filter/` substitute `%f` and then split the command on whitespace, so
-  `a b` becomes two arguments. Upstream splits first.
+  are printed unmasked. Upstream masks Basic credentials.
+- **A pure-SSH server can crash the client.** `download` in
+  `sshtransfer/adapter.rs` calls `Vec::with_capacity` with the `size=` the
+  server sends, so a huge value aborts the process.
+
+### Data loss
+
+- **`git lfs prune --force` deletes staged objects on an unborn branch.**
+  Confirmed. After `git init` and `git add a.bin`, it deletes the only
+  copy. The index is only scanned when HEAD exists (`cli/src/prune.rs`).
+  Upstream refuses to prune when it can't resolve the current ref.
+- **`lfs.fetchinclude` makes prune delete objects HEAD needs.** Confirmed.
+  Prune filters retained objects with both include and exclude. Upstream
+  uses only `lfs.fetchexclude`.
+- **`git lfs prune --verify-remote` asks the wrong remote.** It checks the
+  default remote, not `lfs.pruneremotetocheck`.
+- **Prune can try to delete `/dev/null`** when an object file named after
+  the empty OID exists, since `Store::object_path` maps that OID to the null
+  device. Confirmed (as a normal user it fails, and prune exits 0).
+- **A global `core.hooksPath` is ignored, so pushes skip uploads.**
+  Confirmed. `effective_hooks_dir` in `cli/src/install.rs` only reads the
+  local scope, so hooks go to `.git/hooks` where Git never runs them. The
+  automatic install in `try_install_hooks` ignores `core.hooksPath`
+  entirely.
+- **`git lfs migrate import --fixup` discards uncommitted changes.**
+  Confirmed. It skips the dirty-tree check and then runs
+  `git checkout -f HEAD`. `--no-rewrite` also skips the check. Upstream
+  checks in every mode.
+- **`git lfs migrate import` corrupts non-ASCII file names.** Confirmed.
+  `unquote_path` in `migrate/fast_export.rs` doesn't decode octal escapes,
+  so `café.bin` becomes a file named `caf\303\251.bin` in the rewritten
+  history.
+- **`git lfs migrate --everything` rewrites `refs/notes`.** Confirmed.
+  Upstream skips stash, notes, bisect, and replace refs, and includes
+  remote branches (`all_local_refs` in `migrate/mod.rs`).
+- **`git lfs migrate import` converts nested `.gitattributes` files into
+  pointers.** Confirmed. Only the top-level one is excluded.
+
+### Wrong results or failures
+
+- **`.git/info/attributes` has the lowest precedence instead of the
+  highest** (`AttrSet::from_workdir` in `git/src/attr.rs`), and is assumed
+  to be under the working tree, which is wrong in linked worktrees.
+- **Prune fails on an unborn branch** in the main or a linked worktree, with
+  *not a tree object*. Confirmed. Failed deletes print an error but exit 0.
+- **`git lfs fetch --prune` skips the prune** when nothing needs
+  downloading or with `--dry-run`, and ignores prune errors. Confirmed.
+- **`git lfs migrate import --fixup` misses files added after the commit
+  that adds `.gitattributes`, and fails on any commit with a symlink.**
+  Confirmed. `--above` fails when the root `.gitattributes` is empty and
+  nothing is converted.
+- **`git lfs checkout` aborts when an object is missing and the file's
+  directory doesn't exist.** Confirmed. It writes the pointer before
+  creating the directory.
 - **`git lfs filter-process` ignores `lfs.skipdownloaderrors`** and
-  `GIT_LFS_SKIP_DOWNLOAD_ERRORS`. Only the standalone `git lfs smudge`
-  honors them, so a clone with the setting fails instead of leaving
-  pointers.
-- **`git lfs filter-process` reads each file fully into memory**
-  (`read_payload` in `filter/src/filter_process.rs`). Upstream streams.
-- **Extensions write before they're checked.** Smudge writes the last
-  extension's output before checking its OID, and clean stores it before
-  checking the extension's exit status.
-- **netrc and IPv6:** `strip_port("[::1]:8080")` keeps the brackets, so
-  `machine ::1` doesn't match.
-- **`git cat-file` stderr is piped but never read** (`git/src/cat_file.rs`).
-  If Git writes more than a pipe buffer to it, the process blocks.
+  `GIT_LFS_SKIP_DOWNLOAD_ERRORS`, so a clone with them fails.
+- **Extensions:** `%f` paths with spaces become several arguments
+  (confirmed), smudge writes the last extension's output before checking
+  its OID, and clean stores it before checking the exit status.
+- **Lock verification doesn't stop the push** with `locksverify=true` on a
+  404, a connection error, or any SSH error. Upstream aborts.
+  `git lfs locks --local --verify` isn't rejected.
+- **Lockable files with pure SSH.** The read-only hooks always query locks
+  over HTTP, so with `sshtransfer=always` every lockable file becomes
+  read-only. An empty `next_cursor` makes them loop. Unlock by path sends
+  `unlock` on a download connection.
+- **Pure SSH connections:** a read error returns the connection to the
+  pool mid-message, so the next command on it fails. ssh's stderr is never
+  read, so errors are lost and a chatty ssh could block. Ending the pool
+  may kill the master before its clients.
+- **SSH remotes can send two `Authorization` headers** after a 401, because
+  reqwest appends the helper's credentials to the header from
+  `git-lfs-authenticate`. Confirmed.
+- **Programs are split on whitespace.** `GIT_SSH=/opt/my tools/ssh` runs
+  `/opt/my`, and quoted `GIT_SSH_COMMAND` arguments break. Same for the
+  askpass program.
+- **`expires_in: 0` from `git-lfs-authenticate` means expired at once**,
+  so ssh runs before every request. Confirmed. Upstream treats 0 as no
+  expiry.
+- **Boolean environment variables and settings.** `GIT_LFS_SKIP_PUSH=false`
+  skips the push, and `GIT_LFS_SKIP_SMUDGE=no` skips smudging. `get_bool`
+  in `git/src/fetch_prune.rs`, `lfs.allowincompletepush`, and
+  `lfs.locksverify` each parse booleans differently from Git and upstream.
+- **A relative `core.hooksPath` in a bare repository** resolves outside it.
+  Confirmed.
+- **`git lfs uninstall` stops at the first config error** and leaves the
+  hooks in place, exiting 0.
+- **`git lfs clone`:** a failed pull in a submodule exits 0, `-bmain` is
+  read as `-n` and skips the pull, and `--bare` skips the fetch and hooks.
+- **Pre-push to a local path** ignores `--dry-run` and skips objects
+  missing locally instead of failing.
+- **`git lfs ls-files` lists empty files.** Confirmed.
+- **`git lfs track`** prints *Touching* without `--verbose`, and picks line
+  endings in a different order from upstream.
+- **`create_lock` drops `Retry-After`** on rate-limit and server errors.
+- **`http.sslCert` and `http.sslKey` only work with `http.sslCAInfo`.**
+
+### Minor differences from upstream
+
+- Exit codes: `fetch` with failed objects, `logs show` for a missing log,
+  and the `ls-files` argument errors exit 1 where upstream exits 2. `status`
+  in a bare repository exits 1, not 128. `update --force --manual` isn't
+  rejected.
+- Sizes: `ls-files --size` uses powers of 1024 with two decimals, and
+  `migrate --above` reads `k`, `m`, and `g` as powers of 1024. Upstream
+  uses powers of 1000.
+- `git lfs status` shows paths relative to the repository's parent
+  directories, not stripped of the common prefix.
+- `git lfs env` doesn't read the fetch-recent, prune, or access settings,
+  and doesn't print the include, exclude, or extension lines.
+- Askpass: the trace line prints without `GIT_TRACE`, and empty usernames
+  and passwords are rejected. A failed `git credential approve` isn't
+  rolled back from the cache.
+- `lfs.ssh.automultiplex` and the SSH variant settings aren't read, so the
+  PuTTY, TortoisePlink, and simple code paths in `build_argv` are unused.
+- IPv6: SSH URLs split at the wrong colon, `ssh://host:/path` gives an
+  empty port, and netrc keeps the brackets.
+- `read_fetch_head_url` reads the first line containing " of ", not just
+  the first line.
+- `git cat-file` stderr is never read, so lots of output could block.
+- Memory: `git lfs filter-process` and standalone `git lfs smudge` read
+  each file fully into memory, and pure-SSH downloads are buffered.
+- `git lfs pointer` always computes SHA-1 blob IDs, even in SHA-256
+  repositories.
+- `git lfs fetch`: `--all` applies `lfs.fetchinclude`, conflicting flags
+  such as `--all --recent` are accepted, and `--recent` without a remote
+  looks at every remote.
+- `git lfs push --object-id` doesn't find objects that exist only in an
+  alternate store.
+- `git lfs uninstall` prints different messages, and only removes hooks
+  that exactly match the current template.
+- `git lfs migrate`: export doesn't exclude remote-tracking refs, has no
+  `--yes`, and writes its exclude line without `-text`. Remote refs aren't
+  fetched before the walk, so `--skip-fetch` does nothing. `--no-rewrite`
+  commits everything staged.
+- `git lfs track`: any value of `GIT_LFS_TRACK_NO_INSTALL_HOOKS` disables
+  the hook install, one forbidden pattern stops the others, a failed touch
+  of a read-only file is ignored, and `escape_attr_pattern` only escapes a
+  leading `#`.
+- With no remote named, credential queries use the LFS endpoint URL
+  rather than origin's, and a URL with only a username sends Basic
+  credentials with an empty password.
 
 ## Deferred improvements
 

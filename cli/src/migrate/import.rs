@@ -1,16 +1,14 @@
-//! `git lfs migrate import` — rewrite history so matching files become
-//! LFS pointers.
+//! `git lfs migrate import`: convert files in history to LFS pointers.
 //!
-//! Two modes:
+//! By default this rewrites the selected refs through the
+//! [`pipeline`](super::pipeline), skipping commits reachable from
+//! remote-tracking refs, then moves any other local branch or tag that
+//! pointed at a rewritten commit and force-checks out HEAD. `--fixup`
+//! rewrites the same way but converts what each commit's own attributes
+//! say should be LFS files.
 //!
-//! - **Default (rewrite mode):** spawn `git fast-export --full-tree` →
-//!   stream through [`super::transform::Transform`] → pipe to
-//!   `git fast-import --force`. After import, force-checkout HEAD so
-//!   the working tree reflects the rewritten history.
-//!
-//! - **`--no-rewrite`:** keep history intact, just clean specified
-//!   working-tree files into pointers and add one new commit on top of
-//!   HEAD.
+//! `--no-rewrite` leaves history alone: it converts the given working
+//! tree files to pointers and commits them on top of HEAD.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -36,16 +34,16 @@ pub struct ImportOptions {
     pub message: Option<String>,
     pub paths: Vec<String>,
     pub fixup: bool,
-    /// Accepted from the CLI as a no-op — we never auto-fetch today.
-    /// Kept threaded so wiring up a fetch step is a one-line addition.
+    /// Ignored: remote-tracking refs are never fetched before the walk.
     #[allow(dead_code)]
     pub skip_fetch: bool,
     pub object_map: Option<std::path::PathBuf>,
     pub verbose: bool,
     pub remote: Option<String>,
-    /// `--yes`: bypass the dirty-working-tree refusal. Upstream uses
-    /// it to skip an interactive "rewrite anyway?" prompt; we don't
-    /// prompt, so the flag just disables the guard.
+    /// Rewrite even if the working tree is dirty.
+    ///
+    /// Upstream asks for confirmation instead of refusing, and `--yes`
+    /// answers yes.
     pub yes: bool,
 }
 
@@ -60,33 +58,23 @@ pub fn import(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateError> {
             "Cannot use --fixup with --include, --exclude".into(),
         ));
     }
-    // --above is a size-only filter; mixing it with the path-based
-    // include/exclude patterns or the per-commit fixup walk doesn't
-    // cleanly compose, so upstream rejects the combo outright.
     if opts.above > 0 && (!opts.include.is_empty() || !opts.exclude.is_empty() || opts.fixup) {
         return Err(MigrateError::Other(
             "Cannot use --above with --include, --exclude, --fixup".into(),
         ));
     }
-    // --everything walks every local ref; combining it with explicit
-    // ref selectors is contradictory.
     if opts.everything && (!opts.include_ref.is_empty() || !opts.exclude_ref.is_empty()) {
         return Err(MigrateError::Usage(
             "Cannot use --everything with --include-ref or --exclude-ref".into(),
         ));
     }
 
-    // `--no-rewrite` mutates the working tree by design (it converts
-    // tracked paths to pointer files, then commits). The dirty-tree
-    // guard is for the history-rewriting modes only.
+    // Neither `--no-rewrite` nor `--fixup` checks for a dirty working
+    // tree, unlike upstream.
     if opts.no_rewrite {
         return import_no_rewrite(cwd, opts);
     }
 
-    // `--fixup` runs before the dirty check too — its symlink case
-    // (`.gitattributes` committed as 120000) confuses git status into
-    // reporting modifications, and we want the friendlier
-    // symbolic-link error in front.
     if opts.fixup {
         return import_fixup(cwd, opts);
     }
@@ -127,12 +115,9 @@ pub fn import(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateError> {
         }
     }
     super::validate_refs(cwd, &include_refs, &exclude_refs)?;
-    // Default behavior matches upstream: unless the user asked for
-    // `--everything` or named refs explicitly via `--include-ref` /
-    // `--exclude-ref`, exclude remote-tracking refs from the walk so
-    // commits already pushed to `origin` aren't rewritten locally.
-    // Applies even when a positional branch is given — t-migrate-
-    // import's "given branch, exclude remote refs" tests this.
+    // As upstream, skip commits already on a remote unless the refs
+    // were chosen with `--everything`, `--include-ref`, or
+    // `--exclude-ref`. This applies to branch arguments too.
     if !opts.everything && opts.include_ref.is_empty() && opts.exclude_ref.is_empty() {
         for r in super::export::list_remote_tracking_refs(cwd) {
             if !exclude_refs.iter().any(|x| x == &r) {
@@ -154,15 +139,10 @@ pub fn import(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateError> {
 
     let marks_tmp = tempfile::NamedTempFile::new().map_err(MigrateError::Io)?;
 
-    // When the user supplied `--include`, use those patterns
-    // verbatim (with space escaping) as the `.gitattributes` lines —
-    // otherwise we'd lose information (e.g. `--include "a file.txt"`
-    // collapses to `*.txt` when derived from extension, breaking
-    // t-migrate-import's --include-with-space test).
-    //
-    // Each `--exclude` pattern earns a non-LFS marker line so a more
-    // permissive include can't drag the excluded path back into LFS
-    // later. Upstream uses the `-filter -merge -diff` form.
+    // `--include` patterns become `.gitattributes` lines as given, with
+    // spaces escaped. Deriving them from each path's extension would
+    // turn `--include "a file.txt"` into `*.txt`. Each `--exclude`
+    // pattern gets a line that turns LFS off, as upstream.
     let mut attrs_add_initial: Vec<String> = opts
         .include
         .iter()
@@ -179,10 +159,6 @@ pub fn import(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateError> {
             .map(|p| format!("{} !text -filter -merge -diff", escape_attr_pattern(p))),
     );
 
-    // If the user supplied `--include`, those patterns are already in
-    // `attrs_add_initial`; the per-path derivation would duplicate or
-    // re-derive them with extension semantics that lose the user's
-    // wording.
     let skip_path_derived_attrs = !opts.include.is_empty();
 
     let stats = super::pipeline::run_pipeline_with_export_marks(
@@ -224,21 +200,17 @@ pub fn import(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateError> {
     Ok(stats)
 }
 
-/// Escape spaces in a `.gitattributes` pattern. Git attribute files
-/// treat the first space as the boundary between pattern and
-/// attributes, so a literal space in the path has to be expressed as
-/// `[[:space:]]`. Glob metacharacters (`*`, `?`, `[`) are *not*
-/// escaped — user-supplied patterns like `*.md` are meant as globs
-/// and we honor that intent.
+/// Escape the spaces in a `.gitattributes` pattern as `[[:space:]]`.
+///
+/// A space would otherwise end the pattern. Glob characters stay, since
+/// the user's pattern is a glob.
 pub(crate) fn escape_attr_pattern(p: &str) -> String {
     p.replace(' ', "[[:space:]]")
 }
 
-/// Escape every character in `p` that's special to git's attribute
-/// matcher, so the resulting `.gitattributes` line matches exactly
-/// the path passed in. Used by the `--above` per-path derivation
-/// where the user committed a literal name like `test * special.bin`
-/// and we don't want our written attrs to glob-expand it.
+/// Escape a path for a `.gitattributes` pattern that matches only it.
+///
+/// Escapes spaces and the glob characters `*`, `?`, and `[`.
 pub(crate) fn escape_attr_path(p: &str) -> String {
     let mut out = String::with_capacity(p.len());
     for c in p.chars() {
@@ -257,14 +229,13 @@ pub(crate) fn escape_attr_path(p: &str) -> String {
 // --fixup mode
 // --------------------------------------------------------------------
 
-/// Walk history and convert any plain blob whose path the commit's
-/// `.gitattributes` declared LFS-tracked. Used to repair repos where
-/// someone committed real bytes for a path that was supposed to be a
-/// pointer (e.g. `git lfs uninstall` was active during the commit).
+/// `--fixup`: convert files that were committed without the LFS filter
+/// although their commit's attributes track them.
 ///
-/// Output is intentionally quiet on the no-op path: t-migrate-fixup's
-/// "no potential fixup" tests assert `0 == wc -l` on stdout. We only
-/// print after a conversion succeeds.
+/// Prints nothing when there's nothing to fix: t-migrate-fixup checks
+/// that stdout is empty. Unlike the default mode, this doesn't skip
+/// commits on a remote, ignores `--include-ref` and `--exclude-ref`,
+/// and doesn't move other local refs.
 fn import_fixup(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateError> {
     let sel = RefSelection {
         branches: opts.branches.clone(),
@@ -277,9 +248,7 @@ fn import_fixup(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateError>
         ));
     }
 
-    // Reject `.gitattributes` symlinks (mode 120000) up-front. We check
-    // HEAD only; nested commits with symlink attrs are rare in
-    // practice and the upstream fixture targets HEAD.
+    // Only the tips are checked for a symlinked `.gitattributes`.
     if super::export::any_attrs_symlink(cwd, &include_refs) {
         return Err(MigrateError::Other(
             "expected '.gitattributes' to be a file, got a symbolic link".into(),
@@ -297,10 +266,7 @@ fn import_fixup(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateError>
     )?;
 
     if stats.blobs_converted == 0 {
-        // No-op fixup — refs unchanged because fast-import re-emits
-        // the same commits with identical trees and gets back the same
-        // SHAs. Don't print anything; the `no potential fixup` tests
-        // assert empty output.
+        // fast-import recreated the same commits, so no ref moved.
         return Ok(stats);
     }
 
@@ -331,10 +297,8 @@ fn import_no_rewrite(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateE
     }
 
     let repo_root = repo_root(cwd)?;
-    // `--no-rewrite` doesn't add new tracking lines — it requires the
-    // working tree to already declare each path as LFS in some
-    // `.gitattributes`. Mismatches surface upstream-shaped errors that
-    // the test suite greps verbatim.
+    // Each path must already be tracked by the working tree's
+    // attributes. The shell tests grep these errors.
     let attrs = git_lfs_git::AttrSet::from_workdir(&repo_root).map_err(MigrateError::Io)?;
     let listing = git_lfs_git::attr::list_lfs_patterns(&repo_root).map_err(MigrateError::Io)?;
     if listing.tracked().next().is_none() {
@@ -358,8 +322,6 @@ fn import_no_rewrite(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateE
             )));
         }
 
-        // The error message + the gix-attributes lookup both want a
-        // workdir-relative, forward-slash path.
         let rel = abs
             .strip_prefix(&repo_root)
             .map_err(|_| MigrateError::Other(format!("path outside repo: {raw}")))?;
@@ -390,14 +352,11 @@ fn import_no_rewrite(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateE
     }
 
     if stats.blobs_converted == 0 {
-        // Either nothing matched or every file was already a pointer.
-        // Either way the user already has the state they wanted.
+        // Every file was already a pointer.
         return Ok(stats);
     }
 
-    // `-m ""` is meaningful: an empty message preserved verbatim. Only
-    // fall back to the autogenerated default when the user didn't pass
-    // `-m` at all.
+    // `-m ""` gives an empty message, not the default.
     let message = opts
         .message
         .clone()
@@ -413,12 +372,8 @@ fn import_no_rewrite(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateE
         return Err(MigrateError::Other("git add failed".into()));
     }
 
-    // If `git add` left the index unchanged (e.g. the files were
-    // already cleaned into pointers earlier — happens when
-    // `.gitattributes` was added after the original commit and the
-    // staging-time clean filter normalized the blobs), there's
-    // nothing to commit. The desired state is already in HEAD;
-    // returning success is correct.
+    // HEAD may already have the pointers, if the working tree files
+    // were committed through the clean filter.
     let diff_status = Command::new("git")
         .arg("-C")
         .arg(cwd)
@@ -429,6 +384,7 @@ fn import_no_rewrite(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateE
         return Ok(stats);
     }
 
+    // This commits the whole index, including anything staged before.
     let commit_out = Command::new("git")
         .arg("-C")
         .arg(cwd)

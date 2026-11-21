@@ -1,28 +1,15 @@
-//! Backend-agnostic lock client used by `git lfs lock` / `unlock` /
-//! `locks` and the pre-push lock-verify pre-flight.
+//! Lock client for `git lfs lock`, `unlock`, and `locks`, and for the
+//! pre-push lock check.
 //!
-//! Three variants today, all behind one enum so callers don't branch
-//! on transport:
+//! [`LockClient`] sends lock requests over HTTP or pure SSH, chosen by
+//! `lfs.<url>.sshtransfer` (see [`build_lock_client_with_api`]). Over SSH,
+//! it uses a one-connection pool of git-lfs-transfer sessions. The
+//! negotiate variant tries pure SSH and falls back to HTTP if the pool
+//! can't start, then keeps that choice.
 //!
-//! - [`LockClient::Http`] — classic HTTP path. Wraps
-//!   [`ApiClient`]'s `create_lock` / `delete_lock` / `list_locks` /
-//!   `verify_locks` plus a small runtime for the sync→async bridge.
-//! - [`LockClient::Ssh`] — pure-SSH path. Holds an [`Arc<Pool>`] of
-//!   `git-lfs-transfer` connections (typically size 1, since lock
-//!   commands serialize on the wire anyway) and drives them via
-//!   [`crate::sshtransfer::lock`].
-//! - [`LockClient::Negotiate`] — try pure-SSH first, fall back to
-//!   HTTP on pool spawn failure. Mirrors
-//!   [`SshBackend`](git_lfs_transfer::backend::SshBackend)'s lazy
-//!   per-direction dispatch, but with a single state since locking
-//!   doesn't split by upload/download.
-//!
-//! For SSH variants the pool master spawns lazily on first command,
-//! and is intentionally **kept alive** for the lifetime of the
-//! client — that matches upstream's quirky-but-load-bearing
-//! "control socket SSH connection [for locking] [is] never shut
-//! down cleanly" behavior that `t-batch-transfer.sh`'s
-//! `assert_ssh_transfer_sessions` counts on the upload path.
+//! The SSH pool starts on the first request and is never shut down. Unlike
+//! upstream, which keeps one SSH connection per operation, the first
+//! request's operation is used for every later request.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -39,40 +26,35 @@ use git_lfs_transfer::sshtransfer::lock as ssh_lock;
 use git_lfs_transfer::sshtransfer::pool::{Pool, PoolConfig};
 use tokio::runtime::Runtime;
 
-/// Closure that brings up an SSH lock-pool master on demand. Takes
-/// the transfer-side [`SshOperation`] the pool should announce
-/// (locking uses `upload` for create/unlock per spec; `download`
-/// works for list-only flows).
+/// Closure that starts the SSH lock pool for an operation.
+///
+/// The SSH protocol only allows `lock` and `unlock` on an upload
+/// connection. `list-lock` works on either.
 pub type SshLockPoolSpawner =
     Arc<dyn Fn(SshOperation) -> Result<Arc<Pool>, ConnectionError> + Send + Sync>;
 
-/// Error envelope for [`LockClient`] calls.
+/// Error from a [`LockClient`] call.
 ///
-/// Decoded into [`CreateLockError`] / [`ApiError`] equivalents by
-/// callers that need to distinguish "lock already held" from
-/// "transport failed" etc. The SSH variants are folded onto the
-/// HTTP shapes (e.g. SSH 409 → `Conflict`) so the call sites in
-/// `cli::lock` don't have to fork their error handling per backend.
+/// A conflict is [`Conflict`](Self::Conflict) over either transport, so
+/// callers don't need to know which one was used.
 ///
-/// `Api` is boxed because `ApiError::Status` carries a ~144-byte
-/// body — without the box clippy's `result_large_err` would fire on
-/// every `Result<Lock, _>` return.
+/// `Api` is boxed because [`ApiError`] is large enough to trip clippy's
+/// `result_large_err`.
 #[derive(Debug, thiserror::Error)]
 pub enum LockClientError {
-    /// Path-already-locked. Mirrors [`CreateLockError::Conflict`].
+    /// The path is already locked.
     #[error("lock conflict: {message}")]
     Conflict {
         existing: Option<Lock>,
         message: String,
     },
-    /// HTTP-side `ApiError`.
+    /// An HTTP API error.
     #[error(transparent)]
     Api(Box<ApiError>),
-    /// SSH-side `ConnectionError` (pool spawn or wire-protocol failure).
+    /// The SSH pool couldn't start, or the connection failed.
     #[error("ssh: {0}")]
     Ssh(String),
-    /// SSH server returned a non-success status. Carries the parsed
-    /// status code and the server-supplied message.
+    /// The SSH server returned an error status other than a conflict.
     #[error("ssh: status {status}: {message}")]
     SshStatus { status: u16, message: String },
 }
@@ -100,21 +82,18 @@ impl From<ConnectionError> for LockClientError {
     }
 }
 
-/// One page of locks plus the optional next-page cursor. Mirrors
-/// [`LockList`] but lives here so the SSH side can produce it
-/// without reaching into the HTTP API types' wire-shaped helpers.
+/// One page of locks, from either transport.
 #[derive(Debug, Clone, Default)]
 pub struct LockPage {
-    /// Locks on this page.
     pub locks: Vec<Lock>,
-    /// Pagination continuation cursor; absent on the final page.
+    /// Cursor for the next page, if there is one.
     pub next_cursor: Option<String>,
 }
 
-/// One page of a verify-locks response. Same shape as
-/// [`VerifyLocksResponse`] but lives in this module so the SSH side
-/// can produce it (SSH derives ours/theirs from `owner` lines on
-/// upload-mode `list-lock` rather than a separate endpoint).
+/// One page of locks split into ours and theirs, from either transport.
+///
+/// Over SSH the split comes from the `owner` lines that `list-lock` returns
+/// on an upload connection.
 #[derive(Debug, Clone, Default)]
 pub struct VerifyPage {
     pub ours: Vec<Lock>,
@@ -122,32 +101,27 @@ pub struct VerifyPage {
     pub next_cursor: Option<String>,
 }
 
-/// Backend-agnostic lock client.
+/// Lock client over HTTP, pure SSH, or pure SSH with HTTP fallback.
 pub enum LockClient {
-    /// HTTP transport. See module-level docs.
     Http(HttpLockClient),
-    /// Pure-SSH transport. See module-level docs.
     Ssh(SshLockClient),
-    /// Try SSH first, fall back to HTTP on pool spawn failure.
+    /// Pure SSH, or HTTP if the SSH pool can't start.
     Negotiate(NegotiateLockClient),
 }
 
 impl LockClient {
-    /// Build a pure-HTTP client over `api`. `runtime` is used for the
-    /// sync→async bridge (the underlying [`ApiClient`] methods are
-    /// async).
+    /// Build an HTTP client that runs `api`'s requests on `runtime`.
     pub fn http(api: ApiClient, runtime: Arc<Runtime>) -> Self {
         Self::Http(HttpLockClient { api, runtime })
     }
 
-    /// Build a pure-SSH client over a lazy pool spawner. The pool
-    /// doesn't materialize until the first command runs.
+    /// Build a pure-SSH client. The pool starts on the first request.
     pub fn ssh(spawner: SshLockPoolSpawner) -> Self {
         Self::Ssh(SshLockClient::new(spawner))
     }
 
-    /// Build a negotiate client that prefers SSH and falls back to
-    /// HTTP per call when the pool can't spawn.
+    /// Build a client that tries pure SSH on the first request and uses
+    /// HTTP from then on if the pool can't start.
     pub fn negotiate(
         spawner: SshLockPoolSpawner,
         http_api: ApiClient,
@@ -175,8 +149,10 @@ impl LockClient {
         }
     }
 
-    /// Delete the lock with the given id; pass `force` to override
-    /// owner checks (server still enforces auth).
+    /// Delete the lock with the given id.
+    ///
+    /// `force` asks an HTTP server to delete another user's lock. It isn't
+    /// sent over SSH.
     pub fn delete_lock(
         &self,
         id: &str,
@@ -193,8 +169,7 @@ impl LockClient {
         }
     }
 
-    /// List locks one page at a time. Pagination is the caller's
-    /// responsibility (loop on `next_cursor`).
+    /// List one page of locks. The caller follows `next_cursor`.
     pub fn list_locks(&self, filter: &ListLocksFilter) -> Result<LockPage, LockClientError> {
         match self {
             LockClient::Http(c) => c.list_locks(filter),
@@ -206,8 +181,7 @@ impl LockClient {
         }
     }
 
-    /// Run `/locks/verify` (or its SSH equivalent), partitioning
-    /// locks into ours and theirs.
+    /// List one page of locks split into ours and theirs.
     pub fn verify_locks(&self, req: &VerifyLocksRequest) -> Result<VerifyPage, LockClientError> {
         match self {
             LockClient::Http(c) => c.verify_locks(req),
@@ -220,8 +194,7 @@ impl LockClient {
     }
 }
 
-/// HTTP locking backend. Thin wrapper over `ApiClient` that
-/// block_ons the async methods on a shared runtime.
+/// HTTP lock client that runs the async [`ApiClient`] calls on a runtime.
 pub struct HttpLockClient {
     api: ApiClient,
     runtime: Arc<Runtime>,
@@ -271,20 +244,17 @@ impl HttpLockClient {
     }
 }
 
-/// SSH locking backend. Lazily spawns a single-slot pool on first
-/// call (a master `-oControlMaster=yes` SSH connection), then
-/// dispatches `lock` / `unlock` / `list-lock` commands through it.
+/// Pure-SSH lock client.
 ///
-/// One pool per SSH lock client; we don't tear it down — see
-/// module-level docs.
+/// Starts its pool on the first request and keeps it for the client's
+/// lifetime.
 pub struct SshLockClient {
     spawner: SshLockPoolSpawner,
     state: Mutex<SshState>,
 }
 
-/// Per-client lazy-spawn state. First call transitions
-/// `Untried` → `Pool(...)` on success; spawn failures bubble up
-/// without caching (so a transient SSH failure can be retried).
+/// Whether the SSH pool has started. A failed start isn't remembered, so
+/// the next request tries again.
 enum SshState {
     Untried,
     Pool(Arc<Pool>),
@@ -298,10 +268,11 @@ impl SshLockClient {
         }
     }
 
-    /// Return the cached pool, spawning it via the spawner closure
-    /// on the first call. The operation passed to the spawner
-    /// matches what the upcoming command needs (`upload` for
-    /// create/delete/verify; `download` for plain list).
+    /// Return the pool, starting it for `op` if it hasn't started.
+    ///
+    /// Once started, the pool is returned whatever `op` is, so a
+    /// `list_locks` followed by a `delete_lock` (as path-based unlock does)
+    /// sends `unlock` on a download connection.
     fn pool(&self, op: SshOperation) -> Result<Arc<Pool>, LockClientError> {
         let mut state = self.state.lock().unwrap();
         if let SshState::Pool(p) = &*state {
@@ -328,9 +299,8 @@ impl SshLockClient {
         refspec: Option<&str>,
         _force: bool,
     ) -> Result<Lock, LockClientError> {
-        // `force` doesn't go on the wire — upstream's sshLockClient.Unlock
-        // omits it and scutiger ignores it. Server-side auth is
-        // expected to gate the override.
+        // The protocol has a `force` argument, but upstream's
+        // `sshLockClient.Unlock` doesn't send it either.
         let pool = self.pool(SshOperation::Upload)?;
         let opts = ssh_lock::UnlockOptions {
             refname: refspec.map(str::to_owned),
@@ -355,9 +325,8 @@ impl SshLockClient {
     }
 
     fn verify_locks(&self, req: &VerifyLocksRequest) -> Result<VerifyPage, LockClientError> {
-        // SSH has no separate verify endpoint — it's `list-lock` on
-        // an upload-mode connection, which causes the server to add
-        // `owner <id> ours|theirs` lines that we partition on.
+        // SSH has no verify command. On an upload connection, `list-lock`
+        // adds an `owner` line to each lock saying ours or theirs.
         let pool = self.pool(SshOperation::Upload)?;
         let f = ssh_lock::ListFilter {
             path: None,
@@ -392,25 +361,24 @@ impl SshLockClient {
     }
 }
 
-/// Negotiate client: try SSH first, then HTTP if the SSH pool fails
-/// to spawn. The choice is cached for the lifetime of the client.
+/// Lock client that tries pure SSH first and falls back to HTTP if the
+/// pool can't start.
+///
+/// The first request decides, and the choice is kept for the client's
+/// lifetime.
 pub struct NegotiateLockClient {
     spawner: SshLockPoolSpawner,
     http: HttpLockClient,
     state: Mutex<NegotiateState>,
 }
 
-/// Per-client negotiate state. Mirrors
-/// [`SshBackend`](git_lfs_transfer::backend::SshBackend)'s pattern:
-/// first call decides, subsequent calls reuse.
 enum NegotiateState {
     Untried,
     Ssh(Arc<SshLockClient>),
     Fallback,
 }
 
-/// One concrete backend choice made by
-/// [`NegotiateLockClient::resolve`].
+/// The transport [`NegotiateLockClient::resolve`] picked.
 enum ResolvedLockBackend {
     Ssh(Arc<SshLockClient>),
     Http,
@@ -424,7 +392,6 @@ impl NegotiateLockClient {
             NegotiateState::Fallback => return ResolvedLockBackend::Http,
             NegotiateState::Untried => {}
         }
-        // First call — try spawning the SSH pool.
         let ssh = SshLockClient::new(self.spawner.clone());
         match ssh.pool(op) {
             Ok(_) => {
@@ -440,9 +407,9 @@ impl NegotiateLockClient {
     }
 }
 
-/// Turn an SSH lock/unlock response into a `Result<Lock, LockClientError>`,
-/// folding conflict and error statuses onto the HTTP-shaped error
-/// variants so callers don't have to branch on transport.
+/// Turn an SSH `lock` or `unlock` response into a result.
+///
+/// A 409 becomes [`LockClientError::Conflict`], as it is over HTTP.
 fn translate_lock_response(resp: ssh_lock::LockResponse) -> Result<Lock, LockClientError> {
     let status = resp.status;
     let is_success = (200..300).contains(&status);
@@ -467,10 +434,10 @@ fn translate_lock_response(resp: ssh_lock::LockResponse) -> Result<Lock, LockCli
     })
 }
 
-/// Turn an SSH list-lock response into a `LockPage`. A 404 with a
-/// path filter means "no lock matches" (scutiger's "not found" for
-/// `list-lock path=<p>`) — surface as empty page so callers don't
-/// have to special-case it.
+/// Turn an SSH `list-lock` response into a [`LockPage`].
+///
+/// With a path filter, a 404 means no lock matches (scutiger answers that
+/// way), so it becomes an empty page.
 fn translate_list_response(
     resp: ssh_lock::ListResponse,
     had_path_filter: bool,
@@ -495,9 +462,7 @@ fn translate_list_response(
     })
 }
 
-/// Coerce an SSH-side `LockSpec` into the API crate's `Lock`. The
-/// SSH wire format reuses the same four fields, so the conversion
-/// is straight assignment.
+/// Convert an SSH lock into the API crate's [`Lock`].
 fn lock_from_spec(spec: ssh_lock::LockSpec) -> Lock {
     Lock {
         id: spec.id,
@@ -507,17 +472,9 @@ fn lock_from_spec(spec: ssh_lock::LockSpec) -> Lock {
     }
 }
 
-/// Build a [`LockClient`] for `(cwd, remote)`. Resolves the LFS
-/// endpoint, reads `lfs.<url>.sshtransfer`, and picks the variant:
+/// Build a [`LockClient`] for the endpoint of `remote`.
 ///
-/// - HTTP-shaped endpoint, or `sshtransfer=never`: [`LockClient::Http`].
-/// - SSH-shaped endpoint with `sshtransfer=always`: [`LockClient::Ssh`].
-/// - SSH-shaped endpoint, default or `sshtransfer=negotiate`:
-///   [`LockClient::Negotiate`].
-///
-/// The `runtime` argument is only used by the HTTP-side block-on
-/// bridge; SSH-only callers can hand in any runtime (e.g. a tiny
-/// throwaway one).
+/// See [`build_lock_client_with_api`]. `runtime` runs the HTTP requests.
 pub(crate) fn build_lock_client(
     cwd: &Path,
     remote: Option<&str>,
@@ -527,12 +484,18 @@ pub(crate) fn build_lock_client(
     build_lock_client_with_api(cwd, remote, runtime, api)
 }
 
-/// Like [`build_lock_client`] but reuses an existing [`ApiClient`].
-/// Used by [`LfsFetcher`](crate::fetcher::LfsFetcher) so the HTTP
-/// fallback path shares its credential / SSH-auth cache with the
-/// transfer client — without this, preflight verify ends up making
-/// a second `git-lfs-authenticate` call that the test suite counts
-/// (`t-batch-transfer` test 5).
+/// Build a [`LockClient`] that uses `api` for HTTP.
+///
+/// The transport depends on the endpoint and `lfs.<url>.sshtransfer`:
+///
+/// - An HTTP endpoint, or `never`: [`LockClient::Http`].
+/// - An SSH endpoint with `always`: [`LockClient::Ssh`].
+/// - An SSH endpoint with any other value, or none:
+///   [`LockClient::Negotiate`].
+///
+/// [`LfsFetcher`](crate::fetcher::LfsFetcher) passes its own API client, so
+/// its cached credentials and git-lfs-authenticate response are reused.
+/// `t-batch-transfer.sh` counts git-lfs-authenticate runs.
 pub(crate) fn build_lock_client_with_api(
     cwd: &Path,
     remote: Option<&str>,
@@ -557,9 +520,10 @@ pub(crate) fn build_lock_client_with_api(
     }
 }
 
-/// Build a single-connection [`Pool`] spawner for SSH locks. The
-/// pool size is 1 — lock commands are short and serialize on the
-/// wire, no benefit to extra slots.
+/// Build the spawner for a one-connection SSH lock pool.
+///
+/// Lock requests are sent one at a time, so more connections wouldn't help.
+/// Like transfers, it always uses the OpenSSH variant.
 fn ssh_lock_pool_spawner(ssh: SshInfo) -> SshLockPoolSpawner {
     let program = crate::fetcher::resolve_ssh_program();
     let multiplex_enabled = !cfg!(target_os = "windows");

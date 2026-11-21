@@ -1,4 +1,5 @@
-//! `git lfs track`: manage LFS-tracked patterns in `.gitattributes`.
+//! Reading and writing the LFS patterns in a `.gitattributes` file, for
+//! `git lfs track` and `git lfs untrack`.
 
 use std::fs;
 use std::io;
@@ -9,14 +10,11 @@ use tempfile::NamedTempFile;
 
 const ATTRIBUTES_FILE: &str = ".gitattributes";
 
-/// The attribute fragment that marks a pattern as LFS-tracked. Matches
-/// upstream's format byte-for-byte.
+/// The attributes `track` writes after a pattern, as upstream writes them.
 const LFS_FILTER_TAIL: &str = "filter=lfs diff=lfs merge=lfs -text";
 
-/// Basename prefixes we refuse to LFS-track because doing so would
-/// corrupt the repository (`.gitattributes`, `.gitignore`,
-/// `.gitmodules`, `.lfsconfig`, `.lfs-*`, etc.). Matches upstream's
-/// `prefixBlocklist` in `commands/command_track.go`.
+/// File name prefixes that must not be tracked, such as `.gitattributes`
+/// and `.lfsconfig`. Upstream's `prefixBlocklist`.
 const FORBIDDEN_PREFIXES: &[&str] = &[".git", ".lfs"];
 
 #[derive(Debug, thiserror::Error)]
@@ -27,15 +25,14 @@ pub enum TrackError {
     Persist(String),
 }
 
-/// `--lockable` / `--not-lockable` / neither.
+/// Whether `--lockable` or `--not-lockable` was given.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LockableMode {
-    /// `--lockable` — ensure the line carries the `lockable` attribute.
+    /// `--lockable`: the line must have the `lockable` attribute.
     Yes,
-    /// `--not-lockable` — ensure the line does *not* carry it.
+    /// `--not-lockable`: the line must not have it.
     No,
-    /// Neither flag — leave existing lines as-is; new lines get no
-    /// `lockable` attribute.
+    /// Neither: existing lines are kept, and new lines aren't lockable.
     Default,
 }
 
@@ -58,12 +55,11 @@ impl Eol {
 /// Outcome for a single tracked pattern.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrackResult {
-    /// Pattern was new — line appended.
+    /// A new line was appended.
     Added,
-    /// Pattern already had a line, but its `lockable` state changed —
-    /// line replaced in place.
+    /// The existing line was rewritten to change its `lockable` state.
     Replaced,
-    /// Pattern already had a line with the requested state — no-op.
+    /// The existing line was already as requested.
     AlreadyTracked,
 }
 
@@ -80,9 +76,8 @@ pub struct TrackOutcome {
 pub struct TrackOptions {
     pub lockable: LockableMode,
     pub dry_run: bool,
-    /// Treat each pattern as a literal filename rather than a glob
-    /// expression. Escapes glob metachars (`*`, `?`, `[`, `]`) before
-    /// writing them to `.gitattributes`.
+    /// `--filename`: escape glob characters so each pattern matches only
+    /// the file of that name.
     pub literal_filename: bool,
 }
 
@@ -96,10 +91,10 @@ impl Default for TrackOptions {
     }
 }
 
-/// In-memory view of `.gitattributes`. Preserves the original line order
-/// and any non-LFS content (so `* text=auto`, comments, etc. survive a
-/// track operation untouched). Tracks whether the file used CRLF on
-/// disk, so writes can preserve that style by default.
+/// The lines of a `.gitattributes` file.
+///
+/// Lines that aren't changed are written back as they were, apart from
+/// line endings.
 pub struct Attributes {
     lines: Vec<String>,
     had_crlf: bool,
@@ -157,8 +152,7 @@ impl Attributes {
         }
     }
 
-    /// Track `pattern` (already escaped). Returns whether the line was
-    /// added, replaced (lockable state changed), or unchanged.
+    /// Add or update the line for `pattern`, which is already escaped.
     pub fn track(&mut self, pattern: &str, lockable: LockableMode) -> TrackResult {
         let existing = self.find_lfs_line(pattern);
         match (existing, lockable) {
@@ -179,15 +173,10 @@ impl Attributes {
         }
     }
 
-    /// Remove every LFS-tracked line for `pattern`. Returns `true` if at
-    /// least one line was removed. Non-LFS lines are preserved even if
-    /// their first token matches `pattern`.
+    /// Remove every line for `pattern` that sets `filter=lfs`.
     ///
-    /// Both `pattern` and each line's first token are reduced to a
-    /// canonical form before comparison: leading `./` stripped (legacy
-    /// vs modern `.gitattributes` style), `[[:space:]]` → space,
-    /// `\#` → `#`, and `\\` → `\` (so a user-supplied pathname with
-    /// literal spaces matches an escaped pattern in the file).
+    /// Returns whether any line was removed. Both sides are compared with
+    /// [`canonical_attr_pattern`], so `a b` matches `./a[[:space:]]b`.
     pub fn untrack(&mut self, pattern: &str) -> bool {
         let want = canonical_attr_pattern(pattern);
         let before = self.lines.len();
@@ -221,9 +210,10 @@ impl Attributes {
     }
 }
 
-/// Pick the line-ending policy for writing `.gitattributes`. Honors
-/// `core.autocrlf` first, then existing-file detection, then defaults to
-/// LF. With `core.autocrlf=input`, only Windows hosts use CRLF.
+/// Pick the line ending for writing `.gitattributes`.
+///
+/// CRLF if `core.autocrlf` is `true`, or `input` on Windows, or if the file
+/// already has a CRLF. LF otherwise.
 pub fn detect_eol(cwd: &Path, attrs: &Attributes) -> Eol {
     let autocrlf = git_autocrlf(cwd);
     match autocrlf.as_deref() {
@@ -234,10 +224,9 @@ pub fn detect_eol(cwd: &Path, attrs: &Attributes) -> Eol {
     if attrs.had_crlf() { Eol::Crlf } else { Eol::Lf }
 }
 
-/// Return the trimmed body of a `.gitattributes` line, or `None` if the
-/// line is blank or a comment. Per `gitattributes(5)`, `#` only starts a
-/// comment when it's the line's first non-whitespace character — so a
-/// pattern like `\#` (an escaped literal `#`) is *not* a comment.
+/// The trimmed line, or `None` for a blank line or comment.
+///
+/// A comment starts with `#`, so an escaped `\#` pattern isn't one.
 fn uncommented(line: &str) -> Option<&str> {
     let trimmed = line.trim();
     if trimmed.is_empty() || trimmed.starts_with('#') {
@@ -260,9 +249,10 @@ fn git_autocrlf(cwd: &Path) -> Option<String> {
     if s.is_empty() { None } else { Some(s) }
 }
 
-/// Escape a user-supplied pattern for safe insertion into
-/// `.gitattributes`. Spaces become `[[:space:]]`; a leading `#` is
-/// backslash-escaped so it isn't read as a comment.
+/// Escape a pattern for `.gitattributes`.
+///
+/// Spaces become `[[:space:]]`, and a leading `#` is escaped so it isn't
+/// read as a comment.
 pub fn escape_attr_pattern(pattern: &str) -> String {
     let mut out = String::with_capacity(pattern.len());
     for (i, c) in pattern.chars().enumerate() {
@@ -275,46 +265,32 @@ pub fn escape_attr_pattern(pattern: &str) -> String {
     out
 }
 
-/// Reduce a pattern (either user-supplied or read out of
-/// `.gitattributes`) to a canonical form suitable for equality
-/// comparison: drop a leading `./`, then unescape the spaces / `#` /
-/// backslash sequences `.gitattributes` uses. Two patterns canonicalize
-/// to the same string iff git would treat them as referring to the
-/// same path.
+/// A pattern without a leading `./` and with [`unescape_attr_pattern`]
+/// applied, for comparing a pattern argument with a file's.
 fn canonical_attr_pattern(pattern: &str) -> String {
     let trimmed = pattern.strip_prefix("./").unwrap_or(pattern);
     unescape_attr_pattern(trimmed)
 }
 
-/// Reverse the spaces / `#` / backslash escaping
-/// [`escape_attr_pattern`] applied. Glob backslash-escapes (`\*`, `\[`,
-/// etc.) are left in place — those are part of the literal pattern,
-/// not part of `.gitattributes` syntax. Used to render a tracked
-/// pattern for the user (`Tracking "<pattern>"`).
+/// Undo the escaping of spaces, `#`, and backslashes.
+///
+/// Turns `[[:space:]]` into a space, `\#` into `#`, and `\\` into `\`.
+/// Escaped glob characters such as `\*` are kept.
 pub fn unescape_attr_pattern(escaped: &str) -> String {
-    // Order matters: revert `[[:space:]]` and `\#` first, then the
-    // backslash-doubling. Doing `\\` → `\` first would consume an
-    // escape we still need (e.g. `\\#` → `\#` then `\#` → `#`).
+    // Undo the doubled backslashes last, or `\\#` would become `#`.
     let mut s = escaped.replace("[[:space:]]", " ");
     s = s.replace("\\#", "#");
     s = s.replace("\\\\", "\\");
     s
 }
 
-/// Escape a literal filename for use as a `.gitattributes` pattern —
-/// every glob metacharacter (`*`, `?`, `[`, `]`) gets backslash-quoted
-/// so it matches itself rather than acting as a glob, plus the space /
-/// `#` / backslash handling [`escape_attr_pattern`] does. Used for
-/// `git lfs track --filename`.
+/// Escape a file name for `.gitattributes`, for `track --filename`.
 ///
-/// Backslash handling: a literal `\` in the input is doubled to `\\`
-/// so `gix-glob` (which matches the way git itself does) interprets
-/// it as a single-backslash literal. On Windows, upstream maps `\` to
-/// `/` instead — we don't yet, but the test suite (`t-track 27/28`)
-/// runs on Unix only.
+/// Backslashes are doubled, then `*`, `?`, `[`, and `]` are escaped, and
+/// spaces and a leading `#` are escaped as in [`escape_attr_pattern`]. On
+/// Windows, upstream turns backslashes into slashes instead. This doesn't.
 pub fn escape_glob_characters(pattern: &str) -> String {
-    // Two-stage escape: first the backslash, otherwise we'd re-escape
-    // the backslashes we just inserted in front of `*` etc.
+    // Double backslashes first, so the escapes added below stay single.
     let mut step1 = String::with_capacity(pattern.len());
     for c in pattern.chars() {
         if c == '\\' {
@@ -338,18 +314,14 @@ pub fn escape_glob_characters(pattern: &str) -> String {
     out
 }
 
-/// If `pattern` would match a tracked file whose basename starts with
-/// `.git` or `.lfs`, return the offending filename. Otherwise `None`.
+/// The name of a file in the index that `pattern` matches and that starts
+/// with `.git` or `.lfs`, if there is one.
 ///
-/// Mirrors upstream's `git ls-files --ignored --cached -z -x <pattern>`
-/// plus basename-prefix check (`commands/command_track.go::blocklistItem`).
-/// The git-driven approach avoids the false positive of `**/*` matching
-/// `.gitattributes` textually before anything is committed: a brand-new
-/// repo has no tracked files for the pattern to conflict with, so the
-/// pattern is allowed.
+/// Like upstream's `blocklistItem`, this checks files Git lists for the
+/// pattern, not the pattern's text, so `*` is fine until such a file is
+/// added.
 pub fn forbidden_match(cwd: &Path, pattern: &str) -> Option<String> {
-    // Upstream `sanitizePattern`: drop a leading `/` (pathspec anchor)
-    // so `git ls-files` treats `pattern` as a glob and not a literal.
+    // `git ls-files -x` doesn't handle a leading `/`.
     let safe = pattern.strip_prefix('/').unwrap_or(pattern);
     let out = Command::new("git")
         .arg("-C")
@@ -373,10 +345,10 @@ pub fn forbidden_match(cwd: &Path, pattern: &str) -> Option<String> {
     None
 }
 
-/// Add each `pattern` to `.gitattributes` as LFS-tracked, idempotently.
-/// Honors CRLF detection and `--dry-run`. The caller is expected to have
-/// already vetted patterns against [`forbidden_match`] and printed any
-/// blocklist diagnostics.
+/// Add a line for each pattern to `cwd/.gitattributes`.
+///
+/// The file is only written if a line changed and this isn't a dry run.
+/// Patterns aren't checked with [`forbidden_match`] here.
 pub fn track(
     cwd: &Path,
     patterns: &[String],
@@ -394,13 +366,9 @@ pub fn track(
         };
         let result = attrs.track(&normalized, opts.lockable);
         out.push(TrackedPattern {
-            // Keep the post-escape form here: the dispatcher uses it
-            // both for the user-facing `Tracking "..."` echo (matches
-            // upstream's `unescapeAttrPattern` output for normal-mode
-            // patterns; for `--filename` mode the glob-escapes show
-            // through, which is what upstream prints too) and as a
-            // pathspec for `git ls-files`, which understands the
-            // backslash-escapes the same way.
+            // The escaped form. The caller unescapes it for display,
+            // which keeps escaped glob characters as upstream does, and
+            // passes it to `git ls-files` as is.
             pattern: normalized.clone(),
             result,
         });
@@ -420,18 +388,14 @@ pub struct UntrackOutcome {
     pub missing: Vec<String>,
 }
 
-/// Remove each `pattern` from `.gitattributes`. Idempotent.
+/// Remove the lines for each pattern from `cwd/.gitattributes`.
 pub fn untrack(cwd: &Path, patterns: &[String]) -> Result<UntrackOutcome, TrackError> {
     let mut attrs = Attributes::read(cwd)?;
     let eol = detect_eol(cwd, &attrs);
     let mut removed = Vec::new();
     let mut missing = Vec::new();
     for pattern in patterns {
-        // `Attributes::untrack` canonicalizes both sides, so we hand it
-        // the user's raw input rather than running it through
-        // `normalize_pattern` (which would re-escape spaces / `#` and
-        // mismatch a literal pathname against a `\#` /`[[:space:]]`
-        // entry in the file).
+        // Not escaped: `Attributes::untrack` unescapes both sides.
         if attrs.untrack(pattern) {
             removed.push(pattern.clone());
         } else {
@@ -600,9 +564,8 @@ mod tests {
 
     #[test]
     fn escape_glob_characters_handles_backslash_then_metachars() {
-        // Backslash gets doubled first; then the literal `[` etc. are
-        // backslash-quoted. So `*[foo] \n bar?.txt` expands to:
-        //   `\*\[foo\][[:space:]]\\n[[:space:]]bar\?.txt`
+        // Backslashes are doubled before the glob characters are
+        // escaped.
         assert_eq!(
             escape_glob_characters("*[foo] \\n bar?.txt"),
             "\\*\\[foo\\][[:space:]]\\\\n[[:space:]]bar\\?.txt"
@@ -614,18 +577,13 @@ mod tests {
         assert_eq!(unescape_attr_pattern("foo[[:space:]]bar"), "foo bar");
         assert_eq!(unescape_attr_pattern("\\#foo"), "#foo");
         assert_eq!(unescape_attr_pattern("a\\\\b"), "a\\b");
-        // Glob backslash-escapes (`\[`, `\*`, …) survive — those
-        // belong to the literal pattern, not to .gitattributes
-        // syntax.
+        // Escaped glob characters are kept.
         assert_eq!(unescape_attr_pattern("\\[foo\\]"), "\\[foo\\]");
     }
 
     #[test]
     fn write_preserves_existing_crlf_terminators() {
         let tmp = TempDir::new().unwrap();
-        // Existing file with CRLF lines, no trailing newline at all on
-        // the last line — mirrors the upstream "track without trailing
-        // linebreak" + "track with existing crlf" fixtures.
         write_bytes(tmp.path(), b"*.mov filter=lfs -text\r\n");
         let attrs = Attributes::read(tmp.path()).unwrap();
         assert!(attrs.had_crlf());
@@ -710,8 +668,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         write(tmp.path(), "*.gif -filter -text\n");
         let outcome = untrack(tmp.path(), &["*.gif".into()]).unwrap();
-        // -filter line isn't an LFS-tracked line, so untrack shouldn't
-        // remove it; the pattern is reported as missing.
+        // A `-filter` line doesn't track the pattern.
         assert!(outcome.removed.is_empty());
         assert_eq!(outcome.missing, vec!["*.gif"]);
         let content = fs::read_to_string(tmp.path().join(ATTRIBUTES_FILE)).unwrap();

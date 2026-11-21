@@ -1,18 +1,15 @@
-//! `git lfs migrate export` — rewrite history so LFS pointers become
-//! the raw bytes they reference. Inverse of `import`.
+//! `git lfs migrate export`: replace LFS pointers in history with their
+//! objects.
 //!
-//! Pipeline is identical: `git fast-export --full-tree | transform |
-//! git fast-import --force`. Only the [`super::transform::Mode`]
-//! changes — `Mode::Export` parses each blob as a pointer, looks up
-//! its content from the local LFS store, and replaces the blob bytes
-//! with that content. `.gitattributes` is updated to *un*track the
-//! affected patterns.
+//! The inverse of import, through the same [`pipeline`](super::pipeline).
+//! `--include` is required, as upstream. Each commit's `.gitattributes`
+//! gets lines turning LFS off for the included patterns. Objects must be
+//! in the local store: pointers whose object is missing stay as they
+//! are. Afterwards, other local branches and tags that pointed at a
+//! rewritten commit are moved, local objects no longer referenced are
+//! deleted, and HEAD is force-checked out.
 //!
-//! For v0 we require `--include` (matching upstream) — there's no
-//! useful "export everything" mode since every export needs an
-//! explicit set of paths to convert back. Objects must already be in
-//! the local LFS store; missing objects pass through unchanged so the
-//! user can `git lfs fetch` and re-run.
+//! Unlike import, this doesn't skip commits already on a remote.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -35,8 +32,7 @@ pub struct ExportOptions {
     pub exclude: Vec<String>,
     pub include_ref: Vec<String>,
     pub exclude_ref: Vec<String>,
-    /// Accepted from the CLI as a no-op — we never auto-fetch today.
-    /// Kept threaded so wiring up a fetch step is a one-line addition.
+    /// Ignored: remote-tracking refs are never fetched before the walk.
     #[allow(dead_code)]
     pub skip_fetch: bool,
     pub object_map: Option<PathBuf>,
@@ -45,9 +41,8 @@ pub struct ExportOptions {
 }
 
 pub fn export(cwd: &Path, opts: &ExportOptions) -> Result<Stats, MigrateError> {
-    // Validate args before consulting the working tree — `migrate export
-    // --yes` (no filter) must surface its missing-include error even on
-    // a dirty tree (t-migrate-export::no-filter relies on this).
+    // Before the dirty check: t-migrate-export expects this error even
+    // on a dirty tree.
     if opts.include.is_empty() {
         return Err(MigrateError::Other(
             "One or more files must be specified with --include".into(),
@@ -61,10 +56,8 @@ pub fn export(cwd: &Path, opts: &ExportOptions) -> Result<Stats, MigrateError> {
         )));
     }
 
-    // Reject `.gitattributes` symlinks before the dirty check — git
-    // status reports a symlink target's content mismatch as "modified",
-    // and we want the user-friendly error in front. Probes HEAD only,
-    // which is enough for the upstream fixture.
+    // Before the dirty check, since Git reports a symlinked
+    // `.gitattributes` as modified. Only HEAD is checked.
     if any_attrs_symlink(cwd, &["HEAD".to_owned()]) {
         return Err(MigrateError::Other(
             "expected '.gitattributes' to be a file, got a symbolic link".into(),
@@ -82,10 +75,6 @@ pub fn export(cwd: &Path, opts: &ExportOptions) -> Result<Stats, MigrateError> {
         everything: opts.everything,
     };
     let (mut include_refs, mut exclude_refs) = resolve_refs(cwd, &sel)?;
-    // --include-ref / --exclude-ref add to the rev-list selection on top of
-    // the positional/branch resolution. Used by both `info` (read-only) and
-    // export (rewriting); semantically identical to upstream's
-    // `--include-ref` flag.
     for r in &opts.include_ref {
         if !include_refs.iter().any(|x| x == r) {
             include_refs.push(r.clone());
@@ -112,10 +101,8 @@ pub fn export(cwd: &Path, opts: &ExportOptions) -> Result<Stats, MigrateError> {
     let (attrs_add_initial, attrs_remove_initial) =
         build_export_attrs(&opts.include, &opts.exclude);
 
-    // We always need the export-marks file: the post-rewrite ref-update
-    // pass (`update_local_refs`) consults it to bring sibling refs along
-    // when their tip's commit was inside the rewrite range. The
-    // `--object-map` user option is just one downstream consumer.
+    // The marks are needed to move other refs, not just for
+    // `--object-map`.
     let marks_tmp = tempfile::NamedTempFile::new().map_err(MigrateError::Io)?;
     let marks_path: Option<&Path> = Some(marks_tmp.path());
 
@@ -126,10 +113,6 @@ pub fn export(cwd: &Path, opts: &ExportOptions) -> Result<Stats, MigrateError> {
         super::transform::Options {
             include,
             exclude,
-            // --above doesn't apply to export — pointer files are
-            // tiny by definition; the size that matters is the
-            // pointer's *recorded* size (the LFS object size), and
-            // export converts based on path, not size.
             above: 0,
             attrs_add_initial,
             attrs_remove_initial,
@@ -144,11 +127,8 @@ pub fn export(cwd: &Path, opts: &ExportOptions) -> Result<Stats, MigrateError> {
 
     let oid_map = read_oid_map(marks_tmp.path(), &stats.commit_marks).unwrap_or_default();
 
-    // fast-export only emits a `commit <ref>` directive for the refs
-    // we explicitly named. Sibling refs that pointed at commits in the
-    // walk (e.g. `main` when we rewrote `my-feature`) keep their old
-    // tip until we update them by hand. Mirror upstream's
-    // post-rewrite update-ref pass.
+    // fast-import only updates the refs that were walked. Move the
+    // others that pointed at a rewritten commit, as upstream does.
     if !oid_map.is_empty() {
         update_local_refs(cwd, &oid_map)?;
     }
@@ -157,10 +137,8 @@ pub fn export(cwd: &Path, opts: &ExportOptions) -> Result<Stats, MigrateError> {
         write_object_map_from(out_path, &oid_map, &stats.commit_marks).map_err(MigrateError::Io)?;
     }
 
-    // Drop LFS objects that aren't reachable from any local head/tag.
-    // After a rewrite, objects whose pointers used to be on `main` (or
-    // wherever) but aren't there anymore become unreferenced — t-migrate
-    // -export's tests assert `refute_local_object` for exactly these.
+    // Upstream prunes here too, and t-migrate-export checks that the
+    // exported objects are gone.
     prune_unreferenced(cwd, &store)?;
 
     refresh_working_tree(cwd)?;
@@ -174,11 +152,10 @@ pub fn export(cwd: &Path, opts: &ExportOptions) -> Result<Stats, MigrateError> {
     Ok(stats)
 }
 
-/// Sweep `<git-dir>/lfs/objects/` for OIDs no longer referenced by any
-/// local-only commit. "Local-only" = reachable from a local head or
-/// tag but NOT from any remote-tracking ref — anything visible only on
-/// `refs/remotes/*` can be re-fetched, and t-migrate-export expects
-/// exactly those pruned.
+/// Delete local objects that no unpushed commit references.
+///
+/// Keeps the objects of pointers reachable from a local ref but not
+/// from a remote-tracking one. Errors deleting a file are ignored.
 fn prune_unreferenced(cwd: &Path, store: &Store) -> Result<(), MigrateError> {
     let local = store.each_object().map_err(MigrateError::Io)?;
     if local.is_empty() {
@@ -202,9 +179,7 @@ fn prune_unreferenced(cwd: &Path, store: &Store) -> Result<(), MigrateError> {
     Ok(())
 }
 
-/// All `refs/remotes/*` refs, used to subtract remote-known commits
-/// from the retain set during prune. Returns an empty Vec if `git`
-/// can't be reached.
+/// Every ref under `refs/remotes/`, or none if `git` fails.
 pub(super) fn list_remote_tracking_refs(cwd: &Path) -> Vec<String> {
     let out = std::process::Command::new("git")
         .arg("-C")
@@ -222,7 +197,7 @@ pub(super) fn list_remote_tracking_refs(cwd: &Path) -> Vec<String> {
         .collect()
 }
 
-/// True iff `remote` is one of the configured git remotes.
+/// Whether `remote` is a configured remote.
 pub(super) fn remote_exists(cwd: &Path, remote: &str) -> bool {
     let out = std::process::Command::new("git")
         .arg("-C")
@@ -232,13 +207,11 @@ pub(super) fn remote_exists(cwd: &Path, remote: &str) -> bool {
     matches!(out, Ok(o) if o.status.success())
 }
 
-/// True iff any commit reachable from `refs` has `.gitattributes`
-/// committed as a symbolic link (mode 120000). We `git ls-tree` each
-/// ref's tip; the upstream test fixture only commits the symlink at
-/// HEAD, so this catches the common case without walking full
-/// history. Failures are conservative — if `git` isn't reachable for
-/// some reason, we say "no symlink" and let the rest of the pipeline
-/// surface a real error.
+/// Whether the top-level `.gitattributes` is a symlink at the tip of
+/// any of `refs`.
+///
+/// Earlier commits aren't checked. A ref that `git ls-tree` fails on
+/// counts as no symlink.
 pub(super) fn any_attrs_symlink(cwd: &Path, refs: &[String]) -> bool {
     for r in refs {
         let out = std::process::Command::new("git")
@@ -258,14 +231,13 @@ pub(super) fn any_attrs_symlink(cwd: &Path, refs: &[String]) -> bool {
     false
 }
 
-/// Build the `.gitattributes` add/remove pairs for export from the
-/// CLI patterns:
+/// The `.gitattributes` lines to add and to remove for export.
 ///
-/// - For each `--include` pattern, add `<pat> !text !filter !merge !diff`
-///   (un-track LFS) and stage a remove of the matching
-///   `<pat> filter=lfs ...` line if the existing attrs file has one.
-/// - For each `--exclude` pattern, add `<pat> filter=lfs diff=lfs merge=lfs`
-///   so a permissive include (`*`) doesn't strip its tracking.
+/// Each `--include` pattern adds `<pat> !text !filter !merge !diff` and
+/// removes `<pat> filter=lfs diff=lfs merge=lfs -text`. Each `--exclude`
+/// pattern adds `<pat> filter=lfs diff=lfs merge=lfs`, so a broad
+/// include doesn't untrack it. Unlike upstream, patterns aren't escaped
+/// and the exclude line has no `-text`.
 fn build_export_attrs(include: &[String], exclude: &[String]) -> (Vec<String>, Vec<String>) {
     let mut adds: Vec<String> = Vec::new();
     let mut removes: Vec<String> = Vec::new();
@@ -279,9 +251,10 @@ fn build_export_attrs(include: &[String], exclude: &[String]) -> (Vec<String>, V
     (adds, removes)
 }
 
-/// Build the original_oid → new_oid map for every commit fast-import
-/// recorded a mark for. Reads fast-import's `--export-marks` file
-/// (`:mark sha`) and pairs each mark with its captured `original_oid`.
+/// Map each rewritten commit's old SHA to its new one.
+///
+/// Pairs the `:<mark> <sha>` lines of fast-import's marks file with
+/// `commit_marks`.
 pub(super) fn read_oid_map(
     marks_path: &Path,
     commit_marks: &[(u32, String)],
@@ -309,9 +282,8 @@ pub(super) fn read_oid_map(
     Ok(map)
 }
 
-/// Write `old,new\n` per rewritten commit to `out_path`. Pairs are
-/// emitted in the order fast-export produced them so the output is
-/// stable.
+/// Write the `--object-map` file: an `old,new` line per rewritten
+/// commit, in stream order.
 pub(super) fn write_object_map_from(
     out_path: &Path,
     oid_map: &HashMap<String, String>,
@@ -326,10 +298,10 @@ pub(super) fn write_object_map_from(
     Ok(())
 }
 
-/// For every local head/tag whose tip is in `oid_map`, update the ref
-/// to the corresponding rewritten commit. Tests like `migrate export
-/// (given branch)` rely on this to bring `main` along when we rewrote
-/// `my-feature` (both refs share the rewrite range).
+/// Move each branch and lightweight tag whose tip was rewritten to the
+/// new commit.
+///
+/// Errors from `git update-ref` are ignored.
 pub(super) fn update_local_refs(
     cwd: &Path,
     oid_map: &HashMap<String, String>,

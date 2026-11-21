@@ -1,18 +1,15 @@
-//! Build a `reqwest::Client` honoring git's `http.*` TLS settings.
+//! Builds the `reqwest::Client` shared by the API client and transfers.
 //!
-//! Wired into both the API client (`api/`) and the transfer queue
-//! (`transfer/`) so smudge / clean / push all see the same CA bundle and
-//! verify-mode for the endpoint URL. Falls back to `reqwest::Client::new()`
-//! on any read error so a misconfigured `http.sslcainfo` can't take down
-//! commands that don't talk to the network at all.
+//! The client gets the `http.*` settings for the endpoint URL:
+//! `sslVerify`, `sslCAInfo`, `sslCert`, `sslKey`, `extraHeader`, and
+//! `cookieFile`. It uses them for every request, including action URLs on
+//! other hosts. Upstream looks the settings up for each request's URL.
 //!
-//! When `http.sslcainfo` is set we install a custom rustls
-//! [`ServerCertVerifier`] that trusts certs in the configured bundle by
-//! exact-bytes match. This sidesteps webpki's strict end-entity
-//! validation: the upstream test fixtures (and many real corp setups)
-//! ship a self-signed cert with `CA:TRUE`, which webpki rejects when it
-//! shows up as the server's leaf. Pinning by bytes — what
-//! `http.sslcainfo` is morally about — is exactly the right semantic.
+//! With `http.sslCAInfo`, a server certificate is accepted only if it's
+//! byte for byte one of the certificates in the file. That accepts the
+//! self-signed `CA:TRUE` certificate the upstream test server uses, which
+//! webpki rejects as a server certificate, but it also rejects a server
+//! certificate signed by a CA in the file.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -24,13 +21,12 @@ use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, Server
 use rustls::{DigitallySignedStruct, SignatureScheme};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 
-/// Construct a `reqwest::Client` for `endpoint_url`. URL-specific
-/// `http.<url>.<key>` overrides win over global `http.<key>`.
+/// Build a client with the `http.*` settings for `endpoint_url`.
 ///
-/// `http.<url>.extraHeader` values (multi-value, longest-prefix
-/// match) are merged with global `http.extraHeader` and installed as
-/// the client's default headers — so they ride along on every
-/// request, including transfer-adapter PUT/GET against action URLs.
+/// `http.<url>.<key>` wins over `http.<key>`, except for `extraHeader`,
+/// where all matching values are sent. Settings that can't be read, and
+/// files that can't be loaded, are skipped, so a bad setting doesn't break
+/// commands that never use the network.
 pub fn build(cwd: &Path, endpoint_url: &str) -> reqwest::Client {
     let opts = HttpOptions::for_url(cwd, endpoint_url).unwrap_or_default();
     let mut builder = reqwest::ClientBuilder::new();
@@ -48,10 +44,7 @@ pub fn build(cwd: &Path, endpoint_url: &str) -> reqwest::Client {
     if !extras.is_empty() {
         let mut headers = HeaderMap::new();
         for (name, value) in extras {
-            // `append` (not `insert`) keeps multi-value headers like
-            // two `X-Foo: ...` entries — git config allows accumulating
-            // values per key, and some servers (or proxies) genuinely
-            // care about both.
+            // `append` keeps every value of a header set more than once.
             if let (Ok(n), Ok(v)) = (
                 HeaderName::try_from(name.as_str()),
                 HeaderValue::try_from(value.as_str()),
@@ -73,18 +66,18 @@ pub fn build(cwd: &Path, endpoint_url: &str) -> reqwest::Client {
     builder.build().unwrap_or_else(|_| reqwest::Client::new())
 }
 
-/// Parse a Netscape-format cookie file (the format `curl -b/-c` and
-/// most browsers use) and return a populated [`Jar`]. Each line is
-/// tab-separated:
+/// Load a Netscape-format cookie file, as written by curl.
+///
+/// Each line has seven tab-separated fields:
 ///
 /// ```text
 /// <domain>  <include_subdomains>  <path>  <secure>  <expires>  <name>  <value>
 /// ```
 ///
-/// Lines starting with `#` are comments unless they're the special
-/// `#HttpOnly_<domain>` prefix marking an HttpOnly cookie. Malformed
-/// lines are silently skipped — the file came from `git config`, and
-/// a single bad line shouldn't block the whole transfer.
+/// Lines starting with `#` are comments, except for the `#HttpOnly_`
+/// prefix on a domain. Malformed lines are skipped. The subdomain and
+/// expiry fields are ignored. Returns `None` if the file can't be read or
+/// has no cookies.
 fn load_netscape_cookies(path: &str) -> Option<Jar> {
     let bytes = std::fs::read(path).ok()?;
     let text = String::from_utf8_lossy(&bytes);
@@ -92,10 +85,8 @@ fn load_netscape_cookies(path: &str) -> Option<Jar> {
     let mut added = 0usize;
     for raw in text.lines() {
         let line = raw.trim_end_matches('\r');
-        // Honor the `#HttpOnly_` marker: strip it so the domain
-        // parses, but otherwise treat the cookie like any other (the
-        // HttpOnly attribute only matters to JS, not to our outgoing
-        // requests).
+        // HttpOnly only matters to browsers, so the cookie is used like any
+        // other.
         let line = line.strip_prefix("#HttpOnly_").unwrap_or(line);
         if line.is_empty() || line.starts_with('#') {
             continue;
@@ -112,9 +103,8 @@ fn load_netscape_cookies(path: &str) -> Option<Jar> {
         if name.is_empty() || domain.is_empty() {
             continue;
         }
-        // Reconstruct a Set-Cookie header and a base URL for reqwest's
-        // jar. The scheme matters for the secure flag but reqwest's
-        // jar honors `Domain=` for cross-host sending either way.
+        // The jar takes a Set-Cookie header and the URL it came from.
+        // `Domain=` is always set, so subdomains always get the cookie.
         let scheme = if secure { "https" } else { "http" };
         let base = format!("{scheme}://{domain}{path}");
         let Ok(url) = url::Url::parse(&base) else {
@@ -128,10 +118,12 @@ fn load_netscape_cookies(path: &str) -> Option<Jar> {
     if added == 0 { None } else { Some(jar) }
 }
 
-/// Read `path` as one or more PEM-encoded certs and build a rustls
-/// `ClientConfig` that trusts only those certs (by exact byte match).
-/// If `cert_path`+`key_path` are also set, attaches a client identity
-/// for mTLS (matches `http.sslCert` / `http.sslKey`).
+/// Build a rustls config that trusts exactly the PEM certificates in
+/// `path`.
+///
+/// With `cert_path` and `key_path` (`http.sslCert` and `http.sslKey`), it
+/// also sends a client certificate. Those two settings have no effect
+/// without `http.sslCAInfo`. Returns `None` if `path` has no certificates.
 fn pinned_cert_config(
     path: &str,
     cert_path: Option<&str>,
@@ -163,7 +155,7 @@ fn pinned_cert_config(
     Some(config)
 }
 
-/// Load a client cert chain + private key from two PEM files for mTLS.
+/// Load a client certificate chain and private key from two PEM files.
 fn load_client_identity(
     cert_path: &str,
     key_path: &str,
@@ -184,11 +176,11 @@ fn load_client_identity(
     Some((certs, key))
 }
 
-/// Trusts a server cert iff the leaf's DER bytes match one of the
-/// pinned certs from `http.sslcainfo`. Skips name + chain + signature
-/// validation: the user already promised the bundle is trusted, and
-/// the cert in the bundle may itself be a CA-flagged leaf which webpki
-/// won't accept via the normal path.
+/// Accepts a server certificate only if its bytes match a pinned one.
+///
+/// The host name, chain, and expiry aren't checked. The handshake
+/// signature isn't checked either, so the server never proves it holds the
+/// certificate's private key.
 #[derive(Debug)]
 struct PinnedCertVerifier {
     pinned: Vec<CertificateDer<'static>>,

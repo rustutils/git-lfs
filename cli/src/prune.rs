@@ -1,35 +1,28 @@
-//! `git lfs prune` — delete local LFS objects that aren't reachable
-//! from any retention source. Reclaims disk for LFS-heavy repos whose
-//! history has moved on past the objects.
+//! `git lfs prune`: delete local LFS objects that nothing retains.
 //!
-//! Retention sources, in priority order (matches upstream's
-//! `pruneTaskGetRetainedCurrentAndRecentRefs`):
+//! An object is kept if any of these reference it:
 //!
-//! 1. HEAD's tree.
-//! 2. Recent refs whose tip lies within
-//!    `lfs.fetchrecentrefsdays + lfs.pruneoffsetdays` of now (mirrors
-//!    upstream — recent-tracked branches keep their tip-state pointers
-//!    around in case the user checks them out).
-//! 3. Per-anchor (HEAD + recent refs) pre-images modified within
-//!    `lfs.fetchrecentcommitsdays + lfs.pruneoffsetdays` of *that
-//!    anchor's tip date* (so a ref whose tip is itself old still keeps
-//!    a recent-history slice).
-//! 4. Unpushed history (`HEAD ^refs/remotes/<remote>/*`) — never delete
-//!    LFS objects only the local working copy knows about.
+//! 1. The HEAD tree of this worktree and of every linked worktree.
+//! 2. The tree of each ref whose tip is within `lfs.fetchrecentrefsdays`
+//!    plus `lfs.pruneoffsetdays` of now.
+//! 3. Earlier versions of files changed on HEAD or one of those refs
+//!    within `lfs.fetchrecentcommitsdays` plus `lfs.pruneoffsetdays` of
+//!    that ref's tip commit.
+//! 4. The index of every worktree that has a commit checked out and
+//!    still exists.
+//! 5. The stash.
+//! 6. Commits on local branches and tags that aren't on any
+//!    `refs/remotes/<remote>/` ref, where the remote is
+//!    `lfs.pruneremotetocheck`.
 //!
-//! `--force` skips (2-4) — only HEAD's tree is retained. `--recent`
-//! skips (2) and (3) but keeps unpushed retention. `lfs.fetchexclude` /
-//! `lfs.fetchinclude` filter every retain producer's pointer paths
-//! (matches upstream's `gitscanner.Filter` argument).
+//! `--recent` drops 2 and 3. `--force` also drops 1. Sources 1 to 4 skip
+//! pointers whose paths are all filtered out by `lfs.fetchinclude` and
+//! `lfs.fetchexclude`. Upstream applies only `lfs.fetchexclude` here.
 //!
-//! `--verify-remote` (alias `-c`) sends prunable OIDs through a
-//! download-direction batch and refuses to delete anything the server
-//! can't serve back — protects against accidentally pruning the only
-//! remaining copy of a not-yet-replicated object. With
-//! `--verify-unreachable`, orphan objects (in the local store but not
-//! reachable from any commit) get the same check; without it, orphans
-//! pass through silently. `--when-unverified=continue` drops
-//! unverified objects from the delete set instead of halting.
+//! `--verify-remote` asks the server, with a download batch, which
+//! prunable objects it still has. An object it doesn't have stops the
+//! prune, or with `--when-unverified=continue` is kept. Objects that no
+//! commit references are only checked with `--verify-unreachable`.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -57,15 +50,15 @@ pub enum PruneError {
     Fetch(#[from] crate::fetch::FetchCommandError),
     #[error(transparent)]
     Io(#[from] std::io::Error),
-    /// Verify-remote turned up unverified OIDs that the user didn't
-    /// authorize to be silently dropped — refuse the delete.
-    /// Wording is generic; the OID list is printed before the error
-    /// surfaces so the user knows what's at stake.
+    /// The server is missing objects and `--when-unverified=continue`
+    /// wasn't given.
+    ///
+    /// The OIDs are printed before this error is returned.
     #[error(
         "prune halted: objects missing on remote (re-run with --when-unverified=continue to drop them from the delete set)"
     )]
     UnverifiedHalt,
-    /// Wraps fetcher errors that hit the verify pass.
+    /// The verify batch request failed.
     #[error("prune verify failed: {0}")]
     Verify(String),
 }
@@ -74,26 +67,23 @@ pub enum PruneError {
 pub struct Options {
     pub dry_run: bool,
     pub verbose: bool,
-    /// Skip the recent-refs / recent-commits retention windows
-    /// (`--recent` flag). Unpushed retention still applies.
+    /// `--recent`: don't keep objects for recent refs and commits.
     pub recent: bool,
-    /// Treat every pushed object as prunable regardless of recent /
-    /// unpushed retention (`--force` flag). HEAD-tree retention still
-    /// applies.
+    /// `--force`: keep only unpushed, staged, and stashed objects.
+    ///
+    /// Unlike `--recent`, this also drops the objects in each worktree's
+    /// HEAD tree.
     pub force: bool,
-    /// `--verify-remote`: check each prunable OID against the remote
-    /// before deleting. Combined with `lfs.pruneverifyremotealways`
-    /// and `--no-verify-remote` to compute the effective decision.
+    /// `--verify-remote`, which `lfs.pruneverifyremotealways` also turns
+    /// on and `--no-verify-remote` overrides.
     pub verify_remote: bool,
     pub no_verify_remote: bool,
-    /// `--verify-unreachable`: also verify orphan objects (those not
-    /// reachable from any commit). Combined with
-    /// `lfs.pruneverifyunreachablealways` and `--no-verify-unreachable`.
+    /// `--verify-unreachable`, which `lfs.pruneverifyunreachablealways`
+    /// also turns on and `--no-verify-unreachable` overrides.
     pub verify_unreachable: bool,
     pub no_verify_unreachable: bool,
-    /// `--when-unverified=continue` (default `halt`). When `true`,
-    /// drop unverified objects from the delete set instead of
-    /// refusing the prune.
+    /// `--when-unverified=continue`: keep objects the server is missing
+    /// instead of stopping.
     pub continue_when_unverified: bool,
 }
 
@@ -107,7 +97,6 @@ pub fn run(cwd: &Path, opts: &Options) -> Result<(), PruneError> {
 
     let retained = build_retain_set(cwd, opts)?;
 
-    // Partition: what stays, what goes.
     let mut prunable: Vec<(Oid, u64)> = Vec::new();
     for (oid, size) in &local_objects {
         if !retained.contains(oid) {
@@ -123,23 +112,13 @@ pub fn run(cwd: &Path, opts: &Options) -> Result<(), PruneError> {
         return Ok(());
     }
 
-    // Resolve the effective verify flags. Args win over config; the
-    // explicit `--no-...` form is the override knob for users who
-    // turned the corresponding `lfs.pruneverify*always` config on
-    // globally and want to opt out for this invocation.
+    // The `--no-` flags override both the positive flags and config.
     let cfg = FetchPruneConfig::from_repo(cwd);
     let verify_remote =
         !opts.no_verify_remote && (opts.verify_remote || cfg.prune_verify_remote_always);
     let verify_unreachable = !opts.no_verify_unreachable
         && (opts.verify_unreachable || cfg.prune_verify_unreachable_always);
 
-    // Verify-remote pass: classify each prunable OID into "verified"
-    // (server can serve it back) or "not verified" (missing). With
-    // `verify_unreachable=false`, orphan OIDs (not reachable from any
-    // commit) are NOT considered failures even if the server doesn't
-    // have them — we don't care about pruning bytes nothing in history
-    // references. Without `verify_remote`, every prunable is treated as
-    // verified.
     let (mut delete_list, missing_on_remote, verify_count) = if verify_remote {
         verify_prunable(cwd, &prunable, verify_unreachable)?
     } else {
@@ -157,19 +136,13 @@ pub fn run(cwd: &Path, opts: &Options) -> Result<(), PruneError> {
     println!("{summary}");
 
     if !missing_on_remote.is_empty() {
-        // List the unverified objects so a halt or a continue both
-        // give the user the OIDs they need to re-push or delete
-        // by hand. Wording matches upstream's
-        // `These objects to be pruned are missing on remote:`.
         println!("These objects to be pruned are missing on remote:");
         for oid in &missing_on_remote {
             println!(" * {oid}");
         }
         if !opts.continue_when_unverified {
-            // Halt: refuse the delete entirely. No bytes removed.
             return Err(PruneError::UnverifiedHalt);
         }
-        // Continue: drop the missing ones from the delete set.
         let missing: HashSet<&Oid> = missing_on_remote.iter().collect();
         delete_list.retain(|(oid, _)| !missing.contains(oid));
     }
@@ -207,11 +180,8 @@ pub fn run(cwd: &Path, opts: &Options) -> Result<(), PruneError> {
         let path = store.object_path(*oid);
         match std::fs::remove_file(&path) {
             Ok(()) => deleted += 1,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                // Raced with a concurrent prune or fsck; treat as
-                // already-done.
-                deleted += 1;
-            }
+            // Another process deleted it first.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => deleted += 1,
             Err(e) => failed.push((*oid, e)),
         }
     }
@@ -223,20 +193,18 @@ pub fn run(cwd: &Path, opts: &Options) -> Result<(), PruneError> {
     Ok(())
 }
 
-/// `(delete_list, missing_on_remote, verify_count)` returned by
-/// [`verify_prunable`]. Named because the tuple is wide enough that
-/// clippy flags the bare `Result<...>` as a complex type.
+/// What [`verify_prunable`] returns: the objects to delete, the objects
+/// the server is missing, and how many the server has.
 type VerifyOutcome = (Vec<(Oid, u64)>, Vec<Oid>, usize);
 
-/// Run a download-direction batch over `prunable` and apply the
-/// decision matrix from upstream's `pruneGetVerifiedPrunableObjects`.
+/// Ask the server which of `prunable` it has, with a download batch.
 ///
-/// - `delete_list` — verified objects, plus orphan-and-unverified
-///   objects when `verify_unreachable=false` (nothing to protect).
-/// - `missing_on_remote` — reachable-but-unverified OIDs, or every
-///   unverified OID when `verify_unreachable=true`. Caller either
-///   halts or strips these from the delete list.
-/// - `verify_count` — OIDs the server confirmed it can serve back.
+/// Objects the server has go in the delete list. Objects it's missing go
+/// in the missing list if some commit references them or
+/// `verify_unreachable` is set, and in the delete list otherwise. Same
+/// rules as upstream's `pruneGetVerifiedPrunableObjects`, but the batch
+/// goes to the default remote, where upstream uses
+/// `lfs.pruneremotetocheck`.
 fn verify_prunable(
     cwd: &Path,
     prunable: &[(Oid, u64)],
@@ -260,11 +228,8 @@ fn verify_prunable(
         .collect();
     let verify_count = verified.len();
 
-    // Reachable scan only matters when `verify_unreachable=false`:
-    // an unverified-but-orphan OID is silently passed through (no
-    // value), so we need to know who's an orphan. With
-    // `verify_unreachable=true`, every unverified OID counts as
-    // missing regardless of reachability — the scan is wasted work.
+    // With `verify_unreachable`, every missing object counts, so there's
+    // no need to know which ones are reachable.
     let reachable: HashSet<Oid> = if verify_unreachable {
         HashSet::new()
     } else {
@@ -277,38 +242,29 @@ fn verify_prunable(
         if verified.contains(oid) {
             delete_list.push((*oid, *size));
         } else if verify_unreachable || reachable.contains(oid) {
-            // Reachable + missing OR orphan-with-verify-unreachable:
-            // we care about this one. Caller halts or strips.
             missing.push(*oid);
         } else {
-            // Orphan + missing on remote and we weren't asked to
-            // care about orphans: just prune.
             delete_list.push((*oid, *size));
         }
     }
     Ok((delete_list, missing, verify_count))
 }
 
-/// Every LFS pointer reachable from any ref. Mirrors upstream's
-/// `gitscanner.ScanAll` — used by `--verify-remote` (without
-/// `--verify-unreachable`) to distinguish "missing-on-remote object
-/// I care about" from "orphan in the local store".
+/// Every LFS object referenced from any ref, like upstream's
+/// `gitscanner.ScanAll`.
 fn scan_reachable_pointers(cwd: &Path) -> Result<HashSet<Oid>, PruneError> {
     let entries = scan_pointers_with_args(cwd, &[], &[], &["--all"])?;
     Ok(entries.into_iter().map(|e| e.oid).collect())
 }
 
-/// Build the union of retention sources. Pointers whose paths are all
-/// excluded by `lfs.fetchexclude` / `lfs.fetchinclude` are dropped from
-/// each source — matches upstream's `gitscanner.Filter`.
+/// Collect the objects to keep, from the sources listed in the module
+/// docs.
 fn build_retain_set(cwd: &Path, opts: &Options) -> Result<HashSet<Oid>, PruneError> {
     let cfg = FetchPruneConfig::from_repo(cwd);
     let include_set = fetch_filter_set(cwd, "lfs.fetchinclude")?;
     let exclude_set = fetch_filter_set(cwd, "lfs.fetchexclude")?;
 
-    // Closure: insert `entry` into `retained` if its path-set passes
-    // the user's exclude/include filter. Pointers without any path
-    // (orphan blobs) always pass.
+    // Pointers without a path always pass the filter.
     let mut retained: HashSet<Oid> = HashSet::new();
     let keep = |entry: git_lfs_git::scanner::PointerEntry, retained: &mut HashSet<Oid>| {
         if paths_pass_filter(&entry.paths, &include_set, &exclude_set) {
@@ -316,13 +272,9 @@ fn build_retain_set(cwd: &Path, opts: &Options) -> Result<HashSet<Oid>, PruneErr
         }
     };
 
-    // (a) HEAD's tree across every worktree (this one + linked).
-    // Each worktree may be on a different ref; retain the tip-state
-    // of all of them so a checkout in another worktree isn't broken
-    // by a prune in this one. Skipped under `--force` (the explicit
-    // "purge everything pushed regardless" mode). Dedup by SHA so
-    // a worktree pointing at the same commit as another one doesn't
-    // re-walk the tree.
+    // 1. The HEAD tree of each worktree, scanning each commit once. An
+    // unborn branch in any worktree is listed with an all-zero HEAD,
+    // which makes `scan_tree` fail.
     let head_present = head_exists(cwd);
     let wts = git_lfs_git::refs::worktrees(cwd);
     let head_sha = head_present.then(|| current_head_sha(cwd)).flatten();
@@ -349,9 +301,7 @@ fn build_retain_set(cwd: &Path, opts: &Options) -> Result<HashSet<Oid>, PruneErr
         }
     }
 
-    // (b) Recent refs + (c) per-anchor pre-images. Skipped under
-    // `--force` (purge everything reachable only via recent windows)
-    // or `--recent` (only HEAD-tree + unpushed retention).
+    // 2 and 3: recent refs, and earlier versions on HEAD and on them.
     let do_recent = !opts.force && !opts.recent;
     let mut anchors: Vec<String> = if head_present {
         vec!["HEAD".to_owned()]
@@ -363,8 +313,7 @@ fn build_retain_set(cwd: &Path, opts: &Options) -> Result<HashSet<Oid>, PruneErr
         let day = Duration::from_secs(86_400);
         let prune_ref_days = cfg.fetch_recent_refs_days + cfg.prune_offset_days;
         let since = SystemTime::now() - day * prune_ref_days as u32;
-        // No `only_remote` filter: prune retains across ALL recent
-        // remote refs the user has tracked, not just one fetch source.
+        // Unlike fetch, keep recent refs of every remote.
         let recent = git_lfs_git::refs::recent_branches(
             cwd,
             since,
@@ -396,14 +345,9 @@ fn build_retain_set(cwd: &Path, opts: &Options) -> Result<HashSet<Oid>, PruneErr
         }
     }
 
-    // (d') Index of every (non-prunable) worktree. Pointers staged
-    // but not yet committed — including in linked worktrees — won't
-    // appear in any tree-walk; the index is the only producer that
-    // surfaces them. Mirrors upstream's `pruneTaskGetRetainedIndex`
-    // per worktree. A worktree marked `prunable` (its directory was
-    // removed but `git worktree prune` hasn't run) gets its index
-    // walk skipped — the index file may already be inaccessible.
-    // Always runs (even under `--force`): tests 13 + 14 rely on this.
+    // 4. The index of each worktree, even with `--force`. Skip worktrees
+    // marked prunable, whose directory is gone. Without a HEAD commit
+    // the current worktree's index isn't scanned.
     if head_present {
         for entry in scan_index_pointers(cwd, "HEAD")? {
             keep(entry, &mut retained);
@@ -413,39 +357,27 @@ fn build_retain_set(cwd: &Path, opts: &Options) -> Result<HashSet<Oid>, PruneErr
         if wt.prunable {
             continue;
         }
-        // Skip the current worktree — already scanned above.
         if wt.dir == cwd {
             continue;
         }
         let Some(head) = wt.head.as_deref() else {
             continue;
         };
-        // best-effort — a worktree on an unborn branch has no HEAD
-        // ref to diff against.
+        // A worktree on an unborn branch has no commit to diff against.
         for entry in scan_index_pointers(&wt.dir, head).unwrap_or_default() {
             keep(entry, &mut retained);
         }
     }
 
-    // (d'') Stash. Stashed working-copy / index / untracked LFS
-    // pointers must survive prune so a future `git stash pop` can
-    // restore them. Mirrors upstream's `pruneTaskGetRetainedStashed`
-    // → `gitscanner_log.go::scanStashed`. Filter is *not* applied —
-    // upstream passes a nil filter through `parseScannerLogOutput`,
-    // matching the unpushed walk.
+    // 5. The stash, without the path filter, like upstream's
+    // `scanStashed`.
     for entry in scan_stashed(cwd)? {
         retained.insert(entry.oid);
     }
 
-    // (d) Unpushed history across every local branch + tag. Mirrors
-    // upstream's `git log --branches --tags --not --remotes=<remote>`
-    // (`lfs/gitscanner_log.go::scanUnpushed`). Always runs, even under
-    // `--force` — branches that exist only locally and tags pointing at
-    // deleted branches rely on this to not be deleted. The path filter
-    // is *not* applied here: upstream's `scanUnpushed` passes a nil
-    // filter to `parseScannerLogOutput`, so a pointer under an excluded
-    // path that's only reachable via an unpushed branch still gets
-    // retained (test 3 `prune keep unpushed` is the smoke test).
+    // 6. Unpushed commits, even with `--force` and without the path
+    // filter, like upstream's `scanUnpushed`. Skipped without a HEAD
+    // commit.
     if head_present {
         let excludes = remote_tracking_refs(cwd, &cfg.prune_remote_name).unwrap_or_default();
         let includes = local_branches_and_tags(cwd).unwrap_or_else(|_| vec!["HEAD".to_owned()]);
@@ -461,8 +393,7 @@ fn build_retain_set(cwd: &Path, opts: &Options) -> Result<HashSet<Oid>, PruneErr
     Ok(retained)
 }
 
-/// Every local branch and tag (`refs/heads/*` + `refs/tags/*`).
-/// Mirrors upstream's `git log --branches --tags` reachability seed.
+/// Every local branch and tag, as full ref names.
 fn local_branches_and_tags(cwd: &Path) -> std::io::Result<Vec<String>> {
     let out = std::process::Command::new("git")
         .arg("-C")
@@ -494,8 +425,7 @@ fn head_exists(cwd: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// HEAD's commit SHA. Returns `None` when HEAD doesn't resolve. Used
-/// to dedup the current worktree against the linked-worktree list.
+/// HEAD's commit SHA, or `None` if HEAD doesn't resolve.
 fn current_head_sha(cwd: &Path) -> Option<String> {
     let out = std::process::Command::new("git")
         .arg("-C")
@@ -510,10 +440,8 @@ fn current_head_sha(cwd: &Path) -> Option<String> {
     if s.is_empty() { None } else { Some(s) }
 }
 
-/// Tip commit's Unix timestamp for `reference`, or `None` if the ref
-/// doesn't resolve. Used as the anchor for the per-ref `commits_days +
-/// prune_offset_days` window — matches upstream's
-/// `summ.CommitDate.AddDate(0, 0, -pruneCommitDays)`.
+/// The committer time of `reference`'s tip as a Unix timestamp, or `None`
+/// if it doesn't resolve.
 fn ref_tip_unix(cwd: &Path, reference: &str) -> Option<i64> {
     let out = std::process::Command::new("git")
         .arg("-C")
@@ -527,8 +455,7 @@ fn ref_tip_unix(cwd: &Path, reference: &str) -> Option<i64> {
     String::from_utf8_lossy(&out.stdout).trim().parse().ok()
 }
 
-/// Mirrors the humanizer in `ls_files.rs`. Tiny enough that a duplicate
-/// is fine; if a third caller appears, hoist into a shared util module.
+/// Format a byte count in binary units, like `humanize` in `ls_files.rs`.
 fn humanize(n: u64) -> String {
     const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB", "PB"];
     if n < 1024 {

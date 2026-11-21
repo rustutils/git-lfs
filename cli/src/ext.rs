@@ -1,10 +1,8 @@
-//! `git lfs ext` — list configured pointer extensions.
+//! `git lfs ext`: list the configured pointer extensions.
 //!
-//! Pointer extensions chain external programs around each LFS object's
-//! clean/smudge cycle. They're configured via three keys per extension:
-//! `lfs.extension.<name>.{clean,smudge,priority}`.
-//!
-//! Output format mirrors upstream byte-for-byte:
+//! Each extension is set by `lfs.extension.<name>.clean`,
+//! `lfs.extension.<name>.smudge`, and `lfs.extension.<name>.priority`. The
+//! output matches upstream's:
 //! ```text
 //! Extension: env-test
 //!     clean = env-test-clean
@@ -20,8 +18,7 @@ pub enum ExtError {
     Io(#[from] std::io::Error),
 }
 
-/// Print all configured extensions (bare `git lfs ext` and `git lfs ext list`
-/// with no name args).
+/// Print every configured extension, in priority order.
 pub fn run(cwd: &Path) -> Result<(), ExtError> {
     for ext in git_lfs_git::extension::list_extensions(cwd) {
         print_ext(&ext);
@@ -29,9 +26,11 @@ pub fn run(cwd: &Path) -> Result<(), ExtError> {
     Ok(())
 }
 
-/// Print only the named extensions, in argument order. An unknown name
-/// emits a header with empty fields, matching upstream's behavior of
-/// indexing into the extension map and printing the zero value.
+/// Print the named extensions in argument order, or all of them if none
+/// are named.
+///
+/// An unknown name prints a header with that name and empty fields.
+/// Upstream prints an empty name in that header.
 pub fn run_list(cwd: &Path, names: &[String]) -> Result<(), ExtError> {
     if names.is_empty() {
         return run(cwd);

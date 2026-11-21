@@ -1,16 +1,10 @@
-//! `git lfs migrate` — analyze or rewrite history for LFS conversion.
+//! `git lfs migrate`: report on or rewrite history for LFS.
 //!
-//! Three subcommands sharing ref-resolution + glob-path-filter
-//! scaffolding:
-//!
-//! - **`info`** (Phase 1, [`info()`]): read-only walk + extension report.
-//! - **`import`** (Phase 2, planned): rewrite history so matching files
-//!   become LFS pointers. Implementation will pipe `git fast-export` →
-//!   blob-transform → `git fast-import`.
-//! - **`export`** (Phase 3, planned): inverse of import.
-//!
-//! This module hosts the shared types and helpers; subcommands live in
-//! sibling files.
+//! [`info()`] walks history read-only and reports file sizes by
+//! extension. [`import()`] and [`export()`] rewrite history by piping
+//! `git fast-export` through a [`transform`] into `git fast-import`,
+//! converting matching blobs to or from LFS pointers. This module holds
+//! the ref selection, path filtering, and size helpers they share.
 
 mod export;
 mod fast_export;
@@ -45,22 +39,27 @@ pub enum MigrateError {
     BadSize(String),
     #[error("{0}")]
     Other(String),
-    /// Argument-shape error printed verbatim without the `git-lfs:`
-    /// prefix. Upstream's tests `[$(...) = "Cannot use ..."]` match
-    /// the message exactly, no leading qualifier.
+    /// A usage error, printed without the `git-lfs:` prefix.
+    ///
+    /// The migrate shell tests compare these messages exactly.
     #[error("{0}")]
     Usage(String),
 }
 
-/// Common ref selection for any subcommand: explicit branches, or the
-/// current branch by default, or all local refs with `--everything`.
+/// Which refs a subcommand walks.
+///
+/// Explicit branches, the current branch by default, or every local ref
+/// with `--everything`.
 #[derive(Debug, Clone, Default)]
 pub(super) struct RefSelection {
     pub branches: Vec<String>,
     pub everything: bool,
 }
 
-/// Resolve the include/exclude ref sets to pass to `git rev-list`.
+/// Resolve the refs to include and exclude in the walk.
+///
+/// A `^name` argument is an exclude. With no arguments this is the
+/// current branch, or nothing on an unborn or detached HEAD.
 pub(super) fn resolve_refs(
     cwd: &Path,
     sel: &RefSelection,
@@ -75,9 +74,8 @@ pub(super) fn resolve_refs(
     }
 
     if sel.branches.is_empty() {
-        // No explicit args → current branch (matching upstream's
-        // default). Empty repos have no resolvable HEAD; bail before
-        // we hand a phantom branch name to rev-list.
+        // An unborn HEAD still has a branch name, which rev-list would
+        // reject.
         if !head_exists(cwd) {
             return Ok((Vec::new(), Vec::new()));
         }
@@ -87,7 +85,6 @@ pub(super) fn resolve_refs(
         return Ok((vec![head], Vec::new()));
     }
 
-    // Explicit args. `^name` becomes an exclude.
     let mut include = Vec::new();
     let mut exclude = Vec::new();
     for arg in &sel.branches {
@@ -100,9 +97,10 @@ pub(super) fn resolve_refs(
     Ok((include, exclude))
 }
 
-/// Reject refs that don't resolve. Emits a message matching upstream's
-/// `cannot find git reference: ... can't resolve ref` so error-format
-/// tests greppin' for `"can't resolve ref"` pass.
+/// Fail if any ref doesn't resolve to a commit.
+///
+/// The shell tests grep the error for "can't resolve ref", which is the
+/// end of upstream's message.
 pub(super) fn validate_refs(
     cwd: &Path,
     include: &[String],
@@ -152,10 +150,9 @@ pub(super) fn current_branch(cwd: &Path) -> Option<String> {
 }
 
 pub(super) fn all_local_refs(cwd: &Path) -> Result<Vec<String>, MigrateError> {
-    // `--everything` walks every local ref namespace, including
-    // non-standard ones (`refs/pull/*`, `refs/notes/*`, etc.). Skip
-    // remote-tracking refs so commits already pushed don't get
-    // rewritten by accident.
+    // Every ref except remote-tracking ones, so this includes
+    // `refs/stash` and `refs/notes/*`. Upstream's `--everything` skips
+    // those and includes remote branches instead.
     let out = Command::new("git")
         .arg("-C")
         .arg(cwd)
@@ -211,11 +208,11 @@ pub(super) fn path_matches(
     }
 }
 
-/// Group a path by its file extension for size-bucketing display.
-/// `assets/foo.png` becomes `*.png`; dotfiles like `.gitattributes`
-/// keep their lead dot in the group as `*.gitattributes`. Files
-/// whose basename has no dot — `Makefile`, `no_extension` — keep
-/// their basename verbatim.
+/// The group `migrate info` reports a path under.
+///
+/// `assets/foo.png` becomes `*.png` and `.gitattributes` becomes
+/// `*.gitattributes`. A file name with no dot, or ending in one, is its
+/// own group.
 pub(super) fn ext_group(path: &str) -> String {
     let leaf = path.rsplit('/').next().unwrap_or(path);
     if let Some(idx) = leaf.rfind('.')
@@ -226,16 +223,18 @@ pub(super) fn ext_group(path: &str) -> String {
     leaf.to_owned()
 }
 
-/// Parse strings like "1mb", "500k", "2g", or plain byte counts.
-/// Decimal multipliers (1k = 1024) — matches upstream's `humanize.ParseBytes`
-/// when no `i` suffix is present. We accept either case.
+/// Parse a size like `1mb`, `500k`, `2g`, or a plain byte count.
+///
+/// Case-insensitive, and the multipliers are powers of 1024. Upstream's
+/// `humanize.ParseBytes` uses powers of 1000 for these suffixes and 1024
+/// only for `kib`, `mib`, and so on, which this rejects. An empty string
+/// is 0.
 pub fn parse_size(s: &str) -> Result<u64, MigrateError> {
     let trimmed = s.trim();
     if trimmed.is_empty() {
         return Ok(0);
     }
     let lower = trimmed.to_ascii_lowercase();
-    // Strip an optional trailing `b` (so "1kb" works the same as "1k").
     let lower = lower.strip_suffix('b').unwrap_or(&lower);
     let (num_str, mul) = if let Some(rest) = lower.strip_suffix('k') {
         (rest, 1024u64)
@@ -248,8 +247,7 @@ pub fn parse_size(s: &str) -> Result<u64, MigrateError> {
     } else {
         (lower, 1u64)
     };
-    // Bare unit ("kb", "mb", ...) means 1 of that unit. Lets the
-    // `--unit=kb` form work without having to write `--unit=1kb`.
+    // A bare unit means one of it, for `--unit=kb`.
     let trimmed_num = num_str.trim();
     let num: f64 = if trimmed_num.is_empty() {
         1.0
@@ -278,11 +276,9 @@ pub(super) fn humanize(n: u64) -> String {
     format!("{value:.2} {}", UNITS[i])
 }
 
-/// Format `n` as a fractional count of `unit`-byte chunks. Used when
-/// the user passes `--unit=kb|mb|...` to `migrate info` and wants
-/// every row reported in the same unit instead of per-row auto-scaled.
-/// Unit suffix is omitted — upstream prints the unit once in the table
-/// header, leaving rows as bare numbers.
+/// Format `n` in multiples of `unit` bytes, for `migrate info --unit`.
+///
+/// There's no unit suffix: upstream prints these as bare numbers too.
 pub(super) fn humanize_with_unit(n: u64, unit: u64) -> String {
     let value = n as f64 / unit.max(1) as f64;
     format!("{value:.1}")
@@ -307,8 +303,8 @@ mod tests {
 
     #[test]
     fn ext_group_dotfiles_use_leading_dot_as_extension() {
-        // Matches upstream's display: `.gitattributes` shows up as
-        // `*.gitattributes` so users can spot it among other groups.
+        // Matches upstream, which reports `.gitattributes` as
+        // `*.gitattributes`.
         assert_eq!(ext_group(".gitignore"), "*.gitignore");
         assert_eq!(ext_group("path/.env"), "*.env");
     }

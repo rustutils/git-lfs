@@ -1,28 +1,29 @@
-//! `git lfs pre-push <remote> <url>` — git hook entry point.
+//! `git lfs pre-push`: the pre-push hook, which uploads LFS objects before
+//! `git push` sends commits.
 //!
-//! Git's `pre-push` hook runs before `git push` actually contacts the
-//! remote. It receives `<remote>` and `<url>` as args, plus one stdin
-//! line per ref being pushed in the form:
+//! Git passes the remote as an argument and one line per ref on stdin:
 //!
 //! ```text
 //! <local ref> <local sha> <remote ref> <remote sha>
 //! ```
 //!
-//! For each line, we want to upload every LFS object reachable from
-//! `<local sha>` that the remote doesn't already have. The "doesn't
-//! have" boundary is `<remote sha>` for existing branches, or all of
-//! `refs/remotes/<remote>/*` for brand-new branches (`<remote sha>` is
-//! all-zeros in that case). Branch deletes (`<local sha>` all-zeros)
-//! are skipped — nothing to upload.
+//! The objects uploaded are those in commits reachable from the local
+//! SHAs but not from the remote SHAs. When the remote names a configured
+//! remote or matches one's URL, commits on that remote's tracking refs
+//! are excluded too. Deleted refs are skipped.
 //!
-//! Honors `GIT_LFS_SKIP_PUSH=1` as an early no-op (matches upstream).
+//! A remote that is a local directory without an LFS endpoint gets the
+//! objects copied straight into its store.
 
 use std::io::BufRead;
 use std::path::Path;
 
 use crate::push::{PushCommandError, PushOutcome, remote_tracking_refs, upload_in_range_with_args};
 
-/// Run the pre-push command. `stdin_lines` is typically `io::stdin().lock()`.
+/// Run `git lfs pre-push`, reading the ref lines from `stdin`.
+///
+/// Any value of `GIT_LFS_SKIP_PUSH` other than empty or `0` skips the
+/// upload. Upstream parses it as a boolean, so `false` doesn't skip there.
 pub fn pre_push<R: BufRead>(
     cwd: &Path,
     remote: &str,
@@ -33,12 +34,6 @@ pub fn pre_push<R: BufRead>(
         return Ok(PushOutcome::default());
     }
 
-    // Validate the remote upfront — `git lfs pre-push not-a-remote …`
-    // (t-pre-push 15) wants the user-facing "Invalid remote name"
-    // message before we try anything else. We accept anything that
-    // looks like a URL, an SCP-style `host:path`, a local directory
-    // (so `git push ../sibling-clone` works), or a configured remote.
-    // Anything else is rejected.
     if !is_acceptable_remote(cwd, remote) {
         return Err(PushCommandError::Usage(format!(
             "Invalid remote name {remote:?}"
@@ -54,75 +49,52 @@ pub fn pre_push<R: BufRead>(
         let line = line.map_err(PushCommandError::Io)?;
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() < 4 {
-            // Empty / malformed line — ignore. Git always sends 4 fields,
-            // but `git push --delete` style operations can have edge
-            // cases worth being lenient about.
             continue;
         }
         let local_sha = parts[1];
         let remote_ref = parts[2];
         let remote_sha = parts[3];
 
+        // A deleted ref.
         if is_zero_oid(local_sha) {
-            // Branch delete — no LFS work to do.
             continue;
         }
 
         includes.push(local_sha.to_owned());
         remote_refs.push(remote_ref.to_owned());
+        // A remote SHA we don't have, as after a force push, would make
+        // `git rev-list` fail. t-pre-push.sh checks this.
         if is_zero_oid(remote_sha) {
-            // New branch — remote has nothing for this ref. Fall back
-            // to "everything else the remote tracks" as the exclude
-            // set, same as our `git lfs push` default.
             needs_remote_tracking = true;
         } else if object_exists(cwd, remote_sha) {
             excludes.push(remote_sha.to_owned());
         }
-        // If the remote-side OID isn't in our local store (force-push
-        // after local GC, t-pre-push 39), drop it from the exclude
-        // set — `git rev-list --not <missing>` would error out.
     }
 
     if includes.is_empty() {
         return Ok(PushOutcome::default());
     }
 
-    // Local-path push (`git push ../sibling`, `git push .`) — there's
-    // no LFS server, so we can't go through the batch API. Copy each
-    // reachable LFS object directly into the target repo's
-    // `lfs/objects/` so the downstream checkout can smudge.
     if is_local_path_remote(cwd, remote) {
         return push_to_local_path(cwd, remote, &includes, &excludes);
     }
 
-    // Resolve `remote` (which can be a URL when the user runs
-    // `git push <url>`) to the configured remote name whose URL it
-    // matches, if any. Drives the upstream `--not --remotes=<name>`
-    // optimization below: when the push target *is* one of our
-    // tracked remotes, we can hand its full ref namespace to
-    // rev-list as one expression rather than enumerating each
-    // `refs/remotes/<name>/<branch>` ourselves.
     let resolved_remote_name = matching_remote_name(cwd, remote);
 
     let mut extra_args: Vec<String> = Vec::new();
     if let Some(name) = &resolved_remote_name {
-        // Pass on the cmdline (not via stdin) so the GIT_TRACE output
-        // shows it verbatim — t-pre-push 37 greps the trace for
-        // `rev-list.*--not --remotes=origin`.
+        // On the command line, not stdin, because t-pre-push.sh looks
+        // for `--not --remotes=origin` in the trace.
         extra_args.push("--not".into());
         extra_args.push(format!("--remotes={name}"));
     } else if needs_remote_tracking {
-        // Fallback for URL pushes that don't match any remote: still
-        // exclude objects already in the (now name-pinned) remote
-        // tracking branches by listing each ref explicitly.
+        // `remote` isn't a configured remote here, so this rarely finds
+        // any refs.
         excludes.extend(remote_tracking_refs(cwd, remote)?);
     }
 
-    // Branch-required servers reject batch requests without a refspec
-    // matching the destination ref. Use the remote ref from stdin —
-    // single-ref pushes are unambiguous; multi-ref pushes don't get a
-    // refspec since one batch can only carry one. Drop duplicates so
-    // `git push origin main main` doesn't look like a multi-ref push.
+    // Some servers need the destination ref in the batch request. A
+    // batch carries one ref, so send it only when one ref is pushed.
     remote_refs.sort();
     remote_refs.dedup();
     let refspec = if remote_refs.len() == 1 {
@@ -137,10 +109,8 @@ pub fn pre_push<R: BufRead>(
     upload_in_range_with_args(cwd, remote, &inc, &exc, &extra, refspec, dry_run)
 }
 
-/// Find the configured remote whose `remote.<name>.url` equals
-/// `value` (or matches `value` as a name directly). Used by pre-push
-/// to enable the `--not --remotes=<name>` rev-list optimization on
-/// URL-style pushes.
+/// The configured remote named `value`, or whose `remote.<name>.url` is
+/// `value`.
 fn matching_remote_name(cwd: &Path, value: &str) -> Option<String> {
     if value.is_empty() {
         return None;
@@ -175,22 +145,18 @@ fn matching_remote_name(cwd: &Path, value: &str) -> Option<String> {
     None
 }
 
-/// True if `s` is a non-empty hex string of all zeros — git's marker for
-/// "no commit" in pre-push input. Length-agnostic so SHA-1 (40 chars)
-/// and SHA-256 (64 chars) both work.
+/// Whether `s` is Git's all-zero object ID, for SHA-1 or SHA-256.
 fn is_zero_oid(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| b == b'0')
 }
 
-/// Is `remote` something we should accept as a destination? Mirrors
-/// upstream's `git.ValidateRemote` + `RewriteLocalPathAsURL`:
-/// configured remote names, URL-shaped strings, SCP-style `host:path`,
-/// and local directories all pass.
-/// Copy every LFS object reachable from `includes` (minus those
-/// reachable from `excludes`) into `remote`'s LFS object store.
-/// Hardlinks where possible, falls back to copy on cross-device or
-/// unsupported errors. Used by pre-push when the user is pushing to
-/// a local-path remote (`git push ../sibling`, `git push .`).
+/// Copy the objects in commits reachable from `includes` but not from
+/// `excludes` into the store of the repository at `remote`.
+///
+/// Objects are hard-linked, or copied if that fails. Objects missing
+/// locally are skipped without an error, and `--dry-run` isn't honored.
+/// Upstream instead pushes to a local path through its standalone file
+/// transfer, which fails on missing objects.
 fn push_to_local_path(
     cwd: &Path,
     remote: &str,
@@ -202,8 +168,7 @@ fn push_to_local_path(
         PushCommandError::Usage(format!("local-path remote {remote:?} has no git dir: {e}"))
     })?;
     if target_lfs_dir == git_lfs_git::lfs_dir(cwd).unwrap_or_default() {
-        // `git push . main:foo` — source and target share an LFS
-        // store. Nothing to copy.
+        // `git push .` pushes to the same store.
         return Ok(PushOutcome::default());
     }
 
@@ -218,9 +183,6 @@ fn push_to_local_path(
         let oid = entry.oid;
         let src = local_store.object_path(oid);
         if !src.is_file() {
-            // Object isn't in our store — same situation as a missing
-            // upload to a regular remote. Quietly skip; the downstream
-            // smudge will surface the gap if it matters.
             continue;
         }
         let hex = oid.to_string();
@@ -242,9 +204,7 @@ fn push_to_local_path(
     Ok(PushOutcome::default())
 }
 
-/// `true` if `git cat-file -e <oid>` succeeds — i.e. the object is
-/// present in the repo's object database (or any borrowed alternate).
-/// Used to filter excludes that point at GC'd objects.
+/// Whether the Git object `oid` exists locally.
 fn object_exists(cwd: &Path, oid: &str) -> bool {
     std::process::Command::new("git")
         .arg("-C")
@@ -257,10 +217,7 @@ fn object_exists(cwd: &Path, oid: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// `true` when `remote` resolves to a local directory and isn't also a
-/// configured remote name or a URL we can derive an LFS endpoint from.
-/// Used by pre-push to short-circuit `git push ../sibling-clone`
-/// style invocations that have no LFS server.
+/// Whether `remote` is a local directory with no LFS endpoint.
 fn is_local_path_remote(cwd: &Path, remote: &str) -> bool {
     if git_lfs_git::endpoint::looks_like_url(remote) {
         return false;
@@ -274,6 +231,8 @@ fn is_local_path_remote(cwd: &Path, remote: &str) -> bool {
     std::path::Path::new(remote).is_dir()
 }
 
+/// Whether `remote` is a URL, an SCP-style `host:path`, a name with an LFS
+/// endpoint, or a local directory.
 fn is_acceptable_remote(cwd: &Path, remote: &str) -> bool {
     if remote.is_empty() {
         return false;
@@ -282,18 +241,13 @@ fn is_acceptable_remote(cwd: &Path, remote: &str) -> bool {
         return true;
     }
     if remote.contains(':') {
-        // SCP-style `git@host:path/to/repo`. `looks_like_url` already
-        // catches anything with `@`, so this picks up the colon-only
-        // forms upstream's `ValidateRemoteURL` allows.
+        // SCP-style `host:path`, which upstream's `ValidateRemoteURL`
+        // allows.
         return true;
     }
     if git_lfs_git::endpoint::endpoint_for_remote(cwd, Some(remote)).is_ok() {
         return true;
     }
-    // Local path push (`git push ../sibling`, `git push .`). Accept if
-    // it's a directory we can read; the actual git/LFS push semantics
-    // happen further down — the remote-name layer just needs to know
-    // this isn't a typo.
     std::path::Path::new(remote).is_dir()
 }
 

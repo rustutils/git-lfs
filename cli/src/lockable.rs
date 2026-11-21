@@ -1,13 +1,9 @@
-//! Lockable-file enforcement: chmod working-tree files based on their
-//! `lockable` `.gitattributes` status and the set of locks the current
-//! user holds.
+//! Makes lockable files read-only unless the user holds their lock.
 //!
-//! Invariant for any file matching a `lockable` pattern:
-//!   - we hold the lock → file is writable
-//!   - we don't hold the lock → file is read-only
-//!
-//! Files not matching a `lockable` pattern are never touched by this
-//! module; their permissions are the user's business.
+//! A file is lockable if `.gitattributes` gives it the `lockable`
+//! attribute. Other files are never changed here. On Unix, making a file
+//! writable adds only the owner's write bit, and making it read-only
+//! removes all write bits.
 
 use std::collections::HashSet;
 use std::fs;
@@ -17,10 +13,11 @@ use std::process::Command;
 
 use git_lfs_git::AttrSet;
 
-/// Set of paths the current user holds locks for, relative to the repo
-/// root with `/` separators. `Empty` means "no LFS endpoint configured
-/// or the locks API was unavailable" — treated as "no held locks" by
-/// `apply_modes`, so every lockable file ends up read-only.
+/// Paths the user holds locks for, relative to the repository root with
+/// `/` separators.
+///
+/// `Empty` means no locks, whether because none are held or because the
+/// server couldn't be asked.
 pub enum HeldLocks {
     Empty,
     Paths(HashSet<String>),
@@ -34,11 +31,13 @@ impl HeldLocks {
         }
     }
 
-    /// Query the LFS server's `verify_locks` endpoint, paginating
-    /// through and collecting the `ours` partition. Returns `Empty` on
-    /// any failure (no endpoint, network error, server doesn't support
-    /// locking) so we fall through to the strict "no lock = read-only"
-    /// path rather than aborting a hook.
+    /// Ask the default remote's server which locks are ours, over HTTP.
+    ///
+    /// Any failure stops the query and keeps the locks found so far, so a
+    /// hook never fails because of it. A failure on the first page gives
+    /// `Empty`, which makes every lockable file read-only. An empty
+    /// `next_cursor` is sent back as the cursor rather than ending the
+    /// loop.
     pub fn from_server(cwd: &Path) -> Self {
         let Ok(api) = crate::fetcher::build_api_client(cwd, None) else {
             return Self::Empty;
@@ -68,9 +67,8 @@ impl HeldLocks {
     }
 }
 
-/// For each path in `paths` that matches a `lockable` pattern in
-/// `attrs`: chmod writable if `held.contains(path)`, read-only
-/// otherwise. Non-lockable paths are left alone.
+/// Make each lockable path in `paths` writable if its lock is held, and
+/// read-only otherwise.
 pub fn apply_modes<I>(cwd: &Path, paths: I, attrs: &AttrSet, held: &HeldLocks) -> io::Result<()>
 where
     I: IntoIterator<Item = String>,
@@ -84,16 +82,15 @@ where
     Ok(())
 }
 
-/// Force `path` (relative to `cwd`) writable, regardless of its
-/// `lockable` status. Used by `git lfs lock` (after a successful lock,
-/// the user needs to actually edit the file) and by
-/// `track --not-lockable` (undo any earlier read-only state).
+/// Make `path`, relative to `cwd`, writable whether or not it's lockable.
+///
+/// `git lfs lock` calls this after taking a lock, and `git lfs track
+/// --not-lockable` to undo an earlier read-only mode.
 pub fn force_writable(cwd: &Path, path: &str) -> io::Result<()> {
     chmod_writable(cwd, path, true)
 }
 
-/// If `path` matches a lockable pattern in `attrs`, force it
-/// read-only. Used by `git lfs unlock` after a successful release.
+/// Make `path` read-only if it's lockable. `git lfs unlock` calls this.
 pub fn enforce_readonly_if_lockable(cwd: &Path, attrs: &AttrSet, path: &str) -> io::Result<()> {
     if !attrs.is_lockable(path) {
         return Ok(());
@@ -101,14 +98,11 @@ pub fn enforce_readonly_if_lockable(cwd: &Path, attrs: &AttrSet, path: &str) -> 
     chmod_writable(cwd, path, false)
 }
 
-/// Walk the entire working tree (`git ls-files`) and apply the
-/// lockable invariant. Wrapped by the post-checkout / post-commit /
-/// post-merge hooks.
+/// Set the mode of every lockable file in the index.
 ///
-/// `verify_locks` is only invoked if at least one indexed file matches
-/// a lockable pattern. The credential helper has visible side effects
-/// (caching, reject) and we don't want a `.gitattributes`-only commit
-/// to churn auth state on a server the user hasn't logged into yet.
+/// The post-checkout, post-commit, and post-merge hooks call this. The
+/// server is only asked if some file is lockable, because asking can run
+/// credential helpers, which may prompt or store credentials.
 pub fn enforce_workdir(cwd: &Path) -> io::Result<()> {
     if !lockable_readonly_enabled(cwd) {
         return Ok(());
@@ -122,11 +116,12 @@ pub fn enforce_workdir(cwd: &Path) -> io::Result<()> {
     apply_modes(cwd, files, &attrs, &held)
 }
 
-/// Returns whether the lockable read-only invariant should be
-/// enforced. Defaults to `true`; either the env override
-/// `GIT_LFS_SET_LOCKABLE_READONLY=0/false` or the git config
-/// `lfs.setlockablereadonly=false` flips it off (matching upstream's
-/// `Configuration.SetLockableFilesReadOnly()`).
+/// Whether lockable files should be made read-only.
+///
+/// True unless `GIT_LFS_SET_LOCKABLE_READONLY` or
+/// `lfs.setlockablereadonly` is false, as in upstream's
+/// `SetLockableFilesReadOnly`. The setting is read with `git config`, so
+/// `.lfsconfig` isn't consulted.
 pub fn lockable_readonly_enabled(cwd: &Path) -> bool {
     if let Some(v) = std::env::var_os("GIT_LFS_SET_LOCKABLE_READONLY") {
         let s = v.to_string_lossy().trim().to_lowercase();
@@ -148,23 +143,22 @@ pub fn lockable_readonly_enabled(cwd: &Path) -> bool {
     }
 }
 
-/// `git ls-files -z` listing of cached (in-index) paths. Submodules
-/// appear as their gitlink path, not their contents — exactly what we
-/// want; we never want to descend into a submodule.
+/// List the paths in the index.
+///
+/// A submodule is listed as its own path, without its contents. A failed
+/// `git ls-files` gives an empty list.
 pub fn ls_files(cwd: &Path) -> io::Result<Vec<String>> {
     ls_files_inner(cwd, &[])
 }
 
-/// `git ls-files -z -- <pattern>`. Used by track-time chmod, which
-/// only wants to walk files matching the pattern that just changed
-/// lockable state.
+/// List the paths in the index that match the `.gitattributes` pattern
+/// `pattern`, as a pathspec.
+///
+/// `git lfs track` uses this to find the files whose lockable state it
+/// just changed.
 pub fn ls_files_matching(cwd: &Path, pattern: &str) -> io::Result<Vec<String>> {
-    // Strip a leading `/` before passing to `git ls-files` — in
-    // `.gitattributes` it's the root-anchor marker (`/a.dat` matches
-    // `a.dat` at the repo root only), but as a pathspec git treats it
-    // as an absolute path and errors with "outside repository". The
-    // ancestor walk in `matches_with_prefix`-style consumers handles
-    // anchoring on its own, so dropping the slash here is safe.
+    // A leading `/` anchors a `.gitattributes` pattern at the root, but in
+    // a pathspec it's an absolute path that git rejects, so it's dropped.
     let stripped = pattern
         .strip_prefix('/')
         .filter(|s| !s.is_empty())
@@ -204,8 +198,6 @@ fn chmod_writable(cwd: &Path, path: &str, writable: bool) -> io::Result<()> {
     }
     let mut perms = meta.permissions();
     let mode = perms.mode();
-    // Owner-write only — matches `core.sharedRepository=false` (the
-    // default). Stripping write strips for owner/group/other.
     let new_mode = if writable {
         mode | 0o200
     } else {

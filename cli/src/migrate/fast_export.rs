@@ -1,29 +1,14 @@
-//! Parser for the `git fast-export` / `git fast-import` wire format.
+//! Parser for the `git fast-export` stream format.
 //!
-//! The format is documented in `git-fast-import(1)`. We parse the subset
-//! that `git fast-export --full-tree` actually produces:
+//! The format is in `git-fast-import(1)`. This reads what
+//! `git fast-export --full-tree` produces: blobs, commits, tags, resets,
+//! and the `feature`, `option`, `progress`, `checkpoint`, and `done`
+//! commands. [`Reader::next`] reads one [`Command`] at a time, with blob
+//! contents in memory.
 //!
-//! - `blob` — content blob with optional `mark` and `original-oid`.
-//! - `commit` — commit metadata + a list of file-change directives.
-//! - `tag` — annotated tag.
-//! - `reset` — branch reset (often paired with a `from`).
-//! - `feature`, `option`, `progress`, `checkpoint`, `done` — control
-//!   directives, kept verbatim.
-//!
-//! Streaming: each call to [`Reader::next`] reads exactly one [`Command`]
-//! without buffering the whole stream. Blob content sits in a `Vec<u8>`
-//! because the transform stage needs it; everything else stays as a
-//! handful of strings.
-//!
-//! ## Wire-format quirks we accept
-//!
-//! - Lines inside a command end with `\n`. CR-LF is *not* part of the
-//!   format; we don't strip it.
-//! - The optional trailing `\n` after a `data <N>\n<bytes>` block is
-//!   consumed if present; absent is also fine.
-//! - A commit's file-change list terminates at a blank line *or* at the
-//!   next recognized top-level keyword. We peek one line ahead to
-//!   distinguish.
+//! A commit's file changes end at a blank line or at the next command,
+//! so the reader looks one line ahead. The newline after a data block is
+//! optional.
 
 use std::io::{self, BufRead, BufReader, Read};
 
@@ -53,7 +38,7 @@ pub struct Commit {
     pub ref_name: String,
     pub mark: Option<u32>,
     pub original_oid: Option<String>,
-    /// Raw `<name> <email> <when>` content (we don't parse the timestamp).
+    /// `<name> <email> <when>`, unparsed.
     pub author: Option<String>,
     pub committer: String,
     pub encoding: Option<String>,
@@ -81,44 +66,46 @@ pub struct Reset {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileChange {
-    /// `M <mode> <dataref> <path>` — modify a tree entry.
+    /// `M <mode> <dataref> <path>`.
     Modify {
         mode: String,
         dataref: DataRef,
         path: String,
     },
-    /// `M <mode> inline <path>\n<data>` — inline modify.
+    /// `M <mode> inline <path>` followed by a data block.
     ModifyInline {
         mode: String,
         path: String,
         data: Vec<u8>,
     },
-    /// `D <path>` (or the spelled-out `filedelete`).
+    /// `D <path>` or `filedelete <path>`.
+    ///
+    /// The path is kept quoted as it was in the stream.
     Delete { path: String },
-    /// `R <src> <dst>`
+    /// `R <src> <dst>`, split at the first space.
     Rename { src: String, dst: String },
-    /// `C <src> <dst>`
+    /// `C <src> <dst>`, split at the first space.
     Copy { src: String, dst: String },
-    /// `deleteall` — `--full-tree` emits this at the start of every
-    /// commit; we record it so the emitter can re-emit it.
+    /// `deleteall`, which `--full-tree` puts at the start of every
+    /// commit.
     DeleteAll,
-    /// Anything else (notes, etc.) — emit verbatim.
+    /// A note (`N ...`), written back as it was.
     Raw(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DataRef {
-    /// `:<id>` — a mark referencing a previous blob in this stream.
+    /// `:<id>`, a mark set earlier in the stream.
     Mark(u32),
-    /// `<sha>` — an existing object's SHA-1.
+    /// An existing object's ID.
     Sha(String),
 }
 
 /// Streaming reader for fast-export output.
 pub struct Reader<R: Read> {
     inner: BufReader<R>,
-    /// One-line look-ahead used by commits to know when the
-    /// file-change list ends.
+    /// A line read ahead, or the first byte of one after a data block
+    /// without its trailing newline.
     pending: Option<String>,
 }
 
@@ -137,7 +124,6 @@ impl<R: Read> Reader<R> {
                 return Ok(None);
             };
             if line.is_empty() {
-                // Blank lines between commands; skip.
                 continue;
             }
             return self.parse_command(&line).map(Some);
@@ -214,7 +200,6 @@ impl<R: Read> Reader<R> {
         let mut merges = Vec::new();
         let mut have_message = false;
 
-        // Header lines until we hit `data`.
         while !have_message {
             let line = self
                 .read_line()?
@@ -239,8 +224,6 @@ impl<R: Read> Reader<R> {
             }
         }
 
-        // After the message, optional `from` / `merge` / file changes.
-        // These continue until a blank line or the next command keyword.
         let mut file_changes = Vec::new();
         while let Some(line) = self.peek_line()? {
             if line.is_empty() {
@@ -248,7 +231,6 @@ impl<R: Read> Reader<R> {
                 break;
             }
             if is_top_level_keyword(&line) {
-                // Don't consume — this is the start of the next command.
                 break;
             }
             self.consume_peek();
@@ -282,8 +264,7 @@ impl<R: Read> Reader<R> {
         })
     }
 
-    /// `start` is the file-change line we already consumed. For inline
-    /// modifies we read a follow-up `data` block.
+    /// Finish a file change, reading the data block of an inline modify.
     fn complete_file_change(&mut self, start: FileChangeStart) -> io::Result<FileChange> {
         match start {
             FileChangeStart::Modify {
@@ -355,8 +336,6 @@ impl<R: Read> Reader<R> {
     }
 
     fn read_reset_body(&mut self, ref_name: &str) -> io::Result<Reset> {
-        // The `from` line is optional; an immediate blank line / next
-        // keyword ends the reset.
         let mut from = None;
         if let Some(line) = self.peek_line()? {
             if line.is_empty() {
@@ -365,14 +344,12 @@ impl<R: Read> Reader<R> {
                 let rest = rest.to_owned();
                 self.consume_peek();
                 from = Some(rest);
-                // Optional trailing blank line.
                 if let Some(next) = self.peek_line()?
                     && next.is_empty()
                 {
                     self.consume_peek();
                 }
             }
-            // Else: a top-level keyword starts the next command; leave alone.
         }
         Ok(Reset {
             ref_name: ref_name.to_owned(),
@@ -382,8 +359,7 @@ impl<R: Read> Reader<R> {
 
     fn read_data_block(&mut self, count_str: &str) -> io::Result<Vec<u8>> {
         if let Some(rest) = count_str.strip_prefix("<<") {
-            // `data <<DELIM\n<lines>\nDELIM\n` form. Used by humans;
-            // fast-export doesn't emit it. Refuse rather than half-parse.
+            // The delimited form, which fast-export never writes.
             return Err(io::Error::other(format!(
                 "data <<DELIM form not supported: {rest:?}"
             )));
@@ -393,15 +369,11 @@ impl<R: Read> Reader<R> {
             .map_err(|_| io::Error::other(format!("invalid data count {count_str:?}")))?;
         let mut buf = vec![0u8; count as usize];
         self.inner.read_exact(&mut buf)?;
-        // Optional trailing LF after the data block. fast-export always
-        // emits one; consume if present.
         let mut peek = [0u8; 1];
         match self.inner.read(&mut peek)? {
-            0 => {} // EOF — fine.
+            0 => {}
             1 => {
                 if peek[0] != b'\n' {
-                    // Not the optional LF — must be the start of the
-                    // next line. Stash it.
                     self.pending = Some(String::from_utf8_lossy(&peek).into_owned());
                 }
             }
@@ -413,8 +385,7 @@ impl<R: Read> Reader<R> {
     /// Read one line and strip the trailing `\n`. Returns `None` at EOF.
     fn read_line(&mut self) -> io::Result<Option<String>> {
         if let Some(p) = self.pending.take() {
-            // The pending buffer might be a partial line we stashed
-            // mid-byte. Append more until we hit a newline or EOF.
+            // Pending may be the first byte of a line.
             let mut s = p;
             if !s.ends_with('\n') {
                 let mut tail = String::new();
@@ -442,9 +413,8 @@ impl<R: Read> Reader<R> {
                 self.pending = Some(buf);
             }
             Some(p) => {
-                // Complete a partial pending fragment (e.g. the single
-                // byte the data-block reader stashed when it found a
-                // non-LF character after the data section).
+                // Complete a line whose first byte the data block
+                // reader kept.
                 if p.ends_with('\n') {
                     self.pending = Some(p);
                 } else {
@@ -493,8 +463,7 @@ fn is_top_level_keyword(line: &str) -> bool {
     )
 }
 
-/// Intermediate type so we can read the start-of-line of a file-change
-/// before deciding whether more bytes (an inline `data` block) follow.
+/// A parsed file change line, before any inline data block is read.
 enum FileChangeStart {
     Modify {
         mode: String,
@@ -512,12 +481,14 @@ enum FileChangeStart {
     Raw(String),
 }
 
-/// Decode git's C-style path quoting in a fast-export `M` directive.
-/// fast-export emits paths quoted (`"a file.txt"`) when they contain
-/// space, double-quote, control chars, or non-ASCII bytes; everything
-/// else comes through verbatim. Mirrors `unquote_c_style` in git
-/// itself. Unknown escapes are preserved as a best-effort fallback so
-/// we don't lose data on malformed input.
+/// Undo Git's C-style quoting of a path in an `M` line.
+///
+/// fast-export quotes a path that has a space, double quote, backslash,
+/// control character, or, with the default `core.quotePath`, a non-ASCII
+/// byte.
+/// Unlike Git's `unquote_c_style`, this doesn't decode octal escapes:
+/// `\303\251` stays as those eight characters, so non-ASCII paths come
+/// out renamed. Other unknown escapes are also kept as they are.
 fn unquote_path(raw: &str) -> String {
     if !raw.starts_with('"') || !raw.ends_with('"') || raw.len() < 2 {
         return raw.to_owned();
@@ -556,10 +527,7 @@ fn parse_file_change_start(line: &str) -> Option<FileChangeStart> {
         return Some(FileChangeStart::DeleteAll);
     }
     if let Some(rest) = line.strip_prefix("M ") {
-        // Format: `<mode> <dataref> <path>` where dataref is `:N`,
-        // a sha, or the literal `inline`. Paths with special chars
-        // (e.g. spaces) come C-quoted; unquote before storing so
-        // include/exclude globs match unwrapped paths.
+        // Unquote so the include and exclude globs see the real path.
         let mut parts = rest.splitn(3, ' ');
         let mode = parts.next()?.to_owned();
         let dataref_or_inline = parts.next()?;
@@ -592,7 +560,6 @@ fn parse_file_change_start(line: &str) -> Option<FileChangeStart> {
         let (src, dst) = rest.split_once(' ')?;
         return Some(FileChangeStart::Copy(src.to_owned(), dst.to_owned()));
     }
-    // Notes, etc. Pass through verbatim.
     if line.starts_with("N ") {
         return Some(FileChangeStart::Raw(line.to_owned()));
     }
@@ -641,8 +608,7 @@ mod tests {
 
     #[test]
     fn parses_blob_with_binary_data() {
-        // 4-byte blob containing a NUL and an LF — neither should
-        // confuse the framing.
+        // A NUL and an LF in the data mustn't confuse the framing.
         let s: Vec<u8> = b"blob\nmark :1\ndata 4\n"
             .iter()
             .copied()

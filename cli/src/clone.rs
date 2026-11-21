@@ -1,24 +1,14 @@
-//! `git lfs clone` — deprecated upstream wrapper around `git clone`.
+//! `git lfs clone`: the deprecated wrapper around `git clone`.
 //!
-//! Upstream marked this command deprecated when `git clone` itself
-//! grew comparable speeds, but the shell tests (and the docs) still
-//! exercise it, and downstream tooling sometimes depends on it. The
-//! mechanic:
+//! It runs `git clone` with the LFS filters turned off, like upstream's
+//! `gitConfigNoLFS`, so the working tree gets pointer files. Then it runs
+//! `git lfs pull` in the new repository, and `git lfs pull` in each
+//! submodule if submodules were cloned, and installs the hooks unless
+//! `--skip-repo` is given.
 //!
-//! 1. Run `git clone` with the LFS clean/smudge filters explicitly
-//!    set to empty so the working tree gets pointer text rather than
-//!    smudged content.
-//! 2. `cd` into the cloned directory.
-//! 3. Run our `pull` (or `fetch` for `--no-checkout` / `--bare`) to
-//!    download the LFS objects in batch and rewrite the working tree.
-//! 4. Best-effort install the four LFS hooks.
-//!
-//! The first step's "no smudge during clone" config matches upstream's
-//! `git/git.go::gitConfigNoLFS`. Doing the LFS work in a separate pass
-//! is what made the wrapper faster in the first place; modern
-//! `git clone` parallelizes the smudge filter, so this only matters
-//! for old git versions or networks where one big batch is
-//! materially better than streaming smudges.
+//! With `--bare` or `--no-checkout`, nothing is downloaded and, for
+//! `--bare`, no hooks are installed. Upstream fetches the objects for
+//! the current ref and installs the hooks in both cases.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -40,24 +30,18 @@ pub enum CloneError {
     Io(#[from] std::io::Error),
 }
 
-/// Decoded args after stripping the LFS-only flags (`--include` /
-/// `-I`, `--exclude` / `-X`, `--skip-repo`) and identifying the
-/// post-clone behavior (no-checkout / bare / origin). Everything
-/// else flows through to `git clone` verbatim.
+/// The command line split into what `git clone` gets and what this
+/// command needs to know.
 struct DecodedArgs {
-    /// Flags + positional args destined for `git clone`. LFS-only
-    /// flags are stripped out.
+    /// Arguments for `git clone`, which are all of them except
+    /// `--include`, `--exclude`, and `--skip-repo`.
     forward: Vec<String>,
-    /// Positional args (URL + optional target dir).
+    /// The repository and the optional directory.
     positional: Vec<String>,
     no_checkout: bool,
     bare: bool,
     skip_repo: bool,
-    /// `--recursive` or `--recurse-submodules`. After the top-level
-    /// `git lfs pull`, drives a `git submodule foreach --recursive
-    /// 'git lfs pull'` so each submodule's LFS content materializes
-    /// too — the smudge filter was disabled for the top-level clone,
-    /// and git ≥ 2.9 propagates that to submodules.
+    /// `--recursive` or `--recurse-submodules`.
     recurse_submodules: bool,
     include: Vec<String>,
     exclude: Vec<String>,
@@ -76,7 +60,6 @@ pub fn run(cwd: &Path, raw_args: &[String]) -> Result<(), CloneError> {
     eprintln!("`git clone` has been updated in upstream Git to have comparable");
     eprintln!("speeds to `git lfs clone`.");
 
-    // Step 1: `git -c filter.lfs.smudge= ... clone <flags> <args>`
     let mut cmd = Command::new("git");
     cmd.current_dir(cwd);
     for kv in [
@@ -96,27 +79,17 @@ pub fn run(cwd: &Path, raw_args: &[String]) -> Result<(), CloneError> {
         return Err(CloneError::CloneFailed(status.code().unwrap_or(1)));
     }
 
-    // Step 2: figure out where it landed.
     let clonedir = derive_clone_dir(cwd, &decoded.positional)?;
 
-    // Step 3: pull (or skip — `--bare` / `--no-checkout` have no
-    // working tree to materialize into; upstream fetches the current
-    // ref but the assertions tests grep for don't depend on that).
-    // Empty repos (no commits, HEAD unresolvable) need an early skip:
-    // upstream's `git.CurrentRef()` returns an error and pull is
-    // skipped wholesale.
+    // An empty repository has no HEAD commit. Upstream skips the pull
+    // then too.
     if !decoded.bare && !decoded.no_checkout && has_resolvable_head(&clonedir) {
         let refs: Vec<String> = Vec::new();
         pull::pull_with_filter(&clonedir, &refs, &decoded.include, &decoded.exclude)?;
         if decoded.recurse_submodules {
-            // git ≥ 2.9 forwards `-c filter.lfs.*=` to submodules, so
-            // each submodule's working tree comes out of `git clone`
-            // with pointer text instead of materialized LFS content.
-            // Re-run `git lfs pull` inside each (recursively) to
-            // download. Errors here aren't fatal to the top-level
-            // clone — surface them with a status code matching
-            // upstream's "Error performing git lfs pull for
-            // submodules" wording so tests can grep for the message.
+            // Git passes the `-c` options on to submodules, so they have
+            // pointer files too. A failure here is printed but, unlike
+            // upstream, doesn't fail the command.
             let status = Command::new("git")
                 .current_dir(&clonedir)
                 .args(["submodule", "foreach", "--recursive", "git lfs pull"])
@@ -130,10 +103,6 @@ pub fn run(cwd: &Path, raw_args: &[String]) -> Result<(), CloneError> {
         }
     }
 
-    // Step 4: install hooks (best effort) so subsequent commits run
-    // through pre-push, post-checkout, etc. Already triggered by
-    // pull's smudge calls; this is the explicit safety net upstream
-    // uses too.
     if !decoded.skip_repo && !decoded.bare {
         let _ = install::try_install_hooks(&clonedir);
     }
@@ -141,9 +110,8 @@ pub fn run(cwd: &Path, raw_args: &[String]) -> Result<(), CloneError> {
     Ok(())
 }
 
-/// Walk the raw arg list, recognize the LFS-only flags (and a few
-/// pass-through flags whose presence we need to know about), and
-/// produce a forward list for `git clone`.
+/// Split the command line into the `git clone` arguments and the flags
+/// this command handles.
 fn decode_args(raw: &[String]) -> DecodedArgs {
     let mut forward = Vec::with_capacity(raw.len());
     let mut positional = Vec::new();
@@ -170,7 +138,6 @@ fn decode_args(raw: &[String]) -> DecodedArgs {
             i += 1;
             continue;
         }
-        // LFS-only flags: strip from forward.
         if a == "--skip-repo" {
             skip_repo = true;
             i += 1;
@@ -200,7 +167,6 @@ fn decode_args(raw: &[String]) -> DecodedArgs {
             i += 1;
             continue;
         }
-        // Pass-through flags whose presence we record.
         if a == "--no-checkout" || a == "-n" {
             no_checkout = true;
         } else if a == "--bare" {
@@ -211,7 +177,8 @@ fn decode_args(raw: &[String]) -> DecodedArgs {
         {
             recurse_submodules = true;
         }
-        // Bundled short flags: `-lvn` etc. Recognize -n inside.
+        // Bundled short flags such as `-lvn`. This also matches an `n`
+        // in a short flag's value, as in `-bmain`.
         if let Some(rest) = a.strip_prefix('-')
             && !rest.starts_with('-')
             && rest.len() > 1
@@ -221,9 +188,8 @@ fn decode_args(raw: &[String]) -> DecodedArgs {
         }
         if a.starts_with('-') {
             forward.push(a.clone());
-            // Some flags take a separate value (-b / --branch foo,
-            // -o / --origin foo, --depth N, --template DIR, etc.).
-            // Detect via "no `=`" + "is a known value-taking flag" + "next is not a flag".
+            // Pass a flag's separate value through without taking it as
+            // the repository or directory.
             if (value_taking_long(a) || value_taking_short(a)) && i + 1 < raw.len() {
                 forward.push(raw[i + 1].clone());
                 i += 2;
@@ -248,10 +214,11 @@ fn decode_args(raw: &[String]) -> DecodedArgs {
     }
 }
 
-/// Long-form clone flags that take a value as the next argv slot
-/// (only when not given as `--key=value`). The set is fixed by
-/// upstream's `git clone --help`; missing one just means the value
-/// gets misinterpreted as a positional arg, so be exhaustive.
+/// Whether `s` is a long `git clone` option whose value is the next
+/// argument.
+///
+/// A missing option here makes its value look like the repository or
+/// directory.
 fn value_taking_long(s: &str) -> bool {
     if s.contains('=') {
         return false;
@@ -277,6 +244,8 @@ fn value_taking_long(s: &str) -> bool {
     )
 }
 
+/// Whether `s` is a short `git clone` option whose value is the next
+/// argument.
 fn value_taking_short(s: &str) -> bool {
     matches!(s, "-o" | "-b" | "-u" | "-c" | "-j")
 }
@@ -291,10 +260,10 @@ fn has_resolvable_head(cwd: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Mirror of upstream's clonedir-discovery: prefer the last positional
-/// arg if it's an existing directory (relative to the original cwd),
-/// otherwise derive a name from the repository URL by basename + .git
-/// stripping.
+/// Find the new repository, like upstream.
+///
+/// That's the last positional argument if it's an existing directory,
+/// and otherwise the repository's base name without `.git`.
 fn derive_clone_dir(cwd: &Path, args: &[String]) -> Result<PathBuf, CloneError> {
     let last = args.last().ok_or(CloneError::MissingRepo)?;
     let abs_last = if Path::new(last).is_absolute() {

@@ -1,25 +1,19 @@
-//! `git lfs logs` — manage the crash-log directory at `.git/lfs/logs/`.
+//! `git lfs logs`: list, show, and clear the crash logs in `.git/lfs/logs`.
 //!
-//! Each crash writes a `<timestamp>.log` file with the version banner,
-//! the command line, the error message and a stack-trace-ish payload.
-//! Used both as a diagnostic surface for users filing bug reports and
-//! as a self-test (`git lfs logs boomtown` — exits 2, writes a sample
-//! log so the test harness can verify the directory is writeable and
-//! the format is sane).
-//!
-//! The `boomtown` panic format mirrors upstream's `logPanicToWriter`:
+//! No command writes a crash log on failure. Only `git lfs logs boomtown`
+//! writes one, a sample in the shape of upstream's `logPanicToWriter`:
 //!
 //! ```text
-//! <version desc>
+//! git-lfs <version>
 //! <git --version>
 //!
 //! $ git-lfs logs boomtown
 //! Sample panic message: Sample error message: Sample wrapped error message
 //! ```
 //!
-//! Filenames use upstream's nanosecond timestamp shape
-//! (`YYYYMMDDTHHMMSS.NNNNNNNNN.log`) so chronological sort matches
-//! creation order even when two crashes land in the same second.
+//! Log names are UTC timestamps with nanoseconds,
+//! `YYYYMMDDTHHMMSS.NNNNNNNNN.log`, so sorting them by name sorts them by
+//! time.
 
 use std::fs;
 use std::io;
@@ -36,9 +30,7 @@ pub enum LogsError {
     Read(String),
 }
 
-/// `git lfs logs` (no args): list log filenames in chronological order,
-/// one per line. Missing log directory is not an error — just emits
-/// nothing.
+/// List the log names, oldest first.
 pub fn list(cwd: &Path) -> Result<u8, LogsError> {
     let dir = log_dir(cwd)?;
     for name in sorted_logs(&dir) {
@@ -47,8 +39,7 @@ pub fn list(cwd: &Path) -> Result<u8, LogsError> {
     Ok(0)
 }
 
-/// `git lfs logs last`: print the most recent log to stdout, or
-/// `No logs to show` if the directory is empty.
+/// Print the newest log.
 pub fn last(cwd: &Path) -> Result<u8, LogsError> {
     let dir = log_dir(cwd)?;
     let logs = sorted_logs(&dir);
@@ -59,8 +50,10 @@ pub fn last(cwd: &Path) -> Result<u8, LogsError> {
     show(cwd, name)
 }
 
-/// `git lfs logs show <name>`: print a specific log to stdout. Errors
-/// out (exit 2 via the caller) when the file is missing or unreadable.
+/// Print the log called `name`.
+///
+/// A missing or unreadable log is a [`LogsError::Read`], which exits 1.
+/// Upstream exits 2.
 pub fn show(cwd: &Path, name: &str) -> Result<u8, LogsError> {
     let dir = log_dir(cwd)?;
     let bytes = fs::read(dir.join(name)).map_err(|_| LogsError::Read(name.to_owned()))?;
@@ -69,8 +62,7 @@ pub fn show(cwd: &Path, name: &str) -> Result<u8, LogsError> {
     Ok(0)
 }
 
-/// `git lfs logs clear`: remove the entire log directory and report the
-/// path that was cleared, matching upstream's `Cleared <path>` wording.
+/// Delete the log directory.
 pub fn clear(cwd: &Path) -> Result<u8, LogsError> {
     let dir = log_dir(cwd)?;
     if dir.exists() {
@@ -80,20 +72,18 @@ pub fn clear(cwd: &Path) -> Result<u8, LogsError> {
     Ok(0)
 }
 
-/// `git lfs logs boomtown`: deliberate-failure path that writes a
-/// sample crash log and exits 2. Used by `t-logs.sh` to verify the
-/// log writer round-trips end-to-end.
+/// Write a sample crash log and return exit code 2.
+///
+/// `argv` is the command line without the program name.
 pub fn boomtown(cwd: &Path, argv: &[String]) -> Result<u8, LogsError> {
     let dir = log_dir(cwd)?;
     fs::create_dir_all(&dir)?;
     let filename = format!("{}.log", panic_timestamp());
     let path = dir.join(&filename);
 
-    // Header matches upstream's `logPanicToWriter`: version banner,
-    // git version, blank line, `$ <argv...>` line, error chain.
     let git_version = git_version().unwrap_or_else(|| "git: <unknown>".to_owned());
-    // Match upstream's `$ <basename(os.Args[0])> <args[1..]>` shape;
-    // tests grep the literal `$ git-lfs ...`.
+    // Upstream logs the program's base name, and tests grep for
+    // `$ git-lfs ...`.
     let prog = std::env::args()
         .next()
         .and_then(|arg0| {
@@ -123,14 +113,12 @@ pub fn boomtown(cwd: &Path, argv: &[String]) -> Result<u8, LogsError> {
     Ok(2)
 }
 
-/// `.git/lfs/logs/` for `cwd`. Doesn't create the directory — callers
-/// that write logs (i.e. boomtown) `mkdir -p` it themselves.
+/// The log directory, which may not exist.
 fn log_dir(cwd: &Path) -> Result<PathBuf, LogsError> {
     Ok(git_lfs_git::lfs_dir(cwd)?.join("logs"))
 }
 
-/// Filenames in `dir`, sorted ascending. Empty when the directory
-/// doesn't exist or has no entries.
+/// The names of the files in `dir`, sorted, or none if it can't be read.
 fn sorted_logs(dir: &Path) -> Vec<String> {
     let Ok(rd) = fs::read_dir(dir) else {
         return Vec::new();
@@ -144,10 +132,10 @@ fn sorted_logs(dir: &Path) -> Vec<String> {
     names
 }
 
-/// Upstream's `time.Now().Format("20060102T150405.999999999")` —
-/// year-month-day `T` hour-minute-second `.` nanos. Done with chrono
-/// would be one line; we don't pull chrono just for this, so we
-/// stitch it from `SystemTime` and a manual yyyy-mm-dd split.
+/// The current UTC time as `YYYYMMDDTHHMMSS.NNNNNNNNN`.
+///
+/// Like upstream's `Format("20060102T150405.999999999")`, except that
+/// upstream drops trailing zeros from the nanoseconds.
 fn panic_timestamp() -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -158,10 +146,7 @@ fn panic_timestamp() -> String {
     format!("{y:04}{mo:02}{d:02}T{hr:02}{mn:02}{se:02}.{nanos:09}")
 }
 
-/// Split a UTC epoch second into year/month/day/hour/minute/second.
-/// Naive Gregorian — leap years handled, leap seconds ignored (good
-/// enough for log filenames whose collisions are resolved by the
-/// nanosecond suffix anyway).
+/// Split Unix time into UTC year, month, day, hour, minute, and second.
 fn epoch_to_ymdhms(secs: i64) -> (i32, u32, u32, u32, u32, u32) {
     const SECS_PER_DAY: i64 = 86_400;
     let days = secs.div_euclid(SECS_PER_DAY);
@@ -198,8 +183,7 @@ fn is_leap(year: i32) -> bool {
     (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
 }
 
-/// Capture `git --version` for the log header. Best-effort — a
-/// missing or misbehaving git binary just leaves the field blank.
+/// The output of `git --version`, or `None` if it fails.
 fn git_version() -> Option<String> {
     let out = std::process::Command::new("git")
         .arg("--version")

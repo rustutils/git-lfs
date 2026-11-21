@@ -1,16 +1,11 @@
-//! Library surface for the `git-lfs` binary.
+//! Library half of the `git-lfs` binary.
 //!
-//! This crate is primarily a binary (see `main.rs`). The library
-//! half exists so other tools in the workspace can reuse the clap
-//! command tree for man-page generation, shell completions, and
-//! the like. Only [`args`] and [`man`] are intentionally public;
-//! the rest of the binary's modules stay private to `main.rs`.
+//! It exposes the clap command tree in [`args`] and the documentation in
+//! [`man`] so that `xtask` can render man pages and the manual from them.
+//! The other modules are private to the binary.
 
 pub mod args;
 pub mod man;
 
-/// The published version of the `git-lfs` binary.
-///
-/// Re-exported so xtask (and any future consumer) renders the
-/// correct banner and man-page version without baking in a literal.
+/// The version of the `git-lfs` binary, as shown in its man pages.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

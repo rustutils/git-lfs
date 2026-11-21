@@ -1,18 +1,13 @@
-//! `git lfs update` — (re-)install the four LFS git hooks.
+//! `git lfs update`: install or upgrade the four Git LFS hooks.
 //!
-//! Counterpart to `git lfs install` for the hooks-only side. With no
-//! flags: writes any of `pre-push` / `post-checkout` / `post-commit` /
-//! `post-merge` that are missing or empty, silently upgrades any of our
-//! own previously-shipped templates to the current version, and on the
-//! first user-edited hook prints the upstream-format conflict block
-//! and exits non-zero without touching anything.
+//! A hook that is missing, empty, or one of our older templates is
+//! written. If any hook has other content, nothing is written: the
+//! conflict is printed and the exit code is 2. `--force` overwrites such
+//! hooks, and `--manual` prints what to add to each hook instead of
+//! writing anything.
 //!
-//! `--force` overwrites a user-edited hook. `--manual` prints the
-//! shell-step instructions for installing all four hooks by hand
-//! (used by the conflict-resolution flow) and never touches the disk.
-//!
-//! The `lfs.<url>.access` config migration upstream performs on update
-//! is tracked in NOTES.md.
+//! Upstream also rewrites old `lfs.<url>.access` values. This command
+//! doesn't.
 
 use std::path::Path;
 
@@ -20,8 +15,7 @@ use git_lfs_git::git_dir;
 
 use crate::install;
 
-/// Hook names installed by `git lfs update`, in the order shown to the
-/// user (matches upstream and the order tests assert on).
+/// The hooks, in the order `--manual` prints them, which is upstream's.
 const HOOKS: &[&str] = &["pre-push", "post-checkout", "post-commit", "post-merge"];
 
 #[derive(Debug, thiserror::Error)]
@@ -30,16 +24,16 @@ pub enum UpdateError {
     Install(#[from] install::InstallError),
     #[error(transparent)]
     Io(#[from] std::io::Error),
-    /// Caller isn't inside any git repo. Upstream prints
-    /// `"Not in a Git repository."` and exits 128.
+    /// The command was run outside a repository.
     #[error("Not in a Git repository.")]
     NotInRepo,
 }
 
-/// Run `git lfs update`. Returns the process exit code: `0` on success,
-/// `2` on a hook conflict (after writing the conflict block to stderr),
-/// `Err(NotInRepo)` for the outside-repo case (the caller maps that to
-/// `128` after printing the upstream message).
+/// Run `git lfs update` and return the exit code.
+///
+/// That's 0 on success and 2 after printing a hook conflict to stderr.
+/// Outside a repository it returns [`UpdateError::NotInRepo`], which the
+/// caller prints and turns into exit code 128, as upstream does.
 pub fn run(cwd: &Path, force: bool, manual: bool) -> Result<u8, UpdateError> {
     let git_dir = git_dir(cwd).map_err(|_| UpdateError::NotInRepo)?;
     let hooks_dir = install::effective_hooks_dir(cwd)?;
@@ -69,10 +63,9 @@ pub fn run(cwd: &Path, force: bool, manual: bool) -> Result<u8, UpdateError> {
     }
 }
 
-/// Render the hooks directory the way the user types it: relative to
-/// the working-tree root when possible (e.g. `.git/hooks`, or `hooks`
-/// when `core.hookspath` is set or the repo is bare), absolute when
-/// it lives outside.
+/// Show the hooks directory relative to the Git directory's parent (the
+/// working tree root, normally) or to `cwd`, or absolute if it's under
+/// neither.
 fn display_hooks_dir(cwd: &Path, git_dir: &Path, hooks_dir: &Path) -> String {
     let work_root = git_dir.parent().unwrap_or(git_dir);
     if let Ok(rel) = hooks_dir.strip_prefix(work_root) {

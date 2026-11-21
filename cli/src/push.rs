@@ -1,23 +1,14 @@
-//! `git lfs push <remote> [<ref>...]` — upload every LFS object reachable
-//! from the given refs that the named remote doesn't already have.
+//! `git lfs push`: upload LFS objects to a remote.
 //!
-//! Three argument modes (mutually exclusive):
+//! The arguments after the remote are refs, or OIDs with `--object-id`.
+//! For refs, the objects uploaded are those in commits reachable from
+//! the refs but not from any `refs/remotes/<remote>/` ref. `--all`
+//! without refs uses all local branches and tags. With `--stdin`, the
+//! arguments are read from stdin instead.
 //!
-//! - **refs** (default): positional args are git refs. Scan rev-list
-//!   from those refs (excluding everything reachable from
-//!   `refs/remotes/<remote>/*`) and upload the LFS pointers found.
-//! - `--all`: scan from `refs/heads/*` + `refs/tags/*` instead. If
-//!   positional args are given alongside, they restrict the walk.
-//! - `--object-id`: positional args are raw LFS OIDs. No scan — we
-//!   read the bytes (and size) directly from the local store.
-//!
-//! `--stdin` overrides positional args with one-per-line input from
-//! stdin (blank lines are dropped). Mixing `--stdin` with positional
-//! args emits a warning, mirroring upstream.
-//!
-//! The batch API also dedupes server-side: any object the server
-//! already has comes back from the upload batch with no `actions`, and
-//! the transfer queue treats that as success without sending bytes.
+//! [`upload_in_range`] does the work for both this command and
+//! `pre-push`. Objects the server already has come back from the batch
+//! without actions and aren't sent again.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -40,30 +31,27 @@ pub enum PushCommandError {
     ForEachRef(String),
     #[error("upload failed: {0}")]
     Fetch(git_lfs_filter::FetchError),
-    /// User-facing argument error. Carries the message verbatim — it's
-    /// printed and we exit non-zero. No exit-2 wrapping (that's
-    /// reserved for missing-locally aborts).
+    /// An error whose message is shown as is.
     #[error("{0}")]
     Usage(String),
 }
 
-/// Outcome of a push attempt — carries the per-object [`Report`] plus
-/// whether we aborted before uploading because of locally-and-remotely
-/// missing objects (the `lfs.allowincompletepush=false` failure mode).
-/// Callers map `aborted` to exit code 2 to match upstream.
+/// The result of a push.
+///
+/// `aborted` is set when the push failed after its own error output:
+/// lock verification stopped it, an object is missing locally and on the
+/// server, an object is corrupt, or an upload failed. Callers exit with
+/// code 2 then, like upstream.
 #[derive(Debug, Default)]
 pub struct PushOutcome {
     pub report: Report,
     pub aborted: bool,
 }
 
-/// All flags + positional args for `git lfs push`. Bundled so callers
-/// don't have to thread eight independent parameters through the
-/// dispatcher.
+/// Arguments for [`push`].
 pub struct PushOptions<'a> {
     pub args: &'a [String],
-    /// Pre-read stdin lines (blank lines stripped). Empty when
-    /// `stdin` is false.
+    /// The non-empty lines of stdin, read when `stdin` is set.
     pub stdin_lines: &'a [String],
     pub dry_run: bool,
     pub all: bool,
@@ -71,27 +59,18 @@ pub struct PushOptions<'a> {
     pub object_id: bool,
 }
 
-/// Run `git lfs push`. Validates flags, classifies the requested mode
-/// (refs / refs+--all / object-id), and routes to the appropriate
-/// uploader.
+/// Run `git lfs push`.
 pub fn push(
     cwd: &Path,
     remote: &str,
     opts: &PushOptions<'_>,
 ) -> Result<PushOutcome, PushCommandError> {
-    // Remote validation runs first — both modes need a real remote so
-    // we can resolve its tracking refs / LFS endpoint. This catches
-    // typos like `git lfs push not-a-remote` before any other work.
     if !is_remote_or_url(cwd, remote) {
         return Err(PushCommandError::Usage(format!(
             "Invalid remote name: {remote:?}"
         )));
     }
 
-    // Resolve the effective positional args. With --stdin, stdin_lines
-    // wins and any args become a warning. Empty stdin under --stdin
-    // is fine for object-id (no objects to push); the all-refs walk
-    // and the explicit-refs path catch their own emptiness below.
     let (effective_args, stdin_overrode_args) = if opts.stdin {
         (opts.stdin_lines, !opts.args.is_empty())
     } else {
@@ -117,19 +96,14 @@ pub fn push(
         return upload_in_range(cwd, remote, &ref_strs, &excludes, None, opts.dry_run);
     }
 
-    // Plain ref mode. Refusing the empty-refs case is a small UX
-    // improvement over upstream's silent `git push HEAD` default —
-    // and the test suite explicitly checks for it (`push with
-    // nothing`).
     if effective_args.is_empty() {
         return Err(PushCommandError::Usage(
             "At least one ref must be supplied without --all".into(),
         ));
     }
 
-    // Validate each ref before handing to rev-list, so the user gets
-    // a tidy `Invalid ref argument: foo` instead of git's
-    // `fatal: bad revision 'foo'`.
+    // Check refs first so a typo gets `Invalid ref argument` instead of
+    // an error from `git rev-list`.
     for r in effective_args {
         if !is_resolvable_ref(cwd, r) {
             return Err(PushCommandError::Usage(format!(
@@ -144,20 +118,17 @@ pub fn push(
     upload_in_range(cwd, remote, &ref_strs, &excludes, None, opts.dry_run)
 }
 
-/// `--object-id` path: positional args are LFS OIDs to upload directly
-/// from the store, bypassing the rev-list scan. Used for surgical
-/// re-uploads (e.g. after the user pruned and the remote also lost an
-/// object, leaving only their local copy).
+/// Upload the objects named by `oids` from the local store.
+///
+/// Locks aren't verified, since there are no paths to check, like
+/// upstream.
 fn push_by_oid(
     cwd: &Path,
     remote: &str,
     oids: &[String],
     opts: &PushOptions<'_>,
 ) -> Result<PushOutcome, PushCommandError> {
-    // --stdin with empty input is a legitimate no-op (matches upstream
-    // — easier to script "push every oid in this file"). Without
-    // --stdin, requiring at least one positional arg gives a clear
-    // signal that the flag was used incorrectly.
+    // Empty stdin is allowed, like upstream, to make scripting easier.
     if oids.is_empty() {
         if opts.stdin {
             return Ok(PushOutcome::default());
@@ -183,21 +154,14 @@ fn push_by_oid(
     }
 
     if opts.dry_run {
-        // No path to attribute — just emit the OID with an empty
-        // path slot. Test 14 greps `push <oid> =>`, so the `=>` has
-        // to be there.
+        // There's no path, but t-push.sh checks for `push <oid> =>`.
         for spec in &to_upload {
             println!("push {} => ", spec.oid);
         }
         return Ok(PushOutcome::default());
     }
 
-    let mut fetcher = LfsFetcher::from_repo_with_remote(cwd, &store, Some(remote))?;
-    // Skip lock verification for direct-OID uploads — there's no path
-    // context to reason about ownership against, and the typical
-    // caller is `t-push.sh`-style tooling that's already vetted the
-    // workflow.
-    let _ = &mut fetcher;
+    let fetcher = LfsFetcher::from_repo_with_remote(cwd, &store, Some(remote))?;
 
     let total = to_upload.len();
     let total_bytes: u64 = to_upload.iter().map(|s| s.size).sum();
@@ -233,9 +197,7 @@ fn push_by_oid(
     })
 }
 
-/// Parse an OID string into [`Oid`], rejecting empty / too-short input
-/// with the message `t-push.sh::push --object-id (invalid value)`
-/// expects.
+/// Parse an OID argument, with the error messages t-push.sh checks.
 fn parse_oid(raw: &str) -> Result<Oid, PushCommandError> {
     if raw.len() < 64 {
         return Err(PushCommandError::Usage(format!(
@@ -246,17 +208,12 @@ fn parse_oid(raw: &str) -> Result<Oid, PushCommandError> {
         .map_err(|_| PushCommandError::Usage(format!("invalid object ID: {raw:?}")))
 }
 
-/// True if `<remote>` is something we can resolve to an LFS endpoint —
-/// a known git remote name, a URL we can use directly, or any name
-/// that picks up a fallback `lfs.url` / `GIT_LFS_URL`. The check
-/// mirrors the resolution chain in `endpoint_for_remote` so a
-/// remote-less repo with `lfs.url` set still pushes (the typical
-/// integration-test setup).
+/// Whether `name` is a configured remote, looks like a URL, or has an LFS
+/// endpoint.
+///
+/// The last case lets a repository without remotes push to `lfs.url`.
 fn is_remote_or_url(cwd: &Path, name: &str) -> bool {
-    if name.contains("://")
-        || name.starts_with("git@")
-        || name.starts_with("file://")
-        || std::path::Path::new(name).is_absolute()
+    if name.contains("://") || name.starts_with("git@") || std::path::Path::new(name).is_absolute()
     {
         return true;
     }
@@ -264,12 +221,10 @@ fn is_remote_or_url(cwd: &Path, name: &str) -> bool {
     if matches!(git_lfs_git::config::get_effective(cwd, &key), Ok(Some(_))) {
         return true;
     }
-    // Endpoint-resolvable via `lfs.url` / `remote.<name>.lfsurl` / etc.
     git_lfs_git::endpoint::endpoint_for_remote(cwd, Some(name)).is_ok()
 }
 
-/// True if `<ref>` resolves to a commit. Used to distinguish a typo'd
-/// branch name from a brand-new branch the user just created.
+/// Whether `r` resolves to a commit.
 fn is_resolvable_ref(cwd: &Path, r: &str) -> bool {
     let out = Command::new("git")
         .arg("-C")
@@ -284,9 +239,7 @@ fn is_resolvable_ref(cwd: &Path, r: &str) -> bool {
     matches!(out, Ok(o) if o.status.success())
 }
 
-/// Enumerate `refs/heads/*` and `refs/tags/*` for `--all`. Order is
-/// whatever git's `for-each-ref` emits (alphabetical within each
-/// pattern); the scanner doesn't care.
+/// Every local branch and tag, as full ref names.
 fn all_local_refs(cwd: &Path) -> Result<Vec<String>, PushCommandError> {
     let out = Command::new("git")
         .arg("-C")
@@ -310,13 +263,14 @@ fn all_local_refs(cwd: &Path) -> Result<Vec<String>, PushCommandError> {
         .collect())
 }
 
-/// Shared core: scan for pointers reachable from `includes` minus
-/// `excludes`, partition by local availability, ask the server about
-/// the missing ones, and either upload or fail per upstream's rules.
+/// Upload the objects in commits reachable from `includes` but not from
+/// `excludes`.
 ///
-/// Used by both [`push`] (CLI-driven) and
-/// [`crate::pre_push::pre_push`] (git-hook-driven). Progress output goes
-/// to stderr so it doesn't pollute scripts piping the command's stdout.
+/// Locks are verified first. Objects missing locally are checked against
+/// the server, and fail the push unless the server has them or
+/// `lfs.allowincompletepush` is set. Corrupt local objects always fail
+/// it, after the others are uploaded. `refspec` is sent with the batch
+/// requests. With `dry_run`, only print what would be uploaded.
 pub(crate) fn upload_in_range(
     cwd: &Path,
     remote: &str,
@@ -328,10 +282,12 @@ pub(crate) fn upload_in_range(
     upload_in_range_with_args(cwd, remote, includes, excludes, &[], refspec, dry_run)
 }
 
-/// Like [`upload_in_range`] but threads `extra_rev_list_args` through
-/// to [`scan_pointers_with_args`]. Used by `pre_push` to enable the
-/// upstream `--not --remotes=<name>` optimization when the push URL
-/// matches a configured remote.
+/// Like [`upload_in_range`], with extra arguments for `git rev-list`.
+///
+/// `pre-push` passes `--not --remotes=<name>` here. Those arguments only
+/// narrow the scan for lock verification: objects they exclude are still
+/// checked against the server and uploaded if it's missing them, in case
+/// a remote-tracking ref is stale.
 pub(crate) fn upload_in_range_with_args(
     cwd: &Path,
     remote: &str,
@@ -350,30 +306,14 @@ pub(crate) fn upload_in_range_with_args(
         extra_rev_list_args,
     )?;
 
-    // Partition pointers three ways:
-    //   - present-locally: full-size match → eligible for upload.
-    //   - corrupt: object file exists on disk but its size doesn't
-    //     match the pointer (e.g. truncated). Detected locally; we
-    //     don't ask the server about these — corruption is a local
-    //     data-integrity problem regardless of remote state. They get
-    //     reported `(corrupt) <path> (<oid>)` after the healthy
-    //     objects upload.
-    //   - missing: object file isn't on disk at all. We ask the
-    //     server about these (the optimistic "you might already have
-    //     it" path); whatever the server doesn't have becomes
-    //     `truly_missing` and is the gate that
-    //     `lfs.allowincompletepush` controls.
+    // An object with the wrong size locally is corrupt, and isn't
+    // checked against the server.
     let mut to_upload: Vec<ObjectSpec> = Vec::new();
     let mut paths: HashMap<String, PathBuf> = HashMap::new();
     let mut missing: Vec<(ObjectSpec, Option<PathBuf>)> = Vec::new();
     let mut corrupt: Vec<(ObjectSpec, Option<PathBuf>)> = Vec::new();
     for entry in pointers {
-        // Empty files committed to a `filter=lfs` path are stored by
-        // git as the empty blob — not as a pointer text. Our scanner
-        // still parses them as `Pointer::empty()` (size 0) since
-        // upstream's spec treats empty input as a valid empty pointer,
-        // but they're not real LFS objects to push. Skip so the
-        // "Uploading LFS objects: N/N" count matches upstream's view.
+        // An empty file is its own pointer and has no object to upload.
         if entry.size == 0 {
             continue;
         }
@@ -394,10 +334,8 @@ pub(crate) fn upload_in_range_with_args(
         }
     }
 
-    // Safety net: the `--not --remotes=<name>` optimization may have
-    // excluded LFS pointers that a stale local origin-tracking ref
-    // claims are on the server. Re-scan unrestricted and let the
-    // downstream missing/has-on-server check catch any GC'd objects.
+    // A remote-tracking ref may claim objects the server no longer has,
+    // so scan again without the extra arguments.
     if !extra_rev_list_args.is_empty() {
         use std::collections::HashSet;
         let known: HashSet<git_lfs_pointer::Oid> = to_upload
@@ -433,9 +371,7 @@ pub(crate) fn upload_in_range_with_args(
     }
 
     if dry_run {
-        // Dry-run lists all objects that would be considered — present,
-        // missing, and corrupt alike (matches upstream: dry-run has
-        // nothing local to verify either, so the list is the same).
+        // List missing and corrupt objects too, like upstream.
         for spec in &to_upload {
             if let Some(p) = paths.get(&spec.oid) {
                 println!("push {} => {}", spec.oid, p.display());
@@ -449,24 +385,14 @@ pub(crate) fn upload_in_range_with_args(
         return Ok(PushOutcome::default());
     }
 
-    // For "have a pointer but not the bytes", check whether the server
-    // already holds the object. If yes, treat as a silent no-op
-    // (functionally equivalent to having it locally). If no, it's a
-    // truly-missing object — fail hard or warn, depending on
-    // `lfs.allowincompletepush`.
     let mut fetcher = LfsFetcher::from_repo_with_remote(cwd, &store, Some(remote))?;
     if refspec.is_some() {
         fetcher = fetcher.with_refspec(refspec);
     }
 
-    // Pre-flight `/locks/verify`. Comes before any byte transfer (and
-    // before the missing-object batch) so a "verification required"
-    // failure aborts the push without touching the upload endpoint.
-    //
-    // The intersection set is *every* path changed in the push range,
-    // not just LFS-pointer paths — locks can be held on lockable-but-
-    // non-LFS files too (`*.dat lockable` without `filter=lfs`), and
-    // those still need to gate the push.
+    // Verify locks before any batch request. Their locks block the push
+    // for every path changed in the range, not only LFS files, since a
+    // file can be lockable without being in LFS.
     let endpoint = git_lfs_git::endpoint::endpoint_for_remote(cwd, Some(remote))
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     let changed_paths = changed_paths_in_range(cwd, includes, excludes, extra_rev_list_args)?;
@@ -497,8 +423,6 @@ pub(crate) fn upload_in_range_with_args(
                         }
                     }
                 }
-                // Path-intersect theirs with what we're pushing —
-                // those are the entries that actually block this push.
                 theirs
                     .into_iter()
                     .filter(|l| changed_paths.iter().any(|p| p == &l.path))
@@ -522,11 +446,8 @@ pub(crate) fn upload_in_range_with_args(
         });
     }
 
-    // Pointers that are missing locally but already on the server count
-    // toward the push total so the user sees `100% (N/N)` even though we
-    // couldn't have re-uploaded the bytes. They're tracked separately
-    // from `to_upload` so we don't try to spawn a real transfer for
-    // them.
+    // Objects missing locally that the server already has count as
+    // uploaded in the progress line.
     let (truly_missing, already_on_server): (Vec<(ObjectSpec, Option<PathBuf>)>, Vec<ObjectSpec>) =
         if missing.is_empty() {
             (Vec::new(), Vec::new())
@@ -549,9 +470,6 @@ pub(crate) fn upload_in_range_with_args(
     if !truly_missing.is_empty() {
         let allow = allow_incomplete_push(cwd);
         if !allow {
-            // Trace line + summary + per-object listing, all to stderr
-            // (test grep checks combined-output but stderr keeps stdout
-            // clean for users redirecting).
             for (spec, _) in &truly_missing {
                 eprintln!(
                     "tq: stopping batched queue, object \"{}\" missing locally and on remote",
@@ -571,8 +489,6 @@ pub(crate) fn upload_in_range_with_args(
                 aborted: true,
             });
         } else {
-            // allowincompletepush=true: warn, then proceed with the
-            // present-locally subset.
             eprintln!("LFS upload missing objects");
             for (spec, path) in &truly_missing {
                 let path_str = path
@@ -585,8 +501,6 @@ pub(crate) fn upload_in_range_with_args(
     }
 
     if to_upload.is_empty() && already_on_server.is_empty() {
-        // Nothing healthy to upload, but corrupt objects still need
-        // to be reported and fail the push.
         if !corrupt.is_empty() {
             eprintln!("LFS upload failed:");
             for (spec, path) in &corrupt {
@@ -604,10 +518,6 @@ pub(crate) fn upload_in_range_with_args(
         return Ok(PushOutcome::default());
     }
 
-    // Objects already on the server count as already-successful — no
-    // bytes to ship, but they belong in the total so the progress line
-    // matches upstream's "N/N" when a partial local cache has been
-    // pruned.
     let total = to_upload.len() + already_on_server.len();
     let already_on_server_bytes: u64 = already_on_server.iter().map(|s| s.size).sum();
     let total_bytes: u64 = to_upload.iter().map(|s| s.size).sum::<u64>() + already_on_server_bytes;
@@ -645,13 +555,9 @@ pub(crate) fn upload_in_range_with_args(
         eprintln!("  {oid}: {err}");
     }
 
-    // Locally-corrupt objects: detected during the partition step
-    // above, but reported here so healthy objects in `to_upload` got
-    // their chance to reach the server first (matches upstream — the
-    // present objects in test 7 are expected on the server even
-    // though the push exits non-zero). Always fails the push, even
-    // with `lfs.allowincompletepush=true`: corruption is a data-
-    // integrity problem the user needs to know about.
+    // Corrupt objects fail the push even with `lfs.allowincompletepush`.
+    // They're reported after the upload because t-push.sh expects the
+    // healthy objects on the server, like upstream.
     let aborted = !corrupt.is_empty() || !report.failed.is_empty();
     if !corrupt.is_empty() {
         eprintln!("LFS upload failed:");
@@ -667,10 +573,8 @@ pub(crate) fn upload_in_range_with_args(
     Ok(PushOutcome { report, aborted })
 }
 
-/// Every working-tree path touched by a commit reachable from `includes`
-/// minus those reachable from `excludes` / `extra_rev_list_args`. Used
-/// by the lock-verify intersect: a `*.dat lockable` file with no LFS
-/// filter still gates the push if someone else holds its lock.
+/// Every path changed by a commit reachable from `includes` but not from
+/// `excludes` or `extra_rev_list_args`.
 fn changed_paths_in_range(
     cwd: &Path,
     includes: &[&str],
@@ -687,9 +591,7 @@ fn changed_paths_in_range(
         args.extend(excludes.iter().copied());
     }
     args.extend(extra_rev_list_args.iter().copied());
-    // Disambiguate revs from paths so `git lfs push origin main` works
-    // when a file named `main` lives in the index alongside the branch
-    // ref of the same name.
+    // So a file named like a ref isn't taken as a path.
     args.push("--");
     let out = std::process::Command::new("git")
         .arg("-C")
@@ -717,8 +619,9 @@ fn changed_paths_in_range(
     Ok(seen.into_iter().collect())
 }
 
-/// Effective value of `lfs.allowincompletepush`. Defaults to `false`
-/// (matches upstream — incomplete pushes fail by default).
+/// Whether `lfs.allowincompletepush` is set to `true` or `1`.
+///
+/// Upstream also accepts the other boolean spellings Git does.
 fn allow_incomplete_push(cwd: &Path) -> bool {
     git_lfs_git::config::get_effective(cwd, "lfs.allowincompletepush")
         .ok()
@@ -727,9 +630,8 @@ fn allow_incomplete_push(cwd: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Decimal (SI) byte humanizer matching `dustin/go-humanize`'s `Bytes()`,
-/// which upstream uses in its progress meter. 1000-base, single decimal
-/// digit, units `B / kB / MB / GB / TB / PB / EB`.
+/// Format a byte count in decimal units, like go-humanize's `Bytes`, which
+/// upstream's progress meter uses.
 pub(crate) fn human_bytes(n: u64) -> String {
     const UNITS: &[&str] = &["B", "kB", "MB", "GB", "TB", "PB", "EB"];
     if n < 1000 {
@@ -744,9 +646,7 @@ pub(crate) fn human_bytes(n: u64) -> String {
     format!("{value:.1} {}", UNITS[idx])
 }
 
-/// Enumerate every ref under `refs/remotes/<remote>/`. Returns the
-/// fully-qualified ref names so they can go straight into rev-list's
-/// exclude set.
+/// Every ref under `refs/remotes/<remote>/`, as full ref names.
 pub(crate) fn remote_tracking_refs(
     cwd: &Path,
     remote: &str,

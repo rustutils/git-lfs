@@ -1,5 +1,5 @@
-//! `git lfs install` / `uninstall`: register or remove the LFS filter
-//! configuration and git hooks.
+//! `git lfs install` and `git lfs uninstall`: set or remove the LFS filter
+//! config and Git hooks.
 
 use std::fs;
 use std::io;
@@ -8,14 +8,8 @@ use std::process::Command;
 
 use git_lfs_git::{ConfigScope, config, git_common_dir, git_dir};
 
-/// Which config file the install/uninstall write goes to. Maps to the
-/// scope flag git config takes; `File(path)` becomes `--file=<path>`,
-/// the rest are the obvious mappings.
-///
-/// `Global` and `System` and `File(_)` are "scoped outside the repo" —
-/// the success message says "Global Git LFS configuration has been
-/// removed." (per t-uninstall test 10's `--file` assertion). `Local`
-/// and `Worktree` are per-repo and stay quieter.
+/// The config file install and uninstall write to, passed to `git config`
+/// as `--global`, `--system`, `--local`, `--worktree`, or `--file`.
 #[derive(Debug, Clone)]
 pub enum InstallScope {
     Global,
@@ -36,25 +30,29 @@ impl InstallScope {
         }
     }
 
-    /// `Local` / `Worktree` are per-repo; everything else operates on
-    /// a config file outside the repo and shouldn't try to touch hooks.
+    /// Whether this is the current repository's config.
+    ///
+    /// Hooks are always installed for these scopes, and for others only
+    /// when run inside a repository.
     pub fn is_repo_scope(&self) -> bool {
         matches!(self, Self::Local | Self::Worktree)
     }
 
-    /// Whether the success message should say "Global ..." (vs the
-    /// quieter "Local ..." used for per-repo scopes). Mirrors
-    /// upstream's distinction — `--file` is treated as global-like
-    /// since it usually points at `$XDG_CONFIG_HOME/git/config`.
+    /// Whether uninstall says "Global" rather than "Local" configuration
+    /// was removed.
+    ///
+    /// Upstream says "Global" for `--file` too, which t-uninstall.sh
+    /// checks, but "System" for `--system`.
     pub fn announces_global(&self) -> bool {
         matches!(self, Self::Global | Self::System | Self::File(_))
     }
 }
 
-/// `filter.lfs.<key>` settings written by install. Order is intentional —
-/// `process` is what git actually uses when filter-process is available;
-/// `clean`/`smudge` are the per-invocation fallback; `required = true`
-/// means git refuses to commit if the filter fails (the safe default).
+/// The filter settings install writes.
+///
+/// Git uses `process` when it can and falls back to `clean` and `smudge`.
+/// `required` makes a failing filter an error instead of passing the
+/// content through.
 const FILTER_KEYS: &[(&str, &str)] = &[
     ("filter.lfs.clean", "git-lfs clean -- %f"),
     ("filter.lfs.smudge", "git-lfs smudge -- %f"),
@@ -62,9 +60,8 @@ const FILTER_KEYS: &[(&str, &str)] = &[
     ("filter.lfs.required", "true"),
 ];
 
-/// `--skip-smudge` variant: tell git to invoke smudge/process with `--skip`
-/// so pointer text passes through untouched. Use with a follow-up
-/// `git lfs pull` to download content on demand.
+/// The filter settings for `--skip-smudge`, which check out pointers
+/// instead of content.
 const FILTER_KEYS_SKIP_SMUDGE: &[(&str, &str)] = &[
     ("filter.lfs.clean", "git-lfs clean -- %f"),
     ("filter.lfs.smudge", "git-lfs smudge --skip -- %f"),
@@ -72,12 +69,11 @@ const FILTER_KEYS_SKIP_SMUDGE: &[(&str, &str)] = &[
     ("filter.lfs.required", "true"),
 ];
 
-/// Previously-shipped filter values we silently overwrite without
-/// requiring `--force`. Mirrors upstream's `Upgradeables` map (see
-/// `lfs/attribute.go::filterAttribute`). The key is the full
-/// `filter.lfs.<x>` config name. The list also includes the *other
-/// mode's* current value so toggling between regular and `--skip-smudge`
-/// is silent (test 6 of t-install relies on this).
+/// Older values of filter setting `key` that install replaces without
+/// `--force`, like upstream's `Upgradeables` in `lfs/attribute.go`.
+///
+/// They include the other mode's current value, so switching to or from
+/// `--skip-smudge` works without `--force`.
 fn upgradeables_for(key: &str, skip_smudge: bool) -> &'static [&'static str] {
     match (key, skip_smudge) {
         ("filter.lfs.clean", false) => &["git-lfs clean %f"],
@@ -108,9 +104,9 @@ fn upgradeables_for(key: &str, skip_smudge: bool) -> &'static [&'static str] {
 
 const HOOKS: &[&str] = &["pre-push", "post-checkout", "post-commit", "post-merge"];
 
-/// Hook script template. `{{Command}}` is replaced with the hook type at
-/// install time. The PATH check matches the upstream wording verbatim so
-/// users see the same error if `git-lfs` later disappears from PATH.
+/// The hook script, with `{{Command}}` standing for the hook name.
+///
+/// Matches upstream's exactly, so each recognizes the other's hooks.
 const HOOK_TEMPLATE: &str = "\
 #!/bin/sh
 command -v git-lfs >/dev/null 2>&1 || { printf >&2 \"\\n%s\\n\\n\" \
@@ -124,10 +120,9 @@ git lfs {{Command}} \"$@\"
 pub struct InstallOptions {
     pub scope: InstallScope,
     pub force: bool,
-    /// Skip writing hooks; only set the config.
+    /// Don't write hooks.
     pub skip_repo: bool,
-    /// Configure smudge/process with `--skip` so pointer text passes
-    /// through. `git lfs pull` is the recovery path.
+    /// Write the [`FILTER_KEYS_SKIP_SMUDGE`] settings.
     pub skip_smudge: bool,
 }
 
@@ -137,36 +132,33 @@ pub enum InstallError {
     Git(#[from] git_lfs_git::Error),
     #[error(transparent)]
     Io(#[from] io::Error),
-    /// `filter.lfs.<x>` is set to a value we don't recognize as our
-    /// own (current or any historically-shipped variant). Display
-    /// matches upstream's `lfs/attribute.go::Attribute.set` wording so
-    /// the t-install grep `(clean|smudge)" attribute should be` lands
-    /// on the same substring.
+    /// A filter setting has a value install doesn't recognize.
+    ///
+    /// The message matches upstream's, which t-install.sh greps for.
     #[error("the {key:?} attribute should be {wanted:?} but is {existing:?}")]
     FilterAttribute {
         key: String,
         existing: String,
         wanted: String,
     },
-    /// One of our hooks exists with user-edited content. Carries the
-    /// existing text so the dispatcher can render the upstream-format
-    /// "Hook already exists" block (matched verbatim by t-install
-    /// test 4 and t-update tests 6/7).
+    /// A hook exists with content install doesn't recognize.
+    ///
+    /// [`print_hook_conflict`] prints it.
     #[error("hook {hook:?} already exists with different contents")]
     HookConflict { hook: String, existing: String },
-    /// `git config <scope> ...` failed (e.g. `--worktree` against a
-    /// repo that hasn't enabled `extensions.worktreeConfig`, or
-    /// `--local` against a `.git` the user can't write to). The CLI
-    /// dispatcher renders this verbatim to stdout (the upstream tests
-    /// `grep -E "error running.*git.*config"` against `>out.log`)
-    /// and exits 2.
+    /// A `git config` write failed.
+    ///
+    /// For example, `--worktree` without `extensions.worktreeConfig`, or
+    /// `--local` with a read-only `.git`. Tests grep stdout for this
+    /// message.
     #[error("error running 'git {}': {stderr}", args.join(" "))]
     ConfigCommandFailed { args: Vec<String>, stderr: String },
 }
 
-/// Run the install. Writes the four LFS git hooks when in a repo and
-/// `skip_repo` is false; the scope governs which config file gets the
-/// `filter.lfs.*` writes.
+/// Run `git lfs install`.
+///
+/// Writes the filter settings, then the hooks unless `skip_repo` is set
+/// or there's no repository.
 pub fn install(cwd: &Path, opts: &InstallOptions) -> Result<(), InstallError> {
     set_filter_config(cwd, opts)?;
 
@@ -213,10 +205,9 @@ fn set_filter_config(cwd: &Path, opts: &InstallOptions) -> Result<(), InstallErr
     Ok(())
 }
 
-/// `git config <scope> --get <key>` for one of the install scopes,
-/// including `--file=<path>`. Returns `Ok(None)` when the key isn't
-/// set or when the scope is unreachable (matches `git_lfs_git::config`'s
-/// permissive interpretation of `git config` exit codes).
+/// Read `key` from the config file `scope` names.
+///
+/// Returns `Ok(None)` if the key isn't set or the file can't be read.
 fn scoped_get(
     cwd: &Path,
     scope: &InstallScope,
@@ -231,8 +222,8 @@ fn scoped_get(
         .output()?;
     match out.status.code() {
         Some(0) => Ok(Some(String::from_utf8_lossy(&out.stdout).trim().to_owned())),
-        // 1 = key absent; 2 = multivar (we'll collapse with
-        // `--replace-all` on write); 128/129 = scope unreachable.
+        // 1 is an unset or invalid key, 2 a key without a section, and
+        // 128 or 129 an unreadable scope.
         Some(1) | Some(2) | Some(128) | Some(129) => Ok(None),
         _ => Err(git_lfs_git::Error::Failed(
             String::from_utf8_lossy(&out.stderr).trim().to_owned(),
@@ -240,10 +231,10 @@ fn scoped_get(
     }
 }
 
-/// `git config <scope> --replace-all <key> <value>`. The
-/// `--replace-all` flag matches upstream's `git/config.go::Set*`
-/// helpers and is what lets `git lfs install --force` collapse a
-/// multivar (test 14 of t-install).
+/// Set `key` in the config file `scope` names.
+///
+/// `--replace-all` turns a key with several values into one, as
+/// t-install.sh checks for `--force`.
 fn scoped_set(
     cwd: &Path,
     scope: &InstallScope,
@@ -291,7 +282,7 @@ fn scoped_unset(cwd: &Path, scope: &InstallScope, key: &str) -> Result<(), Insta
         .args(["--unset", key])
         .output()?;
     match out.status.code() {
-        // 0 = unset; 5 = key wasn't there.
+        // 5 means the key wasn't set.
         Some(0) | Some(5) => Ok(()),
         _ => Err(InstallError::ConfigCommandFailed {
             args,
@@ -303,9 +294,8 @@ fn scoped_unset(cwd: &Path, scope: &InstallScope, key: &str) -> Result<(), Insta
 pub(crate) fn install_all_hooks(cwd: &Path, opts: &InstallOptions) -> Result<(), InstallError> {
     let hooks_dir = effective_hooks_dir(cwd)?;
     fs::create_dir_all(&hooks_dir)?;
-    // Pre-flight: classify every hook before writing any of them so a
-    // conflict on hook N doesn't leave hooks 1..N-1 already replaced.
-    // `--force` skips the check and overwrites whatever's there.
+    // Check every hook before writing any, so a conflict leaves them all
+    // as they were. Upstream writes the hooks before the conflicting one.
     if !opts.force {
         for hook in HOOKS {
             let path = hooks_dir.join(hook);
@@ -323,11 +313,9 @@ pub(crate) fn install_all_hooks(cwd: &Path, opts: &InstallOptions) -> Result<(),
     Ok(())
 }
 
-/// Render the `Hook already exists: <hook>` block matched by t-install
-/// test 4 and t-update tests 6/7. Goes to stderr, matching upstream's
-/// `Exit("%s", err)` path. The trailing line break after the third
-/// section is omitted; the calling test captures with `2>&1` and
-/// `$(...)` (which strips trailing newlines anyway).
+/// Print a hook conflict to stderr in upstream's format.
+///
+/// t-install.sh and t-update.sh compare it exactly.
 pub fn print_hook_conflict(hook: &str, existing: &str) {
     eprintln!("Hook already exists: {hook}");
     eprintln!();
@@ -340,15 +328,12 @@ pub fn print_hook_conflict(hook: &str, existing: &str) {
     eprintln!("  2: run `git lfs update --force` to overwrite your hook.");
 }
 
-/// Resolve the hooks directory git would actually invoke. Honors
-/// `core.hookspath` (relative paths resolve against the working tree
-/// root, or the git dir for bare repos), falling back to
-/// `<git-dir>/hooks` when unset.
+/// The directory to write hooks to.
+///
+/// That's the repository's own `core.hooksPath` or else `hooks` in the
+/// common Git directory. Upstream reads `core.hooksPath` from every
+/// config scope.
 pub fn effective_hooks_dir(cwd: &Path) -> Result<std::path::PathBuf, InstallError> {
-    // Default hooks live in the **shared** git-dir, even when run from
-    // a linked worktree. The `core.hooksPath` override is itself
-    // worktree-scoped though, so we still consult it via the
-    // per-worktree `git config --local`.
     let common = git_common_dir(cwd)?;
     if let Ok(Some(hookspath)) = config::get(cwd, ConfigScope::Local, "core.hookspath")
         && !hookspath.is_empty()
@@ -358,20 +343,19 @@ pub fn effective_hooks_dir(cwd: &Path) -> Result<std::path::PathBuf, InstallErro
         if hp.is_absolute() {
             return Ok(hp.to_path_buf());
         }
-        // Relative paths anchor on the working-tree root for non-bare
-        // repos (where git-dir is `<work>/.git`), or on the git dir
-        // itself for bare repos.
+        // This is the working tree root when the Git directory is
+        // `<root>/.git`. In a bare repository it's the directory above
+        // the repository, where Git would use the repository itself.
         let base = common.parent().unwrap_or(&common);
         return Ok(base.join(hp));
     }
     Ok(common.join("hooks"))
 }
 
-/// Tilde-expand a leading `~/` or bare `~` against `$HOME`. Mirrors
-/// upstream's `tools.ExpandPath` for the same-user case (the `~user`
-/// lookup form is not used by any test today; if a user actually sets
-/// `core.hooksPath = ~someone/hooks` we'll fall through to the
-/// literal value and `git config` itself will surface the failure).
+/// Expand a leading `~` or `~/` to `$HOME`.
+///
+/// Unlike upstream's `tools.ExpandPath`, `~user` isn't expanded, so such a
+/// path is treated as relative.
 fn expand_home(raw: &str) -> String {
     if raw == "~"
         && let Some(home) = std::env::var_os("HOME")
@@ -386,17 +370,15 @@ fn expand_home(raw: &str) -> String {
     raw.to_owned()
 }
 
-/// Best-effort hook installer used by `git lfs track`'s auto-install
-/// pathway: writes any of our four hooks that don't already exist (or
-/// already match our template), silently *skips* hooks that exist with
-/// user-edited contents. Never errors on conflict — track shouldn't
-/// fail because someone has a custom pre-push hook.
+/// Install the hooks that are missing or ours, leaving any other hook as
+/// it is.
+///
+/// Commands such as `clean`, `smudge`, and `track` call this on every
+/// run and ignore its errors, as upstream does.
 pub fn try_install_hooks(cwd: &Path) -> Result<(), InstallError> {
-    // Hooks belong to the **shared** git-dir even when invoked from a
-    // linked worktree — `git lfs install` from inside a worktree must
-    // write to the main repo's `.git/hooks/`, not the per-worktree
-    // `.git/worktrees/<name>/hooks/`. t-worktree test 2 enforces this.
-    // Per-worktree hooks (via `core.hooksPath`) aren't yet supported.
+    // Unlike `effective_hooks_dir`, this ignores `core.hooksPath`.
+    // From a linked worktree the hooks go in the main `.git/hooks`, as
+    // t-worktree.sh checks.
     let hooks_dir = git_common_dir(cwd)?.join("hooks");
     fs::create_dir_all(&hooks_dir)?;
     for hook in HOOKS {
@@ -406,32 +388,26 @@ pub fn try_install_hooks(cwd: &Path) -> Result<(), InstallError> {
             HookStatus::Missing | HookStatus::Current | HookStatus::Legacy => {
                 write_hook(&path, &wanted)?;
             }
-            HookStatus::Conflict { .. } => {
-                // User-edited hook — leave it alone.
-            }
+            HookStatus::Conflict { .. } => {}
         }
     }
     Ok(())
 }
 
-/// Outcome of inspecting an existing hook file relative to our current
-/// template. Drives both the install/update writer and the
-/// `git lfs update`-side conflict UI.
+/// What a hook file holds, compared with [`HOOK_TEMPLATE`].
 #[derive(Debug)]
 pub enum HookStatus {
-    /// File doesn't exist or is empty — safe to write.
+    /// The file is missing or blank.
     Missing,
-    /// File matches our current template — already installed.
+    /// The file is the current template.
     Current,
-    /// File matches a previously-shipped template (or a leading-
-    /// whitespace variant of one) — replace with the current version.
+    /// The file is an older template, possibly indented.
     Legacy,
-    /// File has user-edited content. Carries the existing text so the
-    /// caller can render it in a conflict message.
+    /// The file has other content.
     Conflict { existing: String },
 }
 
-/// Inspect `<hooks_dir>/<hook>` and classify it.
+/// Classify the file at `hook_path`, the hook named `hook`.
 pub fn classify_hook(hook_path: &Path, hook: &str) -> io::Result<HookStatus> {
     let existing = match fs::read_to_string(hook_path) {
         Ok(s) => s,
@@ -455,9 +431,8 @@ pub fn classify_hook(hook_path: &Path, hook: &str) -> io::Result<HookStatus> {
     Ok(HookStatus::Conflict { existing })
 }
 
-/// Strip leading tabs/spaces from each line. Lets us recognize the
-/// pre-2.6 hook format that indents the body with one TAB (test
-/// "update with leading spaces" exercises this).
+/// Strip leading tabs and spaces from each line, so indented older hooks
+/// still match.
 fn strip_leading_indent(s: &str) -> String {
     s.lines()
         .map(|l| l.trim_start_matches(['\t', ' ']))
@@ -465,11 +440,10 @@ fn strip_leading_indent(s: &str) -> String {
         .join("\n")
 }
 
-/// Previously-shipped hook templates we recognize as ours and silently
-/// upgrade to the current [`HOOK_TEMPLATE`]. Each returned string is
-/// compared verbatim against the existing hook (after leading-whitespace
-/// normalization). The first three are pre-push-only — older versions
-/// shipped a `git lfs push --stdin` invocation specific to that hook.
+/// Older hook templates that install replaces without `--force`.
+///
+/// The first two are only for `pre-push`, which used to run
+/// `git lfs push --stdin`.
 fn legacy_templates(hook: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     if hook == "pre-push" {
@@ -507,8 +481,7 @@ fn legacy_templates(hook: &str) -> Vec<String> {
     out
 }
 
-/// The current template for `hook`, used both as the on-disk content
-/// and as the body printed by `git lfs update --manual`.
+/// The current hook script for `hook`.
 pub fn current_template(hook: &str) -> String {
     HOOK_TEMPLATE.replace("{{Command}}", hook)
 }
@@ -526,8 +499,7 @@ fn install_one_hook(
             write_hook(&path, &wanted)?;
             Ok(())
         }
-        // `Conflict` only reaches here when `opts.force` is set —
-        // `install_all_hooks`'s pre-flight rejects unforced conflicts.
+        // Without `force`, `install_all_hooks` has already rejected this.
         HookStatus::Conflict { existing } if opts.force => {
             let _ = existing;
             write_hook(&path, &wanted)?;
@@ -561,17 +533,20 @@ fn set_executable(_path: &Path) -> io::Result<()> {
 #[derive(Debug, Clone)]
 pub struct UninstallOptions {
     pub scope: InstallScope,
-    /// Skip removing hooks; only unset the config.
+    /// Don't remove hooks.
     pub skip_repo: bool,
-    /// Inverse of `skip_repo`: remove only the hooks and leave the
-    /// `filter.lfs.*` config alone. Set by `git lfs uninstall hooks`.
+    /// Remove only the hooks, for `git lfs uninstall hooks`.
     pub hooks_only: bool,
 }
 
-/// Run the uninstall. Mirrors [`install`]: clears the four `filter.lfs.*`
-/// config keys and (unless `skip_repo`) removes the LFS hooks. Hooks are
-/// only deleted if their contents match what we'd write — a user-edited
-/// hook is left in place so we don't blow away local customizations.
+/// Run `git lfs uninstall`.
+///
+/// Unsets the filter settings, then removes the hooks unless `skip_repo`
+/// is set or there's no repository. Only hooks that are exactly the
+/// current template are removed. Upstream also removes older templates
+/// and blank hooks.
+///
+/// If unsetting a setting fails, this returns before touching the hooks.
 pub fn uninstall(cwd: &Path, opts: &UninstallOptions) -> Result<(), InstallError> {
     if !opts.hooks_only {
         unset_filter_config(cwd, opts)?;
@@ -609,10 +584,7 @@ fn uninstall_one_hook(hooks_dir: &Path, hook: &str) -> Result<(), InstallError> 
             fs::remove_file(&path)?;
             Ok(())
         }
-        Ok(_) => {
-            // Hook exists but isn't ours — leave it alone.
-            Ok(())
-        }
+        Ok(_) => Ok(()),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(InstallError::Io(e)),
     }

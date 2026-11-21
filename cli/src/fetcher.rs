@@ -1,17 +1,15 @@
-//! Sync→async bridge for on-demand LFS downloads from the smudge filter.
+//! Builds the API client, credential helpers, and transfer backend.
 //!
-//! `filter/`'s [`smudge_with_fetch`](git_lfs_filter::smudge_with_fetch) and
-//! [`filter_process`](git_lfs_filter::filter_process) take a sync closure
-//! that's invoked when an object is missing from the local store. This
-//! module hosts the closure: it owns the tokio runtime + the
-//! [`git_lfs_transfer::Transfer`] instance that actually drives the
-//! download.
+//! [`LfsFetcher`] owns a tokio runtime and a [`Transfer`], and gives the
+//! sync commands blocking methods for downloads, uploads, and one-off batch
+//! requests. The smudge filter, fetch, pull, push, prune, and checkout all
+//! go through it. [`build_api_client`] builds the same API client for the
+//! locking commands.
 //!
-//! Construction is infallible at the runtime level — if `lfs.url` isn't
-//! configured, the [`LfsFetcher`] returns the error lazily, on the first
-//! `fetch` call. That means a smudge of a *locally-present* object never
-//! has to talk to git config, so a stripped-down repo can still smudge
-//! its already-fetched bytes.
+//! Building an [`LfsFetcher`] only fails if the runtime can't be built. If
+//! the endpoint can't be resolved, the error is kept and returned by the
+//! first method that needs it, so smudging an object that's already in the
+//! store works without an endpoint.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -36,43 +34,39 @@ use git_lfs_transfer::sshtransfer::pool::{Pool, PoolConfig};
 use git_lfs_transfer::{Report, Transfer, TransferConfig};
 use tokio::runtime::Runtime;
 
-/// Owns the tokio runtime and the configured [`Transfer`]. One per CLI
-/// invocation; `fetch` is cheap to call repeatedly (e.g. inside the
-/// long-running filter-process loop).
+/// Owns the tokio runtime and the configured [`Transfer`].
+///
+/// Commands build one per run. The filter-process loop calls
+/// [`fetch`](Self::fetch) on the same fetcher for every missing object.
 pub struct LfsFetcher {
     runtime: Runtime,
     transfer: Result<Transfer, String>,
-    /// API client used directly for `check_server_has` (so push can ask
-    /// the server which "missing locally" objects the server already
-    /// holds before deciding whether to fail). Same client the
-    /// `Transfer` uses for its batch calls.
+    /// The API client, kept for [`api_client`](Self::api_client), the lock
+    /// check, and [`persist_access_mode`](Self::persist_access_mode).
     api: Result<ApiClient, String>,
-    /// Refspec sent on every batch request. Resolved once at
-    /// construction (current branch's tracked upstream, falling back
-    /// to the current branch's full ref). Required by servers that
-    /// scope LFS operations per-branch — without it, branch-required
-    /// repos return `403 Expected ref ..., got ""` to push/pull.
+    /// Ref sent with every batch request.
+    ///
+    /// Defaults to the current branch's `branch.<name>.merge`, else the
+    /// branch itself. Servers that scope objects by branch reject requests
+    /// without it.
     refspec: Option<Ref>,
-    /// Repo cwd captured at construction. Used to persist
-    /// `lfs.<url>.access` after a successful authenticated request,
-    /// so future `git lfs env` runs (and the cred-prompting flow)
-    /// know basic auth is in play.
+    /// Where to write `lfs.<url>.access`.
     cwd: PathBuf,
 }
 
 impl LfsFetcher {
-    /// Build a fetcher rooted at the given repo, defaulting the remote
-    /// name to `origin`. Runtime construction is the only thing that can
-    /// fail here; an unresolvable LFS endpoint is captured and surfaced
-    /// on the first [`fetch`](Self::fetch) call instead.
+    /// Build a fetcher for the default remote.
+    ///
+    /// Only fails if the runtime can't be built. An endpoint error is
+    /// returned later, by the first method that needs the endpoint.
     pub fn from_repo(cwd: &Path, store: &Store) -> std::io::Result<Self> {
         Self::from_repo_with_remote(cwd, store, None)
     }
 
-    /// Like [`from_repo`](Self::from_repo) but lets the caller specify
-    /// which remote to resolve against. Used by `push` / `pre-push` so
-    /// the LFS endpoint matches the remote being pushed to (otherwise a
-    /// `git push upstream` would still upload via `origin`'s LFS config).
+    /// Build a fetcher for the endpoint of `remote`.
+    ///
+    /// push and pre-push pass the remote being pushed to, so its LFS
+    /// endpoint is used instead of the default remote's.
     pub fn from_repo_with_remote(
         cwd: &Path,
         store: &Store,
@@ -82,44 +76,24 @@ impl LfsFetcher {
             .enable_all()
             .build()?;
         let endpoint_info = git_lfs_git::endpoint::resolve_endpoint(cwd, remote);
-        let endpoint_url = endpoint_info
-            .as_ref()
-            .map(|i| i.url.clone())
-            .map_err(|e| std::io::Error::other(format!("resolve endpoint: {e}")));
-        let endpoint_url = endpoint_url.or_else(|_e: std::io::Error| {
-            // Re-derive the same error from resolve_endpoint, since
-            // we want `Result<String, EndpointError>` semantics
-            // upstream.
-            git_lfs_git::endpoint::endpoint_for_remote(cwd, remote)
-        });
-        // Even for SSH endpoints we want the http client configured for
-        // the *eventual* HTTPS host — proxy/CA settings index by URL.
-        // For SSH-shaped endpoints, the resolver will replace the URL
-        // per request via `href`; the endpoint string we pass here is
-        // just the bootstrap. Pass the raw value — `http_client::build`
-        // tolerates non-HTTP schemes.
+        let endpoint_url = endpoint_info.as_ref().ok().map(|i| i.url.clone());
+        // The HTTP client takes its `http.*` settings from the endpoint URL
+        // and uses them for every request, including action URLs on other
+        // hosts. For an SSH endpoint that's the SSH URL, so only the global
+        // settings match.
         let http = endpoint_url
-            .as_ref()
+            .as_deref()
             .map(|u| crate::http_client::build(cwd, u))
             .unwrap_or_default();
         let api = build_api_client_with(cwd, remote, http.clone());
-        let config = transfer_config_for(cwd, endpoint_url.as_deref().ok());
+        let config = transfer_config_for(cwd, endpoint_url.as_deref());
 
-        // Routing: when the endpoint is SSH-shaped, dispatch through
-        // `Transfer::new_ssh` with the pure-SSH transfer protocol.
-        // Three sshtransfer modes, mirroring upstream:
-        //   - `always`: pure-SSH only; pool spawn failure surfaces
-        //     to the user.
-        //   - `never`: never try pure-SSH; use the HTTP path
-        //     (`git-lfs-authenticate` over the API client).
-        //   - `negotiate` (default for `ssh://` URLs): try pure-SSH
-        //     first; on pool spawn failure (e.g. remote doesn't have
-        //     `git-lfs-transfer` installed), transparently fall back
-        //     to HTTP per direction.
-        // The SSH backend builds lazily — the master connection
-        // doesn't spawn until the first download or upload actually
-        // runs, so an `LfsFetcher` for a non-LFS-touching command
-        // (e.g. `git lfs env`) doesn't pay for an SSH handshake.
+        // SSH endpoints pick a backend from `lfs.<url>.sshtransfer`.
+        // `always` uses only pure SSH, `never` uses only HTTP with
+        // git-lfs-authenticate, and anything else tries pure SSH and falls
+        // back to HTTP, per direction, if the pool can't start (for example
+        // when the server has no git-lfs-transfer). The SSH connection
+        // starts on the first transfer, not here.
         let ssh_mode = endpoint_info
             .as_ref()
             .ok()
@@ -142,7 +116,6 @@ impl LfsFetcher {
                 ))
             }
             Some((ssh, SshMode::Negotiate)) => {
-                // Need both pure-SSH and HTTP fallback ready.
                 let spawner = ssh_pool_spawner(ssh, config.concurrency.max(1));
                 match api.clone() {
                     Ok(api_client) => {
@@ -156,17 +129,13 @@ impl LfsFetcher {
                             config,
                         ))
                     }
-                    // No HTTP fallback available — still try pure-SSH
-                    // without one. A spawn failure will surface to
-                    // the user, which is the best we can do.
-                    Err(e) => {
-                        let _ = e;
-                        Ok(Transfer::new_ssh(
-                            SshBackend::new(spawner, None),
-                            store.clone(),
-                            config,
-                        ))
-                    }
+                    // Without an API client there's no HTTP fallback, so a
+                    // pool that can't start is an error.
+                    Err(_) => Ok(Transfer::new_ssh(
+                        SshBackend::new(spawner, None),
+                        store.clone(),
+                        config,
+                    )),
                 }
             }
             Some((_, SshMode::Never)) | None => api
@@ -183,14 +152,12 @@ impl LfsFetcher {
         })
     }
 
-    /// If our most recent operation authenticated via HTTP Basic,
-    /// persist `lfs.<url>.access = basic` to local git config so
-    /// future `git lfs env` runs render `(auth=basic)` and the
-    /// cred-prompting flow knows to fill upfront. No-op when the
-    /// endpoint isn't resolvable, no auth was used, or the value is
-    /// already set. Best-effort — config writes that fail are
-    /// swallowed (we'd rather complete the user's operation than
-    /// abort it on a bookkeeping write).
+    /// Set `lfs.<url>.access = basic` in the local config if the API client
+    /// used HTTP Basic auth.
+    ///
+    /// `git lfs env` shows the value. Does nothing if the endpoint didn't
+    /// resolve, Basic auth wasn't used, or the value is already `basic`. A
+    /// failed write is ignored.
     pub fn persist_access_mode(&self) {
         let Ok(api) = self.api.as_ref() else { return };
         if !api.used_basic_auth() {
@@ -206,22 +173,20 @@ impl LfsFetcher {
         let _ = git_lfs_git::config::set(&self.cwd, ConfigScope::Local, &key, "basic");
     }
 
-    /// Override the auto-resolved refspec. Used by `pre-push`, where
-    /// the relevant ref is the *remote* ref being pushed (parsed from
-    /// the hook's stdin), not the local branch the user happens to be
-    /// on.
+    /// Replace the ref sent with batch and lock requests.
+    ///
+    /// pre-push sends the remote ref being pushed, from the hook's input,
+    /// rather than the current branch.
     #[must_use]
     pub fn with_refspec(mut self, refspec: Option<String>) -> Self {
         self.refspec = refspec.map(Ref::new);
         self
     }
 
-    /// Download the object identified by `pointer` into the local store.
-    /// Returns once the bytes are committed (and hash-verified by
-    /// [`Store::insert_verified`](git_lfs_store::Store)).
+    /// Download the object for `pointer` into the store.
     ///
-    /// Single-object convenience over [`download_many`](Self::download_many).
-    /// Used by `smudge` / `filter-process`.
+    /// The smudge filter, checkout, and the merge driver call this for
+    /// objects missing from the store.
     pub fn fetch(&self, pointer: &Pointer) -> Result<(), FetchError> {
         let report = self.download_many(vec![ObjectSpec {
             oid: pointer.oid.to_string(),
@@ -233,10 +198,10 @@ impl LfsFetcher {
         Ok(())
     }
 
-    /// Download many objects in one batch. Errors eagerly if `lfs.url`
-    /// isn't configured (vs. [`fetch`](Self::fetch) which only complains
-    /// when actually invoked). Caller inspects the returned [`Report`] for
-    /// per-object outcomes.
+    /// Download objects into the store.
+    ///
+    /// Fails if the endpoint didn't resolve or the transfer can't run.
+    /// Per-object failures are in the returned [`Report`].
     pub fn download_many(&self, specs: Vec<ObjectSpec>) -> Result<Report, FetchError> {
         let transfer = self.transfer()?;
         let report = self
@@ -245,10 +210,11 @@ impl LfsFetcher {
         Ok(report)
     }
 
-    /// Upload many objects to the configured LFS endpoint. Server-side
-    /// dedup happens at the batch layer: objects the server already has
-    /// come back with no `actions`, the transfer queue treats those as
-    /// success without any byte transfer.
+    /// Upload objects to the endpoint.
+    ///
+    /// Objects the server already has come back without actions and count
+    /// as uploaded without sending anything. Per-object failures are in the
+    /// returned [`Report`].
     pub fn upload_many(&self, specs: Vec<ObjectSpec>) -> Result<Report, FetchError> {
         let transfer = self.transfer()?;
         let report = self
@@ -257,37 +223,28 @@ impl LfsFetcher {
         Ok(report)
     }
 
-    /// Borrow the inner API client (e.g. for callers that want to
-    /// run a one-off batch without going through `download_many`).
-    /// Errors lazily — same `lfs.url` resolution as the transfer
-    /// path.
+    /// The API client, or the error from resolving the endpoint.
     pub fn api_client(&self) -> Result<&ApiClient, FetchError> {
         self.api
             .as_ref()
             .map_err(|m| -> FetchError { m.clone().into() })
     }
 
-    /// Drive an arbitrary future on the fetcher's tokio runtime. Used
-    /// by callers (like fetch's --json --dry-run path) that need to
-    /// hit the API directly while keeping the fetcher's runtime ownership.
+    /// Run a future on the fetcher's runtime.
+    ///
+    /// fetch uses it to send its own batch request for `--json` and
+    /// `--dry-run`.
     pub fn runtime_block_on<F: std::future::Future>(&self, fut: F) -> F::Output {
         self.runtime.block_on(fut)
     }
 
-    /// Run the pre-flight `/locks/verify` check before push, returning
-    /// an [`Outcome`](crate::locks_verify::Outcome) the caller acts on.
-    /// Builds a [`LockClient`](crate::lock_client::LockClient) that
-    /// dispatches per `lfs.<url>.sshtransfer` config — SSH-shaped
-    /// endpoints with `sshtransfer != never` route through the
-    /// pure-SSH lock pool so the master `-oControlMaster=yes` SSH
-    /// connection upstream's test suite counts on actually spawns
-    /// during preflight.
+    /// Run the lock check that push and pre-push do before uploading.
     ///
-    /// Reuses [`self.api`] for the HTTP fallback path so the
-    /// SSH-auth cache (and any URL-scoped credentials) carry over
-    /// from the previous transfer setup — without this, the
-    /// `git-lfs-authenticate` invocation count counted by
-    /// `t-batch-transfer.sh` doubles.
+    /// The lock client follows `lfs.<url>.sshtransfer` like transfers do,
+    /// so for an SSH endpoint the lock pool's master connection starts
+    /// here, which `t-batch-transfer.sh` expects. The HTTP side reuses this
+    /// fetcher's API client and its cached git-lfs-authenticate response,
+    /// so ssh isn't run a second time (the same test counts those runs).
     pub fn preflight_verify_locks(
         &self,
         cwd: &Path,
@@ -316,14 +273,11 @@ impl LfsFetcher {
         crate::locks_verify::run(&client, cwd, remote_label, endpoint, self.refspec.as_ref())
     }
 
-    /// Ask the server which of the given OIDs it already holds. Used by
-    /// `push` / `pre-push` to distinguish "missing locally but server
-    /// has it" (silent skip — see `lfs.allowincompletepush`) from
-    /// "missing both places" (the failure case).
+    /// Return the OIDs the server already has, from one upload batch.
     ///
-    /// Sends one upload-direction batch and returns the OIDs that came
-    /// back with neither `actions` nor `error` (the spec's no-op
-    /// signal — server already has the object).
+    /// The server says it has an object by returning it with neither
+    /// actions nor an error. push uses this to tell objects missing only
+    /// locally from objects missing on both sides.
     pub fn check_server_has(&self, specs: Vec<ObjectSpec>) -> Result<HashSet<String>, FetchError> {
         if specs.is_empty() {
             return Ok(HashSet::new());
@@ -341,17 +295,11 @@ impl LfsFetcher {
             .collect())
     }
 
-    /// Ask the server which of the given OIDs it can serve back. Used
-    /// by `prune --verify-remote` to confirm a candidate-for-deletion
-    /// is actually safe to delete (the remote still has it). Returns
-    /// the subset that the server replied to with usable `actions` —
-    /// objects whose response carried an `error`, or no `actions`
-    /// (a no-op signal that doesn't make sense in download mode), are
-    /// **not** in the returned set.
+    /// Return the OIDs the server can serve, from one download batch.
     ///
-    /// Sends one download-direction batch. Pre-signed action URLs are
-    /// not consumed — we just look at which objects the server
-    /// admits to having.
+    /// An object counts if it comes back with actions and no error. The
+    /// action URLs aren't used. `prune --verify-remote` uses this before
+    /// deleting objects.
     pub fn check_server_can_download(
         &self,
         specs: Vec<ObjectSpec>,
@@ -379,9 +327,11 @@ impl LfsFetcher {
     }
 }
 
-/// Build an [`ApiClient`] for `cwd`+`remote` with our standard credential
-/// helper chain attached. Used both by [`LfsFetcher`] (for transfers) and
-/// by the locking commands (no transfers, just JSON requests).
+/// Build an [`ApiClient`] for the endpoint of `remote`, with credential
+/// helpers and, for SSH endpoints, git-lfs-authenticate.
+///
+/// The locking commands and the lockable hooks use this. [`LfsFetcher`]
+/// builds the same client.
 pub fn build_api_client(cwd: &Path, remote: Option<&str>) -> Result<ApiClient, String> {
     let endpoint = git_lfs_git::endpoint::endpoint_for_remote(cwd, remote)
         .map_err(|e| format!("resolving LFS endpoint: {e}"))?;
@@ -396,25 +346,23 @@ fn build_api_client_with(
 ) -> Result<ApiClient, String> {
     let info = git_lfs_git::endpoint::resolve_endpoint(cwd, remote)
         .map_err(|e| format!("resolving LFS endpoint: {e}"))?;
-    // For SSH-shaped endpoints, the configured URL might be `ssh://...`
-    // (e.g. `lfs.url = ssh://git@host/repo`). reqwest needs an http(s)
-    // base URL; the SSH resolver's `href` will replace it on each
-    // request, but we still need a parseable bootstrap value here.
+    // An SSH endpoint gets its HTTPS form as the base URL. The href from
+    // git-lfs-authenticate replaces it on each request.
     let endpoint =
         http_compatible_endpoint(&info.url).map_err(|e| format!("invalid LFS endpoint: {e}"))?;
     let mut url = url::Url::parse(&endpoint).map_err(|e| format!("invalid LFS endpoint: {e}"))?;
-    // Extract `user:pass@` from the endpoint and use it as the initial
-    // auth so we don't have to round-trip through 401 → fill on every
-    // first request. Mirrors upstream's `setRequestAuthWithCreds` for
-    // URL-embedded credentials. Strip the user info from the URL we
-    // pass to reqwest so it doesn't double-apply.
+    // Credentials in the endpoint URL become the initial auth, so the first
+    // request doesn't have to get a 401 first. Upstream's
+    // `setRequestAuthFromURL` only does this when there's a password. Here
+    // a username alone also gives Basic auth, with an empty password.
     let initial_auth = take_url_basic_auth(&mut url);
     let use_http_path = read_bool_default(cwd, "credential.useHttpPath", false);
-    // Resolve the credential URL up front (git remote URL when it
-    // shares scheme+host with the LFS endpoint, else the LFS endpoint
-    // itself). The helper chain consults it for URL-specific
-    // `credential.<url>.helper` lookup, and the API client uses it for
-    // prompts and "Git credentials for X not found" wording.
+    // Credential queries use the Git remote's URL when it has the same
+    // scheme, host, and port as the endpoint, else the endpoint. Only a
+    // remote the caller names is checked, so with `None` it's always the
+    // endpoint. The helper chain uses this URL to find
+    // `credential.<url>.helper`, and the API client uses it in prompts and
+    // the credentials-not-found error.
     let resolved_cred_url = remote
         .and_then(|r| git_lfs_git::endpoint::remote_url(cwd, r).ok().flatten())
         .and_then(|raw| url::Url::parse(&raw).ok())
@@ -424,15 +372,9 @@ fn build_api_client_with(
                 && gu.port() == url.port()
         });
     let cred_url_for_helper = resolved_cred_url.clone().unwrap_or_else(|| url.clone());
-    // Snapshot the configured `http.<url>.extraHeader` values so the
-    // GIT_CURL_VERBOSE dump can echo them. They're already on the wire
-    // via the reqwest client's `default_headers` (set up in
-    // `cli/src/http_client.rs`); the snapshot is purely so the
-    // verbose dump can name them.
+    // The HTTP client already sends `http.extraHeader` values as default
+    // headers. This copy is only for the `GIT_CURL_VERBOSE` dump.
     let extras = git_lfs_git::extra_headers_for(cwd, url.as_str());
-    // `credential.<url>.skipwwwauth` falls back to `credential.skipwwwauth`,
-    // default false. Mirrors upstream's `urlConfig.Bool("credential",
-    // rawurl, "skipwwwauth", false)` lookup.
     let skip_wwwauth = url_scoped_credential_bool(cwd, &cred_url_for_helper, "skipwwwauth", false);
     let mut client = ApiClient::with_http_client(url.clone(), initial_auth, http)
         .with_credential_helper(default_helper_chain(cwd, &cred_url_for_helper))
@@ -443,18 +385,10 @@ fn build_api_client_with(
         client = client.with_cred_url(git_url);
     }
     if let Some(ssh_info) = info.ssh {
-        // `lfs.<url>.sshtransfer` (with `lfs.sshtransfer` fallback) gates
-        // the pure-SSH transfer protocol (`git-lfs-transfer`). We don't
-        // implement that yet, so:
-        //   - `always`: the user explicitly asked for the unimplemented
-        //     path → fail loudly with upstream's exact wording so
-        //     scripts that opted in get a clear signal (and the shell
-        //     test grep matches).
-        //   - `never`: the user wants pure-SSH off; we honor that
-        //     trivially (we already only do `git-lfs-authenticate`),
-        //     and emit the trace line upstream prints for parity.
-        //   - unset / other: default behavior — just use
-        //     `git-lfs-authenticate`.
+        // With `sshtransfer = always`, only pure SSH may be used, so every
+        // API call fails instead of running git-lfs-authenticate. Upstream
+        // does this for any value other than `negotiate` and `never`. The
+        // trace lines are upstream's.
         let sshtransfer = read_sshtransfer_for(cwd, &info.url);
         match sshtransfer.as_deref() {
             Some("always") => {
@@ -475,8 +409,9 @@ fn build_api_client_with(
     Ok(client)
 }
 
-/// Read `lfs.<endpoint>.sshtransfer` falling back to `lfs.sshtransfer`.
-/// Lowercased so callers can pattern-match on `"always" / "never"`.
+/// Read `lfs.<endpoint>.sshtransfer`, falling back to `lfs.sshtransfer`.
+///
+/// The value is trimmed and lowercased.
 pub(crate) fn read_sshtransfer_for(cwd: &Path, endpoint: &str) -> Option<String> {
     let endpoint_key = format!("lfs.{endpoint}.sshtransfer");
     if let Ok(Some(v)) = git_lfs_git::config::get_effective(cwd, &endpoint_key) {
@@ -488,9 +423,9 @@ pub(crate) fn read_sshtransfer_for(cwd: &Path, endpoint: &str) -> Option<String>
     None
 }
 
-/// Emit one stderr trace line, gated on `GIT_TRACE` (matches the
-/// `creds/src/ssh.rs` trace gate). Used for the `sshtransfer=always` /
-/// `sshtransfer=never` notes the upstream test suite greps for.
+/// Print a line to stderr if `GIT_TRACE` is set and not false.
+///
+/// Prints the `sshtransfer` trace lines the upstream tests grep for.
 fn ssh_trace(args: std::fmt::Arguments) {
     if !ssh_trace_enabled() {
         return;
@@ -510,11 +445,10 @@ fn ssh_trace_enabled() -> bool {
     }
 }
 
-/// Resolver installed when `lfs.<url>.sshtransfer=always` and we don't
-/// implement pure-SSH transfer: refuses every request with upstream's
-/// "git-lfs-authenticate has been disabled by request" wording so the
-/// failure surfaces consistently regardless of which API method the
-/// caller hit.
+/// SSH resolver for `sshtransfer = always`, which refuses to run
+/// git-lfs-authenticate.
+///
+/// Every API call fails with upstream's message.
 struct DisabledSshResolver;
 
 impl SshResolver for DisabledSshResolver {
@@ -525,11 +459,11 @@ impl SshResolver for DisabledSshResolver {
     }
 }
 
-/// Convert an LFS endpoint string into something reqwest can use as a
-/// base URL. SSH-style schemes (`ssh://...`, bare `git@host:repo`, …)
-/// are run through [`derive_lfs_url`] to get the matching HTTPS form;
-/// HTTP/HTTPS pass through verbatim. The SSH resolver overrides this
-/// per-request when it returns a non-empty `href`.
+/// Turn an endpoint into an HTTP or HTTPS URL for the API client.
+///
+/// HTTP and HTTPS URLs are kept. Others, such as `ssh://` or `git@host:repo`,
+/// get their HTTPS form from
+/// [`derive_lfs_url`](git_lfs_git::endpoint::derive_lfs_url).
 fn http_compatible_endpoint(url_str: &str) -> Result<String, git_lfs_git::endpoint::EndpointError> {
     if url_str.starts_with("http://") || url_str.starts_with("https://") {
         return Ok(url_str.to_owned());
@@ -537,9 +471,8 @@ fn http_compatible_endpoint(url_str: &str) -> Result<String, git_lfs_git::endpoi
     git_lfs_git::endpoint::derive_lfs_url(url_str)
 }
 
-/// Construct an [`SshResolver`] for the given SSH endpoint metadata,
-/// using `GIT_SSH_COMMAND` / `GIT_SSH` / `ssh` for the executable in
-/// upstream's selection order.
+/// Build the [`SshResolver`] that runs git-lfs-authenticate for an SSH
+/// endpoint, with the program from [`resolve_ssh_program`].
 fn build_ssh_resolver(info: SshInfo) -> SharedSshResolver {
     let program = resolve_ssh_program();
     Arc::new(SshAuthAdapter {
@@ -548,10 +481,9 @@ fn build_ssh_resolver(info: SshInfo) -> SharedSshResolver {
     })
 }
 
-/// Build a [`PoolSpawner`] closure for the given SSH endpoint. The
-/// closure is called by [`SshBackend`] at most once per direction,
-/// on first use; the resolved program / variant / metadata are
-/// captured once and shared across both directions.
+/// Build the closure that starts a pure-SSH connection pool.
+///
+/// [`SshBackend`] calls it at most once per direction, on first use.
 fn ssh_pool_spawner(ssh: SshInfo, pool_size: usize) -> git_lfs_transfer::backend::PoolSpawner {
     let program = resolve_ssh_program();
     let multiplex_enabled = !cfg!(target_os = "windows");
@@ -563,38 +495,33 @@ fn ssh_pool_spawner(ssh: SshInfo, pool_size: usize) -> git_lfs_transfer::backend
     Arc::new(move |operation| {
         let pool_config = PoolConfig {
             program: program.clone(),
-            // Variant detection (`GIT_SSH_VARIANT`, `ssh.variant`,
-            // autodetect from program name) lands when we wire the
-            // multistage SSH config — for now we assume OpenSSH,
-            // which matches the platforms covered by the upstream
-            // tests.
+            // Always OpenSSH: `GIT_SSH_VARIANT` and `ssh.variant` aren't
+            // read, and the variant isn't guessed from the program name.
             variant: PoolVariant::Default,
             metadata: metadata.clone(),
             operation: operation.into(),
-            // Matches upstream's `lfs.ssh.automultiplex` default:
-            // on everywhere but Windows.
+            // `lfs.ssh.automultiplex` isn't read. This is its default, on
+            // everywhere but Windows.
             multiplex_enabled,
         };
         Pool::new(pool_config, pool_size).map(Arc::new)
     })
 }
 
-/// How to dispatch SSH-shaped endpoints. Mirrors the values of
-/// `lfs.<url>.sshtransfer` upstream: `always` opts out of HTTP
-/// fallback, `never` opts out of pure-SSH entirely,
-/// `negotiate` (the default for `ssh://`) tries pure-SSH first
-/// with HTTP as a fallback.
+/// How an SSH endpoint transfers, from `lfs.<url>.sshtransfer`.
+///
+/// `always` uses only pure SSH and `never` only HTTP. Any other value,
+/// including none, is `Negotiate`: pure SSH with HTTP as the fallback.
 enum SshMode {
     Always,
     Negotiate,
     Never,
 }
 
-/// Pick the SSH executable per upstream's order:
-/// `GIT_SSH_COMMAND` (full command line, parsed by SshAuthClient) >
-/// `GIT_SSH` (single program path) > literal `ssh` on `$PATH`.
-/// `core.sshCommand` is upstream's fallback before `GIT_SSH`; we don't
-/// honor it yet — see NOTES.md.
+/// Pick the SSH program: `GIT_SSH_COMMAND`, then `GIT_SSH`, then `ssh`.
+///
+/// The result is a command line that callers split on whitespace.
+/// `core.sshCommand`, which upstream tries after `GIT_SSH`, isn't read.
 pub(crate) fn resolve_ssh_program() -> String {
     if let Some(v) = std::env::var_os("GIT_SSH_COMMAND")
         && !v.is_empty()
@@ -609,11 +536,8 @@ pub(crate) fn resolve_ssh_program() -> String {
     "ssh".to_owned()
 }
 
-/// Bridge between `git_lfs_creds::SshAuthClient` (which knows how to
-/// spawn ssh and parse responses) and `git_lfs_api::SshResolver` (the
-/// trait the API client calls into). Holds the per-endpoint metadata
-/// the SSH command needs (`user@host`, port, path) and the operation
-/// translation between the two crates' enums.
+/// Adapts [`SshAuthClient`] to the API client's [`SshResolver`] trait for
+/// one SSH endpoint.
 struct SshAuthAdapter {
     client: Arc<SshAuthClient>,
     ssh: SshInfo,
@@ -641,10 +565,10 @@ impl SshResolver for SshAuthAdapter {
     }
 }
 
-/// Pull `user:pass@` (or `user@`, with empty password) out of `url` and
-/// turn it into an [`Auth::Basic`]. Strips both fields from the URL so
-/// downstream callers see the bare endpoint. Returns [`Auth::None`]
-/// when there's no user info to extract.
+/// Remove the user info from `url` and return it as [`Auth::Basic`].
+///
+/// A username without a password gives an empty password. Returns
+/// [`Auth::None`] if the URL has no user info.
 fn take_url_basic_auth(url: &mut url::Url) -> Auth {
     let user = url.username().to_owned();
     let pass = url.password().map(str::to_owned).unwrap_or_default();
@@ -659,13 +583,13 @@ fn take_url_basic_auth(url: &mut url::Url) -> Auth {
     }
 }
 
-/// Build a [`TransferConfig`] for `cwd`, plumbing
-/// `lfs.transfer.enablehrefrewrite` + `url.<base>.insteadOf` into
-/// `url_rewriter` when the flag is enabled. The rewrite map is captured
-/// at construction so the queue's hot path doesn't shell out to git for
-/// every action URL. `endpoint_url` (when known) is also used to
-/// resolve URL-scoped `lfs.<url>.contenttype` — passed in rather than
-/// re-resolved because the caller already paid for endpoint resolution.
+/// Build the [`TransferConfig`] from git config.
+///
+/// With `lfs.transfer.enablehrefrewrite`, action URLs are rewritten by
+/// `url.<base>.insteadOf`, and uploads first by `pushInsteadOf`. The rules
+/// are loaded once here, not per URL. Also reads `lfs.transfer.batchSize`,
+/// `lfs.concurrenttransfers`, `lfs.transfer.maxverifies`, and
+/// `lfs.<endpoint_url>.contenttype`.
 fn transfer_config_for(cwd: &Path, endpoint_url: Option<&str>) -> TransferConfig {
     let mut config = TransferConfig::default();
     if href_rewrite_enabled(cwd) {
@@ -678,8 +602,8 @@ fn transfer_config_for(cwd: &Path, endpoint_url: Option<&str>) -> TransferConfig
             }));
         }
         if !push_aliases.is_empty() {
-            // pushInsteadOf wins for upload + verify; insteadOf is the
-            // fallback when a URL doesn't match any push alias.
+            // Upload and verify URLs try pushInsteadOf first, then
+            // insteadOf.
             let upload_push = push_aliases;
             let upload_fallback = aliases;
             config.upload_url_rewriter = Some(Arc::new(move |url: &str| {
@@ -698,29 +622,23 @@ fn transfer_config_for(cwd: &Path, endpoint_url: Option<&str>) -> TransferConfig
     {
         config.batch_size = n;
     }
-    // `lfs.concurrenttransfers` overrides the default queue width.
-    // Upstream auto-tunes from CPU count; we still hard-code the
-    // default (see NOTES.md) but honor the user override so test 8
-    // of `t-batch-transfer.sh` (which sets `concurrentTransfers=2`)
-    // exercises a real concurrency cap.
+    // Without this setting the default of 8 applies. Upstream scales its
+    // default with the CPU count.
     if let Ok(Some(raw)) = git_lfs_git::config::get_effective(cwd, "lfs.concurrenttransfers")
         && let Ok(n) = raw.trim().parse::<usize>()
         && n > 0
     {
         config.concurrency = n;
     }
-    // `lfs.transfer.maxverifies` clamps to >= 3, matching upstream's
-    // `tq/verify.go` `max(defaultMaxVerifyAttempts, mv)` — so a negative
-    // or absurdly-small value silently falls back to the default.
+    // Values below the default of 3 are ignored, like upstream's
+    // `max(defaultMaxVerifyAttempts, mv)` in `tq/verify.go`.
     if let Ok(Some(raw)) = git_lfs_git::config::get_effective(cwd, "lfs.transfer.maxverifies")
         && let Ok(n) = raw.trim().parse::<u32>()
         && n >= 3
     {
         config.max_verifies = n;
     }
-    // `lfs.<url>.contenttype` falls back to global `lfs.contenttype`,
-    // default `true`. Without an endpoint we can't apply URL scoping
-    // — fall back to the global key directly.
+    // Defaults to true. Without an endpoint only `lfs.contenttype` is read.
     config.detect_content_type = match endpoint_url {
         Some(u) => git_lfs_git::lfs_url_bool(cwd, u, "contenttype", true),
         None => match git_lfs_git::config::get_effective(cwd, "lfs.contenttype") {
@@ -734,8 +652,7 @@ fn transfer_config_for(cwd: &Path, endpoint_url: Option<&str>) -> TransferConfig
     config
 }
 
-/// Read `lfs.transfer.enablehrefrewrite` from the effective config
-/// (default false). Accepts the standard git-bool spellings.
+/// Read `lfs.transfer.enablehrefrewrite`, default false.
 fn href_rewrite_enabled(cwd: &Path) -> bool {
     let raw = git_lfs_git::config::get_effective(cwd, "lfs.transfer.enablehrefrewrite")
         .ok()
@@ -747,31 +664,16 @@ fn href_rewrite_enabled(cwd: &Path) -> bool {
     )
 }
 
-/// Default credential resolution chain: in-process cache → netrc
-/// (when `~/.netrc` is present) → optional askpass → `git credential`.
-/// Cache is consulted first so a single CLI invocation only shells out
-/// once per host. Reads `credential.protectProtocol` (default `true`)
-/// and threads it into the git-credential helper so CR-bearing URLs
-/// can be opted into when the user explicitly does so.
+/// Build the credential helper chain: netrc, the in-process cache, askpass,
+/// then `git credential`.
 ///
-/// Netrc lookup is inserted ahead of askpass + git-credential when
-/// `$HOME/.netrc` (or `_netrc` on Windows) exists, matching upstream's
-/// `creds.NewCredentialHelperContext` order. Hosts not covered by
-/// netrc fall through to the rest of the chain.
-///
-/// Askpass is only inserted when:
-/// - `GIT_ASKPASS` / `core.askpass` / `SSH_ASKPASS` resolves to a
-///   non-empty program (priority in that order, matching upstream's
-///   `creds.NewCredentialHelperContext`), AND
-/// - `credential.helper` is unset — a configured helper takes
-///   precedence over interactive prompting.
+/// This is upstream's order. netrc is only added if the user's netrc file
+/// exists. It comes before the cache, so its trace line prints on every
+/// request. Askpass is only added if a program is configured and no
+/// `credential.helper` matches `cred_url`. `credential.protectProtocol`
+/// (default true) is passed on to `git credential`.
 fn default_helper_chain(cwd: &Path, cred_url: &url::Url) -> Arc<dyn Helper> {
     let protect_protocol = read_bool_default(cwd, "credential.protectProtocol", true);
-    // Netrc goes ahead of the cache so the `netrc: git credential fill`
-    // trace fires on every authenticated request, not just the first.
-    // For an actually-cached host, netrc's lookup is in-memory and
-    // cheap (file is read once at construction). Hosts not in netrc
-    // fall through to cache + askpass + git-credential as before.
     let mut helpers: Vec<Box<dyn Helper>> = Vec::new();
     if let Some(netrc) = NetrcCredentialHelper::from_default_location() {
         helpers.push(Box::new(netrc));
@@ -788,10 +690,10 @@ fn default_helper_chain(cwd: &Path, cred_url: &url::Url) -> Arc<dyn Helper> {
     Arc::new(HelperChain::new(helpers))
 }
 
-/// Resolve the askpass program per upstream's selection order:
-/// `GIT_ASKPASS` env > `core.askpass` config > `SSH_ASKPASS` env. First
-/// non-empty value wins. Returns `None` when none is configured (which
-/// is the typical headless / CI case).
+/// Pick the askpass program: `GIT_ASKPASS`, then `core.askpass`, then
+/// `SSH_ASKPASS`, as upstream does.
+///
+/// The first non-empty value wins.
 fn resolve_askpass_program(cwd: &Path) -> Option<String> {
     if let Some(v) = std::env::var_os("GIT_ASKPASS")
         && !v.is_empty()
@@ -811,12 +713,12 @@ fn resolve_askpass_program(cwd: &Path) -> Option<String> {
     None
 }
 
-/// Read a `credential.<url>.<suffix>` bool with `credential.<suffix>`
-/// fallback. Checks the same URL-prefix variants `has_credential_helper`
-/// walks: most-specific (`<scheme>://<host>:<port><path>`), then
-/// host-authority, then bare global. First match wins; absent or
-/// unparseable values fall through to `default`. Mirrors upstream's
-/// `urlConfig.Bool("credential", rawurl, suffix, default)`.
+/// Read a bool from `credential.<url>.<suffix>`, falling back to
+/// `credential.<suffix>`.
+///
+/// Tries the URL with its path, then without, then the bare key. The first
+/// valid value wins. Upstream's `urlConfig` also tries shorter paths,
+/// wildcard hosts, and URLs with a username. This doesn't.
 fn url_scoped_credential_bool(
     cwd: &Path,
     cred_url: &url::Url,
@@ -853,14 +755,10 @@ fn url_scoped_credential_bool(
     default
 }
 
-/// True if a non-empty `credential.helper` is configured for `cred_url`.
-/// Checks the URL-prefix variants in upstream's precedence order
-/// (`credential.<scheme>://<host>[:port]/<path>.helper` →
-/// `credential.<scheme>://<host>[:port].helper` →
-/// `credential.helper`) and returns true on the first non-empty match.
-/// When `true`, we skip askpass so a configured helper isn't shadowed
-/// by a pop-up prompt. Mirrors upstream's
-/// `urlConfig.Get("credential", rawurl, "helper")` lookup.
+/// Whether a non-empty `credential.helper` is set for `cred_url`.
+///
+/// Tries the same keys as [`url_scoped_credential_bool`], with the same
+/// limits compared to upstream.
 fn has_credential_helper(cwd: &Path, cred_url: &url::Url) -> bool {
     let mut keys = Vec::with_capacity(3);
     let host_authority = match (cred_url.host_str(), cred_url.port()) {
@@ -869,7 +767,6 @@ fn has_credential_helper(cwd: &Path, cred_url: &url::Url) -> bool {
         _ => None,
     };
     if let Some(h) = &host_authority {
-        // Most-specific: include path component if present.
         if !cred_url.path().is_empty() && cred_url.path() != "/" {
             keys.push(format!(
                 "credential.{}{}.helper",
@@ -890,9 +787,8 @@ fn has_credential_helper(cwd: &Path, cred_url: &url::Url) -> bool {
     false
 }
 
-/// Read a git-bool config value, returning `default` when the key is
-/// unset or unparseable. Matches git's accepted spellings (true/false,
-/// yes/no, on/off, 1/0).
+/// Read a boolean config value, or `default` if it's unset or not one of
+/// true, false, yes, no, on, off, 1, or 0.
 fn read_bool_default(cwd: &Path, key: &str, default: bool) -> bool {
     let Ok(Some(raw)) = git_lfs_git::config::get_effective(cwd, key) else {
         return default;

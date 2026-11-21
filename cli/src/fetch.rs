@@ -1,19 +1,22 @@
-//! `git lfs fetch [<remote>] [<ref>...]` — download LFS objects reachable
-//! from the named refs that aren't already in the local store.
+//! `git lfs fetch`: download the LFS objects for some refs into the local
+//! store.
 //!
-//! Argument shape mirrors upstream: the first positional arg is treated
-//! as a remote name if it resolves (and isn't a refspec); everything
-//! after is a ref. With `--all`, all `refs/heads/*` + `refs/tags/*` get
-//! walked. With `--stdin`, refs are read from stdin one per line.
+//! The first argument is a remote if it names one or looks like a URL, and
+//! the rest are refs. Which objects are wanted depends on the arguments:
 //!
-//! Per-ref scanning uses `git/scanner.rs` (`ScanRefs` semantics — every
-//! blob in every commit's tree is examined). Pointers we already have
-//! locally are filtered out before the batch (`--refetch` skips this
-//! filter). Path-pattern filters (`--include` / `--exclude`, plus the
-//! `lfs.fetchinclude` / `lfs.fetchexclude` config keys) are applied to
-//! each pointer's working-tree path; pointers whose path is unknown
-//! pass through unfiltered (matching upstream's "include the orphan"
-//! behavior).
+//! - Refs: the objects in each ref's tree.
+//! - `--all`: every object in the history of the given refs, or of all
+//!   local branches, tags, and remote-tracking refs.
+//! - Neither: the objects in the index.
+//!
+//! `--recent` or `lfs.fetchrecentalways` adds recent refs and recent
+//! history (see [`recent_walk`]). Then the include and exclude patterns
+//! drop objects by path, and objects already in the store are dropped
+//! unless `--refetch` is given.
+//!
+//! Unlike upstream, `--all` doesn't ignore `lfs.fetchinclude` and
+//! `lfs.fetchexclude`, and isn't rejected together with `--recent`,
+//! `--include`, or `--exclude`.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -36,13 +39,12 @@ pub enum FetchCommandError {
     Io(#[from] std::io::Error),
     #[error("fetch failed: {0}")]
     Fetch(git_lfs_filter::FetchError),
-    /// User-facing argument error. Carries the message verbatim.
+    /// An error whose message is shown as is.
     #[error("{0}")]
     Usage(String),
 }
 
-/// All flags + positional args for `git lfs fetch`. Bundled so callers
-/// don't have to thread eight independent parameters through dispatch.
+/// Arguments for [`fetch`].
 pub struct FetchOptions<'a> {
     pub args: &'a [String],
     pub stdin_lines: &'a [String],
@@ -52,38 +54,33 @@ pub struct FetchOptions<'a> {
     pub refetch: bool,
     pub stdin: bool,
     pub prune: bool,
-    /// User passed `--recent`. Combined with `lfs.fetchrecentalways` to
-    /// decide whether to walk recent refs + recent commits in addition
-    /// to the named refs' HEAD-state.
+    /// `--recent`, which `lfs.fetchrecentalways` also turns on.
     pub recent: bool,
-    /// Comma-separated globs from `--include` / `-I`. Empty string =
-    /// "no override" (config still applies).
+    /// Values of `--include`, each a comma-separated pattern list.
+    ///
+    /// When empty, `lfs.fetchinclude` applies. A single empty value turns
+    /// off the config value.
     pub include: &'a [String],
-    /// Comma-separated globs from `--exclude` / `-X`. Same semantics.
+    /// Values of `--exclude`, used like `include` with `lfs.fetchexclude`.
     pub exclude: &'a [String],
 }
 
-/// Outcome of a fetch attempt — carries the per-object [`Report`]. No
-/// `aborted` flag (fetch has no equivalent of push's exit-2 case).
+/// The result of [`fetch`].
 #[derive(Debug, Default)]
 pub struct FetchOutcome {
     pub report: Report,
 }
 
-/// Run the fetch command. Routes to the right scan / filter / download
-/// path based on `opts`.
+/// Run `git lfs fetch`.
 pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchCommandError> {
-    // Outside-a-repo guard. Upstream exits 128 here; we surface the
-    // condition via Usage and let the dispatcher map it. Use
-    // `--git-dir` rather than `--is-inside-work-tree`: the former
-    // succeeds for any valid repo configuration (work-tree, bare,
-    // or `GIT_DIR` / `GIT_WORK_TREE` env-var redirection where cwd
-    // sits outside the work tree, t-checkout test 14).
+    // The dispatcher matches this message and exits 128, like upstream.
+    // `--git-dir` also succeeds in a bare repository and when
+    // `GIT_WORK_TREE` points away from the current directory.
     if !is_in_git_repo(cwd) {
         return Err(FetchCommandError::Usage("Not in a Git repository.".into()));
     }
 
-    // Resolve the effective positional args: --stdin overrides argv.
+    // With `--stdin`, the refs come from stdin.
     let (effective_args, stdin_overrode_args) = if opts.stdin {
         (opts.stdin_lines, !opts.args.is_empty())
     } else {
@@ -93,15 +90,8 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
         eprintln!("Further command line arguments are ignored with --stdin.");
     }
 
-    // Split first positional into "remote" if it resolves; rest are
-    // refs. With `--stdin`, all stdin lines are refs (no remote in
-    // stdin); the remote is taken from argv[0] if argv had one.
-    //
-    // Disambiguation rule (matching upstream): when argv[0] resolves
-    // as neither a remote nor a ref, prefer the "remote name" error
-    // — the upstream test asks for `Invalid remote name` when the
-    // first arg is genuinely bogus (`t-fetch.sh::fetch with invalid
-    // remote`).
+    // A lone argument that is neither a remote nor a ref is reported as
+    // an invalid remote, which t-fetch.sh checks.
     let (remote, ref_args): (Option<String>, Vec<String>) = if opts.stdin {
         let remote = opts
             .args
@@ -123,9 +113,8 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
         }
     };
 
-    // Validate ref args before handing to rev-list. Lets us emit the
-    // upstream-format `Invalid ref argument:` for typos, matching
-    // `t-fetch.sh::fetch with invalid ref`.
+    // Check refs first so a typo gets upstream's `Invalid ref argument`
+    // message, which t-fetch.sh checks.
     for r in &ref_args {
         if !is_resolvable_ref(cwd, r) {
             return Err(FetchCommandError::Usage(format!(
@@ -134,20 +123,6 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
         }
     }
 
-    // Resolve the include set. Upstream's `--all` semantics:
-    //   `--all` + ref args → walk only those refs (test 21
-    //                       `fetch --all origin main` excludes
-    //                       branch1's objects).
-    //   `--all` alone     → walk every local + remote-tracking ref
-    //                       so an LFS object reachable only via
-    //                       refs/remotes/<remote>/<deleted-locally>
-    //                       still gets fetched.
-    //   no `--all`, refs  → use the refs.
-    //   no args + no all  → discover via `git ls-files :(attr:filter=lfs)`
-    //                       (matches upstream's git 2.42+ behavior:
-    //                       respects sparse-checkout, skips bare repos
-    //                       without an index, sidesteps rev-list on
-    //                       partial clones).
     let mut store = Store::new(git_lfs_git::lfs_dir(cwd)?)
         .with_references(git_lfs_git::lfs_alternate_dirs(cwd).unwrap_or_default());
     if let Some(v) = crate::shared_repo_config(cwd) {
@@ -164,19 +139,15 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
     let ref_strs: Vec<&str> = walk_refs.iter().map(String::as_str).collect();
 
     let mut pointers = if walk_refs.is_empty() {
+        // Like upstream with Git 2.42 and later, which reads the index:
+        // this respects sparse checkout and avoids walking history in a
+        // partial clone.
         git_lfs_git::scanner::scan_index_lfs(cwd)?
     } else if opts.all {
-        // `--all` walks every reachable commit so historical /
-        // deleted-from-HEAD pointers still get fetched. Augmented
-        // below with per-ref tree paths so include/exclude filters
-        // see every working-tree path an OID lives at.
         scan_pointers(cwd, &ref_strs, &[])?
     } else {
-        // Plain `git lfs fetch <ref>` walks the HEAD-state tree of
-        // each ref only — matches upstream's `fetchRef` behavior
-        // (recent-history walks happen via `--recent` or `--all`).
-        // Dedup by OID across refs so a pointer reachable from two
-        // refs at the same path doesn't double-enqueue.
+        // Like upstream's `fetchRef`, only each ref's tree. Merge the
+        // paths of an object found in several refs.
         use std::collections::HashMap;
         let mut by_oid: HashMap<git_lfs_pointer::Oid, PointerEntry> = HashMap::new();
         for r in &walk_refs {
@@ -196,16 +167,10 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
         by_oid.into_values().collect()
     };
 
-    // For the `--all` path, augment each pointer's `paths` with every
-    // working-tree path the same LFS object lives at across the named
-    // refs. `git rev-list --objects` only emits each blob OID once
-    // (with one of its paths), so two `--include` patterns like
-    // `big/a` vs `big/b` — pointing at files that share a blob —
-    // would otherwise see one arbitrary side and reject the OID.
-    // `scan_tree` does walk every path in one ref, so unioning that
-    // gives us the full set. The non-all path already aggregates via
-    // scan_tree above, and the index path emits one entry per index
-    // path already.
+    // `git rev-list --objects` gives each blob only one of its paths, so
+    // an include pattern that matches another path of the same object
+    // would miss it. Add every path the object has in the tip trees of
+    // the walked refs.
     if !walk_refs.is_empty() && opts.all {
         use std::collections::HashMap;
         let mut extra_paths: HashMap<git_lfs_pointer::Oid, Vec<PathBuf>> = HashMap::new();
@@ -232,23 +197,11 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
         }
     }
 
-    // Recent-history walk. `--recent` (or `lfs.fetchrecentalways`)
-    // expands the fetch set with two extras:
-    //   1. HEAD-state of every ref whose tip commit is within
-    //      `lfs.fetchrecentrefsdays` of now.
-    //   2. Pre-images of every LFS pointer modified within
-    //      `lfs.fetchrecentcommitsdays` on each named ref AND on each
-    //      recent ref.
-    // Mirrors upstream's `fetchRecent` (command_fetch.go::fetchRecent).
-    // Skipped on `--all` (already walks full history) and on the
-    // index-only / no-arg path (no refs to anchor the walk).
+    // `--all` already walks the whole history.
     let fp_cfg = git_lfs_git::fetch_prune::FetchPruneConfig::from_repo(cwd);
     let want_recent = (opts.recent || fp_cfg.fetch_recent_always) && !opts.all;
     if want_recent {
-        // Anchor the scan: when the user passed no positional refs the
-        // implicit anchor is HEAD's current branch (matches upstream's
-        // `refs = [CurrentRef()]` default). The named-refs path uses
-        // walk_refs verbatim.
+        // Without refs, start from HEAD like upstream.
         let anchors: Vec<String> = if walk_refs.is_empty() {
             vec!["HEAD".to_owned()]
         } else {
@@ -257,10 +210,6 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
         recent_walk(cwd, &fp_cfg, remote.as_deref(), &anchors, &mut pointers)?;
     }
 
-    // Apply include/exclude path filters. CLI flags take precedence
-    // over `lfs.fetchinclude` / `lfs.fetchexclude`; an empty CLI flag
-    // (e.g. `-X ""`) explicitly clears the config. Pointers without a
-    // path go through unfiltered.
     let include_set = build_pattern_set(cwd, opts.include, "lfs.fetchinclude")?;
     let exclude_set = build_pattern_set(cwd, opts.exclude, "lfs.fetchexclude")?;
     let filtered: Vec<PointerEntry> = pointers
@@ -268,10 +217,6 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
         .filter(|p| paths_pass_filter(&p.paths, &include_set, &exclude_set))
         .collect();
 
-    // Decide what to actually fetch. With `--refetch`, download
-    // everything regardless of local state (corrupt-recovery
-    // scenario); otherwise filter to what we don't already have at
-    // the right size.
     let mut to_fetch: Vec<ObjectSpec> = Vec::new();
     let mut paths: std::collections::HashMap<String, PathBuf> = std::collections::HashMap::new();
     for p in &filtered {
@@ -297,8 +242,6 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
 
     if opts.dry_run {
         if opts.json {
-            // For --json --dry-run, we still need batch URLs to fill
-            // in the `actions` field — call batch but skip transfer.
             return run_dry_run_with_json(cwd, remote.as_deref(), to_fetch, paths, &store);
         }
         for spec in &to_fetch {
@@ -309,12 +252,8 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
         return Ok(FetchOutcome::default());
     }
 
-    // Validate `http.sslKey` upfront. We don't yet wire client certs
-    // through to reqwest, but t-fetch 28 (`fetch does not crash on
-    // empty key files`) configures `/dev/null` as the key and expects
-    // an `Error decoding PEM block` message instead of a panic or
-    // a generic network error. Mirrors upstream's PEM-decode check
-    // in `lfshttp/certs.go::getClientCertForHost`.
+    // t-fetch.sh sets `http.sslKey` to `/dev/null` and expects this
+    // message, like upstream's `getClientCertForHost`.
     if let Ok(Some(path)) = git_lfs_git::config::get_effective(cwd, "http.sslkey")
         && !path.is_empty()
     {
@@ -328,14 +267,9 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
         }
     }
 
-    // Probe the storage directory before resolving the LFS endpoint
-    // so a chmod 400'd `.git/lfs/objects/` surfaces as
-    // `error trying to create local storage directory` (t-fetch 28),
-    // not as a downstream "can't resolve remote" error. Mirrors
-    // upstream's `fs.ObjectPath` mkdir-on-first-use semantics — we
-    // can't lazily defer it like the store's `commit` does because
-    // the error path the test greps for fires before any object is
-    // ever written.
+    // Create an object directory before contacting the server, so a
+    // read-only `.git/lfs/objects` gives this message, which t-fetch.sh
+    // checks, instead of a later transfer error.
     if let Some(spec) = to_fetch.first()
         && let Ok(oid) = spec.oid.parse::<git_lfs_pointer::Oid>()
     {
@@ -350,18 +284,12 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
         }
     }
 
-    // Real fetch: drive the transfer queue.
     let fetcher = LfsFetcher::from_repo_with_remote(cwd, &store, remote.as_deref())?;
     let total = to_fetch.len();
     let total_bytes: u64 = to_fetch.iter().map(|s| s.size).sum();
 
-    // For `--json` we also want the batch response — the test diffs
-    // against a literal JSON shape that includes `actions.download.href`.
-    // The transfer queue runs its own batch internally, but doesn't
-    // surface that response back. Easiest: do a one-off batch up front
-    // when JSON is requested. The redundant second batch from the
-    // transfer is harmless (server-side dedup, idempotent), and only
-    // happens on the `--json` path which isn't a hot loop.
+    // The JSON output includes the batch actions, which the transfer
+    // queue doesn't return, so `--json` sends one extra batch request.
     let batch_resp =
         if opts.json {
             use git_lfs_api::{BatchRequest, Operation};
@@ -396,11 +324,7 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
 
     if opts.json {
         print_json_transfers(&store, &to_fetch, &paths, batch_resp.as_ref())?;
-    } else if total > 0 {
-        // Suppress the progress line when there's literally nothing to
-        // fetch — t-pull `with partial clone and sparse checkout` greps
-        // for absence of "Downloading LFS objects" to confirm no
-        // out-of-cone work happened.
+    } else {
         eprintln!(
             "Downloading LFS objects: {percent}% ({succeeded}/{total}), {}",
             human_bytes(succeeded_bytes),
@@ -411,8 +335,9 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
     }
 
     if opts.prune {
-        // Best-effort prune after a successful fetch — matches
-        // upstream's `--prune` shorthand.
+        // Prune errors are ignored. Upstream exits with them. Prune is
+        // also skipped when there was nothing to download or with
+        // `--dry-run`, which upstream doesn't do.
         let prune_opts = crate::prune::Options {
             dry_run: false,
             verbose: false,
@@ -430,8 +355,8 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
     Ok(FetchOutcome { report })
 }
 
-/// `--dry-run --json`: call batch to learn the action URLs without
-/// downloading bytes. Used by `t-fetch.sh::fetch --json`.
+/// Print the `--dry-run --json` output, which needs a batch request for
+/// the actions.
 fn run_dry_run_with_json(
     cwd: &Path,
     remote: Option<&str>,
@@ -454,9 +379,10 @@ fn run_dry_run_with_json(
     Ok(FetchOutcome::default())
 }
 
-/// JSON output: `{ "transfers": [ { name, oid, size, actions, path } ] }`.
-/// Single-space indent matches upstream + `t-fetch.sh::fetch --json`'s
-/// literal-string diff.
+/// Print the `--json` output.
+///
+/// t-fetch.sh compares it to upstream's output byte for byte, which is
+/// indented by one space.
 fn print_json_transfers(
     store: &Store,
     specs: &[ObjectSpec],
@@ -507,7 +433,6 @@ fn print_json_transfers(
         .collect();
     let doc = Doc { transfers };
 
-    // Single-space indent matches upstream's JSON formatter.
     let mut buf = Vec::new();
     let formatter = serde_json::ser::PrettyFormatter::with_indent(b" ");
     let mut ser = serde_json::Serializer::with_formatter(&mut buf, formatter);
@@ -519,10 +444,9 @@ fn print_json_transfers(
     Ok(())
 }
 
-/// Read `<config_key>` (e.g. `lfs.fetchinclude`) and turn its
-/// comma-separated globs into a [`GlobSet`]. `None` if the key isn't
-/// set or has no patterns. Used by `fsck` to honor the same
-/// include/exclude policy as `fetch` without going through CLI flags.
+/// The patterns in `config_key`, such as `lfs.fetchinclude`.
+///
+/// `None` if the key isn't set or has no patterns.
 pub(crate) fn fetch_filter_set(
     cwd: &Path,
     config_key: &str,
@@ -530,10 +454,11 @@ pub(crate) fn fetch_filter_set(
     build_pattern_set(cwd, &[], config_key)
 }
 
-/// Build a [`GlobSet`] from CLI patterns + a config-key fallback. Empty
-/// pattern strings (e.g. `--include ""`) clear the set entirely. Empty
-/// list of patterns falls back to the config value (which is itself
-/// comma-separated).
+/// Build a pattern set from command-line values, or from `config_key` if
+/// there are none.
+///
+/// Each value is a comma-separated list. Values that hold no patterns,
+/// such as `--include ""`, give an empty set instead of the config value.
 pub(crate) fn build_pattern_set(
     cwd: &Path,
     cli: &[String],
@@ -558,18 +483,15 @@ pub(crate) fn build_pattern_set(
     }
     let mut builder = GlobSetBuilder::new();
     for pat in &raw {
-        // A trailing `/` means "directory contents", e.g. `dir/` should
-        // match `dir/a.dat`. Drop the slash so the ancestor-dir branch
-        // of `matches_with_prefix` handles it. Don't strip a lone `/`.
+        // A trailing slash means the directory's contents. Drop it so the
+        // ancestor check in `matches_with_prefix` matches. Keep a lone
+        // slash.
         let mut normalized: &str = pat
             .strip_suffix('/')
             .filter(|s| !s.is_empty())
             .unwrap_or(pat);
-        // Leading `/` is upstream's root-anchor marker (e.g.
-        // `lfs.fetchexclude=/foo` means "the foo directory at the
-        // repo root"). Globset has no path-anchor concept, so strip
-        // the slash before compiling — `matches_with_prefix` already
-        // walks ancestors, which gives the correct subtree match.
+        // A leading slash anchors the pattern at the repository root.
+        // Globset paths have no leading slash, so drop it.
         if let Some(rest) = normalized.strip_prefix('/')
             && !rest.is_empty()
         {
@@ -585,16 +507,10 @@ pub(crate) fn build_pattern_set(
     Ok(Some(set))
 }
 
-/// Apply include/exclude logic to a single pointer's working-tree
-/// path. Pointers without a path always pass (orphan blobs from
-/// rev-list — keep them, since the user can't filter what they can't
-/// see). Exposed pub(crate) so `fsck` can apply the same
-/// `lfs.fetchinclude` / `lfs.fetchexclude` semantics.
-/// True if *any* of `paths` would pass [`path_passes_filter`]. A
-/// single LFS OID can be checked in at multiple working-tree paths
-/// across history, so a filter that picks one of those paths must
-/// pull the OID even when the scanner's "primary" path doesn't
-/// match. t-fetch-include 3 is the smoke test.
+/// Whether any of `paths` passes [`path_passes_filter`].
+///
+/// An object can be at several paths, and is wanted if any of them is.
+/// An object with no known path passes.
 pub(crate) fn paths_pass_filter(
     paths: &[PathBuf],
     include: &Option<GlobSet>,
@@ -608,6 +524,9 @@ pub(crate) fn paths_pass_filter(
         .any(|p| path_passes_filter(Some(p), include, exclude))
 }
 
+/// Whether `path` matches `include` (if set) and doesn't match `exclude`.
+///
+/// `None` always passes.
 pub(crate) fn path_passes_filter(
     path: Option<&Path>,
     include: &Option<GlobSet>,
@@ -627,14 +546,11 @@ pub(crate) fn path_passes_filter(
     true
 }
 
-/// Match `path` against `set` with three escape hatches that mirror
-/// `.gitignore` / upstream `filepathfilter` semantics:
-///   1. Exact path match (`big/b/b1.big` against `big/b/*.big`).
-///   2. Basename match (`b1.big` against `b*.big`) so users can
-///      filter without knowing where in the tree the file lives.
-///   3. Ancestor-directory match (`big/b/b1.big` accepted when the
-///      pattern is `big/b`) — t-fetch-include's `--include=big/b`
-///      relies on this.
+/// Whether `set` matches `path`, its file name, or one of its parent
+/// directories.
+///
+/// So `big/b/b1.big` matches `big/b/*.big`, `b*.big`, and `big/b`, much
+/// like upstream's `filepathfilter`.
 fn matches_with_prefix(path: &Path, set: &GlobSet) -> bool {
     if set.is_match(path) {
         return true;
@@ -643,8 +559,6 @@ fn matches_with_prefix(path: &Path, set: &GlobSet) -> bool {
     if set.is_match(basename) {
         return true;
     }
-    // Walk up the path checking each ancestor directory. Skip the
-    // path itself (already checked) and the empty root.
     let mut ancestor = path.parent();
     while let Some(a) = ancestor {
         if a.as_os_str().is_empty() {
@@ -658,7 +572,7 @@ fn matches_with_prefix(path: &Path, set: &GlobSet) -> bool {
     false
 }
 
-/// Decimal SI byte humanizer matching `dustin/go-humanize`'s `Bytes()`.
+/// Format a byte count in decimal units, like go-humanize's `Bytes`.
 fn human_bytes(n: u64) -> String {
     const UNITS: &[&str] = &["B", "kB", "MB", "GB", "TB", "PB", "EB"];
     if n < 1000 {
@@ -683,10 +597,7 @@ fn is_in_git_repo(cwd: &Path) -> bool {
 }
 
 fn is_remote_or_url(cwd: &Path, name: &str) -> bool {
-    if name.contains("://")
-        || name.starts_with("git@")
-        || name.starts_with("file://")
-        || std::path::Path::new(name).is_absolute()
+    if name.contains("://") || name.starts_with("git@") || std::path::Path::new(name).is_absolute()
     {
         return true;
     }
@@ -695,9 +606,8 @@ fn is_remote_or_url(cwd: &Path, name: &str) -> bool {
 }
 
 pub(crate) fn is_resolvable_ref(cwd: &Path, r: &str) -> bool {
-    // Range syntax (`A..B`, `A...B`) — validate each side separately.
-    // `git rev-parse --verify` doesn't accept ranges, but `git lfs fsck
-    // HEAD^..HEAD` is a thing the test suite exercises.
+    // `git rev-parse --verify` rejects ranges, which `git lfs fsck`
+    // accepts, so check each side.
     if let Some((a, b)) = r.split_once("...") {
         return is_resolvable_ref(cwd, a) && is_resolvable_ref(cwd, b);
     }
@@ -717,13 +627,13 @@ pub(crate) fn is_resolvable_ref(cwd: &Path, r: &str) -> bool {
     matches!(out, Ok(o) if o.status.success())
 }
 
-/// Append "recent" pointers — HEAD-state of recent refs, plus
-/// pre-images of LFS files modified within `commits_days` on each
-/// named-and-recent ref — into `pointers`. Dedups by OID against
-/// what's already present.
+/// Add the objects for `--recent` to `pointers`, like upstream's
+/// `fetchRecent`.
 ///
-/// Mirrors upstream's `command_fetch.go::fetchRecent` (and the
-/// `gitscanner.ScanPreviousVersions` calls it spawns).
+/// These are the trees of `named_refs` and of refs whose tip is within
+/// `lfs.fetchrecentrefsdays` of now, and the earlier versions of files
+/// changed on any of them within `lfs.fetchrecentcommitsdays` of that
+/// ref's tip. Objects already in `pointers` aren't added again.
 fn recent_walk(
     cwd: &Path,
     cfg: &git_lfs_git::fetch_prune::FetchPruneConfig,
@@ -737,15 +647,11 @@ fn recent_walk(
     let now = SystemTime::now();
     let day = Duration::from_secs(86_400);
 
-    // Recent refs: tips with committer date within `refs_days` of now.
-    // `refs_days = 0` disables this discovery (only the named refs +
-    // their pre-images contribute).
     let mut recent_refs: Vec<String> = Vec::new();
     if cfg.fetch_recent_refs_days > 0 {
         let since = now - day * cfg.fetch_recent_refs_days as u32;
-        // When include-remotes is on, restrict to *this* fetch's
-        // remote — a recent ref under a different remote isn't going
-        // to come from the same server.
+        // Only remote refs of the remote named on the command line, if
+        // any. Upstream uses the default remote when none is named.
         let only_remote = if cfg.fetch_recent_refs_include_remotes {
             remote
         } else {
@@ -764,13 +670,9 @@ fn recent_walk(
 
     let mut have_oids: HashSet<git_lfs_pointer::Oid> = pointers.iter().map(|p| p.oid).collect();
 
-    // 1. HEAD-state of every walk anchor (named or recent) → scan_tree.
-    //    Anchors are added unconditionally — `scan_index_lfs` only
-    //    finds pointers in repos with a committed `.gitattributes`,
-    //    so on partial-clone / no-attrs setups (like the t-fetch-recent
-    //    fixture) we'd otherwise miss the HEAD-state entirely. Dedup
-    //    via `have_oids` keeps us from double-fetching when the index
-    //    scan did surface them.
+    // Scan the named refs' trees too: when the caller read the index
+    // instead, it finds nothing without a `.gitattributes`, as in the
+    // t-fetch-recent.sh fixtures.
     let mut all_anchors: Vec<&str> = named_refs.iter().map(String::as_str).collect();
     for r in &recent_refs {
         if !all_anchors.contains(&r.as_str()) {
@@ -785,12 +687,7 @@ fn recent_walk(
         }
     }
 
-    // 2. Pre-images for the recent commits window. `commits_days = 0`
-    //    means "at-ref only" (no pre-images). Window is measured from
-    //    *each ref's tip commit date* (matching upstream's
-    //    `summ.CommitDate.AddDate(0,0,-N)`), not from now — so a ref
-    //    whose tip is itself old still surfaces its pre-images
-    //    correctly relative to that tip.
+    // The window ends at each ref's tip commit, not at now.
     if cfg.fetch_recent_commits_days > 0 {
         for r in &all_anchors {
             let Some(tip_unix) = ref_tip_unix(cwd, r) else {
@@ -809,9 +706,8 @@ fn recent_walk(
     Ok(())
 }
 
-/// Tip commit's Unix timestamp for `reference`, or `None` if the ref
-/// doesn't resolve. Used as the anchor for the per-ref
-/// `commits_days` window in [`recent_walk`].
+/// The committer time of `reference`'s tip as a Unix timestamp, or `None`
+/// if it doesn't resolve.
 fn ref_tip_unix(cwd: &Path, reference: &str) -> Option<i64> {
     let out = Command::new("git")
         .arg("-C")
@@ -826,11 +722,9 @@ fn ref_tip_unix(cwd: &Path, reference: &str) -> Option<i64> {
 }
 
 fn all_local_refs(cwd: &Path) -> Result<Vec<String>, FetchCommandError> {
-    // `--all` includes remote tracking refs so an LFS object that
-    // lives only on `refs/remotes/origin/<deleted-locally>` still
-    // gets walked (t-fetch-all `git branch -D remote_branch_only`
-    // case). Mirrors upstream's scanRefsToChan with an empty range
-    // — it ends up running `git rev-list --all`.
+    // Remote-tracking refs too, so objects only on a branch deleted
+    // locally are fetched, as t-fetch-all.sh checks. Upstream runs
+    // `git rev-list --all`.
     let out = Command::new("git")
         .arg("-C")
         .arg(cwd)

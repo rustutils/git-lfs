@@ -47,10 +47,10 @@ use git_lfs::args::{
     UntrackArgs, UpdateArgs, VersionArgs,
 };
 
-/// Strip backtick characters from every help-text field in the clap
-/// command tree so `--help` reads as plain prose. The backticks live in
-/// the source rustdoc because the markdown and groff renderers consume
-/// them as code-span markers; in the terminal they're just noise.
+/// Strip the backticks from all help text in the clap command tree.
+///
+/// The help text keeps them for the man pages and the manual, which render
+/// them as code. In a terminal they're noise.
 fn strip_backticks_in_help(cmd: clap::Command) -> clap::Command {
     let mut cmd = cmd.mut_args(strip_backticks_in_arg);
     let about = cmd.get_about().map(|s| s.to_string().replace('`', ""));
@@ -86,7 +86,6 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     let Some(command) = cli.command else {
-        // Mimic clap's default error path when no subcommand is given.
         Cli::command().print_help().ok();
         return ExitCode::FAILURE;
     };
@@ -99,9 +98,8 @@ fn main() -> ExitCode {
     }
 }
 
-/// Path-shaped git env vars that interpret relative values against
-/// the caller's cwd. We canonicalize them once up front so subprocess
-/// invocations using `git -C <dir>` don't re-resolve them.
+/// Git environment variables holding paths, which Git resolves against the
+/// current directory.
 const PATH_GIT_ENV_VARS: &[&str] = &[
     "GIT_DIR",
     "GIT_WORK_TREE",
@@ -110,15 +108,15 @@ const PATH_GIT_ENV_VARS: &[&str] = &[
     "GIT_OBJECT_DIRECTORY",
 ];
 
-/// Snapshot of `PATH_GIT_ENV_VARS` taken before [`canonicalize_path_envs`]
-/// rewrites them to absolute paths. `git lfs env` reports the original
-/// (possibly relative) values to match upstream's output.
+/// The values of [`PATH_GIT_ENV_VARS`] before [`canonicalize_path_envs`]
+/// made them absolute.
 static ORIGINAL_PATH_ENVS: std::sync::OnceLock<Vec<(&'static str, std::ffi::OsString)>> =
     std::sync::OnceLock::new();
 
-/// Look up the *original* value of a path-shaped git env var, before
-/// canonicalization. Returns `None` if the variable wasn't set or
-/// wasn't in the path-shaped allowlist.
+/// The value environment variable `name` had at startup, if it's one of
+/// [`PATH_GIT_ENV_VARS`] and was set.
+///
+/// `git lfs env` prints these, as upstream does.
 pub fn original_path_env(name: &str) -> Option<std::ffi::OsString> {
     ORIGINAL_PATH_ENVS
         .get()?
@@ -127,11 +125,10 @@ pub fn original_path_env(name: &str) -> Option<std::ffi::OsString> {
         .map(|(_, v)| v.clone())
 }
 
-/// Make any relative path-shaped git env var absolute against `base`,
-/// so subsequent `git -C <some_dir>` calls don't re-resolve them
-/// against the wrong directory. Operates in place via `set_var`. Saves
-/// the originals via [`original_path_env`] so `git lfs env` can still
-/// echo the user-visible value.
+/// Make relative [`PATH_GIT_ENV_VARS`] absolute against `base`.
+///
+/// Otherwise a later `git -C <dir>` would resolve them against `<dir>`.
+/// The original values stay available through [`original_path_env`].
 fn canonicalize_path_envs(base: &std::path::Path) {
     let mut snapshot = Vec::new();
     for name in PATH_GIT_ENV_VARS {
@@ -147,10 +144,9 @@ fn canonicalize_path_envs(base: &std::path::Path) {
             continue;
         }
         let absolute = base.join(p);
-        // SAFETY: We're early in `dispatch` before any threads are
-        // spawned. `set_var` is unsafe in 2024 edition because of
-        // multi-threaded races; the single-threaded prelude here is
-        // exactly the documented safe usage pattern.
+        // SAFETY: This runs at the start of `dispatch`, before any other
+        // thread exists, so nothing can read the environment at the same
+        // time.
         unsafe {
             std::env::set_var(name, absolute);
         }
@@ -158,9 +154,10 @@ fn canonicalize_path_envs(base: &std::path::Path) {
     let _ = ORIGINAL_PATH_ENVS.set(snapshot);
 }
 
-/// Reduce the per-flag scope toggles for `install` / `uninstall` to a
-/// single [`install::InstallScope`]. Multiple scope flags is a usage
-/// error matching upstream's exact wording.
+/// Turn the scope flags of `install` and `uninstall` into a scope.
+///
+/// With no flag it's global. More than one flag is an error, with
+/// upstream's message.
 fn resolve_install_scope(
     local: bool,
     system: bool,
@@ -189,12 +186,11 @@ fn resolve_install_scope(
     })
 }
 
-/// If `e` is a `git config <scope> ...` failure, render it on stdout
-/// in upstream's `error running 'git config ...': <stderr>` shape and
-/// return exit code 2. Otherwise return `None` and let the caller
-/// propagate the error normally. The `>out.log` redirection in
-/// t-install test 9 and t-install-worktree test 4 means this has to
-/// land on stdout, not stderr.
+/// Print a failed `git config` write and return exit code 2, or return
+/// `None` for any other error.
+///
+/// It goes to stdout, since t-install.sh and t-install-worktree.sh only
+/// capture stdout.
 fn handle_install_config_failure(e: &install::InstallError) -> Option<u8> {
     if let install::InstallError::ConfigCommandFailed { .. } = e {
         println!("{e}");
@@ -204,10 +200,8 @@ fn handle_install_config_failure(e: &install::InstallError) -> Option<u8> {
     }
 }
 
-/// Print upstream's `Not in a Git repository.` to stdout and return a
-/// non-zero exit code if `cwd` isn't inside any git repo. Returns
-/// `None` to keep going. Mirrors the error path test 7 of t-uninstall
-/// (and the analogous t-install test) asserts on.
+/// Outside a repository, print upstream's message to stdout and return
+/// exit code 128, as upstream's `requireInRepo` does.
 fn bail_if_outside_repo(cwd: &std::path::Path) -> Option<u8> {
     if git_lfs_git::git_dir(cwd).is_err() {
         println!("Not in a Git repository.");
@@ -216,10 +210,12 @@ fn bail_if_outside_repo(cwd: &std::path::Path) -> Option<u8> {
     None
 }
 
-/// `GIT_LFS_SKIP_SMUDGE=1` (any value other than empty/0/false) tells
-/// the smudge filter to leave pointer text in place rather than fetch.
-/// Used by clones that intentionally don't materialize content (e.g.
-/// CI partial clones, t-pull's "skip" tests).
+/// Whether `GIT_LFS_SKIP_SMUDGE` is set, which makes smudge write pointers
+/// instead of content.
+///
+/// Any value but empty, `0`, or `false` (in three spellings) counts as
+/// set. Upstream's `config.Bool` reads only `true`, `1`, `on`, `yes`,
+/// and `t` as true, in any case.
 fn skip_smudge_env() -> bool {
     match std::env::var_os("GIT_LFS_SKIP_SMUDGE") {
         None => false,
@@ -230,11 +226,10 @@ fn skip_smudge_env() -> bool {
     }
 }
 
-/// Print a migrate error and choose an exit code. Usage-shaped errors
-/// (`MigrateError::Usage`) print verbatim and exit with code 2 —
-/// upstream's `if PIPESTATUS == 1 fatal` checks distinguish usage
-/// errors from general failures, and exact-match tests like
-/// `[$(cmd) = "Cannot use ..."]` don't care about the code anyway.
+/// Print a migrate error and return the exit code.
+///
+/// Usage errors print as they are, since tests compare them exactly, and
+/// exit 2 like upstream's `Exit`. Other errors exit 1.
 fn handle_migrate_error(e: migrate::MigrateError) -> u8 {
     match e {
         migrate::MigrateError::Usage(msg) => {
@@ -248,11 +243,10 @@ fn handle_migrate_error(e: migrate::MigrateError) -> u8 {
     }
 }
 
-/// Split each entry in `values` on commas and trim whitespace, dropping
-/// empties. Mirrors upstream's `--include="*.md, *.txt"` parsing — clap
-/// gives us one Vec entry per `--include` flag, and a comma-separated
-/// list within the entry needs to expand. Repeated flags (e.g.
-/// `--include foo --include bar`) are also flattened.
+/// Split each of `values` on commas, trimming whitespace and dropping
+/// empty entries.
+///
+/// Upstream accepts `--include="*.md, *.txt"`.
 fn split_csv(values: &[String]) -> Vec<String> {
     values
         .iter()
@@ -263,21 +257,20 @@ fn split_csv(values: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// Read `core.sharedRepository` from any config scope. `None` means
-/// "respect process umask"; a returned value is fed to
-/// [`Store::with_shared_repository`] to apply the right file/dir mode
-/// policy when committing objects. `git config` errors are non-fatal —
-/// the default umask path is always a safe fallback.
+/// `core.sharedRepository`, for [`Store::with_shared_repository`].
+///
+/// `None` if it's unset or can't be read, in which case the store uses
+/// the umask.
 pub fn shared_repo_config(cwd: &std::path::Path) -> Option<String> {
     git_lfs_git::config::get_effective(cwd, "core.sharedRepository")
         .ok()
         .flatten()
 }
 
-/// Read configured pointer extensions and convert to the filter crate's
-/// runtime form. Skips entries whose `clean` is empty or whose priority
-/// is outside the spec's 0-9 range — those wouldn't produce a valid
-/// `ext-N-<name>` line anyway.
+/// The configured pointer extensions that have a clean command.
+///
+/// Extensions with a priority outside 0 to 9 are skipped, since a pointer
+/// can't record them.
 fn collect_clean_extensions(cwd: &std::path::Path) -> Vec<CleanExtension> {
     git_lfs_git::extension::list_extensions(cwd)
         .into_iter()
@@ -295,10 +288,10 @@ fn collect_clean_extensions(cwd: &std::path::Path) -> Vec<CleanExtension> {
         .collect()
 }
 
-/// Same shape as [`collect_clean_extensions`] but builds the `smudge`
-/// side of the registered extensions. Used by the smudge filter,
-/// filter-process, and the pull/checkout materialize loops to invert
-/// what `clean` did during commit.
+/// The configured pointer extensions that have a smudge command.
+///
+/// Extensions with a priority outside 0 to 9 are skipped, as in
+/// [`collect_clean_extensions`].
 fn collect_smudge_extensions(cwd: &std::path::Path) -> Vec<SmudgeExtension> {
     git_lfs_git::extension::list_extensions(cwd)
         .into_iter()
@@ -318,19 +311,10 @@ fn collect_smudge_extensions(cwd: &std::path::Path) -> Vec<SmudgeExtension> {
 
 fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
     let cwd = std::env::current_dir()?;
-    // `GIT_DIR` / `GIT_WORK_TREE` (and the auxiliary `GIT_OBJECT_*`
-    // variants) come in relative to the *caller's* cwd. Many of our
-    // subprocess invocations later use `git -C <repo_root>`, which
-    // would re-resolve those relative paths against the wrong base.
-    // Canonicalize once up front so every downstream `git` call sees
-    // absolute paths regardless of where it's chdir'd to.
     canonicalize_path_envs(&cwd);
 
-    // Sweep stale temp-object files (`<oid>-<random>` under
-    // `<lfs>/tmp/objects/`) whose object is already complete in the
-    // store. Mirrors upstream's `lfs.cleanupTempFiles` startup task.
-    // Skipped silently when we're not in a repo (e.g. `git lfs
-    // version` outside any repo).
+    // Delete leftover temporary objects. Upstream does this when a
+    // command exits instead.
     if let Ok(lfs_root) = git_lfs_git::lfs_dir(&cwd) {
         Store::new(lfs_root).cleanup_tmp_objects();
     }
@@ -342,10 +326,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             if let Some(v) = shared_repo_config(&cwd) {
                 store = store.with_shared_repository(&v);
             }
-            // No `with_references` here: clean writes new content
-            // computed from working-tree input, so alternate stores
-            // can't satisfy the lookup (and we don't want to reuse
-            // their inode for a freshly-staged file).
+            // No `with_references`: clean only writes to the store.
             let stdin = io::stdin().lock();
             let mut input: Box<dyn Read> = Box::new(stdin);
             let mut output: Box<dyn Write> = Box::new(BufWriter::new(io::stdout().lock()));
@@ -376,22 +357,16 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                     .as_deref()
                     .map(|p| p.to_string_lossy().into_owned())
                     .unwrap_or_default();
-                // Honor `lfs.fetchinclude` / `lfs.fetchexclude` even
-                // on the standalone smudge entrypoint: filter-process
-                // (used by `git checkout`) already does, but
-                // `git lfs smudge <path>` invocations bypass that
-                // path. When `<path>` doesn't pass the filter, emit
-                // the pointer bytes verbatim — same passthrough
-                // semantics filter-process uses.
+                // A path that `lfs.fetchinclude` or `lfs.fetchexclude`
+                // filters out gets the pointer, as in filter-process.
                 let include_set = fetch::build_pattern_set(&cwd, &[], "lfs.fetchinclude")?;
                 let exclude_set = fetch::build_pattern_set(&cwd, &[], "lfs.fetchexclude")?;
                 let filter_passes = path
                     .as_deref()
                     .is_none_or(|p| fetch::path_passes_filter(Some(p), &include_set, &exclude_set));
-                // Buffer stdin so we can pass the original pointer
-                // bytes through on a fetch failure when
-                // `lfs.skipdownloaderrors` is set. Pointers are tiny
-                // (`MAX_POINTER_SIZE`), so the buffer cost is bounded.
+                // Buffer the input so the pointer can be written out if
+                // the download fails and `lfs.skipdownloaderrors` is
+                // set. Input that isn't a pointer is buffered whole.
                 let mut buf = Vec::new();
                 io::copy(&mut input, &mut buf)?;
                 if !filter_passes {
@@ -444,10 +419,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 skip_repo,
                 skip_smudge,
             };
-            // Compute up-front whether hooks would be installed so the
-            // success path can print "Updated Git hooks." in the same
-            // order upstream does. Mirrors the `install_hooks_too`
-            // condition inside `install::install`.
+            // The same condition `install::install` uses for hooks.
             let hooks_active = !opts.skip_repo
                 && (opts.scope.is_repo_scope() || git_lfs_git::git_dir(&cwd).is_ok());
             match install::install(&cwd, &opts) {
@@ -458,11 +430,8 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                     println!("Git LFS initialized.");
                 }
                 Err(e @ install::InstallError::FilterAttribute { .. }) => {
-                    // Mirrors upstream's `commands/command_install.go`:
-                    // print `warning: <err>` + the `--force` hint on
-                    // stdout, exit 2. t-install test 2 captures via
-                    // `tee install.log` (stdout only) and greps for
-                    // `(clean|smudge)" attribute should be`.
+                    // On stdout, like upstream: t-install.sh only
+                    // captures stdout.
                     println!("warning: {e}");
                     println!("Run `git lfs install --force` to reset Git configuration.");
                     return Ok(2);
@@ -512,20 +481,16 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             };
             if let Err(e) = install::uninstall(&cwd, &opts) {
                 if matches!(e, install::InstallError::ConfigCommandFailed { .. }) {
-                    // Uninstall is idempotent — a failing
-                    // `git config <scope> --unset` (e.g. --worktree
-                    // against a repo without the worktreeConfig
-                    // extension) becomes a stdout warning and we keep
-                    // going. Exit 0 matches upstream's t-uninstall-
-                    // worktree test 4.
+                    // Exit 0, as t-uninstall-worktree.sh expects. The
+                    // hooks aren't removed. Upstream prints a warning and
+                    // goes on to remove them.
                     println!("{e}");
                     return Ok(0);
                 }
                 return Err(Box::new(e));
             }
             if hooks_only {
-                // No "configuration removed" message: hooks-only mode
-                // leaves the filter config exactly as-is.
+                // The config wasn't touched.
             } else if scope.announces_global() {
                 println!("Global Git LFS configuration has been removed.");
             } else {
@@ -547,12 +512,8 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             let stdout = io::stdout().lock();
             let clean_extensions = collect_clean_extensions(&cwd);
             let smudge_extensions = collect_smudge_extensions(&cwd);
-            // Honor `lfs.fetchinclude`/`lfs.fetchexclude`: paths
-            // outside the include set or inside the exclude set get
-            // pointer-text passthrough at smudge time, matching
-            // upstream's filter-process behavior (test 2 of
-            // t-filter-process). Patterns are pulled via
-            // `build_pattern_set`, the same helper fetch/pull use.
+            // Paths that `lfs.fetchinclude` or `lfs.fetchexclude`
+            // filters out are smudged to the pointer, as upstream does.
             let include_set = fetch::build_pattern_set(&cwd, &[], "lfs.fetchinclude")?;
             let exclude_set = fetch::build_pattern_set(&cwd, &[], "lfs.fetchexclude")?;
             let path_filter = move |path: &str| -> bool {
@@ -610,19 +571,14 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             match fetch::fetch(&cwd, &opts) {
                 Ok(outcome) => {
                     if !outcome.report.failed.is_empty() {
-                        // Upstream format from
-                        // `commands/command_fetch.go::Exit("error: failed to
-                        // fetch some objects from '%s'")`. The vendored
-                        // shell tests grep for the prefix `error: failed
-                        // to fetch some objects` verbatim.
+                        // Tests grep for this prefix of upstream's
+                        // message. Upstream exits 2 here, not 1.
                         return Err("error: failed to fetch some objects".into());
                     }
                 }
                 Err(fetch::FetchCommandError::Usage(msg)) if msg == "Not in a Git repository." => {
-                    // Test `t-fetch.sh::fetch: outside git repository`
-                    // greps for this on stdout (`2>&1 > fetch.log`
-                    // captures stdout only). Match upstream and emit
-                    // here, then exit 128.
+                    // On stdout, like upstream: t-fetch.sh only captures
+                    // stdout.
                     println!("{msg}");
                     return Ok(128);
                 }
@@ -639,17 +595,12 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 Err(pull::PullCommandError::Fetch(fetch::FetchCommandError::Usage(msg)))
                     if msg == "Not in a Git repository." =>
                 {
-                    // Mirrors fetch's outside-repo handling for parity
-                    // with `git lfs fetch` (and t-pull's `outside git
-                    // repository` test, which expects exit 128).
                     println!("{msg}");
                     return Ok(128);
                 }
                 Err(e @ pull::PullCommandError::FetchFailures(_)) => {
-                    // Per-object transfer failures (per-object-batch
-                    // 404s, action-URL 4xx/5xx) — upstream exits 2
-                    // here, and t-pull's `pull with invalid insteadof`
-                    // greps for that exit code specifically.
+                    // Upstream exits 2 when objects fail to download,
+                    // and t-pull.sh checks for that.
                     eprintln!("git-lfs: {e}");
                     return Ok(2);
                 }
@@ -760,8 +711,6 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 no_extensions,
                 extensions: collect_clean_extensions(&cwd),
             };
-            // Pointer's exit codes are semantic: 1 = mismatch / parse
-            // failure, 2 = `--strict` non-canonical. Propagate verbatim.
             let code = pointer_cmd::run(&opts)?;
             return Ok(code as u8);
         }
@@ -775,9 +724,8 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
         Command::Update(UpdateArgs { force, manual }) => match update::run(&cwd, force, manual) {
             Ok(code) => return Ok(code),
             Err(update::UpdateError::NotInRepo) => {
-                // Stdout, not stderr: upstream prints to stdout here
-                // and `t-update` test 4 redirects only `>check.log`
-                // (its `2>&1` is in the wrong order to capture stderr).
+                // On stdout, like upstream: t-update.sh only captures
+                // stdout.
                 println!("Not in a Git repository.");
                 return Ok(128);
             }
@@ -883,9 +831,8 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                             "Unsupported --pointers option value: {other:?}"
                         ))));
                     }
-                    // No `--pointers` flag: `--fixup` implies `ignore`
-                    // (we want to see what *should* be LFS but isn't);
-                    // otherwise default to `follow`.
+                    // `--fixup` looks for files that should be pointers
+                    // but aren't, so it ignores pointers.
                     None if fixup => migrate::PointerMode::Ignore,
                     None => migrate::PointerMode::Follow,
                 };
@@ -929,21 +876,15 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             match checkout::run(&cwd, &opts) {
                 Ok(()) => {}
                 Err(checkout::CheckoutError::NotInWorkTree) => {
-                    // Bare repo: matches t-status / t-checkout
-                    // bare-repo expectation. Exit 0 with the
-                    // upstream-compatible message.
+                    // A bare repository. Upstream exits 0 here too.
                     println!("This operation must be run in a work tree.");
                 }
                 Err(checkout::CheckoutError::NotInRepo) => {
-                    // Outside any repo. Exit 128 with the wording the
-                    // t-checkout outside-repo test greps for.
                     println!("Not in a Git repository.");
                     return Ok(128);
                 }
                 Err(checkout::CheckoutError::Usage(msg)) => {
-                    // Conflict-mode flag validation errors. Upstream
-                    // exits via `Exit()` which writes to stderr and
-                    // returns 2; mirror that.
+                    // Upstream's `Exit` prints to stderr and exits 2.
                     eprintln!("{msg}");
                     return Ok(2);
                 }
@@ -1001,15 +942,11 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             match status::run(&cwd, format) {
                 Ok(()) => {}
                 Err(status::StatusError::NotInRepo) => {
-                    // Match `git lfs fetch` / `pull`: emit the message
-                    // on stdout and exit 128 so the t-status outside-
-                    // repo test (and parity with upstream) holds.
                     println!("Not in a Git repository.");
                     return Ok(128);
                 }
                 Err(status::StatusError::NotInWorkTree) => {
-                    // Bare repo: status has nothing to compare a work
-                    // tree against. Upstream exits non-zero here.
+                    // A bare repository. Upstream exits 128 here.
                     println!("This operation must be run in a work tree.");
                     return Ok(1);
                 }
@@ -1087,17 +1024,14 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             if let Some(code) = bail_if_outside_repo(&cwd) {
                 return Ok(code);
             }
-            // `git lfs ls-files -- --all` parks `--all` in `refspec`,
-            // which silently scans HEAD for a (non-existent) ref called
-            // `--all`. Almost always a typo for `git lfs ls-files --all --`.
+            // `git lfs ls-files -- --all` would otherwise treat `--all`
+            // as a ref.
             if refspec.as_deref() == Some("--all") {
                 eprintln!("Did you mean `git lfs ls-files --all --` ?");
                 return Ok(1);
             }
-            // `--all` walks every ref's history; a positional ref makes
-            // no sense alongside it. Match upstream's exact wording —
-            // `t-ls-files.sh::ls-files: --all with argument(s)` greps
-            // for it verbatim.
+            // t-ls-files.sh checks this message. Upstream prints both
+            // of these to stderr and exits 2.
             if all && refspec.is_some() {
                 println!("Cannot use --all with explicit reference");
                 return Ok(1);
@@ -1153,9 +1087,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             if let Some(code) = bail_if_outside_repo(&cwd) {
                 return Ok(code);
             }
-            // `git lfs logs <argv...>` is what the boomtown crash log
-            // records as the command line, so reconstruct argv here
-            // rather than threading it through every entrypoint.
+            // The command line recorded in the boomtown log.
             let argv: Vec<String> = std::env::args().skip(1).collect();
             return match sub {
                 None => Ok(logs::list(&cwd)?),
@@ -1169,12 +1101,10 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             if patterns.is_empty() {
                 return Err("git lfs untrack <pattern> [pattern...]".into());
             }
-            // Resolve the work-tree root: a bare repo or being outside
-            // any repo entirely is a "not in a git repository" error
-            // matching git's exit code (128). When cwd is inside the
-            // work tree we prefer it (so `cd a; git lfs untrack foo`
-            // edits `a/.gitattributes`), falling back to the work-tree
-            // root when GIT_WORK_TREE points outside cwd.
+            // Like upstream, edit `.gitattributes` in the current
+            // directory, or at the work tree root if `GIT_WORK_TREE`
+            // points elsewhere. A bare repository fails like no
+            // repository.
             let work_tree = match git_lfs_git::work_tree_root(&cwd) {
                 Ok(p) => p,
                 Err(_) => {

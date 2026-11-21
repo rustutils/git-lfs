@@ -1,17 +1,11 @@
-//! `git lfs pull [<remote>] [<ref>...]` — `fetch` + materialize LFS
-//! files in the working tree.
+//! `git lfs pull`: fetch, then replace pointer files in the working tree
+//! with their content.
 //!
-//! After `fetch` populates the store, walk HEAD's tree to find every
-//! tracked LFS pointer and rewrite the working-tree file with its
-//! content from the store. Walking the tree (rather than `git ls-files`)
-//! handles the "user `rm`'d the file" case — `git lfs pull` should
-//! restore deleted tracked files from the store, matching upstream.
-//!
-//! Doing the rewrite ourselves (rather than `git checkout HEAD -- .`)
-//! is deliberate: `git checkout` skips files it considers "unchanged"
-//! relative to the index — and a pointer text that's also what's in
-//! the index counts as unchanged. We'd never re-trigger the smudge
-//! filter that way.
+//! The files come from the index, so files deleted from the working tree
+//! are restored, like upstream. A file is only written if it's missing or
+//! holds the pointer for the same object. We write the files ourselves
+//! because `git checkout` sees a pointer file that matches the index as
+//! unchanged and wouldn't run the smudge filter.
 
 use std::io::Write;
 use std::path::Path;
@@ -41,6 +35,8 @@ pub enum PullCommandError {
     Smudge(#[from] SmudgeError),
 }
 
+/// Run `git lfs pull` with the given arguments and include and exclude
+/// patterns.
 pub fn pull_with_filter(
     cwd: &Path,
     args: &[String],
@@ -65,11 +61,8 @@ pub fn pull_with_filter(
         return Err(PullCommandError::FetchFailures(outcome.report.failed.len()));
     }
 
-    // Match upstream `newSingleCheckout`: if the smudge filter isn't
-    // installed (no `filter.lfs.clean` config), skip the working-
-    // tree materialize step and tell the user how to fix it. The
-    // fetch above still ran, so objects land in `.git/lfs/objects/`
-    // and `git lfs install` later will smudge them in.
+    // Like upstream's `newSingleCheckout`, which checks
+    // `filter.lfs.clean`. The objects are already fetched.
     if !smudge_filter_installed(cwd) {
         println!(
             "Skipping object checkout, Git LFS is not installed for this repository.\n\
@@ -78,17 +71,12 @@ pub fn pull_with_filter(
         return Ok(());
     }
 
-    // Bare repos have no working tree, so the materialize phase is a
-    // no-op. Fetch already ran above; we're done.
     if is_bare_repo(cwd) {
         return Ok(());
     }
 
-    // Build the same include/exclude filter `fetch` used so the
-    // working-tree rewrite respects -I / -X (or `lfs.fetchinclude` /
-    // `lfs.fetchexclude`). Without this an LFS object that fetch
-    // skipped would still be rewritten in-place if it happened to be
-    // present locally already.
+    // Filter like fetch did, so an excluded file isn't written even if
+    // its object happens to be in the store.
     let include_set = fetch::build_pattern_set(cwd, include, "lfs.fetchinclude")?;
     let exclude_set = fetch::build_pattern_set(cwd, exclude, "lfs.fetchexclude")?;
 
@@ -98,30 +86,17 @@ pub fn pull_with_filter(
         store = store.with_shared_repository(&v);
     }
     let repo_root = repo_root(cwd)?;
-    // Pointer extensions (case-inverter, encryption shims, etc.) need
-    // to run on the way out of the store. Resolve once before the
-    // walk; non-extension files take the direct-copy fast path inside
-    // the loop.
     let smudge_extensions = collect_smudge_extensions(cwd);
-    // Walk via the index (`git ls-files :(attr:filter=lfs)`) instead
-    // of HEAD's tree: respects sparse-checkout (don't materialize
-    // out-of-cone files) and reads what's *staged*, matching what a
-    // checkout would actually smudge.
+    // The index rather than HEAD's tree, so files outside a sparse
+    // checkout are left alone.
     let pointers = scan_index_lfs(&repo_root)?;
     let mut rewritten_paths: Vec<String> = Vec::new();
     for p in &pointers {
-        // Empty pointers (size 0) come from genuinely empty files in
-        // the index — git stores those under the empty-blob hash, and
-        // `Pointer::parse` of empty bytes is Ok(empty()). There's
-        // nothing to materialize; touching the working-tree file
-        // would needlessly bump mtime (test 17).
+        // An empty file is its own pointer. Rewriting it would change
+        // its mtime, which t-pull.sh checks.
         if p.size == 0 {
             continue;
         }
-        // Iterate every working-tree path the same LFS object lives
-        // at — `scan_index_lfs` dedups by LFS OID, but a deduped
-        // entry can have multiple paths (`dir1/dir.dat` and
-        // `dir2/dir.dat` sharing the same LFS pointer text).
         for rel in &p.paths {
             if !fetch::path_passes_filter(Some(rel), &include_set, &exclude_set) {
                 continue;
@@ -129,10 +104,8 @@ pub fn pull_with_filter(
             let rel_str = rel.to_string_lossy();
             let dst = repo_root.join(rel);
 
-            // Walk the parent path components. If any is a regular
-            // file or symlink, refuse to write through it — matches
-            // upstream's "skip and warn" behavior on dir/file/symlink
-            // conflicts.
+            // Don't write through a symlink or a file in the path, like
+            // upstream.
             if let Some(rel_parent) = rel.parent()
                 && !rel_parent.as_os_str().is_empty()
                 && let Err(msg) = check_safe_parent(&repo_root, rel_parent)
@@ -141,14 +114,10 @@ pub fn pull_with_filter(
                 continue;
             }
 
-            // Destination policy. Symlink at the destination is a
-            // "not a regular file" warning (we won't overwrite a
-            // symlink). For regular files, mirror checkout / upstream's
-            // `singleCheckout.Run`: leave alone raw content or
-            // different-OID pointers; materialize over our own
-            // pointer. Capture permissions of the existing file so a
-            // read-only pointer text → read-only smudged content
-            // (test 16).
+            // Like upstream's `singleCheckout.Run`, only replace a
+            // pointer for the same object, never a symlink or other
+            // content. Keep the file's permissions, so a read-only
+            // pointer stays read-only, as t-pull.sh checks.
             let mut preserved_perms: Option<std::fs::Permissions> = None;
             match std::fs::symlink_metadata(&dst) {
                 Ok(meta) if meta.file_type().is_symlink() => {
@@ -164,7 +133,6 @@ pub fn pull_with_filter(
                     }
                 }
                 Ok(_) => {
-                    // Some other file type (dir, fifo, …). Skip.
                     println!("{rel_str:?}: not a regular file");
                     continue;
                 }
@@ -173,8 +141,6 @@ pub fn pull_with_filter(
             }
 
             if !store.contains_with_size(p.oid, p.size) {
-                // Object missing locally (fetch failed or skipped).
-                // Leave whatever is on disk alone.
                 continue;
             }
 
@@ -184,10 +150,7 @@ pub fn pull_with_filter(
                 println!("{rel_str:?}: not a directory");
                 continue;
             }
-            // Unlink the existing file (if any) before recreating:
-            // this works around a read-only existing file (we only
-            // need write permission on the parent directory). Ignore
-            // NotFound.
+            // Removing first means a read-only file can be replaced.
             match std::fs::remove_file(&dst) {
                 Ok(_) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -196,10 +159,8 @@ pub fn pull_with_filter(
             let mut out = match std::fs::File::create(&dst) {
                 Ok(f) => f,
                 Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-                    // Read-only parent directory (test 15): warn in
-                    // the upstream-compatible format and keep going.
-                    // Object is in the local store; user can chmod
-                    // and rerun.
+                    // A read-only directory. t-pull.sh checks for these
+                    // messages and that the pull goes on.
                     println!("could not check out {rel_str:?}");
                     println!("could not create working directory file");
                     println!("permission denied");
@@ -207,12 +168,8 @@ pub fn pull_with_filter(
                 }
                 Err(e) => return Err(e.into()),
             };
-            // Reconstruct the pointer from the index entry and route
-            // through the smudge filter — for plain pointers this is
-            // a direct store→file copy; pointers with extensions get
-            // their chain run from the work-tree root (so case-
-            // inverter / encryption shims find `.git/`, even when
-            // pull was invoked from a subdirectory).
+            // Extensions run from the repository root, even when pull
+            // runs in a subdirectory.
             let pointer = Pointer {
                 oid: p.oid,
                 size: p.size,
@@ -228,31 +185,23 @@ pub fn pull_with_filter(
                 Some(&repo_root),
             )?;
             if let Some(perms) = preserved_perms {
-                // Restore the original mode so a chmod-a-w pointer
-                // remains read-only after we materialize.
                 let _ = std::fs::set_permissions(&dst, perms);
             }
             rewritten_paths.push(rel.to_string_lossy().into_owned());
         }
     }
     if !rewritten_paths.is_empty() {
-        // After overwriting working-tree files, the stat info in the
-        // index is stale; `git diff-index HEAD` would report each as
-        // modified even though `clean(content)` hashes back to the
-        // original blob. `git update-index -q --refresh --stdin`
-        // re-stats each path and runs the clean filter to confirm
-        // the content blob matches; matching paths get fresh stat
-        // info and drop out of subsequent diff-index walks.
+        // The index has stale stat data for the rewritten files, so Git
+        // would show them as modified until it refreshes.
         refresh_index(&repo_root, &rewritten_paths)?;
     }
     Ok(())
 }
 
-/// Walk the parent components of a repo-relative path. If any
-/// component is a regular file, symlink, or some other non-directory,
-/// return the upstream-formatted "not a directory" string so the
-/// caller can emit `"path": not a directory` and skip. Stops at the
-/// first non-existent component (we'd `create_dir_all` from there).
+/// Check that each existing component of `rel_parent` is a real
+/// directory.
+///
+/// The error is the message to print after the path.
 fn check_safe_parent(repo_root: &Path, rel_parent: &Path) -> Result<(), &'static str> {
     let mut current = repo_root.to_path_buf();
     for comp in rel_parent.components() {
@@ -302,10 +251,8 @@ fn refresh_index(cwd: &Path, paths: &[String]) -> Result<(), PullCommandError> {
             stdin.write_all(b"\n")?;
         }
     }
-    // Don't surface failures: `update-index --refresh` exits non-zero
-    // when *some* path is still considered dirty (e.g. genuine local
-    // edits we didn't rewrite), and treating that as a hard error
-    // would break the legitimate "clean partial pull" case.
+    // `update-index --refresh` fails when a path is still modified,
+    // which isn't an error here.
     let _ = child.wait()?;
     Ok(())
 }

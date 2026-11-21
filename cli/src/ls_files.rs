@@ -1,10 +1,9 @@
-//! `git lfs ls-files [<ref>]` — list LFS-tracked files visible at a ref
-//! (default: HEAD), optionally across full history with `--all`.
+//! `git lfs ls-files`: list the LFS pointers in a tree.
 //!
-//! v0 supports the most-used flags: `-l/--long`, `-s/--size`, `-n/--name-only`,
-//! `-d/--debug`, `-a/--all`, `--deleted`, `-j/--json`. The upstream
-//! `--include`/`--exclude` path filters and the two-ref range form are
-//! deferred — see NOTES.md.
+//! Without a ref, lists the index and HEAD together. With a ref, lists its
+//! tree, with `--deleted` its whole history, and with `--all` the history
+//! of every ref. `--include`, `--exclude`, and the form that takes two refs
+//! aren't supported.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -14,8 +13,7 @@ use git_lfs_pointer::VERSION_LATEST;
 use git_lfs_store::Store;
 use serde::Serialize;
 
-/// Git's well-known empty-tree hash. Used as the diff-index baseline when
-/// the repo has no commits yet, so freshly-staged pointers still surface.
+/// Git's empty tree, which stands in for HEAD before the first commit.
 const EMPTY_TREE_SHA: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 #[derive(Debug, thiserror::Error)]
@@ -32,28 +30,26 @@ pub enum LsFilesError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
-    /// `<oid> <marker> <name> [(<size>)]`
+    /// One line per file.
     Default,
-    /// Multi-line per-file block with size/checkout/download/oid/version.
+    /// `--debug`: a block of fields per file.
     Debug,
-    /// `{"files": [...]}`.
+    /// `--json`.
     Json,
 }
 
 #[derive(Debug, Clone)]
 pub struct Options {
-    /// `-l/--long`: emit full 64-char OID instead of the 10-char prefix.
+    /// `--long`: the full OID instead of the first 10 digits.
     pub long: bool,
-    /// `-s/--size`: append humanized size in parens.
+    /// `--size`: add the size.
     pub show_size: bool,
-    /// `-n/--name-only`: emit only the path.
+    /// `--name-only`: only the path.
     pub name_only: bool,
-    /// `-a/--all`: scan all refs' history, not just one tree.
+    /// `--all`: the history of every ref. Takes precedence over `deleted`.
     pub all: bool,
-    /// `--deleted`: walk the given ref's full history and surface LFS
-    /// pointers that are reachable from history but no longer present
-    /// in the current tree. Mutually exclusive with `--all` at the
-    /// dispatch layer; this struct doesn't enforce that.
+    /// `--deleted`: the whole history of the ref, so files that were
+    /// deleted are listed too.
     pub deleted: bool,
     pub format: Format,
 }
@@ -79,9 +75,8 @@ pub fn run(cwd: &Path, refspec: Option<&str>, opts: &Options) -> Result<(), LsFi
         .with_references(git_lfs_git::lfs_alternate_dirs(cwd).unwrap_or_default());
 
     let pointers = if opts.all {
-        // `--all`: walk every reachable commit from every ref. We
-        // enumerate refs ourselves rather than passing `--all` to
-        // rev-list because our `rev_list` wrapper feeds refs via stdin.
+        // `scan_pointers` passes refs on stdin, where `--all` doesn't
+        // work, so list them here.
         let refs = enumerate_refs(cwd)?;
         if refs.is_empty() {
             Vec::new()
@@ -90,19 +85,12 @@ pub fn run(cwd: &Path, refspec: Option<&str>, opts: &Options) -> Result<(), LsFi
             scan_pointers(cwd, &r, &[])?
         }
     } else if opts.deleted {
-        // `--deleted`: walk the ref's full history (or HEAD by default),
-        // so pointers that were once committed but no longer exist in
-        // the current tree still surface. `scan_pointers` already does
-        // exactly this — it's the ref-history walker used by fetch/push.
         let r = refspec.unwrap_or("HEAD");
         scan_pointers(cwd, &[r], &[])?
     } else if let Some(r) = refspec {
         scan_tree(cwd, r)?
     } else {
-        // No args: combine the tree at HEAD with the index, so
-        // freshly-staged-but-uncommitted pointers show up. Fall back to
-        // the empty tree when HEAD doesn't exist yet (matches upstream's
-        // `git.EmptyTree()` path) so the index pass still works.
+        // The index, then HEAD. Before the first commit, only the index.
         let has_head = head_exists(cwd);
         let ref_or_empty = if has_head { "HEAD" } else { EMPTY_TREE_SHA };
         let tree = if has_head {
@@ -110,11 +98,8 @@ pub fn run(cwd: &Path, refspec: Option<&str>, opts: &Options) -> Result<(), LsFi
         } else {
             Vec::new()
         };
-        // `scan_index_pointers` dedupes its results by LFS OID and
-        // accumulates every path the OID was seen at — fine for prune
-        // retention, but ls-files needs one row per file. Fan back out
-        // so each path becomes its own entry before the path-based
-        // dedup below collapses tree↔index overlaps.
+        // `scan_index_pointers` gives one entry per OID with all its
+        // paths. Split it into one entry per path.
         let index_raw = scan_index_pointers(cwd, ref_or_empty).unwrap_or_default();
         let mut index: Vec<PointerEntry> = Vec::new();
         for e in index_raw {
@@ -136,11 +121,7 @@ pub fn run(cwd: &Path, refspec: Option<&str>, opts: &Options) -> Result<(), LsFi
         merge_by_path(index, tree)
     };
 
-    // Pointer paths come back repo-relative (from `git ls-tree` and
-    // `git diff-index`), so the `*`/`-` "is the working-tree file
-    // present?" check must join against the repo root rather than the
-    // caller's cwd — otherwise `ls-files` run from a subdirectory
-    // reports `-` for every file that does exist in the working tree.
+    // Paths are repo-relative, so check for the files from the root.
     let working_dir = repo_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
     emit(&pointers, &store, &working_dir, opts)
 }
@@ -163,10 +144,9 @@ fn repo_root(cwd: &Path) -> Option<PathBuf> {
     }
 }
 
-/// Concatenate two pointer lists and drop entries whose path was already
-/// seen. Matches upstream's `seen[p.Name]` dedup: when the index and tree
-/// both surface a path, the first one (index) wins. Entries without a
-/// path are kept unconditionally.
+/// Concatenate two lists, keeping only the first entry for each path.
+///
+/// Entries without a path are all kept.
 fn merge_by_path(first: Vec<PointerEntry>, second: Vec<PointerEntry>) -> Vec<PointerEntry> {
     let mut seen: HashSet<PathBuf> = HashSet::new();
     let mut out = Vec::with_capacity(first.len() + second.len());
@@ -195,14 +175,14 @@ fn emit(
         }
         Format::Default => {
             for p in pointers {
-                emit_default_line(p, store, cwd, opts);
+                emit_default_line(p, cwd, opts);
             }
             Ok(())
         }
     }
 }
 
-fn emit_default_line(p: &PointerEntry, store: &Store, cwd: &Path, opts: &Options) {
+fn emit_default_line(p: &PointerEntry, cwd: &Path, opts: &Options) {
     let name = p
         .path
         .as_deref()
@@ -226,7 +206,6 @@ fn emit_default_line(p: &PointerEntry, store: &Store, cwd: &Path, opts: &Options
     } else {
         println!("{oid_short} {marker} {name}");
     }
-    let _ = store; // unused in default mode; kept symmetric with debug
 }
 
 fn emit_debug_block(p: &PointerEntry, store: &Store, cwd: &Path) {
@@ -261,8 +240,7 @@ fn emit_json(pointers: &[PointerEntry], store: &Store, cwd: &Path) -> Result<(),
             version: VERSION_LATEST,
         })
         .collect();
-    // Upstream's `json.Encoder` with `SetIndent("", " ")` — single-space
-    // indent and a trailing newline (Encode always appends one).
+    // Like upstream's encoder: one-space indent and a final newline.
     let formatter = serde_json::ser::PrettyFormatter::with_indent(b" ");
     let mut buf = Vec::new();
     let mut ser = serde_json::Serializer::with_formatter(&mut buf, formatter);
@@ -274,6 +252,7 @@ fn emit_json(pointers: &[PointerEntry], store: &Store, cwd: &Path) -> Result<(),
     Ok(())
 }
 
+/// Whether the working-tree file exists with the object's size.
 fn file_present(cwd: &Path, p: &PointerEntry) -> bool {
     let Some(rel) = p.path.as_deref() else {
         return false;
@@ -284,8 +263,6 @@ fn file_present(cwd: &Path, p: &PointerEntry) -> bool {
 }
 
 fn head_exists(cwd: &Path) -> bool {
-    // Capture (don't inherit) stdout/stderr — rev-parse prints the OID
-    // on success and we don't want that leaking into our own output.
     std::process::Command::new("git")
         .arg("-C")
         .arg(cwd)
@@ -313,9 +290,10 @@ fn enumerate_refs(cwd: &Path) -> Result<Vec<String>, LsFilesError> {
         .collect())
 }
 
-/// Match upstream's `humanize.FormatBytes`: powers of 1024, two decimals
-/// for non-byte units, units `B/KB/MB/GB/TB`. We only need to be
-/// approximately right — this is for human display, never parsed back.
+/// Format a size in powers of 1024 with two decimals, such as `1.50 KB`.
+///
+/// Upstream's `humanize.FormatBytes` uses powers of 1000 and one decimal
+/// below 10, such as `1.5 KB`.
 fn humanize(n: u64) -> String {
     const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB", "PB"];
     if n < 1024 {

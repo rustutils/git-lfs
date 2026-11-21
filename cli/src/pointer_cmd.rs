@@ -1,20 +1,13 @@
-//! `git lfs pointer` — debug helper that builds and inspects pointer files.
+//! `git lfs pointer`: build a pointer for a file, or check one.
 //!
-//! Three modes:
+//! - `--check` with `--file` or `--stdin` exits 0 for a pointer and 1 for
+//!   anything else. With `--strict`, a pointer that isn't canonical exits 2.
+//! - `--file` prints the pointer for a file, through the configured
+//!   extensions unless `--no-extensions` is given.
+//! - `--pointer` or `--stdin` parses a pointer and echoes it to stderr.
+//!   Given with `--file`, the two pointers are compared by Git blob ID.
 //!
-//! - `--check` (with `--file` or `--stdin`): pure validity check. Exit
-//!   0 if the input is a parseable pointer, 1 if not, 2 if `--strict`
-//!   and the pointer wasn't byte-canonical.
-//! - `--file <path>`: hash a working-tree file, build the canonical
-//!   pointer, print to stdout. With `--pointer` / `--stdin` *also*
-//!   given, compare against an existing pointer and print whether
-//!   they match. Comparison uses git's blob-OID semantics — same as
-//!   upstream.
-//! - `--pointer <path>` or `--stdin`: parse and display an existing
-//!   pointer (echo to stderr).
-//!
-//! Output ordering and stream destinations match upstream exactly so
-//! the upstream `t-pointer.sh` shell tests pass against this binary.
+//! t-pointer.sh checks which stream each line goes to and in what order.
 
 use std::io::{IsTerminal, Read, Write};
 use std::path::PathBuf;
@@ -42,38 +35,31 @@ pub struct Options {
     pub check: bool,
     pub strict: bool,
     pub no_strict: bool,
-    /// Suppress the configured extension chain when building from `--file`.
+    /// `--no-extensions`: build the `--file` pointer without extensions.
     pub no_extensions: bool,
-    /// Configured `lfs.extension.<name>.clean` chain. Empty when there
-    /// are no configured extensions OR when invoked outside a repo.
+    /// The configured clean extensions. Empty outside a repository.
     pub extensions: Vec<CleanExtension>,
 }
 
-/// Run the command. Returns the intended process exit code (0 = success,
-/// 1 = mismatch / parse error / "nothing to do", 2 = `--strict` failed).
+/// Run the command and return the exit code.
+///
+/// The code is 1 if the pointers don't match, a pointer can't be parsed, or
+/// there's nothing to do, and 2 if `--check --strict` finds a pointer that
+/// isn't canonical.
 pub fn run(opts: &Options) -> Result<i32, PointerError> {
     if opts.check {
         return run_check(opts);
     }
 
-    // upstream: comparing := pointerCompare != "" || pointerStdin
-    // then if --file is set, the value is preserved; else reset to false.
-    // Net effect: we print Git-blob-OID lines iff we have BOTH a built
-    // and a parsed pointer to compare.
+    // Blob IDs are printed only when there are two pointers to compare.
     let comparing = opts.file.is_some() && (opts.pointer.is_some() || opts.stdin);
 
     let mut something = false;
     let mut built_oid: Option<String> = None;
-    let mut built_text: Option<Vec<u8>> = None;
 
     let stdout = std::io::stdout();
     let stderr = std::io::stderr();
 
-    // True iff we're in a repo with `lfs.extension.<n>.*` configured AND
-    // the user didn't pass `--no-extensions`. When set, the file's content
-    // is run through the chain to produce a pointer with `ext-N-<name>`
-    // lines (and we print the "Using LFS extensions" warning); otherwise
-    // we hash the bytes directly.
     let use_extensions = !opts.no_extensions && !opts.extensions.is_empty();
 
     if let Some(path) = &opts.file {
@@ -100,9 +86,7 @@ pub fn run(opts: &Options) -> Result<i32, PointerError> {
             let bytes = match std::fs::read(path) {
                 Ok(b) => b,
                 Err(e) => {
-                    // Match upstream's `os.Open(...)` error format:
-                    // `open <path>: <reason>` (Go's stdlib formats it
-                    // that way). Print verbatim — no `git-lfs:` prefix.
+                    // The format of Go's `os.Open` errors.
                     eprintln!("open {}: {}", path.display(), e);
                     return Ok(1);
                 }
@@ -112,9 +96,8 @@ pub fn run(opts: &Options) -> Result<i32, PointerError> {
         };
         let encoded = pointer.encode();
 
-        // stderr: header (+ optional warning) + blank line, then stdout:
-        // pointer text. Flush each before crossing streams so a `2>&1`-
-        // merged capture sees the lines in the order we wrote them.
+        // Flush before switching streams, so output merged with `2>&1`
+        // keeps its order.
         let mut e = stderr.lock();
         let mut o = stdout.lock();
         writeln!(e, "Git LFS pointer for {}", path.display())?;
@@ -129,9 +112,7 @@ pub fn run(opts: &Options) -> Result<i32, PointerError> {
         write!(o, "{encoded}")?;
         o.flush()?;
         if comparing {
-            // `\nGit blob OID: <hex>\n\n` to stderr. Two trailing
-            // newlines because the next section's "Pointer from X"
-            // header carries only one.
+            // The extra blank line separates this from the next section.
             let blob_oid = git_blob_oid(encoded.as_bytes());
             writeln!(e)?;
             writeln!(e, "Git blob OID: {blob_oid}")?;
@@ -139,7 +120,6 @@ pub fn run(opts: &Options) -> Result<i32, PointerError> {
             e.flush()?;
         }
         built_oid = Some(git_blob_oid(encoded.as_bytes()));
-        built_text = Some(encoded.into_bytes());
     }
 
     let mut compared_oid: Option<String> = None;
@@ -171,8 +151,7 @@ pub fn run(opts: &Options) -> Result<i32, PointerError> {
         }
     } else if opts.stdin {
         if std::io::stdin().is_terminal() {
-            // No piped input — emit the friendly error upstream's
-            // requireStdin uses. No `git-lfs:` prefix.
+            // Upstream's `requireStdin` message.
             eprintln!(
                 "Cannot read from STDIN. The --stdin flag expects a pointer file from STDIN."
             );
@@ -207,7 +186,6 @@ pub fn run(opts: &Options) -> Result<i32, PointerError> {
         e.flush()?;
         return Ok(1);
     }
-    let _ = built_text; // built_text retained for symmetry; dropped here.
 
     if !something {
         let mut e = stderr.lock();
@@ -218,12 +196,11 @@ pub fn run(opts: &Options) -> Result<i32, PointerError> {
     Ok(0)
 }
 
-/// Emit the `Pointer from <name>\n\n[…]` block to stderr. On a parse
-/// failure we print the error *without* echoing the input — matching
-/// upstream's order (parse first, then echo iff successful). On
-/// success, also reports whether the parsed pointer carried any
-/// `ext-N-<name>` lines so the caller can phrase the mismatch note
-/// accordingly.
+/// Print the `Pointer from <name>` section to stderr.
+///
+/// The input is echoed only if it parses. Otherwise an error is printed in
+/// its place. Sets `has_extensions` if the pointer has extensions, and
+/// `compared_oid` to its blob ID when `comparing`.
 fn emit_compared_section(
     stderr: &std::io::Stderr,
     name: &str,
@@ -238,16 +215,13 @@ fn emit_compared_section(
     let parsed = match Pointer::parse(bytes) {
         Ok(p) => p,
         Err(_) => {
-            // No `git-lfs:` prefix and no trailing newline — tests
-            // compare with `printf %s` which doesn't add one.
+            // No trailing newline: t-pointer.sh compares with `printf %s`.
             write!(e, "Pointer file error: invalid header")?;
             e.flush()?;
             return Ok(());
         }
     };
     *has_extensions = !parsed.extensions.is_empty();
-    // Successful parse: echo the input verbatim so a user diffing
-    // two `git lfs pointer` invocations sees both texts.
     e.write_all(bytes)?;
     if comparing {
         let oid = git_blob_oid(bytes);
@@ -259,9 +233,10 @@ fn emit_compared_section(
     Ok(())
 }
 
-/// Compute git's blob OID over `content` — `SHA-1("blob <len>\0<content>")`.
-/// Matches what `git hash-object --stdin` produces and what upstream
-/// `pointer` calls into via the git binary.
+/// The SHA-1 Git blob ID of `content`.
+///
+/// Upstream runs `git hash-object`, which gives a SHA-256 ID in a SHA-256
+/// repository. This is always SHA-1.
 fn git_blob_oid(content: &[u8]) -> String {
     let mut h = Sha1::new();
     h.update(format!("blob {}\0", content.len()).as_bytes());
@@ -402,16 +377,14 @@ mod tests {
 
     #[test]
     fn git_blob_oid_matches_known_value() {
-        // SHA-1 of "blob 5\0hello" = b6fc4c620b67d95f953a5c1c1230aaab5db5a1b0
-        // (this is what `printf 'hello' | git hash-object --stdin` returns)
+        // `printf hello | git hash-object --stdin`
         let oid = git_blob_oid(b"hello");
         assert_eq!(oid, "b6fc4c620b67d95f953a5c1c1230aaab5db5a1b0");
     }
 
     #[test]
     fn git_blob_oid_for_canonical_pointer() {
-        // The OID upstream's t-pointer.sh expects for the standard
-        // "simple\n" 7-byte pointer.
+        // The blob ID t-pointer.sh expects.
         let pointer = "version https://git-lfs.github.com/spec/v1\n\
              oid sha256:6c17f2007cbe934aee6e309b28b2dba3c119c5dff2ef813ed124699efe319868\n\
              size 7\n"

@@ -1,11 +1,11 @@
-//! `git lfs lock`, `git lfs locks`, `git lfs unlock` — the file-lock
-//! command surface. All three speak the locking API in `api/src/locks.rs`;
-//! this module is mostly path-resolution + flag dispatch + display logic.
+//! `git lfs lock`, `git lfs locks`, and `git lfs unlock`.
 //!
-//! `git lfs locks --local` reads from a side-effect cache populated by
-//! `git lfs lock` and pruned by `git lfs unlock` (see [`crate::lock_cache`]).
-//! `--cached` (which would persist the last remote query) is still
-//! deferred — see NOTES.md.
+//! Requests go through [`LockClient`], over HTTP or pure SSH. Paths are
+//! sent relative to the repository root with `/` separators.
+//!
+//! `git lfs locks --local` reads the [`lock_cache`] that `lock` and `unlock`
+//! keep up to date. There's no `--cached`
+//! option.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -34,8 +34,8 @@ pub enum LockCommandError {
 #[derive(Debug, Default, Clone)]
 pub struct LockOptions {
     pub remote: Option<String>,
-    /// Override the auto-detected refspec (`branch.<current>.merge` or
-    /// the current branch). `None` means "auto".
+    /// The ref to send. `None` means the current branch's
+    /// `branch.<name>.merge`, else the branch itself.
     pub refspec: Option<String>,
     pub json: bool,
 }
@@ -49,10 +49,10 @@ pub struct LocksOptions {
     pub limit: Option<u32>,
     pub verify: bool,
     pub json: bool,
-    /// `--local`: list from the on-disk cache without touching the
-    /// server. Cache is populated as a side effect of `git lfs lock`
-    /// and pruned by `git lfs unlock`. Combined with `--path`/`--id`/
-    /// `--limit` the same way the remote query is.
+    /// List from the [`lock_cache`] without contacting the server.
+    ///
+    /// `--path`, `--id`, and `--limit` filter the cache. `--verify` is
+    /// ignored.
     pub local: bool,
 }
 
@@ -97,22 +97,14 @@ pub fn lock(cwd: &Path, paths: &[String], opts: &LockOptions) -> Result<bool, Lo
                 if !opts.json {
                     println!("Locked {path} ({})", lock.id);
                 }
-                // The user took the lock to edit the file; if the
-                // file is currently read-only (because it matches a
-                // lockable pattern and the previous post-* hook
-                // chmod'd it), they need it writable. Best-effort —
-                // a chmod failure shouldn't fail the lock op.
+                // A lockable file may have been made read-only by a hook.
+                // A failed chmod doesn't fail the lock.
                 let _ = lockable::force_writable(&root, &path);
-                // Persist to the on-disk cache so a later
-                // `git lfs locks --local` (or an unlock that needs
-                // path→id lookup) can find it without a round-trip.
                 lock_cache::add(cwd, &lock);
                 locks.push(lock);
             }
             Err(LockClientError::Conflict { existing, message }) => {
-                // Match upstream's "Locking <path> failed: <reason>"
-                // shape (see `t-lock.sh::locking a previously locked
-                // file`). Owner goes on its own follow-up line.
+                // Upstream's wording, which `t-lock.sh` checks.
                 eprintln!("Locking {path} failed: {message}");
                 if let Some(owner) = existing.as_ref().and_then(|l| l.owner.as_ref()) {
                     eprintln!("  Lock owner: {}", owner.name);
@@ -145,10 +137,8 @@ struct VerifyJsonOutput<'a> {
 pub fn locks(cwd: &Path, opts: &LocksOptions) -> Result<(), LockCommandError> {
     let root = repo_root(cwd).map_err(LockCommandError::Build)?;
 
-    // `--local`: read from the on-disk cache without a server round-
-    // trip (the test deliberately removes `origin` to prove we don't
-    // talk to it). Path/id/limit filters apply, but `--verify` doesn't
-    // make sense locally — upstream rejects that combination too.
+    // This must not touch the remote: `t-locks.sh` removes `origin` to
+    // check. `--verify` is ignored here, where upstream rejects it.
     if opts.local {
         let path_filter = match opts.path.as_deref() {
             Some(raw) => Some(resolve_lock_path(cwd, &root, raw).map_err(LockCommandError::Build)?),
@@ -196,9 +186,8 @@ pub fn locks(cwd: &Path, opts: &LocksOptions) -> Result<(), LockCommandError> {
         return Ok(());
     }
 
-    // Path filter must be relativized just like `lock` does — the server
-    // stores repo-relative paths, so a user-supplied `./data/x.bin`
-    // wouldn't match anything otherwise.
+    // The server stores paths relative to the root, so `./data/x.bin`
+    // must be resolved like `lock` does to match anything.
     let path_filter = match opts.path.as_deref() {
         Some(raw) => Some(resolve_lock_path(cwd, &root, raw).map_err(LockCommandError::Build)?),
         None => None,
@@ -217,10 +206,9 @@ pub fn locks(cwd: &Path, opts: &LocksOptions) -> Result<(), LockCommandError> {
             .list_locks(&filter)
             .map_err(|e| LockCommandError::Api(lock_client_error_reason(&e)))?;
         all_locks.extend(page.locks);
-        // Check the limit BEFORE the cursor — a server that ignores
-        // `?limit=N` and returns more on the last page would otherwise
-        // sneak past us (we'd see no next_cursor and exit before the
-        // truncate would have fired).
+        // Check the limit before the cursor, so a server that ignores the
+        // limit and returns too many locks on the last page is still cut
+        // off.
         if let Some(limit) = opts.limit
             && all_locks.len() >= limit as usize
         {
@@ -241,7 +229,10 @@ pub fn locks(cwd: &Path, opts: &LocksOptions) -> Result<(), LockCommandError> {
     Ok(())
 }
 
-/// Drain verify across all pages — paginated the same way list_locks is.
+/// Fetch every page of ours and theirs.
+///
+/// `limit` is sent as the page size. Unlike the plain listing, the total
+/// isn't cut to it.
 fn verify_all(
     client: &LockClient,
     limit: Option<u32>,
@@ -288,7 +279,7 @@ pub fn unlock(
     let has_path = !paths.is_empty();
     let has_id = opts.id.is_some();
     if has_path == has_id {
-        // Capital "E" matches the upstream test grep.
+        // Upstream's wording, which the shell tests grep for.
         return Err(LockCommandError::Build(
             "Exactly one of --id or a set of paths must be provided".into(),
         ));
@@ -318,11 +309,8 @@ pub fn unlock(
                         reason: None,
                     });
                 }
-                // The server hands back the unlocked lock's path in
-                // the response; use it to restore the read-only
-                // invariant for lockable patterns. Without this,
-                // `unlock --id=<id>` doesn't chmod even though
-                // path-based unlock does.
+                // The response has the lock's path, so the file can be
+                // made read-only again, as for a path-based unlock.
                 if lockable_readonly && let Some(attrs) = attrs.as_ref() {
                     let _ = lockable::enforce_readonly_if_lockable(&root, attrs, &lock.path);
                 }
@@ -342,16 +330,12 @@ pub fn unlock(
             }
         }
     } else {
-        // Built once so we can flip a successfully-released lockable
-        // path back to read-only without re-parsing `.gitattributes`
-        // for every path.
         let attrs = git_lfs_git::AttrSet::from_workdir(&root).ok();
         for raw in paths {
             let path = match resolve_lock_path(cwd, &root, raw) {
                 Ok(p) => p,
                 Err(e) if opts.force => {
-                    // Match upstream: with --force, fall back to the
-                    // raw path. The server may still reject it.
+                    // With `--force`, upstream sends the path as given.
                     eprintln!("git-lfs: warning: {e} (continuing because --force)");
                     raw.replace('\\', "/").trim_start_matches("./").to_owned()
                 }
@@ -370,9 +354,6 @@ pub fn unlock(
                 }
             };
 
-            // Refuse to unlock a path with uncommitted edits unless
-            // `--force` is given (in which case we warn and continue,
-            // matching upstream).
             if has_uncommitted_changes(&root, &path) {
                 if opts.force {
                     eprintln!("warning: unlocking with uncommitted changes");
@@ -392,8 +373,7 @@ pub fn unlock(
                 }
             }
 
-            // Look up the lock id by path. Use a bounded list — we want
-            // exact-path matches, of which there's at most one.
+            // Only the first page is read. A path has at most one lock.
             let lookup = ListLocksFilter {
                 path: Some(path.clone()),
                 refspec: refspec.clone(),
@@ -440,19 +420,13 @@ pub fn unlock(
                     if !opts.json {
                         println!("Unlocked {path}");
                     }
-                    // Restore the read-only invariant for lockable
-                    // paths now that we no longer hold the lock —
-                    // unless `lfs.setlockablereadonly=false` opts out.
                     if lockable_readonly && let Some(attrs) = attrs.as_ref() {
                         let _ = lockable::enforce_readonly_if_lockable(&root, attrs, &path);
                     }
                     lock_cache::remove_by_id(cwd, &id);
                     lock_cache::remove_by_path(cwd, &path);
                     if opts.json {
-                        // Path-based unlocks emit only `path` and
-                        // `unlocked` per upstream's JSON schema; the
-                        // id field is reserved for `--id`-keyed
-                        // unlocks.
+                        // Upstream leaves out `id` for path-based unlocks.
                         report.push(UnlockJsonEntry {
                             id: None,
                             path: Some(path),
@@ -493,9 +467,10 @@ fn build_runtime() -> std::io::Result<Runtime> {
         .build()
 }
 
-/// Resolve the refspec to send with lock-API requests: caller-supplied
-/// override wins, else `git_lfs_git::refs::current_refspec`. `None`
-/// means "send no ref" (detached HEAD with no override).
+/// The ref to send with lock requests: the override, else the current
+/// branch's.
+///
+/// `None`, on a detached HEAD without an override, sends no ref.
 fn resolve_refspec(repo_root: &Path, override_ref: Option<&str>) -> Option<String> {
     if let Some(s) = override_ref {
         return Some(s.to_owned());
@@ -503,12 +478,11 @@ fn resolve_refspec(repo_root: &Path, override_ref: Option<&str>) -> Option<Strin
     git_lfs_git::refs::current_refspec(repo_root)
 }
 
-/// Pull just the human-readable reason out of an `ApiError`. For
-/// `Status` with a server-supplied error body, use the body's
-/// `message` directly so the user sees what the LFS server said
-/// without our "server returned status N:" wrapper. The wrapper makes
-/// the test grep brittle (e.g. `grep 'Locking a.dat failed: Expected
-/// ref ...'`).
+/// The reason to print for an API error.
+///
+/// If the server sent an error body, it's just the server's message,
+/// without the status prefix. `t-lock.sh` greps for lines like
+/// `Locking a.dat failed: Expected ref ...`.
 fn api_error_reason(e: &ApiError) -> String {
     match e {
         ApiError::Status { body: Some(b), .. } => b.message.clone(),
@@ -516,8 +490,9 @@ fn api_error_reason(e: &ApiError) -> String {
     }
 }
 
-/// Same idea as [`api_error_reason`], generalized to [`LockClientError`].
-/// SSH-side errors (no underlying ApiError) fall back to `Display`.
+/// The reason to print for a [`LockClientError`].
+///
+/// Like [`api_error_reason`], it's the server's message where there is one.
 fn lock_client_error_reason(e: &LockClientError) -> String {
     match e {
         LockClientError::Api(inner) => api_error_reason(inner),
@@ -533,10 +508,11 @@ fn lock_client_error_reason(e: &LockClientError) -> String {
     }
 }
 
-/// True if `path` (relative to `root`) has staged or unstaged
-/// modifications. `git status --porcelain -- <path>` prints a line
-/// only for dirty paths; an empty result means clean. Errors fall
-/// back to "clean" so a `git status` failure doesn't block unlock.
+/// Whether `git status --porcelain` prints anything for `path`.
+///
+/// That includes staged and unstaged changes and an untracked file, as in
+/// upstream's `IsFileModified`. If `git status` fails, the file counts as
+/// unchanged.
 fn has_uncommitted_changes(root: &Path, path: &str) -> bool {
     let out = Command::new("git")
         .arg("-C")
@@ -569,13 +545,13 @@ fn repo_root(cwd: &Path) -> Result<PathBuf, String> {
     Ok(PathBuf::from(s))
 }
 
-/// Resolve `file` to a repo-relative POSIX path suitable for the locking
-/// API. Mirrors upstream's `lockPath` — it uses `filepath.Abs` which
-/// also does not follow symlinks, just lexical normalization. That
-/// matters when the user is locking a path that traverses a symlink:
-/// `git lfs lock folder1/folder2/a.dat` (where `folder1/folder2` is a
-/// symlink) should record the path as typed, not the resolved target
-/// (`t-lock` test 14).
+/// Turn `file` into a path relative to the repository root, with `/`
+/// separators, for the locking API.
+///
+/// Like upstream's `lockPath`, symlinks aren't followed: with
+/// `folder1/folder2` a symlink, `folder1/folder2/a.dat` is sent as typed,
+/// which `t-lock.sh` checks. Directories, the root, and paths outside the
+/// repository are rejected.
 fn resolve_lock_path(cwd: &Path, repo_root: &Path, file: &str) -> Result<String, String> {
     let file_path = Path::new(file);
     let abs = if file_path.is_absolute() {
@@ -594,20 +570,17 @@ fn resolve_lock_path(cwd: &Path, repo_root: &Path, file: &str) -> Result<String,
         return Err(format!("cannot lock the repository root: {file}"));
     }
 
-    // is_dir() follows symlinks for the metadata syscall but doesn't
-    // change the path text — so we still emit the user-typed form on
-    // success.
+    // `t-lock.sh` greps for this message.
     if cleaned.is_dir() {
-        // Test grep expects "cannot lock directory" verbatim
-        // (`t-lock.sh::locking a directory`).
         return Err(format!("cannot lock directory: {file}"));
     }
 
     Ok(s)
 }
 
-/// Lexical path normalization: collapse `.` and `..` components without
-/// touching the filesystem. Equivalent of Go's `path/filepath.Clean`.
+/// Remove `.` and `..` components without touching the filesystem.
+///
+/// Like Go's `filepath.Clean` for absolute paths.
 fn lexical_clean(p: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for c in p.components() {
@@ -720,9 +693,7 @@ mod tests {
 
     #[test]
     fn resolve_lock_path_allows_nonexistent_leaf() {
-        // Locking a file that doesn't exist yet should be permitted —
-        // the server stores the path string verbatim, and locking
-        // ahead of file creation is a legitimate workflow.
+        // Locking a file before creating it is allowed.
         let tmp = init_repo();
         let path = resolve_lock_path(tmp.path(), tmp.path(), "nope.bin").unwrap();
         assert_eq!(path, "nope.bin");

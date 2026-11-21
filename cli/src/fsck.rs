@@ -1,23 +1,16 @@
-//! `git lfs fsck` — integrity check for LFS objects + pointers.
+//! `git lfs fsck`: check LFS objects and pointers.
 //!
-//! Two independent checks driven by `--objects` and `--pointers`:
+//! - `--objects` hashes the local object for every pointer in the history of
+//!   the ref (or range). Paths excluded by `lfs.fetchinclude` and
+//!   `lfs.fetchexclude` are skipped. Unless `--dry-run` is given, corrupt
+//!   objects are moved to `<lfs>/bad/<oid>`.
+//! - `--pointers` checks every blob that `.gitattributes` tracks in the
+//!   ref's tree (or every tree in the range). A blob that isn't a pointer is
+//!   an `unexpectedGitObject`, and a pointer that isn't canonical is a
+//!   `nonCanonicalPointer`.
 //!
-//! - **`--objects`**: for every LFS pointer reachable from the named ref's
-//!   history, verify the local store has its bytes and that re-hashing
-//!   them matches the pointer's OID. Missing or corrupt files are
-//!   reported and (unless `--dry-run`) moved to `<lfs>/bad/<oid>`.
-//! - **`--pointers`**: for every blob in the named ref's tree, classify
-//!   it against `.gitattributes`. A blob whose path matches `filter=lfs`
-//!   is expected to be a canonical pointer; if it parses but isn't
-//!   canonical we report `nonCanonicalPointer`, and if it doesn't parse
-//!   at all (or is too big to be a pointer) we report
-//!   `unexpectedGitObject`.
-//!
-//! Defaults to running both. Exit code: 0 if everything is fine,
-//! 1 otherwise.
-//!
-//! Out of scope (see NOTES.md): the `<a>..<b>` range form, scanning the
-//! index alongside HEAD when no ref is given, `lfs.fetchexclude` honor.
+//! Both run when neither is given. Without a ref, HEAD is checked, but not
+//! the index as upstream does.
 
 use std::io::Read;
 use std::path::Path;
@@ -31,14 +24,11 @@ use sha2::{Digest, Sha256};
 
 use crate::fetch::fetch_filter_set;
 
-/// Loosened "inside a repo" check: anything `git rev-parse
-/// --absolute-git-dir` can resolve counts. Earlier we required
-/// `--is-inside-work-tree`, but that rejected the
-/// `GIT_DIR=… GIT_WORK_TREE=… GIT_OBJECT_DIRECTORY=…` invocation in
-/// t-fsck 7 (cwd is the parent of the work tree, not inside it). The
-/// outside-repo case (test 4) still surfaces because `git_dir` fails
-/// when nothing on the cwd path is a git repo and no env vars steer
-/// us at one.
+/// Whether Git can find a repository from `cwd`.
+///
+/// Only the Git directory is required, not being inside the work tree:
+/// t-fsck.sh runs fsck from outside the work tree with `GIT_DIR` and
+/// `GIT_WORK_TREE` set.
 fn is_in_git_repo(cwd: &Path) -> bool {
     git_lfs_git::git_dir(cwd).is_ok()
 }
@@ -51,19 +41,18 @@ pub enum FsckError {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Fetch(#[from] crate::fetch::FetchCommandError),
-    /// User-facing error printed verbatim. Used for things like
-    /// `Git can't resolve ref: "..."` that the test suite greps.
+    /// Error printed as is, such as an unresolvable ref.
     #[error("{0}")]
     Other(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
-    /// Run `--objects` only.
+    /// `--objects` only.
     Objects,
-    /// Run `--pointers` only.
+    /// `--pointers` only.
     Pointers,
-    /// Run both (the default when no flag is given).
+    /// Both, the default.
     Both,
 }
 
@@ -73,12 +62,12 @@ pub struct Options {
     pub dry_run: bool,
 }
 
-/// Returns the intended process exit code (0 = OK, 1 = at least one
-/// problem found, 128 = not in a git repo).
+/// Run fsck and return the exit code.
+///
+/// The code is 0 if everything is fine, 1 if a problem was found, and 128
+/// outside a repository.
 pub fn run(cwd: &Path, refspec: Option<&str>, opts: &Options) -> Result<i32, FsckError> {
-    // Outside-a-repo guard. `t-fsck.sh::fsck: outside git repository`
-    // greps `Not in a Git repository` on stdout (`2>&1 > fsck.log`
-    // captures stdout only) and asserts exit 128.
+    // t-fsck.sh expects this on stdout.
     if !is_in_git_repo(cwd) {
         println!("Not in a Git repository.");
         return Ok(128);
@@ -86,9 +75,8 @@ pub fn run(cwd: &Path, refspec: Option<&str>, opts: &Options) -> Result<i32, Fsc
     let store = Store::new(git_lfs_git::lfs_dir(cwd)?);
     let r = refspec.unwrap_or("HEAD");
 
-    // Validate the ref upfront so a typo surfaces as the upstream-
-    // format `Git can't resolve ref: "<r>"` line (t-fsck 16) instead
-    // of a stack of internal `git rev-list failed` messages.
+    // Check the ref first so a typo gets upstream's message rather than a
+    // failed rev-list.
     if !crate::fetch::is_resolvable_ref(cwd, r) {
         return Err(FsckError::Other(format!("Git can't resolve ref: {r:?}")));
     }
@@ -97,17 +85,8 @@ pub fn run(cwd: &Path, refspec: Option<&str>, opts: &Options) -> Result<i32, Fsc
     let mut non_canonical: usize = 0;
 
     if matches!(opts.mode, Mode::Objects | Mode::Both) {
-        // Scan the full reachable history; this is what upstream's
-        // ScanRef does, and it's what most users mean by "fsck this
-        // ref's LFS objects."
-        //
-        // Honor `lfs.fetchinclude` / `lfs.fetchexclude`: pointers
-        // whose working-tree path matches an exclude (or doesn't
-        // match an include) are skipped, because the user has
-        // explicitly opted out of having those objects locally.
-        // `t-fsck.sh::fsck detects invalid objects except in
-        // excluded paths` and `t-fetch.sh::fetch with exclude
-        // filters in gitconfig` both rely on this.
+        // Objects that fetch wouldn't download aren't expected locally.
+        // Upstream only applies `lfs.fetchexclude` here.
         let include_set = fetch_filter_set(cwd, "lfs.fetchinclude")?;
         let exclude_set = fetch_filter_set(cwd, "lfs.fetchexclude")?;
         let pointers = scan_pointers(cwd, &[r], &[])?;
@@ -147,29 +126,19 @@ pub fn run(cwd: &Path, refspec: Option<&str>, opts: &Options) -> Result<i32, Fsc
     if matches!(opts.mode, Mode::Pointers | Mode::Both) {
         let blobs = scan_tree_blobs(cwd, r)?;
         let mut batch = CatFileBatch::spawn(cwd)?;
-        // Build attrs from the *tree*, not the working directory: when
-        // someone runs `git lfs fsck` against a repo populated only by
-        // env vars (`GIT_DIR=… GIT_WORK_TREE=… GIT_OBJECT_DIRECTORY=…`,
-        // see t-fsck 7) the work tree may be empty even though HEAD
-        // has a `.gitattributes`. Read each `.gitattributes` blob from
-        // the tree and feed it to AttrSet at the right directory.
-        let attrs = build_tree_attrs(cwd, &blobs, &mut batch)?;
+        // Read attributes from the tree, not the working tree, which may
+        // be empty or out of date.
+        let attrs = build_tree_attrs(&blobs, &mut batch)?;
         for blob in &blobs {
-            // Symlinks store their target path as the blob content;
-            // they're not LFS pointers regardless of `.gitattributes`
-            // and upstream's fsck (`fsck does not detect invalid
-            // pointers with symlinks`) expects them to pass through.
+            // A symlink is never a pointer, whatever `.gitattributes` says.
             if blob.mode == "120000" {
                 continue;
             }
-            // Use forward slashes for path matching — gix-attributes
-            // works in repo-relative `/`-separated paths.
             let path_str = blob.path.to_string_lossy().replace('\\', "/");
             if !attrs.is_lfs_tracked(&path_str) {
                 continue;
             }
-            // Blobs above the pointer size ceiling can't be pointers; flag
-            // and skip the read entirely.
+            // Too big to be a pointer, so don't read it.
             if (blob.size as usize) >= MAX_POINTER_SIZE {
                 println!(
                     "pointer: unexpectedGitObject: \"{path_str}\" (treeish {}) should have been a pointer but was not",
@@ -211,9 +180,7 @@ pub fn run(cwd: &Path, refspec: Option<&str>, opts: &Options) -> Result<i32, Fsc
         return Ok(1);
     }
 
-    // Recovery: move corrupt object files to `<lfs>/bad/<oid>` so the
-    // next fetch will re-download them. Atomicity isn't critical — if
-    // the rename fails we report and exit non-zero.
+    // Move corrupt objects aside so the next fetch downloads them again.
     let bad_dir = store.root().join("bad");
     println!(
         "objects: repair: moving corrupt objects to {}",
@@ -226,7 +193,7 @@ pub fn run(cwd: &Path, refspec: Option<&str>, opts: &Options) -> Result<i32, Fsc
         match std::fs::rename(&src, &dst) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                // Already absent (the missing case above); nothing to move.
+                // A missing object.
             }
             Err(e) => return Err(e.into()),
         }
@@ -241,22 +208,15 @@ enum ObjectVerify {
     Corrupt,
 }
 
-/// Walk every `.gitattributes` blob in the tree-blob list and feed its
-/// contents to a fresh [`AttrSet`] at the right per-directory base.
-/// Unlike [`AttrSet::from_workdir`], this reads from the git tree
-/// itself, so an empty / out-of-sync working directory is fine.
-/// Falls back silently when a blob can't be read (the only consumer
-/// is fsck, which would just report nothing extra rather than fail).
+/// Build an [`AttrSet`] from the `.gitattributes` files among `blobs`.
+///
+/// A `.gitattributes` blob missing from the object database is skipped.
 fn build_tree_attrs(
-    cwd: &Path,
     blobs: &[git_lfs_git::scanner::TreeBlob],
     batch: &mut CatFileBatch,
 ) -> std::io::Result<AttrSet> {
     let mut attrs = AttrSet::empty();
-    let _ = cwd;
-    // Sort by path-component depth so root .gitattributes is added
-    // first, mirroring AttrSet::from_workdir's "shallow → deep" order
-    // (gix-attributes' last-added wins).
+    // Shallowest first, since the last file added wins.
     let mut by_depth: Vec<&git_lfs_git::scanner::TreeBlob> = blobs
         .iter()
         .filter(|b| b.path.file_name().is_some_and(|n| n == ".gitattributes"))
@@ -278,14 +238,13 @@ fn build_tree_attrs(
 
 fn verify_object(store: &Store, oid: Oid, size: u64) -> std::io::Result<ObjectVerify> {
     if oid == Oid::EMPTY {
-        // The empty pointer doesn't reference any file; treat as OK.
+        // The empty object is never stored.
         return Ok(ObjectVerify::Ok);
     }
     let mut file = match store.open(oid) {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            // Special-case zero-size pointers — upstream reports them as
-            // OK even when the on-disk file is missing.
+            // Like upstream, a missing zero-size object is fine.
             if size == 0 {
                 return Ok(ObjectVerify::Ok);
             }
@@ -346,8 +305,7 @@ mod tests {
     fn verify_object_corrupt_when_size_lies() {
         let (_tmp, store) = fixture();
         let (oid, _) = store.insert(&mut b"hello".as_slice()).unwrap();
-        // Lie about the size — the on-disk content (5 bytes "hello")
-        // is fine for its own OID but doesn't match this 99 size.
+        // The content matches its OID but not this size.
         assert_eq!(
             verify_object(&store, oid, 99).unwrap(),
             ObjectVerify::Corrupt,
@@ -370,7 +328,7 @@ mod tests {
     #[test]
     fn verify_object_handles_empty_oid() {
         let (_tmp, store) = fixture();
-        // Empty OID is a sentinel; never has a backing file.
+        // The empty object never has a file.
         assert_eq!(
             verify_object(&store, Oid::EMPTY, 0).unwrap(),
             ObjectVerify::Ok

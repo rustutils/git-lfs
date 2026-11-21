@@ -1,17 +1,12 @@
-//! `post-checkout`, `post-commit`, `post-merge` — git hook entry points.
+//! The `post-checkout`, `post-commit`, and `post-merge` hook entry points.
 //!
-//! These hooks exist to manage the **lockable** read-only feature: files
-//! matching a `lockable` pattern in `.gitattributes` get their write bit
-//! cleared on disk so users can't accidentally edit a file someone else
-//! holds the lock for. After a checkout / commit / merge, the working
-//! tree may have new lockable files (or files whose lockable status
-//! flipped) that need re-chmodding.
+//! All three keep lockable files read-only: files matching a `lockable`
+//! pattern in `.gitattributes` lose their write bit unless the user holds
+//! the lock, so nobody edits a file without locking it first. A checkout,
+//! commit, or merge can add such files or change which files are lockable.
 //!
-//! All three hooks do the same thing: full workdir walk, apply the
-//! lockable invariant. Upstream optimizes by diffing changed files
-//! only — we can do that later, but a full `git ls-files` scan is fine
-//! for correctness and matches the strict "post-* always sees a clean
-//! workdir" assumption.
+//! Each hook walks every file in the index. Upstream's `post-checkout` and
+//! `post-commit` only check the paths that changed.
 
 use std::path::Path;
 
@@ -25,8 +20,10 @@ pub enum HookError {
     Io(#[from] std::io::Error),
 }
 
-/// `post-checkout <prev-sha> <post-sha> <flag>`. The `flag` is "1" if
-/// HEAD moved, "0" if a single file was checked out.
+/// Run `post-checkout <prev-sha> <post-sha> <flag>`.
+///
+/// The flag is 1 for a branch checkout and 0 for a file checkout. Only the
+/// argument count is checked.
 pub fn post_checkout(cwd: &Path, args: &[String]) -> Result<(), HookError> {
     if args.len() != 3 {
         return Err(HookError::Usage(
@@ -39,7 +36,7 @@ pub fn post_checkout(cwd: &Path, args: &[String]) -> Result<(), HookError> {
     Ok(())
 }
 
-/// `post-commit` (no arguments).
+/// Run `post-commit`, which takes no arguments.
 pub fn post_commit(cwd: &Path, args: &[String]) -> Result<(), HookError> {
     if !args.is_empty() {
         return Err(HookError::Usage(format!(
@@ -51,9 +48,9 @@ pub fn post_commit(cwd: &Path, args: &[String]) -> Result<(), HookError> {
     Ok(())
 }
 
-/// `post-merge <squash-flag>`. Argument is "1" for squash merges, "0"
-/// otherwise — irrelevant to lockable read-only management, so we
-/// only validate count.
+/// Run `post-merge <squash-flag>`.
+///
+/// Only the argument count is checked.
 pub fn post_merge(cwd: &Path, args: &[String]) -> Result<(), HookError> {
     if args.len() != 1 {
         return Err(HookError::Usage(

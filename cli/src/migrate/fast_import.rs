@@ -1,19 +1,18 @@
-//! Emitter for the `git fast-import` wire format.
+//! Writer for the `git fast-import` stream format.
 //!
-//! Inverse of [`crate::migrate::fast_export::Reader`]: takes [`Command`]
-//! values and writes them back as bytes that `git fast-import` can
-//! ingest. Round-tripping a command through Reader → Writer → Reader
-//! should yield equal values; see the round-trip tests.
+//! The inverse of [`Reader`](super::fast_export::Reader): reading back
+//! what [`Writer`] writes gives the same [`Command`] values.
 
 use std::io::{self, Write};
 
 use super::fast_export::{Command, Commit, DataRef, FileChange, Reset, Tag};
 
-/// C-quote a path for the fast-import wire format. fast-import treats
-/// space as the field separator inside `M`/`R`/`C`/`D` directives, so
-/// any path with a space, double-quote, control char, or non-ASCII
-/// byte must be wrapped in `"..."` with the standard `\\`/`\"`
-/// escapes. Mirrors git's `quote_c_style`.
+/// Quote a path for a file change line, if it needs it.
+///
+/// Quotes paths with a space, double quote, backslash, control
+/// character, or non-ASCII character. Unlike Git's `quote_c_style`,
+/// non-ASCII characters are written as they are, which fast-import
+/// accepts.
 fn quote_path(p: &str) -> String {
     let needs_quoting = p
         .chars()
@@ -101,16 +100,12 @@ impl<W: Write> Writer<W> {
         for change in &c.file_changes {
             self.write_file_change(change)?;
         }
-        // Trailing blank line. fast-import accepts either blank or the
-        // start of the next command; emitting blank is unambiguous.
         writeln!(self.inner)
     }
 
     fn write_tag(&mut self, t: &Tag) -> io::Result<()> {
-        // fast-import wants the order: tag, mark, from, original-oid,
-        // tagger, data. We previously emitted original-oid before
-        // from, which fast-import rejected with "expected 'from'
-        // command, got 'original-oid ...'".
+        // fast-import requires `from` before `original-oid` here, unlike
+        // in a commit.
         writeln!(self.inner, "tag {}", t.name)?;
         if let Some(m) = t.mark {
             writeln!(self.inner, "mark :{m}")?;
@@ -165,9 +160,7 @@ impl<W: Write> Writer<W> {
     fn write_data_block(&mut self, data: &[u8]) -> io::Result<()> {
         writeln!(self.inner, "data {}", data.len())?;
         self.inner.write_all(data)?;
-        // Optional trailing LF after the data block. fast-export emits
-        // it; we do too so the next command's keyword starts on its
-        // own line.
+        // Optional, but fast-export writes it too.
         self.inner.write_all(b"\n")?;
         Ok(())
     }

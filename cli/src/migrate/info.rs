@@ -1,8 +1,9 @@
-//! `git lfs migrate info` — read-only walk + extension report.
+//! `git lfs migrate info`: report file sizes in history by extension.
 //!
-//! Pipeline: `git rev-list --objects` → `cat-file --batch-check` to
-//! filter to blobs → `cat-file --batch` to read pointer-sized blobs for
-//! pointer-detection.
+//! Lists objects with `git rev-list --objects`, keeps the blobs with
+//! `git cat-file --batch-check`, and reads the ones small enough to be
+//! pointers with `git cat-file --batch`. `--fixup` instead looks only at
+//! the tree of the first ref.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -13,6 +14,7 @@ use git_lfs_git::rev_list::rev_list;
 use git_lfs_git::scanner::scan_tree_blobs;
 use git_lfs_pointer::{MAX_POINTER_SIZE, Pointer};
 
+use super::transform::{dir_of, is_attrs_path};
 use super::{
     MigrateError, RefSelection, build_globset, ext_group, humanize, humanize_with_unit,
     path_matches, resolve_refs,
@@ -21,14 +23,12 @@ use super::{
 /// How `migrate info` treats blobs that look like LFS pointers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PointerMode {
-    /// Parse pointers; count them under a separate "LFS Objects" group
-    /// using the pointer's recorded size.
+    /// Count pointers in a separate "LFS Objects" group, by the size of
+    /// the object they point to.
     Follow,
-    /// Don't parse pointers; count by extension regardless. Cheapest
-    /// — skips the cat-file --batch read entirely.
+    /// Count pointers like any other file, without reading any blob.
     NoFollow,
-    /// Parse pointers; exclude them from the output. Useful for users
-    /// who want to see what's *still* not in LFS.
+    /// Leave pointers out.
     Ignore,
 }
 
@@ -43,9 +43,9 @@ pub struct InfoOptions {
     pub above: u64,
     pub top: usize,
     pub pointers: PointerMode,
-    /// Force the byte-count unit. When `Some`, every row's size is
-    /// reported as a fractional count of this many bytes (parsed from
-    /// `--unit=kb|mb|...`). When `None`, sizes are auto-scaled per row.
+    /// `--unit` in bytes, to print every size in that unit.
+    ///
+    /// Without it, each size gets its own unit.
     pub unit: Option<u64>,
     pub fixup: bool,
 }
@@ -65,8 +65,6 @@ pub fn info(cwd: &Path, opts: &InfoOptions) -> Result<(), MigrateError> {
             "Cannot use --everything with --include-ref or --exclude-ref".into(),
         ));
     }
-    // `--fixup` answers "what *should* be LFS but isn't"; mixing it
-    // with explicit pointer/path filters is contradictory.
     if opts.fixup {
         match opts.pointers {
             PointerMode::Follow => {
@@ -103,8 +101,7 @@ pub fn info(cwd: &Path, opts: &InfoOptions) -> Result<(), MigrateError> {
         }
     }
     super::validate_refs(cwd, &include_refs, &exclude_refs)?;
-    // Auto-exclude remote-tracking refs in the default mode (no
-    // `--everything`, no explicit `--include-ref`/`--exclude-ref`).
+    // Skip commits already on a remote, as in import.
     if !opts.everything && opts.include_ref.is_empty() && opts.exclude_ref.is_empty() {
         for r in super::export::list_remote_tracking_refs(cwd) {
             if !exclude_refs.iter().any(|x| x == &r) {
@@ -113,7 +110,6 @@ pub fn info(cwd: &Path, opts: &InfoOptions) -> Result<(), MigrateError> {
         }
     }
     if include_refs.is_empty() {
-        // Empty repo or no resolvable refs — nothing to report.
         return Ok(());
     }
     if super::export::any_attrs_symlink(cwd, &include_refs) {
@@ -174,9 +170,7 @@ pub fn info(cwd: &Path, opts: &InfoOptions) -> Result<(), MigrateError> {
                 (Ok(p), PointerMode::Follow) => {
                     accumulate(&mut lfs_entry, p.size, opts.above);
                 }
-                (Ok(_), PointerMode::Ignore) => {
-                    // Skip — user wants to see only non-pointer blobs.
-                }
+                (Ok(_), PointerMode::Ignore) => {}
                 _ => {
                     let group = ext_group(&name);
                     accumulate(by_ext.entry(group).or_default(), blob_size, opts.above);
@@ -189,16 +183,12 @@ pub fn info(cwd: &Path, opts: &InfoOptions) -> Result<(), MigrateError> {
     Ok(())
 }
 
-/// `--fixup` walk: list blobs at the first include ref, build a
-/// fresh [`AttrSet`] from that tree's `.gitattributes` blobs, and
-/// count every non-attrs, non-symlink, non-pointer blob whose path
-/// the attrs declare LFS-tracked. Mirrors upstream's
-/// `commands/command_migrate_info.go::BlobFn` fixup branch.
+/// `--fixup`: count the files that are tracked by the attributes but
+/// aren't pointers.
 ///
-/// Multi-commit per-commit attribute resolution is deferred — the
-/// upstream test suite only exercises single-commit fixup scenarios
-/// today and walking each commit would multiply the work without
-/// changing the test outcomes. Tracked in NOTES.md.
+/// Looks only at the tree of the first ref, with that tree's
+/// `.gitattributes` files, where upstream checks every commit with its
+/// own. `info/attributes` and the global attributes file aren't used.
 fn info_fixup(cwd: &Path, opts: &InfoOptions, include_refs: &[String]) -> Result<(), MigrateError> {
     let Some(reference) = include_refs.first() else {
         return Ok(());
@@ -206,11 +196,7 @@ fn info_fixup(cwd: &Path, opts: &InfoOptions, include_refs: &[String]) -> Result
 
     let blobs = scan_tree_blobs(cwd, reference).map_err(|e| MigrateError::Other(e.to_string()))?;
 
-    // First pass: read every `.gitattributes` blob in the tree and
-    // accumulate them into one AttrSet keyed by directory. Shallow →
-    // deep insertion so deeper dirs win in gix-attributes' last-added
-    // ordering. Matches the per-commit logic in
-    // `migrate/transform.rs::process_commit_fixup`.
+    // Add shallow to deep, since the last list added takes precedence.
     let mut attrs_dirs: Vec<(String, Vec<u8>)> = Vec::new();
     {
         let mut batch = CatFileBatch::spawn(cwd)?;
@@ -231,9 +217,6 @@ fn info_fixup(cwd: &Path, opts: &InfoOptions, include_refs: &[String]) -> Result
         attrs.add_buffer_at(content, dir);
     }
 
-    // Second pass: count non-attrs blobs whose path is LFS-tracked
-    // and aren't already valid pointers (fixup implies
-    // `--pointers=ignore`).
     let mut by_ext: HashMap<String, Entry> = HashMap::new();
     let mut batch = CatFileBatch::spawn(cwd)?;
     for blob in &blobs {
@@ -242,15 +225,11 @@ fn info_fixup(cwd: &Path, opts: &InfoOptions, include_refs: &[String]) -> Result
             continue;
         }
         if blob.mode == "120000" {
-            // Symlinks aren't pointer candidates; git stores the link
-            // target as the blob content.
             continue;
         }
         if !attrs.is_lfs_tracked(&path) {
             continue;
         }
-        // Skip blobs that already parse as LFS pointers — the file is
-        // *already* in LFS, nothing to fix.
         if (blob.size as usize) < MAX_POINTER_SIZE
             && let Some(b) = batch.read(&blob.blob_oid)?
             && Pointer::parse(&b.content).is_ok()
@@ -265,24 +244,6 @@ fn info_fixup(cwd: &Path, opts: &InfoOptions, include_refs: &[String]) -> Result
     let lfs = Entry::default();
     print_table(&by_ext, &lfs, opts);
     Ok(())
-}
-
-/// `.gitattributes` filename detector — top-level or nested under any
-/// directory. Mirrors `migrate/transform.rs::is_attrs_path`; duplicated
-/// rather than re-exported because the transform module is private to
-/// the migrate command tree.
-fn is_attrs_path(path: &str) -> bool {
-    const ATTRS: &str = ".gitattributes";
-    path == ATTRS || path.rsplit_once('/').is_some_and(|(_, leaf)| leaf == ATTRS)
-}
-
-/// Directory portion of a tree path, with no trailing slash. Empty
-/// for top-level paths.
-fn dir_of(path: &str) -> String {
-    match path.rsplit_once('/') {
-        Some((parent, _)) => parent.to_owned(),
-        None => String::new(),
-    }
 }
 
 fn accumulate(entry: &mut Entry, size: u64, above: u64) {
@@ -329,10 +290,7 @@ fn print_table(by_ext: &HashMap<String, Entry>, lfs: &Entry, opts: &InfoOptions)
         if *separate && i > 0 {
             println!();
         }
-        // Match upstream's column shape: extension, size, and stat
-        // columns are left-aligned (so a row with a smaller size like
-        // `83 B` shows up with a *trailing* space rather than a
-        // leading one). Percent stays right-aligned.
+        // As upstream, only the percentage is right-aligned.
         println!(
             "{:<qw$}\t{:<sw$}\t{:<tw$}\t{:>pw$}",
             qual,
@@ -362,9 +320,7 @@ fn format_row(
         Some(u) => humanize_with_unit(entry.bytes_above, u),
         None => humanize(entry.bytes_above),
     };
-    // `file ` (trailing space) keeps singular and plural tokens at
-    // the same character width — upstream right-pads the noun so
-    // adjacent rows line up regardless of count.
+    // Upstream pads "file" to the width of "files".
     let noun = if entry.total == 1 { "file " } else { "files" };
     (
         qual.to_owned(),
