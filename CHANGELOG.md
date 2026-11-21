@@ -66,6 +66,8 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- `git lfs migrate --everything` no longer rewrites the stash or notes,
+  bisect, and replace refs, matching upstream.
 - `git lfs migrate import` keeps non-ASCII file names. Before, a file like
   `café.bin` was renamed to `caf\303\251.bin` in the rewritten history.
 - `git lfs migrate import --fixup` and `--no-rewrite` refuse to run with

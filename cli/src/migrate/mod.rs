@@ -149,10 +149,12 @@ pub(super) fn current_branch(cwd: &Path) -> Option<String> {
     (!s.is_empty()).then_some(s)
 }
 
+/// The refs `--everything` rewrites.
+///
+/// Every ref except remote-tracking ones and the special refs upstream's
+/// `isSpecialGitRef` skips: the stash, notes, bisect, and replace refs.
+/// Upstream also rewrites remote-tracking branches.
 pub(super) fn all_local_refs(cwd: &Path) -> Result<Vec<String>, MigrateError> {
-    // Every ref except remote-tracking ones, so this includes
-    // `refs/stash` and `refs/notes/*`. Upstream's `--everything` skips
-    // those and includes remote branches instead.
     let out = Command::new("git")
         .arg("-C")
         .arg(cwd)
@@ -166,9 +168,17 @@ pub(super) fn all_local_refs(cwd: &Path) -> Result<Vec<String>, MigrateError> {
     }
     Ok(String::from_utf8_lossy(&out.stdout)
         .lines()
-        .filter(|l| !l.is_empty() && !l.starts_with("refs/remotes/"))
+        .filter(|l| !l.is_empty() && !l.starts_with("refs/remotes/") && !is_special_ref(l))
         .map(String::from)
         .collect())
+}
+
+/// Whether `refname` isn't history, and so mustn't be rewritten.
+fn is_special_ref(refname: &str) -> bool {
+    refname == "refs/stash"
+        || ["refs/notes/", "refs/bisect/", "refs/replace/"]
+            .iter()
+            .any(|prefix| refname.starts_with(prefix))
 }
 
 pub(super) fn build_globset(patterns: &[String]) -> Result<Option<GlobSet>, MigrateError> {

@@ -2736,6 +2736,40 @@ fn migrate_import_keeps_non_ascii_file_names() {
     );
 }
 
+#[test]
+fn migrate_everything_leaves_notes_and_stash_alone() {
+    // Notes and the stash aren't history to rewrite, as upstream's
+    // `isSpecialGitRef` says.
+    let repo = fresh_repo_with_identity();
+    std::fs::write(repo.path().join("a.bin"), b"binary data\n").unwrap();
+    git_in(repo.path(), &["add", "."]);
+    git_in(repo.path(), &["commit", "-q", "-m", "init"]);
+    git_in(repo.path(), &["notes", "add", "-m", "a note"]);
+    std::fs::write(repo.path().join("a.bin"), b"stashed change\n").unwrap();
+    git_in(repo.path(), &["stash", "-q"]);
+    let rev = |r: &str| {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(["rev-parse", r])
+            .output()
+            .unwrap();
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let notes = rev("refs/notes/commits");
+    let stash = rev("refs/stash");
+
+    let args = ["migrate", "import", "--everything", "--include", "*.bin"];
+    let out = run_in(repo.path(), &args, b"");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(rev("refs/notes/commits"), notes, "notes were rewritten");
+    assert_eq!(rev("refs/stash"), stash, "stash was rewritten");
+}
+
 // ---------- core.hooksPath ----------------------------------------------
 
 /// Run `git-lfs <args>` in `cwd` with `global` as the global Git config.

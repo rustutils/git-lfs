@@ -121,9 +121,6 @@ come from reading the code.
 
 ### Data loss
 
-- **`git lfs migrate --everything` rewrites `refs/notes`.** Confirmed.
-  Upstream skips stash, notes, bisect, and replace refs, and includes
-  remote branches (`all_local_refs` in `migrate/mod.rs`).
 - **`git lfs migrate import` converts nested `.gitattributes` files into
   pointers.** Confirmed. Only the top-level one is excluded.
 
@@ -219,6 +216,9 @@ come from reading the code.
   alternate store.
 - `git lfs uninstall` prints different messages, and only removes hooks
   that exactly match the current template.
+- `git lfs migrate --everything` doesn't rewrite remote-tracking branches,
+  which upstream does. Rewriting them would leave them out of step with the
+  server until the next fetch, so this may be worth keeping.
 - `git lfs migrate`: export doesn't exclude remote-tracking refs, has no
   `--yes`, and writes its exclude line without `-text`. Remote refs aren't
   fetched before the walk, so `--skip-fetch` does nothing. `--no-rewrite`
