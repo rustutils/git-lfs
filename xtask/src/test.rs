@@ -142,10 +142,8 @@ fn parse_tap_result(line: &str) -> Option<TapRecord> {
     let trimmed = line.trim_start();
     let (ok, rest) = if let Some(r) = trimmed.strip_prefix("ok ") {
         (true, r)
-    } else if let Some(r) = trimmed.strip_prefix("not ok ") {
-        (false, r)
     } else {
-        return None;
+        (false, trimmed.strip_prefix("not ok ")?)
     };
     let (num_part, desc_part) = rest.split_once(" - ")?;
     let num: usize = num_part.trim().parse().ok()?;

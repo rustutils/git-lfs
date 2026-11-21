@@ -225,13 +225,10 @@ pub fn run(cwd: &Path, opts: &Options) -> Result<(), CheckoutError> {
             }
             Ok(meta) if meta.is_file() => {
                 preserved_perms = Some(meta.permissions());
-                match std::fs::read(&dst) {
-                    Ok(bytes) => match Pointer::parse(&bytes) {
-                        Ok(existing) if existing.oid == p.oid => {}
-                        Ok(_) => continue,
-                        Err(_) => continue,
-                    },
-                    Err(e) => return Err(e.into()),
+                let bytes = std::fs::read(&dst)?;
+                match Pointer::parse(&bytes) {
+                    Ok(existing) if existing.oid == p.oid => {}
+                    Ok(_) | Err(_) => continue,
                 }
             }
             Ok(_) => {
