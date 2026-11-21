@@ -1,30 +1,20 @@
 //! Content-addressable on-disk store for Git LFS objects.
 //!
-//! Git LFS keeps large files outside git's object database, leaving
-//! small pointer blobs committed to git in their place. This crate
-//! owns the local half of that split: where the actual file bytes
-//! live on disk, how they get there, and how they're served back out.
+//! A [`Store`] manages the LFS directory, usually `.git/lfs`. Each object is
+//! stored under `objects/` at a path made from its OID, as in the [spec].
 //!
-//! Objects live under `<lfs_dir>/objects/aa/bb/aabbcc…` where the
-//! hex string is the SHA-256 of the content, sharded by the first
-//! two bytes (see [`docs/spec.md`]). Writes go through a tempfile in
-//! `<lfs_dir>/tmp/` and are atomically renamed into place once their
-//! hash is known.
+//! There are two ways to add an object. [`Store::insert`] hashes the content
+//! as it's written and returns the OID, which is what the clean filter needs.
+//! [`Store::insert_verified`] checks the content against an OID you already
+//! have, which is what downloads need. Both write to a temporary file first,
+//! so an interrupted write never leaves a partial object.
 //!
-//! Two insert paths cover the two callers: [`Store::insert`] hashes
-//! bytes as they're written (the clean-filter path: bytes in, OID
-//! out), and [`Store::insert_verified`] checks the resulting hash
-//! against a caller-supplied expected OID (the download path: the
-//! server names the OID, we confirm what arrived).
+//! Resumable downloads instead write to [`Store::incomplete_path`] and move
+//! the finished file into place with [`Store::commit_partial`].
 //!
-//! In-progress downloads stage as `.part` files at
-//! [`Store::incomplete_path`] and rename into place via
-//! [`Store::commit_partial`], so an interrupted transfer resumes
-//! with a `Range:` request rather than restarting. Alternate object
-//! stores attached via [`Store::with_references`] are hardlinked or
-//! copied into the primary on a miss (the LFS analogue of
-//! `git clone --shared`). File and directory modes follow
-//! `core.sharedRepository`, see [`Store::with_shared_repository`].
+//! [`Store::with_references`] adds other stores to fall back on, such as the
+//! source of a `git clone --shared`. [`Store::with_shared_repository`] sets
+//! file permissions from `core.sharedRepository`.
 //!
 //! ```
 //! use git_lfs_store::Store;
@@ -37,7 +27,7 @@
 //! assert_eq!(size, 11);
 //! ```
 //!
-//! [`docs/spec.md`]: https://gitlab.com/rustutils/git-lfs/-/blob/master/docs/spec.md
+//! [spec]: https://gitlab.com/rustutils/git-lfs/-/blob/master/docs/spec.md
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -48,44 +38,30 @@ use git_lfs_pointer::Oid;
 use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 
-/// Platform null device
-///
-/// What `object_path` returns for [`Oid::EMPTY`].
+/// The null device, which [`Store::object_path`] returns for [`Oid::EMPTY`].
 const NULL_DEVICE: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
 
 const COPY_BUFFER: usize = 64 * 1024;
 
-/// A local LFS object store rooted at `<lfs_dir>` (typically `.git/lfs`).
-///
-/// May reference any number of alternate stores (typically the LFS
-/// objects of a `git clone --shared` source) and will materialize a
-/// hit from one of them into the local store on demand. See
-/// [`Store::with_references`].
+/// A local LFS object store.
 #[derive(Debug, Clone)]
 pub struct Store {
     root: PathBuf,
-    /// Paths to alternate `lfs/objects/` directories. Each maps to a
-    /// `.git/objects/info/alternates` entry: when the local store
-    /// misses, [`Store::contains_with_size`] / [`Store::open`] walk
-    /// these in order and hardlink (or copy) any hit into `root`.
+    /// Other stores' `objects` directories, searched in order when an object
+    /// is missing locally.
     references: Vec<PathBuf>,
-    /// File/directory mode policy for objects committed into the
-    /// store. Defaults to "honor process umask"; set via
-    /// [`Store::with_shared_repository`] to override (e.g. to apply
-    /// `core.sharedRepository=group` semantics).
+    /// Permissions for new files and directories.
     mode_policy: ModePolicy,
 }
 
-/// File-mode rule used when committing objects and creating their
-/// containing directories. Mirrors git's `core.sharedRepository`
-/// semantics, see `config/config.go::getMask` upstream.
+/// Permissions for new files and directories, following
+/// `core.sharedRepository` like upstream's `getMask` in `config/config.go`.
 #[derive(Debug, Clone, Copy)]
 struct ModePolicy {
-    /// Bits to mask off `0o666` when chmoding a committed object;
-    /// resolved eagerly at construction (from the process umask or
-    /// from `core.sharedRepository`). An explicit chmod is always
-    /// applied because the `tempfile` crate creates files at 0o600
-    /// regardless of umask.
+    /// Permission bits to clear, like a umask.
+    ///
+    /// Files are always chmodded, because `tempfile` creates them with mode
+    /// 0o600 whatever the umask is.
     mask: u32,
 }
 
@@ -96,11 +72,12 @@ impl ModePolicy {
         }
     }
 
-    /// Parse a `core.sharedRepository` config value into a mask.
-    /// Recognized: `umask`/`false`/`0`/unset → process umask;
-    /// `group`/`true`/`1` → 0o007; `all`/`world`/`everybody`/`2` →
-    /// 0o002; any other octal value N → `0o666 & !N`. Unrecognized
-    /// strings fall back to umask.
+    /// Parse a `core.sharedRepository` value.
+    ///
+    /// `group` (or `true`, `1`) makes files group-writable, and `all` (or
+    /// `world`, `everybody`, `2`) also makes them world-readable. An octal
+    /// mode such as `0660` is used as given. Anything else, including
+    /// `umask`, uses the process umask.
     fn from_shared_repository(value: &str) -> Self {
         let v = value.trim().to_ascii_lowercase();
         let mask = match v.as_str() {
@@ -108,8 +85,7 @@ impl ModePolicy {
             "all" | "world" | "everybody" | "2" => 0o002,
             "umask" | "false" | "0" | "" => process_umask(),
             other => {
-                // Try octal interpretation. Strip any leading `0` to
-                // match git's `strconv.ParseInt(v, 8, ...)` behavior.
+                // Parse as octal, like upstream's strconv.ParseInt(v, 8, ...).
                 match u32::from_str_radix(other.trim_start_matches('0'), 8) {
                     Ok(mode) if mode <= 0o777 => 0o666 & !mode,
                     _ => process_umask(),
@@ -119,30 +95,28 @@ impl ModePolicy {
         Self { mask: mask & 0o777 }
     }
 
-    /// Target file mode for committed objects (and the temp files
-    /// they're persisted from).
+    /// Mode for object files.
     fn file_mode(self) -> u32 {
         0o666 & !self.mask & 0o777
     }
 
-    /// Target directory mode. Matches git's
-    /// `tools.ExecutablePermissions`: copy read bits to execute bits.
+    /// Mode for directories: the file mode, with each read bit also granting
+    /// execute, like upstream's `tools.ExecutablePermissions`.
     fn dir_mode(self) -> u32 {
         let f = self.file_mode();
         (f | ((f & 0o444) >> 2)) & 0o777
     }
 }
 
-/// Read the process umask without permanently changing it. POSIX's
-/// `umask` syscall is read-modify-write; the bracketed `(0,prev)`
-/// dance is the standard way to capture it without races.
+/// Read the process umask.
+///
+/// POSIX can only read the umask by setting it, so this sets it and then
+/// restores the old value.
 #[cfg(unix)]
 fn process_umask() -> u32 {
-    // SAFETY: `libc::umask` is signal-safe and thread-safe to call;
-    // the brief window where umask is 0 only matters if another
-    // thread creates a file in that interval. Stores live for the
-    // duration of a single command and are constructed before any
-    // worker threads spawn.
+    // SAFETY: `umask` is always safe to call. The umask is briefly 0o022,
+    // which only matters to a thread creating a file at that moment. Stores
+    // are created before any worker threads start.
     unsafe {
         let prev = libc::umask(0o022);
         libc::umask(prev);
@@ -155,31 +129,25 @@ fn process_umask() -> u32 {
     0o022
 }
 
-/// Things that can go wrong while inserting an object.
+/// Why inserting an object failed.
 ///
-/// Reads from the store ([`Store::open`], [`Store::contains`], and others)
-/// return a plain [`io::Error`]. This enum is only surfaced by the
-/// insert paths because they have a non-IO failure mode (hash
-/// mismatch) that needs its own variant.
+/// Other operations return [`io::Error`], since they can't fail any other
+/// way.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
-    /// Filesystem-level failure.
-    ///
-    /// Surfaced by operations like tempfile creation, write, rename,
-    /// permission, etc.
+    /// A filesystem error.
     #[error(transparent)]
     Io(#[from] io::Error),
-    /// [`Store::insert_verified`] received bytes that hashed to
-    /// something other than the OID the caller asserted.
-    ///
-    /// The tempfile is dropped, so no half-committed object is left behind.
+    /// The content given to [`Store::insert_verified`] doesn't match the
+    /// expected OID. Nothing is stored.
     #[error("expected OID {expected}, got {actual}")]
     HashMismatch { expected: Oid, actual: Oid },
 }
 
 impl Store {
-    /// Create a store rooted at the given LFS directory. The directory is not
-    /// created eagerly; subdirectories are created on demand as objects land.
+    /// Create a store for an LFS directory.
+    ///
+    /// Directories are created when they're first needed.
     pub fn new(lfs_dir: impl Into<PathBuf>) -> Self {
         Self {
             root: lfs_dir.into(),
@@ -188,69 +156,53 @@ impl Store {
         }
     }
 
-    /// Apply `core.sharedRepository` semantics to objects this store
-    /// commits.
+    /// Set permissions from a `core.sharedRepository` value, such as `group`
+    /// or `0660`.
     ///
-    /// `value` is the literal string from `git config`
-    /// (`group`, `everybody`, octal `0660`, etc). Unrecognized values
-    /// fall back to honoring the process umask. Resets any prior
-    /// policy on this `Store`.
+    /// Unrecognized values use the process umask.
     #[must_use]
     pub fn with_shared_repository(mut self, value: &str) -> Self {
         self.mode_policy = ModePolicy::from_shared_repository(value);
         self
     }
 
-    /// Attach alternate `lfs/objects/` directories that the store may
-    /// hardlink-or-copy from when a local lookup misses.
+    /// Add other stores' `objects` directories to fall back on.
     ///
-    /// Used by `git clone --shared` setups so the new repo can read the
-    /// source's existing LFS objects without re-downloading.
-    ///
-    /// Pass [`git_lfs_git::lfs_alternate_dirs`](https://docs.rs/git-lfs-git)
-    /// (`<git-dir>/objects/info/alternates` resolved to LFS-objects
-    /// dirs) at construction.
+    /// When an object is missing locally but one of these has it, it's
+    /// hardlinked into this store, or copied if that fails. The CLI passes
+    /// the LFS directories of the repository's Git alternates, from
+    /// `git_lfs_git::lfs_alternate_dirs`.
     #[must_use]
     pub fn with_references(mut self, refs: impl IntoIterator<Item = PathBuf>) -> Self {
         self.references = refs.into_iter().collect();
         self
     }
 
-    /// Root LFS directory.
+    /// The LFS directory.
     pub fn root(&self) -> &Path {
         &self.root
     }
 
-    /// Directory holding temp files for in-flight inserts.
+    /// The directory for temporary files.
     pub fn tmp_dir(&self) -> PathBuf {
         self.root.join("tmp")
     }
 
-    /// Directory holding partial or in-progress downloads.
-    ///
-    /// Files are named `<oid>.part` and persist across process
-    /// invocations so a later attempt can pick up where a prior
-    /// one left off (issuing a `Range:` request). Mirrors upstream's
-    /// `incomplete/` layout.
+    /// The directory for partial downloads, which are kept between runs so
+    /// they can be resumed.
     pub fn incomplete_dir(&self) -> PathBuf {
         self.root.join("incomplete")
     }
 
-    /// Path to the partial-download file for `oid`.
-    ///
-    /// The file may not exist; the caller is responsible for creating
-    /// and writing it.
+    /// Where the partial download of `oid` goes. The file may not exist.
     pub fn incomplete_path(&self, oid: Oid) -> PathBuf {
         self.incomplete_dir().join(format!("{oid}.part"))
     }
 
-    /// Atomically move a fully-downloaded partial file into its final
-    /// object-path location.
+    /// Move a finished download into the store.
     ///
-    /// The caller is responsible for confirming
-    /// the file's bytes hash to `oid` first; this is a pure rename.
-    /// Clobbers any existing file at the destination, see
-    /// [`insert_verified`](Self::insert_verified) for the rationale.
+    /// This doesn't check the content, so verify it against `oid` first. Any
+    /// existing file for `oid` is replaced.
     pub fn commit_partial(&self, oid: Oid, partial: &Path) -> io::Result<()> {
         if oid == Oid::EMPTY {
             return Ok(());
@@ -264,32 +216,16 @@ impl Store {
         Ok(())
     }
 
-    /// Sweep `<root>/tmp/` for stale temp files left behind by
-    /// interrupted prior runs.
+    /// Delete temporary files left behind by interrupted runs.
     ///
-    /// Filenames matching `<64-hex>-<random>`
-    /// whose object is already complete in the store are removed
-    /// unconditionally (upstream's in-flight download tempfile shape);
-    /// everything else older than an hour is pruned.
+    /// Meant to run when a command starts, like upstream's cleanup in
+    /// `fs/cleanup.go`. Errors are ignored. A file is deleted if:
     ///
-    /// Best-effort: the dir not existing, or any individual remove
-    /// failing, is silently ignored. Intended to run once per
-    /// command invocation, before the command's main work, so an
-    /// interrupted prior run doesn't leak temp files indefinitely
-    /// (matches upstream's `lfs.cleanupTempFiles` startup task in
-    /// `fs/cleanup.go`).
-    ///
-    /// Per-file rules, mirroring upstream:
-    /// 1. Filenames starting with `<64-hex>-` whose object is already
-    ///    complete in the store are removed unconditionally
-    ///    (interrupted-rename leftovers).
-    /// 2. Otherwise, files older than 1 hour are removed *unless*
-    ///    they live in a subdirectory whose own mtime is fresher than
-    ///    1 hour, since active processes may have stale-looking files
-    ///    they still hold open (hard-linked across repos). Files
-    ///    directly under `tmp/` are exempt from the subdir-age
-    ///    short-circuit since we modify the top-level tmp dir often
-    ///    enough that it would never expire.
+    /// - its name is an OID followed by `-`, and that object is already in
+    ///   the store, or
+    /// - it's more than an hour old, and so is its directory. Another process
+    ///   may still be using old files in a recently changed subdirectory.
+    ///   Files directly in the temporary directory don't need this check.
     pub fn cleanup_tmp_objects(&self) {
         let tmp = self.root.join("tmp");
         if !tmp.exists() {
@@ -300,8 +236,7 @@ impl Store {
                 Some(t) => t,
                 None => return,
             };
-        // Cache subdir mtimes so the 1-hour exemption check doesn't
-        // re-stat the same dir per file.
+        // Directory modification times, so each is read only once.
         let mut dir_mtimes: HashMap<PathBuf, std::time::SystemTime> = HashMap::new();
         self.walk_tmp(&tmp, &tmp, cutoff, &mut dir_mtimes);
     }
@@ -327,11 +262,9 @@ impl Store {
             }
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            // Rule 1: "<oid>-..." file whose object is already complete.
-            // The filesystem-level cleanup accepts any 64-char prefix
-            // (no hex validation) so upstream test sentinels like
-            // `good...` / `bad...` round-trip.
-            if name_str.len() > 64 && name_str.as_bytes().get(64) == Some(&b'-') {
+            // An object that's already stored. The prefix isn't checked for
+            // hex, because upstream's tests use names like `good...`.
+            if name_str.len() > 64 && name_str.as_bytes()[64] == b'-' && name_str[..64].is_ascii() {
                 let oid_str = &name_str[..64];
                 let object_path = self
                     .root
@@ -344,10 +277,8 @@ impl Store {
                     continue;
                 }
             }
-            // Rule 2a: skip files in young subdirectories. The
-            // top-level tmp/ itself is exempt (otherwise it'd never
-            // expire). Cache the dir's mtime so we don't restat per
-            // file.
+            // Skip files in recently changed subdirectories. The top-level
+            // directory changes too often for this check to be useful.
             if dir != root {
                 let dir_mtime = *dir_mtimes.entry(dir.to_path_buf()).or_insert_with(|| {
                     std::fs::metadata(dir)
@@ -358,7 +289,7 @@ impl Store {
                     continue;
                 }
             }
-            // Rule 2b: remove file if older than the cutoff.
+            // Delete files older than the cutoff.
             let Ok(meta) = entry.metadata() else { continue };
             let Ok(mtime) = meta.modified() else { continue };
             if mtime < cutoff {
@@ -367,11 +298,10 @@ impl Store {
         }
     }
 
-    /// Where the object with this OID lives on disk.
+    /// Where the object for `oid` is stored.
     ///
-    /// For [`Oid::EMPTY`] this returns the platform null device, mirroring
-    /// upstream's behavior so callers can `open` an empty object without
-    /// special-casing.
+    /// For [`Oid::EMPTY`], this is the null device, so opening the empty object
+    /// needs no special case.
     pub fn object_path(&self, oid: Oid) -> PathBuf {
         if oid == Oid::EMPTY {
             return PathBuf::from(NULL_DEVICE);
@@ -384,11 +314,10 @@ impl Store {
             .join(&hex)
     }
 
-    /// Check if this object is present locally as a regular file.
+    /// Whether the object is in the store.
     ///
-    /// The empty OID is always considered present. If the local copy
-    /// is missing but an alternate store has the object, materializes
-    /// it locally first.
+    /// The empty object always is. An object found in a fallback store is
+    /// linked into this one first.
     pub fn contains(&self, oid: Oid) -> bool {
         if oid == Oid::EMPTY {
             return true;
@@ -399,11 +328,10 @@ impl Store {
         self.materialize_from_reference(oid, None)
     }
 
-    /// Check if the object is present and its on-disk size matches `size`.
+    /// Whether the object is in the store with the expected size.
     ///
-    /// Used to detect partial/corrupted local copies. Like
-    /// [`contains`](Self::contains), will fault in a matching alternate-store
-    /// object on demand.
+    /// A different size means the local copy is incomplete or corrupt. Like
+    /// [`Store::contains`], this uses fallback stores.
     pub fn contains_with_size(&self, oid: Oid, size: u64) -> bool {
         if oid == Oid::EMPTY {
             return size == 0;
@@ -417,12 +345,8 @@ impl Store {
         self.materialize_from_reference(oid, Some(size))
     }
 
-    /// Materialize the object from a reference store, if one is available.
-    ///
-    /// Walk reference stores looking for `oid`; the first hit (matching
-    /// `size` if specified) is hardlinked (or copied, on cross-device
-    /// fallback) into the local store. Returns `true` if the object
-    /// is now present locally as a result.
+    /// Link or copy an object from the first fallback store that has it, with
+    /// the given size if there is one. Returns whether it worked.
     fn materialize_from_reference(&self, oid: Oid, size: Option<u64>) -> bool {
         if self.references.is_empty() {
             return false;
@@ -445,9 +369,7 @@ impl Store {
             if let Some(parent) = dest.parent() {
                 let _ = self.create_dir_all_with_mode(parent);
             }
-            // Hardlink first (free, O(1), shares inode); fall back to
-            // copy on EXDEV / NotSupported (e.g. alternate on a
-            // different filesystem).
+            // A hardlink fails across filesystems, so fall back to copying.
             if std::fs::hard_link(&src, &dest).is_ok() || std::fs::copy(&src, &dest).is_ok() {
                 let _ = self.set_file_mode(&dest);
                 return true;
@@ -456,12 +378,10 @@ impl Store {
         false
     }
 
-    /// Walk every object file in the store, yielding (oid, size_on_disk).
+    /// List every object in the store, with its size on disk.
     ///
-    /// Traverses the sharded `objects/<aa>/<bb>/<oid>` layout. Filenames
-    /// that don't parse as 64-char SHA-256 hex are silently skipped, as
-    /// are unexpected directories. The store directory not existing is
-    /// not an error; the result is just empty.
+    /// Files that aren't named like an OID are skipped. A store that doesn't
+    /// exist yet is empty.
     pub fn each_object(&self) -> io::Result<Vec<(Oid, u64)>> {
         let objects_dir = self.root.join("objects");
         if !objects_dir.exists() {
@@ -500,8 +420,8 @@ impl Store {
 
     /// Open an object for reading.
     ///
-    /// Errors with [`io::ErrorKind::NotFound`] if the object isn't in the store.
-    /// Faults in from a reference store if needed.
+    /// Uses fallback stores, and fails with [`io::ErrorKind::NotFound`] if
+    /// the object isn't in any of them.
     pub fn open(&self, oid: Oid) -> io::Result<File> {
         let path = self.object_path(oid);
         match File::open(&path) {
@@ -517,14 +437,10 @@ impl Store {
         }
     }
 
-    /// Stream `src` into the store, computing SHA-256 as we go, returning
-    /// the resulting OID and byte count.
+    /// Add content to the store, returning its OID and size.
     ///
-    /// This is the clean-filter path: the OID isn't known until the
-    /// content has been hashed. Inserting bytes that already exist
-    /// locally under the same OID is a no-op; in particular, the
-    /// existing on-disk file (which may be a hardlink into an
-    /// alternate store) is left untouched.
+    /// If the object is already stored, the existing file is left alone, since
+    /// it may be a hardlink into a fallback store.
     pub fn insert(&self, src: &mut impl Read) -> Result<(Oid, u64), StoreError> {
         let (oid, size, tmp) = self.stream_to_tmp(src)?;
         if oid != Oid::EMPTY && self.object_path(oid).is_file() {
@@ -535,18 +451,14 @@ impl Store {
         Ok((oid, size))
     }
 
-    /// Stream `src` into the store, requiring the resulting hash to equal
-    /// `expected`.
+    /// Add content that should have the OID `expected`, returning its size.
     ///
-    /// On mismatch, returns [`StoreError::HashMismatch`] and the
-    /// temp file is dropped without being committed.
-    ///
-    /// This is the download path: we know the OID upfront and must verify
-    /// what the server sent.
+    /// Fails with [`StoreError::HashMismatch`] if it doesn't, and stores
+    /// nothing. Any existing file for the OID is replaced, which is how
+    /// `git lfs fetch --refetch` repairs a corrupt copy.
     pub fn insert_verified(&self, expected: Oid, src: &mut impl Read) -> Result<u64, StoreError> {
         let (actual, size, tmp) = self.stream_to_tmp(src)?;
         if actual != expected {
-            // Drop the tmp file; it goes away on Drop.
             return Err(StoreError::HashMismatch { expected, actual });
         }
         self.commit(actual, tmp)?;
@@ -575,7 +487,7 @@ impl Store {
     }
 
     fn commit(&self, oid: Oid, tmp: NamedTempFile) -> io::Result<()> {
-        // The empty object lives at /dev/null, never persist it.
+        // The empty object is the null device, so there's nothing to store.
         if oid == Oid::EMPTY {
             return Ok(());
         }
@@ -583,32 +495,24 @@ impl Store {
         if let Some(parent) = dest.parent() {
             self.create_dir_all_with_mode(parent)?;
         }
-        // Atomic rename, *clobbering* any existing file at the target
-        // path. The store is content-addressed: anything already there
-        // is either the same content (no-op overwrite) or corrupt
-        // (truncated, half-written), and the latter is exactly what
-        // `git lfs fetch --refetch` exists to recover from.
+        // Replace any existing file. It either has the same content or is
+        // corrupt.
         tmp.persist(&dest).map_err(|e| e.error)?;
         self.set_file_mode(&dest)?;
         Ok(())
     }
 
-    /// Create the directory `target` and its parents, setting the mode
-    /// to the configured mode policy.
-    ///
-    /// `mkdir -p` walking the path, chmoding each directory under
-    /// `root` to the configured `mode_policy.dir_mode()`. Components
-    /// outside `root` (e.g. the user's home directory) are left
-    /// alone: we only own the LFS subtree.
+    /// Create a directory and its parents, setting the permissions of those
+    /// inside the LFS directory.
     fn create_dir_all_with_mode(&self, target: &Path) -> io::Result<()> {
         std::fs::create_dir_all(target)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let mode = self.mode_policy.dir_mode();
-            // Walk from root → target, chmoding each component that
-            // exists under our LFS root. The check `starts_with(root)`
-            // guards against calls with an unrelated path.
+            // Chmod the LFS directory and each directory below it on the
+            // way to `target`. A `target` outside the LFS directory is left
+            // alone.
             let mut cursor = self.root.clone();
             if cursor.is_dir() {
                 let _ = std::fs::set_permissions(&cursor, std::fs::Permissions::from_mode(mode));
@@ -628,19 +532,13 @@ impl Store {
         Ok(())
     }
 
-    /// Ensure `<root>/incomplete/` exists with the configured
-    /// directory mode.
-    ///
-    /// Call before staging `.part` files yourself
-    /// so the resulting directory honors any `core.sharedRepository`
-    /// policy on this `Store`.
+    /// Create the directory for partial downloads, with the right
+    /// permissions.
     pub fn prepare_incomplete_dir(&self) -> io::Result<()> {
         self.create_dir_all_with_mode(&self.incomplete_dir())
     }
 
-    /// Chmod a committed object file to the configured file mode.
-    ///
-    /// No-op on non-unix.
+    /// Set an object file's permissions. Does nothing on Windows.
     fn set_file_mode(&self, path: &Path) -> io::Result<()> {
         #[cfg(unix)]
         {
@@ -925,5 +823,15 @@ mod tests {
             store.open(oid).unwrap_err().kind(),
             io::ErrorKind::NotFound,
         ));
+    }
+
+    #[test]
+    fn cleanup_ignores_non_ascii_names() {
+        let (_tmp, store) = fixture();
+        std::fs::create_dir_all(store.tmp_dir()).unwrap();
+        // Byte 64 is `-`, but byte 2 is inside a multi-byte character.
+        let name = format!("€{}-x", "a".repeat(61));
+        std::fs::write(store.tmp_dir().join(name), b"x").unwrap();
+        store.cleanup_tmp_objects();
     }
 }
