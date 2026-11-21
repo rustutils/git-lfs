@@ -1,22 +1,16 @@
 # git-lfs-creds
 
-Credential helper bridge for Git LFS (git credential fill/approve/reject).
+Credential helpers for Git LFS, built on `git credential`.
 
-LFS endpoints are usually HTTPS, and HTTPS auth needs a username and
-password. Rather than maintaining a separate credential store, this
-crate defers to git's existing one: whatever the user has already
-configured for their git remote (osxkeychain, libsecret, manager,
-store, plain `cache`, …) is what LFS uses too.
+Rather than keeping its own credential store, Git LFS uses the one Git is
+already configured with, such as osxkeychain, libsecret, or Git Credential
+Manager.
 
-A `Helper` trait represents each credential source, and a
-`HelperChain` tries them in order: in-process cache first, then
-`git credential`, with `GIT_ASKPASS` / `SSH_ASKPASS` and `~/.netrc`
-slotting in as additional sources. Success and failure are broadcast
-to every helper in the chain so caches stay in sync with the
-upstream source of truth.
+Each credential source implements the `Helper` trait, and a `HelperChain` tries
+them in order. The Git LFS CLI uses `.netrc`, an in-memory cache, an askpass
+program, and then `git credential`. Approved and rejected credentials go to the
+first helper that handles them.
 
-SSH remotes follow a different model. Rather than asking the user
-for credentials, we run `git-lfs-authenticate <path> <operation>`
-over SSH and parse a short-lived HTTPS token from the response. The
-SSH key the user already manages is the only credential involved;
-results are cached with the server-supplied expiry honored.
+SSH remotes work differently. Instead of asking for credentials, the client
+runs `git-lfs-authenticate` on the server over SSH, which returns a short-lived
+HTTPS token. The token is cached until it expires.

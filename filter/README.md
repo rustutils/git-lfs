@@ -2,31 +2,21 @@
 
 Clean and smudge filters and the filter-process protocol for Git LFS.
 
-Git invokes content filters whenever a file moves between the
-working tree and a git blob: a *clean* filter runs on the way
-in (`git add`) and a *smudge* filter runs on the way out
-(`git checkout`). LFS hooks into both ends. Clean hashes the
-working-tree bytes, hands them to the local LFS store, and
-emits a small pointer file (which is what git ends up storing);
-smudge takes the pointer back from git, looks up the real
-bytes (fetching from the server if they're not local), and
-writes the content into the working tree.
+Git runs filters when files move between the working tree and the repository.
+The clean filter runs when a file is added: it stores the file in the LFS
+store, and gives Git a small pointer file to commit instead. The smudge filter
+runs on checkout: it finds the file content for a pointer, downloading it if
+needed, and writes it to the working tree.
 
-This crate implements both filters plus the long-running
-[filter-process protocol][filter-process], which modern git
-uses by default: one subprocess handles many files in a single
-session over a pkt-line-framed connection. The three entry
-points are `clean`, `smudge`, and `filter_process`, invoked as
-the bodies of `git lfs clean`, `git lfs smudge`, and
-`git lfs filter-process` respectively.
+This crate implements both filters, and Git's [long-running filter
+protocol][filter-process], which handles many files in one process. The entry
+points `clean`, `smudge`, and `filter_process` are the bodies of `git lfs
+clean`, `git lfs smudge`, and `git lfs filter-process`.
 
-Pointer extensions chain external programs between the raw
-bytes and the stored object. On clean, content passes through
-each registered extension in priority order, with each stage's
-input OID recorded in the resulting pointer; smudge undoes the
-chain in reverse to reconstruct the original bytes. Used for
-case-inverters, content-defined chunking, encryption shims, or
-similar transforms; configured via `lfs.extension.<name>.*` in
-git config.
+LFS extensions are external programs that transform file content on the way in
+and reverse it on the way out, for things like encryption. They're configured
+with `lfs.extension.<name>.*` settings. Clean runs them in priority order and
+records each step in the pointer, and smudge runs them in reverse.
 
-[filter-process]: https://git-scm.com/docs/gitattributes#_long_running_filter_process
+[filter-process]:
+https://git-scm.com/docs/gitattributes#_long_running_filter_process

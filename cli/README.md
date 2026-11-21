@@ -2,21 +2,18 @@
 
 Large file storage for git, implemented in Rust.
 
-A from-scratch Rust port of [upstream Git LFS][upstream]. The
-goal is feature parity with the upstream Go binary at the CLI
-and wire-protocol level, with a clean library split and better
-help output in the binaries.
+A from-scratch Rust port of [Git LFS][upstream]. The goal is feature parity
+with the upstream Go binary at the CLI and protocol level, with better help
+output and a clean split into libraries.
 
 ## Status
 
-Work in progress, but already functional for day-to-day use.
-The bulk of upstream's test suite passes; see the [scoreboard]
-for the current breakdown. For production workloads, the
-upstream Go `git-lfs` is still the answer.
+Work in progress, but usable day to day. About 93% of upstream's tests pass
+(see the [scoreboard] for details). For production use, upstream Git LFS is
+still the safer choice.
 
-The major gaps are custom transfer adapters, TUS uploads, the
-`dedup` subcommand, encrypted client certificate keys, and NTLM
-and Negotiate auth.
+The main gaps are custom transfer adapters, tus uploads, `git lfs dedup`,
+encrypted client certificate keys, and NTLM and Negotiate authentication.
 
 ## Installing
 
@@ -43,12 +40,10 @@ and Negotiate auth.
 
     cargo install git-lfs
 
-While installing from Cargo is possible, it means you will not get the
-manpages that are available with the other installation methods.
+Installing with Cargo doesn't install the man pages. The other methods do.
 
-After installing, run `git lfs install` once per machine to
-register the clean, smudge, and process filters in your global
-git config.
+After installing, run `git lfs install` once per machine to register the Git
+LFS filters in your global Git config.
 
 [upstream]: https://github.com/git-lfs/git-lfs
 [scoreboard]: https://gitlab.com/rustutils/git-lfs/-/blob/master/tests/SCOREBOARD.md
