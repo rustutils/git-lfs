@@ -1,4 +1,10 @@
-//! Get, set, and unset git config values, scoped to one of git's config files.
+//! Read and write git config, including the repository's `.lfsconfig`.
+//!
+//! [`get`], [`set`] and [`unset`] act on one [`ConfigScope`].
+//! [`get_effective`] is what most callers want: git's merged config, then
+//! `.lfsconfig` as a fallback. Only a fixed set of keys is read from
+//! `.lfsconfig`, because it comes from the repository and can't be trusted
+//! with settings that run commands.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -29,15 +35,14 @@ impl ConfigScope {
     }
 }
 
-/// Read a single config value from the given scope. Returns `Ok(None)` if
-/// the key isn't set, *or* if the scope itself isn't readable here:
-/// `git config --local` exits 128 outside any repo, exits 129 ("only
-/// one config file at a time") when `GIT_CONFIG` is also set, and any
-/// scope exits 128 when env-vars like `GIT_WORK_TREE` point at a
-/// missing path. Treating all of those as "no value" matches upstream's
-/// `cfg.Git.Get(key)` semantics — `git lfs env` distinguishes a
-/// configured value from an unconfigured one, but not between "key not
-/// set" and "scope unreachable."
+/// Read a single config value from the given scope.
+///
+/// Returns `Ok(None)` if the key isn't set, and also if the scope can't be
+/// read: `git config --local` exits 128 outside a repository, any scope
+/// exits 128 when a variable like `GIT_WORK_TREE` points at a missing path,
+/// and git exits 129 when `GIT_CONFIG` is set alongside a scope flag. This
+/// matches upstream, which doesn't tell an unset key from an unreadable
+/// scope either.
 pub fn get(cwd: &Path, scope: ConfigScope, key: &str) -> Result<Option<String>, Error> {
     let out = Command::new("git")
         .arg("-C")
@@ -46,10 +51,7 @@ pub fn get(cwd: &Path, scope: ConfigScope, key: &str) -> Result<Option<String>, 
         .output()?;
     match out.status.code() {
         Some(0) => Ok(Some(String::from_utf8_lossy(&out.stdout).trim().to_owned())),
-        // exit 1 = key not set; 128 = scope unreachable (no repo / bad
-        // work tree); 129 = "only one config file at a time" when both
-        // `GIT_CONFIG` and a scope flag are in effect. All three are
-        // "no value here" from our perspective.
+        // 1 is an unset key, 128 and 129 an unreadable scope.
         Some(1) | Some(128) | Some(129) => Ok(None),
         _ => Err(Error::Failed(
             String::from_utf8_lossy(&out.stderr).trim().to_owned(),
@@ -57,11 +59,10 @@ pub fn get(cwd: &Path, scope: ConfigScope, key: &str) -> Result<Option<String>, 
     }
 }
 
-/// Read a single config value from the merged (local → global → system,
-/// plus `GIT_CONFIG` and `include.path` directives) view. Mirrors
-/// upstream's `cfg.Git.Get` — they always read scope-less so git's own
-/// priority + include resolution applies in one shot. Returns `Ok(None)`
-/// for missing keys *or* unreadable config (no repo, bad work tree).
+/// Read a single config value from git's merged view of all scopes.
+///
+/// Git applies its own precedence and `include.path` handling. Returns
+/// `Ok(None)` if the key isn't set or the config can't be read (exit 128).
 fn get_any_scope(cwd: &Path, key: &str) -> Result<Option<String>, Error> {
     let out = Command::new("git")
         .arg("-C")
@@ -77,12 +78,13 @@ fn get_any_scope(cwd: &Path, key: &str) -> Result<Option<String>, Error> {
     }
 }
 
-/// Read a single config value from a specific file (e.g. `.lfsconfig`).
-/// Returns `Ok(None)` if the file doesn't exist or the key isn't set.
+/// Read a single config value from `file`, relative to `cwd`.
+///
+/// Returns `Ok(None)` if the file doesn't exist or the key isn't set. No
+/// key filtering is applied, unlike [`get_from_lfsconfig`].
 pub fn get_from_file(cwd: &Path, file: &Path, key: &str) -> Result<Option<String>, Error> {
     if !cwd.join(file).is_file() {
-        // `git config --file` errors loudly on a missing file. The common
-        // case for `.lfsconfig` is "no file" — treat that as "no value".
+        // `git config --file` fails on a missing file.
         return Ok(None);
     }
     let file_arg = format!("--file={}", file.display());
@@ -100,15 +102,10 @@ pub fn get_from_file(cwd: &Path, file: &Path, key: &str) -> Result<Option<String
     }
 }
 
-/// Look up `key` across `.lfsconfig` (committed; lowest priority) and
-/// the standard git config scopes (local → global → system). Returns the
-/// first match.
+/// Look up `key` in git's merged config, falling back to `.lfsconfig`.
 ///
-/// Mirrors upstream's effective config: settings written to `.lfsconfig`
-/// at the repo root are visible without overriding anything explicitly
-/// set in the user's git config. `.lfsconfig` reads are filtered through
-/// a safe-key allowlist — settings that aren't URL/access related are
-/// ignored, with a one-shot warning to stderr.
+/// Anything set in git config wins over `.lfsconfig`, as in upstream.
+/// See [`get_from_lfsconfig`] for which keys `.lfsconfig` may set.
 pub fn get_effective(cwd: &Path, key: &str) -> Result<Option<String>, Error> {
     if let Some(v) = get_any_scope(cwd, key)? {
         return Ok(Some(v));
@@ -116,12 +113,15 @@ pub fn get_effective(cwd: &Path, key: &str) -> Result<Option<String>, Error> {
     get_from_lfsconfig(cwd, key)
 }
 
-/// Look up `key` in `.lfsconfig`, applying the safe-key allowlist.
+/// Look up `key` in the repository's `.lfsconfig`.
 ///
-/// The first call per `cwd` per process loads + filters `.lfsconfig`,
-/// caches the result, and emits the `warning: These unsafe '.lfsconfig'
-/// keys were ignored:` line that t-config 9 / upstream's config loader
-/// produces. Subsequent lookups hit the cache.
+/// The file is read from the working tree, then the index, then `HEAD`,
+/// and the first one found is used. A bare repository reads only `HEAD`.
+/// Only URL and access settings and a few other safe `lfs.*` keys are
+/// kept. The rest are dropped with a warning on stderr.
+///
+/// The file is parsed once per repository per process. Later lookups, and
+/// the warning, come from that first parse.
 pub fn get_from_lfsconfig(cwd: &Path, key: &str) -> Result<Option<String>, Error> {
     let entries = load_lfsconfig(cwd)?;
     Ok(entries
@@ -145,8 +145,9 @@ pub fn set(cwd: &Path, scope: ConfigScope, key: &str, value: &str) -> Result<(),
     }
 }
 
-/// Unset `key` in the given scope. Idempotent: if the key isn't there,
-/// returns `Ok(())` rather than erroring.
+/// Unset `key` in the given scope.
+///
+/// Returns `Ok(())` if the key wasn't set.
 pub fn unset(cwd: &Path, scope: ConfigScope, key: &str) -> Result<(), Error> {
     let out = Command::new("git")
         .arg("-C")
@@ -163,11 +164,8 @@ pub fn unset(cwd: &Path, scope: ConfigScope, key: &str) -> Result<(), Error> {
     }
 }
 
-/// Hardcoded list of `.lfsconfig` keys upstream considers safe outside
-/// of the URL/access pattern rules. Mirrors `safeKeys` in upstream's
-/// `config/git_fetcher.go`. Anything not on this list (and not matching
-/// the remote/extension/access rules) gets stripped from `.lfsconfig`
-/// reads with a warning.
+/// Keys allowed in `.lfsconfig` besides those [`is_safe_key`] matches by
+/// pattern, as in `safeKeys` in upstream's `config/git_fetcher.go`.
 const SAFE_KEYS: &[&str] = &[
     "lfs.allowincompletepush",
     "lfs.fetchexclude",
@@ -179,15 +177,15 @@ const SAFE_KEYS: &[&str] = &[
     "lfs.url",
 ];
 
-/// Whether `key` is allowed to come from `.lfsconfig`. Compared against
-/// the lowercase canonical form (sections + final subkey lowercased,
-/// middle preserved — as git itself emits via `--list`).
+/// Whether `key` may be read from `.lfsconfig`.
+///
+/// `key` must be in the canonical form `git config --list` prints, with
+/// the section and last component lowercased.
 fn is_safe_key(key: &str) -> bool {
     let parts: Vec<&str> = key.split('.').collect();
 
-    // `lfs.extension.<name>.priority` is the only extension knob safe
-    // from `.lfsconfig`; `clean`/`smudge` are intentionally excluded
-    // upstream because they're command-execution surfaces.
+    // An extension's `clean` and `smudge` run commands, so only its
+    // `priority` is allowed.
     if parts.len() == 4 && parts[0] == "lfs" && parts[1] == "extension" && parts[3] == "priority" {
         return true;
     }
@@ -197,9 +195,8 @@ fn is_safe_key(key: &str) -> bool {
         return true;
     }
 
-    // Any 3+ part key ending in `.access` — e.g. `lfs.<url>.access` —
-    // is allowed; this is what attaches an auth scheme to a per-URL
-    // override.
+    // Any key of three or more parts ending in `access`, such as
+    // `lfs.<url>.access`, which sets the auth scheme for a URL.
     if parts.len() >= 3 && *parts.last().unwrap() == "access" {
         return true;
     }
@@ -207,10 +204,10 @@ fn is_safe_key(key: &str) -> bool {
     SAFE_KEYS.contains(&key)
 }
 
-/// Canonicalize a config key the way git does: lowercase the first and
-/// last components, preserve the middle (which may be a URL or branch
-/// name and is case-sensitive). Used so a stored `lfs.URL` and a lookup
-/// for `lfs.url` resolve to the same entry.
+/// Canonicalize a config key the way git does.
+///
+/// The first and last components are lowercased. The middle, such as a URL
+/// or remote name, is case-sensitive and kept as is.
 fn fold_key(key: &str) -> String {
     let parts: Vec<&str> = key.split('.').collect();
     if parts.len() < 3 {
@@ -228,10 +225,11 @@ fn fold_key(key: &str) -> String {
 
 type LfsConfigEntries = HashMap<String, Vec<String>>;
 
-/// Process-wide cache of parsed `.lfsconfig` files, keyed by the
-/// canonicalized cwd. We load each `.lfsconfig` at most once per process
-/// — both to avoid the `git config --list` subprocess on every
-/// `get_effective` call, and so the unsafe-key warning fires once.
+/// Filtered `.lfsconfig` entries, keyed by the canonicalized work tree
+/// root.
+///
+/// Caching avoids running `git config` on every lookup and makes the
+/// unsafe-key warning print only once.
 static LFSCONFIG_CACHE: OnceLock<Mutex<HashMap<PathBuf, LfsConfigEntries>>> = OnceLock::new();
 
 fn lfsconfig_cache() -> &'static Mutex<HashMap<PathBuf, LfsConfigEntries>> {
@@ -239,22 +237,18 @@ fn lfsconfig_cache() -> &'static Mutex<HashMap<PathBuf, LfsConfigEntries>> {
 }
 
 fn load_lfsconfig(cwd: &Path) -> Result<LfsConfigEntries, Error> {
-    // Resolve the repo root so subdirectory invocations still find the
-    // `.lfsconfig` at the top of the work tree. Falls back to `cwd` when
-    // we can't determine a top-level (e.g. bare repos, or callers that
-    // explicitly pass a non-repo path for testing).
+    // `.lfsconfig` lives at the top of the work tree. Bare repositories
+    // and non-repository paths have no top level, so use `cwd`.
     let root = repo_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
     let canon = root.canonicalize().unwrap_or_else(|_| root.clone());
     if let Some(cached) = lfsconfig_cache().lock().unwrap().get(&canon) {
         return Ok(cached.clone());
     }
 
-    // Upstream's lookup chain (`git/config.go::Sources`):
-    //   - non-bare: working tree → `:.lfsconfig` (index) → `HEAD:.lfsconfig`
-    //   - bare:     `HEAD:.lfsconfig` only
-    // First hit wins; failures fall through silently. The index step is
-    // what t-config 2 exercises after `git read-tree` populates the
-    // staged copy without ever touching the working tree.
+    // Same order as upstream's `git/config.go::Sources`: working tree,
+    // index, then `HEAD`, or only `HEAD` in a bare repository. The first
+    // one found wins. t-config 2 covers the index case, staging the file
+    // with `git read-tree` without writing it to the working tree.
     let bare = is_bare(cwd);
     let mut entries = None;
     if !bare && root.join(".lfsconfig").is_file() {
@@ -271,9 +265,7 @@ fn load_lfsconfig(cwd: &Path) -> Result<LfsConfigEntries, Error> {
     let (safe, ignored) = filter_safe(entries);
 
     if !ignored.is_empty() {
-        // Match upstream's wording verbatim — t-config 9 greps for the
-        // exact prefix "warning: These unsafe '.lfsconfig' keys were
-        // ignored:" and for each indented key on its own line.
+        // Upstream's exact wording, which t-config 9 matches.
         eprintln!("warning: These unsafe '.lfsconfig' keys were ignored:");
         eprintln!();
         for key in &ignored {
@@ -288,7 +280,7 @@ fn load_lfsconfig(cwd: &Path) -> Result<LfsConfigEntries, Error> {
     Ok(safe)
 }
 
-/// Read an existing working-tree `.lfsconfig` via `git config --file`.
+/// Read `.lfsconfig` from the working tree at `root`.
 fn read_lfsconfig_file(root: &Path) -> Result<LfsConfigEntries, Error> {
     let out = Command::new("git")
         .arg("-C")
@@ -304,10 +296,11 @@ fn read_lfsconfig_file(root: &Path) -> Result<LfsConfigEntries, Error> {
     Ok(parse_list_output(&out.stdout))
 }
 
-/// Read `.lfsconfig` from a git revision (`:.lfsconfig` for index,
-/// `HEAD:.lfsconfig` for HEAD's tree). Returns `None` when the blob
-/// doesn't exist — git emits exit 128 with an "ambiguous argument" or
-/// "does not exist" error in that case.
+/// Read `.lfsconfig` from a blob, such as `:.lfsconfig` for the index or
+/// `HEAD:.lfsconfig`.
+///
+/// Returns `None` whenever `git config` fails, which includes a missing
+/// blob or ref.
 fn read_lfsconfig_blob(cwd: &Path, revision: &str) -> Result<Option<LfsConfigEntries>, Error> {
     let blob_arg = format!("--blob={revision}");
     let out = Command::new("git")
@@ -317,16 +310,14 @@ fn read_lfsconfig_blob(cwd: &Path, revision: &str) -> Result<Option<LfsConfigEnt
         .output()?;
     match out.status.code() {
         Some(0) => Ok(Some(parse_list_output(&out.stdout))),
-        // Missing blob ⇒ silent fallback. Both "exit 1" (key not found
-        // when the blob is empty) and "exit 128" (ambiguous arg / no
-        // such ref) land here.
         _ => Ok(None),
     }
 }
 
-/// Whether `cwd` is inside a bare repository. Returns `false` for non-
-/// repos too — anything we can't classify is treated as non-bare so
-/// the working-tree lookup still runs.
+/// Whether `cwd` is inside a bare repository.
+///
+/// Returns `false` when git can't tell, so the working tree is still
+/// checked.
 fn is_bare(cwd: &Path) -> bool {
     Command::new("git")
         .arg("-C")
@@ -338,10 +329,9 @@ fn is_bare(cwd: &Path) -> bool {
         .is_some_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "true")
 }
 
-/// Locate the work-tree root (where `.lfsconfig` lives). Returns `None`
-/// for bare repos (no work tree) or when `cwd` isn't inside a repo at
-/// all. We can't reuse [`crate::path::git_dir`] because that yields the
-/// `.git` directory; `.lfsconfig` lives one level up.
+/// Find the top of the work tree, where `.lfsconfig` lives.
+///
+/// Returns `None` in a bare repository or outside any repository.
 fn repo_root(cwd: &Path) -> Option<PathBuf> {
     let out = Command::new("git")
         .arg("-C")
@@ -359,9 +349,11 @@ fn repo_root(cwd: &Path) -> Option<PathBuf> {
     Some(PathBuf::from(s))
 }
 
-/// Parse `git config --list` style `key=value` lines. Values can contain
-/// `=` (URLs commonly do), so split on the *first* one only. Keys come
-/// out already case-folded to git's canonical form.
+/// Parse the `key=value` lines of `git config --list`.
+///
+/// Each line splits at its first `=`, since values such as URLs can
+/// contain more. Git already prints keys in canonical case. Repeated keys
+/// keep every value, in order.
 fn parse_list_output(bytes: &[u8]) -> LfsConfigEntries {
     let s = String::from_utf8_lossy(bytes);
     let mut entries: LfsConfigEntries = HashMap::new();
@@ -373,8 +365,8 @@ fn parse_list_output(bytes: &[u8]) -> LfsConfigEntries {
     entries
 }
 
-/// Split parsed `.lfsconfig` entries into a (safe-keys map, ignored-key
-/// list). The ignored list is sorted for deterministic warning output.
+/// Split `.lfsconfig` entries into the safe entries and the sorted names
+/// of the ignored keys.
 fn filter_safe(entries: LfsConfigEntries) -> (LfsConfigEntries, Vec<String>) {
     let mut safe = LfsConfigEntries::new();
     let mut ignored = Vec::new();
@@ -456,21 +448,21 @@ mod tests {
         assert!(is_safe_key("lfs.fetchinclude"));
         assert!(is_safe_key("lfs.locksverify"));
 
-        // Per-URL access knob — middle component is a URL.
+        // Per-URL access setting, where the middle component is a URL.
         assert!(is_safe_key("lfs.http://example.com/repo.git.access"));
         assert!(is_safe_key("lfs.https://host.access"));
 
-        // Remote LFS URL override — but only `lfsurl`, no other remote.* keys.
+        // Only `lfsurl` is safe under `remote.*`.
         assert!(is_safe_key("remote.origin.lfsurl"));
         assert!(!is_safe_key("remote.origin.url"));
         assert!(!is_safe_key("remote.origin.pushurl"));
 
-        // Extension priority is safe; clean/smudge are not (they execute commands).
+        // Extension priority is safe, but clean and smudge run commands.
         assert!(is_safe_key("lfs.extension.foo.priority"));
         assert!(!is_safe_key("lfs.extension.foo.clean"));
         assert!(!is_safe_key("lfs.extension.foo.smudge"));
 
-        // Generic credential / core knobs from .lfsconfig — never safe.
+        // Credential and core settings are never safe.
         assert!(!is_safe_key("core.askpass"));
         assert!(!is_safe_key("credential.helper"));
         assert!(!is_safe_key("lfs.concurrenttransfers"));

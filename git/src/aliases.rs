@@ -1,19 +1,13 @@
-//! `url.<base>.insteadOf <alias>` rewrite handling.
+//! URL rewriting with `url.<base>.insteadOf` and `pushInsteadOf`.
 //!
-//! Git lets users define URL prefix aliases in config:
-//! `git config url."https://github.com/".insteadOf gh:` makes any URL
-//! starting with `gh:` rewrite to `https://github.com/...`. The git
-//! tooling applies this rewrite universally; LFS has to do the same
-//! so settings like `lfs.url = gh:org/repo` resolve the same way the
-//! user's `git fetch` already does.
+//! With `git config url."https://github.com/".insteadOf gh:`, any URL that
+//! starts with `gh:` is rewritten to start with `https://github.com/`
+//! instead. LFS applies the same rewrite, so a setting like
+//! `lfs.url = gh:org/repo` resolves the way `git fetch` would.
 //!
-//! The rewrite logic itself is dead simple — pick the longest alias
-//! that's a prefix of the input URL and swap it for the configured
-//! base. The only subtlety is duplicate detection: when two
-//! `url.<base>.insteadOf` entries share the *same* alias value but
-//! disagree on the base, we emit
-//! `warning: Multiple 'url.*.insteadof' keys with the same alias: ...`
-//! once per process, mirroring upstream.
+//! The longest matching alias wins. When two entries give the same alias
+//! different bases, the first one wins and a warning is printed, as in
+//! upstream.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -22,13 +16,13 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::Error;
 
-/// Maps `<alias>` → `<base>` for every `url.<base>.insteadOf <alias>`
-/// entry in the effective git config.
+/// Base URL for each alias, from `url.<base>.insteadOf <alias>` entries.
 pub type Aliases = HashMap<String, String>;
 
-/// Load the alias map for `cwd`, warning once-per-process about
-/// conflicts. Cached so repeated calls within one process don't fire
-/// `git config` again.
+/// Load the `insteadOf` aliases from git config.
+///
+/// The result is cached per `cwd` for the life of the process, so the
+/// conflict warning prints once.
 pub fn load_aliases(cwd: &Path) -> Result<Aliases, Error> {
     let canon = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
     if let Some(cached) = aliases_cache().lock().unwrap().get(&canon) {
@@ -45,11 +39,10 @@ pub fn load_aliases(cwd: &Path) -> Result<Aliases, Error> {
     Ok(aliases)
 }
 
-/// Load the push-direction alias map (`url.<base>.pushInsteadOf`) for
-/// `cwd`. Cached separately from `load_aliases`. Falls back to an empty
-/// map when no `pushInsteadOf` entries are configured — callers should
-/// then use [`load_aliases`] for the upload path too, so plain
-/// `insteadOf` still applies.
+/// Load the `pushInsteadOf` aliases from git config.
+///
+/// Cached like [`load_aliases`]. When no alias here matches a push URL,
+/// callers should fall back to [`load_aliases`], as git does.
 pub fn load_push_aliases(cwd: &Path) -> Result<Aliases, Error> {
     let canon = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
     if let Some(cached) = push_aliases_cache().lock().unwrap().get(&canon) {
@@ -66,18 +59,16 @@ pub fn load_push_aliases(cwd: &Path) -> Result<Aliases, Error> {
     Ok(aliases)
 }
 
-/// Apply `url.*.insteadOf` rewriting to `url`, returning the longest-
-/// prefix-match rewrite or the original string if nothing matches.
+/// Rewrite `url` with the `insteadOf` aliases for `cwd`.
 pub fn rewrite(cwd: &Path, url: &str) -> Result<String, Error> {
     let aliases = load_aliases(cwd)?;
     Ok(apply(&aliases, url))
 }
 
-/// Pure function: given a built alias map and a URL, do the longest-
-/// prefix-match rewrite. Split out so unit tests don't need a temp
-/// repo, and exposed so callers that already hold an [`Aliases`] map
-/// (e.g. the transfer queue, which captures the map once at startup
-/// instead of re-locking the per-call cache) can apply it directly.
+/// Rewrite `url` with an alias map you already hold.
+///
+/// The longest alias that prefixes `url` is replaced with its base. With
+/// no match, `url` is returned unchanged.
 pub fn apply(aliases: &Aliases, url: &str) -> String {
     let mut best: Option<&str> = None;
     for alias in aliases.keys() {
@@ -94,29 +85,26 @@ pub fn apply(aliases: &Aliases, url: &str) -> String {
     }
 }
 
-/// One parsed `url.<base>.insteadOf <alias>` entry.
+/// One `url.<base>.insteadOf <alias>` or `pushInsteadOf` entry.
 struct InsteadOf {
     base: String,
     alias: String,
 }
 
-/// Read every `url.*.<suffix>` from the effective config (all scopes),
-/// preserving ordering and duplicates so callers can apply upstream's
-/// "first-seen wins / warn on conflict" rule. `suffix` is `"insteadof"`
-/// for the download/general path or `"pushinsteadof"` for the upload
-/// path; git's config parsing is case-insensitive on the key, so the
-/// lowercased form covers `pushInsteadOf` etc.
+/// Read every `url.<base>.<suffix>` entry from git's merged config.
+///
+/// `suffix` is `insteadof` or `pushinsteadof`, lowercase because git
+/// prints keys that way. Entries keep config order and duplicates, for
+/// [`build_aliases`].
 fn list_aliases_entries(cwd: &Path, suffix: &str) -> Result<Vec<InsteadOf>, Error> {
     let regex = format!(r"^url\..*\.{suffix}$");
-    // `--null` so newlines in URLs (which never happen in practice but
-    // *would* break the default key/value separator) and special chars
-    // in alias values come out unambiguously.
+    // `--null` keeps a value containing a newline in one record.
     let out = Command::new("git")
         .arg("-C")
         .arg(cwd)
         .args(["config", "--includes", "--null", "--get-regexp", &regex])
         .output()?;
-    // Exit 1 just means "no matches" — common case.
+    // Exit 1 means no entries matched.
     match out.status.code() {
         Some(0) => {}
         Some(1) => return Ok(Vec::new()),
@@ -134,16 +122,16 @@ fn list_aliases_entries(cwd: &Path, suffix: &str) -> Result<Vec<InsteadOf>, Erro
         if record.is_empty() {
             continue;
         }
-        // Each record is `<key>\n<value>` — `--null` separates entries
-        // but uses the literal newline between key and value.
+        // With `--null`, each record is the key, a newline, then the
+        // value.
         let s = std::str::from_utf8(record)
             .map_err(|e| Error::Failed(format!("non-utf8 {suffix} entry: {e}")))?;
         let (key, value) = match s.split_once('\n') {
             Some(kv) => kv,
             None => continue,
         };
-        // Strip `url.` prefix and `.<suffix>` suffix to recover the
-        // base URL, which can itself contain dots.
+        // The base URL is everything between `url.` and `.<suffix>`,
+        // dots included.
         let trimmed = match key.strip_prefix("url.") {
             Some(s) => s,
             None => continue,
@@ -160,10 +148,10 @@ fn list_aliases_entries(cwd: &Path, suffix: &str) -> Result<Vec<InsteadOf>, Erro
     Ok(entries)
 }
 
-/// Convert the raw entry list into a map, emitting the conflict
-/// warning when an alias maps to two different bases. First-seen base
-/// wins, matching upstream — but iteration order from `git config
-/// --get-regexp` is config-file order, so this is deterministic.
+/// Build the alias map from entries in config order.
+///
+/// When an alias appears again with a different base, the first base is
+/// kept and a warning is printed once for that alias, as in upstream.
 fn build_aliases(entries: &[InsteadOf]) -> Aliases {
     let mut map = Aliases::new();
     let mut warned: std::collections::HashSet<String> = Default::default();
@@ -175,8 +163,6 @@ fn build_aliases(entries: &[InsteadOf]) -> Aliases {
                     entry.alias
                 );
             }
-            // First-seen base wins (matches upstream's `if v != url`
-            // path: it warns but doesn't overwrite).
             continue;
         }
         map.insert(entry.alias.clone(), entry.base.clone());
@@ -235,10 +221,9 @@ mod tests {
 
     #[test]
     fn build_aliases_does_not_warn_on_duplicate_same_value() {
-        // Two entries with the same alias *and* the same base → no
-        // conflict, no warning. (We can't capture stderr here, but
-        // we can at least exercise the path and check the resulting
-        // map.)
+        // Two entries with the same alias and the same base are not a
+        // conflict. (We can't capture stderr here, but we can at least
+        // exercise the path and check the resulting map.)
         let entries = vec![
             InsteadOf {
                 base: "https://host.example/domain/".into(),

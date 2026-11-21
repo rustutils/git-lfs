@@ -1,25 +1,30 @@
-//! Resolve the LFS server endpoint for a repo.
+//! Find the LFS server URL for a remote.
 //!
-//! Implements the priority chain documented in
-//! `docs/api/server-discovery.md`, plus the SSH/git URL → HTTPS rewriting
-//! upstream does so a `git@github.com:foo/bar.git` remote yields the
-//! expected `https://github.com/foo/bar.git/info/lfs` endpoint.
+//! [`resolve_endpoint`] follows the [server discovery] rules. The first of
+//! these that is set wins:
 //!
-//! # Priority order
+//! 1. The `GIT_LFS_URL` environment variable.
+//! 2. `lfs.url`.
+//! 3. `remote.<name>.lfsurl`.
+//! 4. `remote.<name>.url`, turned into an LFS URL by [`derive_lfs_url`].
 //!
-//! 1. `GIT_LFS_URL` environment variable (matches upstream's escape hatch).
-//! 2. `lfs.url` from git config — local → global → system → `.lfsconfig`.
-//! 3. `remote.<name>.lfsurl` (same scopes as above).
-//! 4. `remote.<name>.url` rewritten via [`derive_lfs_url`].
+//! `lfs.url` and `remote.<name>.lfsurl` can also come from `.lfsconfig`, at
+//! the lowest priority. `url.<base>.insteadOf` aliases apply to every URL.
 //!
-//! `<name>` defaults to `origin` when the caller hasn't passed a remote.
+//! Without a remote name, `<name>` is `origin`, or the only remote if there
+//! is no `origin`. When nothing above is set, a remote name that looks like
+//! a URL is used as the remote URL. Without a remote name, the URL of the
+//! last `git fetch` in `FETCH_HEAD` is the last resort.
 //!
-//! # SSH-style URLs
+//! Pushes use the same endpoint as fetches. Neither `remote.<name>.pushurl`
+//! nor `lfs.pushurl` is read.
 //!
-//! `git lfs` itself only speaks HTTP(S); for SSH remotes the *protocol* is
-//! still HTTPS, just inferred from the remote's host/path. Upstream also
-//! supports the `git-lfs-authenticate` SSH command for handing back a
-//! token; that's deferred (see NOTES.md).
+//! An SSH remote such as `git@github.com:foo/bar.git` gets the HTTPS
+//! endpoint `https://github.com/foo/bar.git/info/lfs`. [`parse_ssh_url`]
+//! keeps the SSH details, which callers need to run `git-lfs-authenticate`
+//! or `git-lfs-transfer` on the server.
+//!
+//! [server discovery]: https://gitlab.com/rustutils/git-lfs/-/blob/master/docs/api/server-discovery.md
 
 use std::path::Path;
 
@@ -29,53 +34,58 @@ use crate::config;
 
 const DEFAULT_REMOTE: &str = "origin";
 
+/// An error from resolving an endpoint.
 #[derive(Debug, thiserror::Error)]
 pub enum EndpointError {
+    /// Reading config or `FETCH_HEAD` failed.
     #[error(transparent)]
     Git(#[from] Error),
+    /// Nothing configured an endpoint for this remote.
     #[error("no LFS endpoint could be determined for remote {0:?}")]
     Unresolved(String),
+    /// The remote URL has a form [`derive_lfs_url`] doesn't recognize.
     #[error("invalid remote URL {url:?}: {reason}")]
     InvalidUrl { url: String, reason: String },
 }
 
-/// SSH-shaped remote/endpoint URL parsed into the components `git lfs
-/// env` echoes back as `  SSH=<user_and_host>:<path>`.
+/// The parts of an SSH remote URL needed to run commands on the server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SshInfo {
-    /// Either `<user>@<host>` if a user was present, or just `<host>`.
+    /// `<user>@<host>`, or just `<host>` if the URL has no user.
     pub user_and_host: String,
-    /// The path portion — `:foo/bar.git` from `git@host:foo/bar.git`,
-    /// or `/foo/bar.git` from `ssh://host/foo/bar.git` (we keep
-    /// upstream's exact form: leading `/` preserved for `ssh://`,
-    /// stripped for bare SSH).
+    /// The repository path in upstream's form.
+    ///
+    /// `ssh://host/foo/bar.git` gives `/foo/bar.git`, with the leading
+    /// slash. `git@host:foo/bar.git` gives `foo/bar.git`, without one.
     pub path: String,
-    /// Port specified in the URL (e.g. `ssh://host:22/path`). `None` for
-    /// bare SSH (`git@host:path`) and for `ssh://` URLs without a port.
-    /// Threaded into `git-lfs-authenticate` invocations as `-p <port>`.
+    /// The port of an `ssh://host:22/path` URL.
+    ///
+    /// `None` for bare `git@host:path` URLs and for `ssh://` URLs without a
+    /// port.
     pub port: Option<String>,
 }
 
-/// LFS endpoint resolution result with the optional SSH metadata
-/// upstream's `git lfs env` displays alongside the HTTPS-equivalent
-/// endpoint URL.
+/// A resolved LFS endpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EndpointInfo {
+    /// The LFS server URL.
+    ///
+    /// URLs derived from `remote.<name>.url` are HTTP(S) or `file://`.
+    /// Configured LFS URLs such as `lfs.url` are returned as they are.
     pub url: String,
+    /// The SSH details, if the URL the endpoint came from was an SSH URL.
     pub ssh: Option<SshInfo>,
 }
 
-/// Resolve the LFS endpoint URL for `cwd` + `remote`. Pass `None` for the
-/// default (`origin`, with a "single remote" fallback when origin doesn't
-/// exist and exactly one other remote does).
+/// Resolve the LFS endpoint URL for `remote` in the repository at `cwd`.
+///
+/// Pass `None` for the default remote. The [module docs](crate::endpoint)
+/// give the order of lookups.
 pub fn endpoint_for_remote(cwd: &Path, remote: Option<&str>) -> Result<String, EndpointError> {
     Ok(resolve_endpoint(cwd, remote)?.url)
 }
 
-/// Like [`endpoint_for_remote`], but also returns the SSH metadata
-/// when the underlying URL was SSH-shaped. Used by `git lfs env` to
-/// render the `  SSH=<user_and_host>:<path>` line alongside the
-/// HTTPS-equivalent endpoint.
+/// Like [`endpoint_for_remote`], but also returns the SSH details.
 pub fn resolve_endpoint(cwd: &Path, remote: Option<&str>) -> Result<EndpointInfo, EndpointError> {
     let caller_specified_remote = remote.is_some();
     let mut remote = remote.unwrap_or(DEFAULT_REMOTE).to_owned();
@@ -91,11 +101,8 @@ pub fn resolve_endpoint(cwd: &Path, remote: Option<&str>) -> Result<EndpointInfo
         return direct_endpoint(cwd, &v);
     }
 
-    // When the caller didn't pin a remote name and `origin` doesn't
-    // exist, fall back to the only configured remote. Mirrors
-    // upstream's `git remote` discovery in `lfsfetch` and is what
-    // `t-fetch.sh::fetch with no origin remote` exercises (rename
-    // origin → something, then bare `git lfs fetch`).
+    // Without a remote name and without `origin`, use the only remote,
+    // as upstream does (`t-fetch.sh`, "fetch with no origin remote").
     if !caller_specified_remote && remote_url(cwd, &remote)?.is_none() {
         let remotes = list_remotes(cwd)?;
         if remotes.len() == 1 {
@@ -109,9 +116,8 @@ pub fn resolve_endpoint(cwd: &Path, remote: Option<&str>) -> Result<EndpointInfo
     }
 
     if let Some(remote_url) = remote_url(cwd, &remote)? {
-        // Apply insteadOf rewrite *before* deriving the LFS suffix so
-        // a `gh:org/repo` style alias resolves to the real URL first
-        // and `derive_lfs_url` sees a URL it can parse.
+        // Rewrite aliases first, so `derive_lfs_url` sees a real URL
+        // instead of something like `gh:org/repo`.
         let rewritten = aliases::rewrite(cwd, &remote_url)?;
         return Ok(EndpointInfo {
             url: derive_lfs_url(&rewritten)?,
@@ -119,12 +125,8 @@ pub fn resolve_endpoint(cwd: &Path, remote: Option<&str>) -> Result<EndpointInfo
         });
     }
 
-    // Last fallback: the caller may have passed a URL directly in
-    // place of a remote name (e.g. `git lfs push https://host/repo`).
-    // Treat anything that looks URL-shaped as the remote URL and run
-    // it through the same rewriter — same outcome as if they'd added
-    // a `remote.x.url = <URL>` entry first. Bare-SSH (`git@host:path`)
-    // also covers the SCP-style case the rewriter understands.
+    // The caller may have passed a URL in place of a remote name, as in
+    // `git lfs push https://host/repo`.
     if looks_like_url(&remote) {
         let rewritten = aliases::rewrite(cwd, &remote)?;
         return Ok(EndpointInfo {
@@ -133,15 +135,10 @@ pub fn resolve_endpoint(cwd: &Path, remote: Option<&str>) -> Result<EndpointInfo
         });
     }
 
-    // No configured remote, no `lfs.url`, no URL-shaped argument.
-    // Last-resort fallback: parse `.git/FETCH_HEAD` for the URL of
-    // the most recent `git fetch <url>` and derive an endpoint from
-    // that. This is what makes `git archive` work in a bare repo
-    // that was populated via a one-off `git fetch <url> refs/...`
-    // without setting up a remote — the LFS smudge filter still has
-    // somewhere to look up objects (`t-no-remote` test 1). Skipped
-    // when the caller pinned a remote name, since that signals an
-    // intent that's incompatible with the FETCH_HEAD fallback.
+    // Use the URL of the last `git fetch`. This lets the smudge filter
+    // find objects in a repository filled by `git fetch <url> <ref>`
+    // without a remote (`t-no-remote.sh`). A named remote means the
+    // caller wants that remote, so this doesn't apply.
     if !caller_specified_remote && let Some(url) = read_fetch_head_url(cwd)? {
         let rewritten = aliases::rewrite(cwd, &url)?;
         return Ok(EndpointInfo {
@@ -153,10 +150,12 @@ pub fn resolve_endpoint(cwd: &Path, remote: Option<&str>) -> Result<EndpointInfo
     Err(EndpointError::Unresolved(remote))
 }
 
-/// Best-effort parse of `.git/FETCH_HEAD` for the source URL of the
-/// most recent `git fetch`. Each line is `<sha1>\t[not-for-merge]\t
-/// branch 'X' of <url>` — we take the first match's `<url>` token.
-/// Returns `None` if the file is missing, empty, or unparseable.
+/// Read the source URL of the last `git fetch` from `FETCH_HEAD`.
+///
+/// Takes the URL after `of` on the first line that has one, as in
+/// `<oid>\t\tbranch 'main' of <url>`. Like upstream, this finds no URL
+/// when only `HEAD` was fetched, since git then writes `<oid>\t\t<url>`.
+/// Returns `None` if the file is missing or has no such line.
 fn read_fetch_head_url(cwd: &Path) -> Result<Option<String>, EndpointError> {
     let git_dir = match crate::path::git_dir(cwd) {
         Ok(p) => p,
@@ -179,12 +178,10 @@ fn read_fetch_head_url(cwd: &Path) -> Result<Option<String>, EndpointError> {
     Ok(None)
 }
 
-/// Build an `EndpointInfo` from a directly-configured LFS URL value
-/// (`GIT_LFS_URL`, `lfs.url`, `remote.X.lfsurl`). These values are
-/// returned to callers as-is — no `.git/info/lfs` derivation — but we
-/// still parse SSH metadata so `git lfs env` can echo the original
-/// SSH-shaped string back. Aliases are applied first so users can
-/// store something like `lfs.url = gh:org/repo` and have it resolve.
+/// Build an endpoint from a configured LFS URL.
+///
+/// The value is used as is, after alias rewriting, without appending
+/// `info/lfs`.
 fn direct_endpoint(cwd: &Path, value: &str) -> Result<EndpointInfo, EndpointError> {
     let rewritten = aliases::rewrite(cwd, value)?;
     let ssh = parse_ssh_url(&rewritten);
@@ -194,9 +191,7 @@ fn direct_endpoint(cwd: &Path, value: &str) -> Result<EndpointInfo, EndpointErro
     })
 }
 
-/// `git remote` enumeration. Returns the configured remote names in
-/// definition order. Used by [`endpoint_for_remote`] to fall back from
-/// `origin` to the "only remote" when one exists.
+/// The configured remote names, or none if `git remote` fails.
 fn list_remotes(cwd: &Path) -> Result<Vec<String>, Error> {
     let out = std::process::Command::new("git")
         .arg("-C")
@@ -214,41 +209,36 @@ fn list_remotes(cwd: &Path) -> Result<Vec<String>, Error> {
         .collect())
 }
 
-/// Quick syntactic check: does `s` look like one of the URL forms
-/// [`derive_lfs_url`] recognizes? Used to decide whether to treat a
-/// "remote name" argument as a literal URL.
+/// Whether a remote name argument should be treated as a URL.
+///
+/// True if `s` contains `://` or `@`. A bare `host:path` without a user
+/// is not treated as a URL.
 pub fn looks_like_url(s: &str) -> bool {
-    s.starts_with("http://")
-        || s.starts_with("https://")
-        || s.starts_with("ssh://")
-        || s.starts_with("git+ssh://")
-        || s.starts_with("ssh+git://")
-        || s.starts_with("git://")
-        || s.starts_with("file://")
-        || s.contains("://")
-        || s.contains('@')
+    s.contains("://") || s.contains('@')
 }
 
-/// Read `remote.<name>.url` from the merged git config view (any
-/// scope, plus `include.path` and `GIT_CONFIG` resolution).
+/// Read `remote.<name>.url` from git config.
 ///
-/// We don't currently honor `remote.<name>.pushurl` separately — that's a
-/// minor accuracy issue for `git push`-driven LFS uploads, captured in
-/// NOTES.md.
+/// This is also the URL used for pushes, since `remote.<name>.pushurl` is
+/// not read.
 pub fn remote_url(cwd: &Path, remote: &str) -> Result<Option<String>, Error> {
     config::get_effective(cwd, &format!("remote.{remote}.url"))
 }
 
 /// Convert a clone URL into the matching LFS endpoint URL.
 ///
-/// Rules (mirroring upstream's `NewEndpointFromCloneURL`):
-/// - `https://host/path` → `https://host/path.git/info/lfs`
-/// - `https://host/path.git` → `https://host/path.git/info/lfs`
-/// - `ssh://[user@]host[:port]/path` → `https://host/path.git/info/lfs`
-///   (port is dropped — LFS is HTTPS-only at the wire layer)
-/// - `git@host:path` → `https://host/path.git/info/lfs`
-/// - `git://host/path` → `https://host/path.git/info/lfs`
-/// - `file://path` → returned unchanged (used by upstream test infra)
+/// Follows upstream's `NewEndpointFromCloneURL`:
+///
+/// - `https://host/path` and `https://host/path.git` become
+///   `https://host/path.git/info/lfs`. `http://` stays `http://`.
+/// - `ssh://[user@]host[:port]/path` becomes
+///   `https://host/path.git/info/lfs`, dropping the user and port. The
+///   `git+ssh://` and `ssh+git://` schemes work the same way.
+/// - `[user@]host:path` becomes `https://host/path.git/info/lfs`.
+/// - `git://host/path` becomes `https://host/path.git/info/lfs`.
+/// - `file://` URLs are returned unchanged.
+///
+/// Anything else, including local paths, is an error.
 pub fn derive_lfs_url(remote_url: &str) -> Result<String, EndpointError> {
     let trimmed = remote_url.trim();
     if trimmed.is_empty() {
@@ -259,13 +249,11 @@ pub fn derive_lfs_url(remote_url: &str) -> Result<String, EndpointError> {
     }
 
     if let Some(rest) = trimmed.strip_prefix("file://") {
-        // file:// URLs are local — pass through. The transfer/ basic
-        // adapter doesn't speak file:// today, but rewriting it would be
-        // worse than letting it fall over visibly.
+        // No transfer adapter handles `file://`, but passing it through
+        // fails visibly, which beats inventing an HTTPS URL.
         return Ok(format!("file://{rest}"));
     }
 
-    // URL schemes we handle by parsing.
     if let Some(rest) = trimmed.strip_prefix("https://") {
         return Ok(append_lfs_path(&format!("https://{rest}")));
     }
@@ -282,13 +270,10 @@ pub fn derive_lfs_url(remote_url: &str) -> Result<String, EndpointError> {
         return ssh_to_https(rest, "ssh+git://");
     }
     if let Some(rest) = trimmed.strip_prefix("git://") {
-        // `git://` is the bare git protocol — LFS rides on top via HTTPS.
         return Ok(append_lfs_path(&format!("https://{rest}")));
     }
 
-    // Bare-SSH form: `[user@]host:path`. Distinguish from a Windows path
-    // (`C:\…`) by requiring the part before `:` to contain a `@` or be a
-    // hostname-shaped token (no backslash, no drive-letter pattern).
+    // Bare SSH form: `[user@]host:path`.
     if let Some((host_part, path)) = bare_ssh_split(trimmed) {
         let host = host_part.split('@').next_back().unwrap_or(host_part);
         return Ok(append_lfs_path(&format!(
@@ -303,19 +288,14 @@ pub fn derive_lfs_url(remote_url: &str) -> Result<String, EndpointError> {
     })
 }
 
-/// Extract the SSH metadata from a remote URL — the `<user_and_host>`
-/// and `<path>` pieces `git lfs env` echoes back as
-/// `  SSH=<user_and_host>:<path>`. Returns `None` for URLs that don't
-/// look SSH-shaped (HTTP(S), git://, file://, plain paths).
+/// Extract the SSH details from a remote URL.
 ///
-/// Mirrors upstream's `EndpointFromSshUrl` / `EndpointFromBareSshUrl`
-/// for the metadata fields specifically; the URL itself is rewritten
-/// elsewhere (see [`derive_lfs_url`]).
+/// Recognizes `ssh://`, `git+ssh://`, `ssh+git://`, and bare
+/// `[user@]host:path` URLs, like upstream's `EndpointFromSshUrl` and
+/// `EndpointFromBareSshUrl`. Returns `None` for anything else, including
+/// HTTP(S), `git://`, `file://`, and local paths.
 pub fn parse_ssh_url(rawurl: &str) -> Option<SshInfo> {
     let trimmed = rawurl.trim();
-    // Schemes upstream classifies as SSH: `ssh://`, `git+ssh://`,
-    // `ssh+git://`. Plain HTTP(S) and `git://` are not SSH; `file://`
-    // and bare paths aren't either.
     let ssh_rest = trimmed
         .strip_prefix("ssh://")
         .or_else(|| trimmed.strip_prefix("git+ssh://"))
@@ -325,21 +305,16 @@ pub fn parse_ssh_url(rawurl: &str) -> Option<SshInfo> {
         if authority.is_empty() {
             return None;
         }
-        // Split port from user_and_host — upstream's `EndpointFromSshUrl`
-        // keeps user@host but stores the port separately so it can pass
-        // `-p <port>` to ssh.
         let (user_and_host, port) = match authority.rsplit_once(':') {
             Some((host, p)) => (host.to_owned(), Some(p.to_owned())),
             None => (authority.to_owned(), None),
         };
         return Some(SshInfo {
             user_and_host,
-            // Leading `/` preserved for ssh:// to match upstream.
             path: format!("/{}", path.trim_start_matches('/')),
             port,
         });
     }
-    // HTTP/HTTPS/git/file aren't SSH.
     if trimmed.starts_with("http://")
         || trimmed.starts_with("https://")
         || trimmed.starts_with("git://")
@@ -347,9 +322,6 @@ pub fn parse_ssh_url(rawurl: &str) -> Option<SshInfo> {
     {
         return None;
     }
-    // Bare-SSH form: `[user@]host:path`. Strip leading `/` from path
-    // (upstream's `EndpointFromBareSshUrl` does this explicitly). Bare
-    // SSH has no port — that's an `ssh://` form thing.
     let (host, path) = bare_ssh_split(trimmed)?;
     Some(SshInfo {
         user_and_host: host.to_owned(),
@@ -358,11 +330,11 @@ pub fn parse_ssh_url(rawurl: &str) -> Option<SshInfo> {
     })
 }
 
-/// Split `<host>:<path>` if `rawurl` looks like a bare SSH URL. Returns
-/// `None` if it doesn't (e.g. a plain filesystem path like `/foo/bar` or
-/// a Windows drive letter `C:\foo`).
+/// Split a bare SSH URL `[user@]host:path` at the first colon.
+///
+/// Returns `None` for local paths such as `/foo/bar`, `./foo`, or
+/// `C:\foo`.
 fn bare_ssh_split(rawurl: &str) -> Option<(&str, &str)> {
-    // Reject things that look like local paths.
     if rawurl.starts_with('/') || rawurl.starts_with('.') {
         return None;
     }
@@ -374,9 +346,7 @@ fn bare_ssh_split(rawurl: &str) -> Option<(&str, &str)> {
     if host.is_empty() || path.is_empty() {
         return None;
     }
-    // A single ASCII letter before `:` is almost certainly a Windows
-    // drive letter, not a hostname. `git@C:/foo` would be malformed
-    // anyway.
+    // A single letter before the colon is a Windows drive letter.
     if host.len() == 1 && host.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) {
         return None;
     }
@@ -393,9 +363,7 @@ fn ssh_to_https(rest: &str, scheme_for_error: &str) -> Result<String, EndpointEr
             reason: "missing host".into(),
         });
     }
-    // Strip off any `user@` prefix.
     let host_with_port = authority.split('@').next_back().unwrap_or(authority);
-    // Drop the port: `ssh://host:22/foo` → host portion is just `host`.
     let host = host_with_port.split(':').next().unwrap_or(host_with_port);
     Ok(append_lfs_path(&format!(
         "https://{host}/{}",
@@ -403,9 +371,9 @@ fn ssh_to_https(rest: &str, scheme_for_error: &str) -> Result<String, EndpointEr
     )))
 }
 
-/// Append the LFS protocol suffix to an HTTPS URL — `.git/info/lfs` if
-/// the URL doesn't already end in `.git`, just `/info/lfs` if it does.
-/// Trailing slash on the input URL is collapsed first.
+/// Append `/info/lfs` to a URL, adding `.git` first if it isn't there.
+///
+/// Trailing slashes are removed first.
 fn append_lfs_path(url: &str) -> String {
     let trimmed = url.trim_end_matches('/');
     if trimmed.ends_with(".git") {
@@ -609,7 +577,7 @@ mod tests {
 
     fn lock_env() -> MutexGuard<'static, ()> {
         // PoisonError can happen if a previous test panicked while holding
-        // the lock — that's a test bug, but recovering keeps the rest of
+        // the lock. That's a test bug, but recovering keeps the rest of
         // the suite useful instead of cascading-failing.
         ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }

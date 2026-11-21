@@ -1,23 +1,17 @@
-//! Git interop helpers for Git LFS: config, refs, scanners, and `.gitattributes` matching.
+//! Ask the user's installed `git` about a repository.
 //!
-//! Git LFS needs the user's git binary for a handful of things
-//! with no LFS-specific equivalent: where the repo lives, what's
-//! in its config, which objects each ref reaches, and how
-//! `.gitattributes` applies to a given path. This crate collects
-//! those helpers in one place. Everything runs by shelling out
-//! to the `git` binary the user has installed; this crate does
-//! not bundle its own git implementation.
+//! Git LFS needs to know things only Git can answer: where the repository
+//! lives, what its config says, which objects each ref reaches, and which
+//! attributes apply to a path. This crate answers them by running the `git`
+//! binary, so behavior matches whatever Git the user has. Parsing stable file
+//! formats like `.gitattributes` is done in-process.
 //!
-//! It sits at the bottom of the LFS workspace: every other crate
-//! goes through it whenever it needs to know something about the
-//! repo it's running against. The crate is intentionally a
-//! collection of unrelated helpers rather than a single
-//! abstraction, so the pieces are independent of each other and
-//! you can pick what you need. See the per-module docs below for
-//! the specific surfaces.
+//! The modules are independent, so use only what you need. Most functions
+//! take a directory inside the repository as their first argument and run
+//! `git` there.
 //!
-//! [`Error`] is the shared error type for the few cases that
-//! need to surface git's stderr verbatim.
+//! Functions that run `git` return [`Error`] when it can't be started or
+//! exits with an error.
 
 use std::io;
 use std::path::Path;
@@ -38,18 +32,20 @@ pub mod refs;
 pub mod rev_list;
 pub mod scanner;
 
-// Top-level re-exports: a small set of widely-used helpers that
-// feel natural as flat names. Everything else is accessed through
-// its module — see the module list rendered below by rustdoc.
 pub use attr::AttrSet;
 pub use config::ConfigScope;
 pub use http_options::{HttpOptions, extra_headers_for, lfs_url_bool};
 pub use path::{git_common_dir, git_dir, lfs_alternate_dirs, lfs_dir, work_tree_root};
 
+/// An error from running `git`.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// An I/O error, such as `git` not being installed.
     #[error("io error invoking git: {0}")]
     Io(#[from] io::Error),
+    /// `git` failed or printed something unexpected.
+    ///
+    /// Holds git's stderr, or a description of the unexpected output.
     #[error("git: {0}")]
     Failed(String),
 }
@@ -70,8 +66,9 @@ pub(crate) fn run_git(cwd: &Path, args: &[&str]) -> Result<String, Error> {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    /// Shared test helpers for setting up real git repos. Each helper
-    /// function shells out to the `git` binary; tests using these are
+    /// Shared test helpers for setting up real git repos.
+    ///
+    /// Each helper runs the `git` binary, so tests using them are
     /// integration-level despite living next to their module.
     pub mod commit_helper {
         use std::path::Path;
@@ -79,15 +76,15 @@ pub(crate) mod tests {
 
         use tempfile::TempDir;
 
-        /// Initialize a fresh repo with a deterministic identity + branch
+        /// Initialize a fresh repo with a deterministic identity and branch
         /// so tests don't depend on the developer's git config.
         pub fn init_repo() -> TempDir {
-            // Fail loudly if the test process inherits GIT_DIR /
+            // Fail loudly if the test process inherits GIT_DIR or
             // GIT_WORK_TREE. With those set, `git init <tempdir>`
             // ignores the path and operates on the inherited git-dir
-            // instead — every subsequent assertion would silently
+            // instead, and every subsequent assertion would silently
             // exercise the wrong repo. The `Justfile` pre-commit
-            // recipe strips these; this is the canary if anything
+            // recipe strips these. This is the canary if anything
             // else slips through.
             for var in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"] {
                 assert!(
@@ -109,8 +106,7 @@ pub(crate) mod tests {
         }
 
         /// Add and commit `content` at `path` (relative to the repo root).
-        /// Returns nothing — call `head_oid` if you need the resulting
-        /// commit's SHA.
+        /// Call `head_oid` for the resulting commit's SHA.
         pub fn commit_file(repo: &TempDir, path: &str, content: &[u8]) {
             std::fs::write(repo.path().join(path), content).unwrap();
             run(repo.path(), &["add", path]);

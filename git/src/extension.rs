@@ -1,28 +1,36 @@
-//! Pointer extension config (`lfs.extension.<name>.{clean,smudge,priority}`).
+//! Pointer extension config.
 //!
-//! Extensions chain external programs around each LFS object's clean/smudge
-//! cycle (`docs/extensions.md`). They're declared via three keys per
-//! extension; `priority` is the only one that can come from `.lfsconfig`.
+//! Extensions run external programs on each object during clean and
+//! smudge, as described in [`docs/extensions.md`][ext]. Each is configured
+//! with `lfs.extension.<name>.clean`, `.smudge` and `.priority`. Only
+//! `priority` can come from `.lfsconfig`.
+//!
+//! [ext]: https://gitlab.com/rustutils/git-lfs/-/blob/master/docs/extensions.md
 
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::Command;
 
-/// One configured extension. Missing knobs come back as empty/0 to mirror
-/// upstream's zero-value Extension struct — callers that *run* extensions
-/// must reject empty `clean`/`smudge` themselves.
+/// One configured extension.
+///
+/// Unset keys come back empty, and an unset or unparsable priority as 0,
+/// as in upstream. Callers that run extensions must reject an empty
+/// `clean` or `smudge` themselves.
 #[derive(Debug, Clone)]
 pub struct ExtensionConfig {
     pub name: String,
+    /// Command for the clean filter.
     pub clean: String,
+    /// Command for the smudge filter.
     pub smudge: String,
+    /// Position in the chain. Lower runs first on clean.
     pub priority: i64,
 }
 
-/// Discover and resolve every configured extension. Sorted ascending by
-/// priority, with name as the tiebreaker so duplicate priorities (which
-/// upstream errors on, but which we currently surface) at least come out
-/// deterministically.
+/// Read every configured extension, sorted by priority.
+///
+/// Extensions with the same priority are sorted by name. Upstream rejects
+/// duplicate priorities, but this function returns them.
 pub fn list_extensions(cwd: &Path) -> Vec<ExtensionConfig> {
     let mut extensions: Vec<ExtensionConfig> = list_extension_names(cwd)
         .into_iter()
@@ -32,11 +40,12 @@ pub fn list_extensions(cwd: &Path) -> Vec<ExtensionConfig> {
     extensions
 }
 
-/// Discover extension names from any source — local/global/system git
-/// config plus `.lfsconfig`. We deliberately enumerate from raw config
-/// (rather than `get_effective`) because we want to find names declared
-/// only in `.lfsconfig` too; the per-key resolution still goes through
-/// `get_effective` so the safe-key filter is honored.
+/// Find the names of all configured extensions.
+///
+/// Looks in git's merged config and in the working tree's `.lfsconfig`,
+/// but not in a `.lfsconfig` that is only in the index or `HEAD`. A name
+/// found only in `.lfsconfig` is still listed, though [`list_extensions`]
+/// then reads only its priority from there.
 pub fn list_extension_names(cwd: &Path) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
 
@@ -104,9 +113,10 @@ fn repo_root(cwd: &Path) -> Option<std::path::PathBuf> {
     }
 }
 
-/// Pull the `<name>` out of `lfs.extension.<name>.<prop>`. The middle
-/// component can contain dots (rare for extensions, but defensible),
-/// so split on the suffix not on `.`.
+/// Get `<name>` from `lfs.extension.<name>.<key>`.
+///
+/// The name may contain dots, so this strips the known suffixes rather
+/// than splitting on `.`.
 fn extension_name_from_key(key: &str) -> Option<String> {
     let rest = key.strip_prefix("lfs.extension.")?;
     for suffix in [".clean", ".smudge", ".priority"] {

@@ -1,22 +1,26 @@
 //! `.gitattributes` parsing and matching.
 //!
-//! Backed by `gix-attributes` + `gix-glob`, which together implement Git's
-//! wildmatch + macro + per-directory precedence semantics. The "shell out
-//! to git, not gix" rule in CLAUDE.md applies to runtime git operations
-//! (rev-list, cat-file, etc.), not to using gix-* crates as parsing libs.
+//! Matching uses `gix-attributes` and `gix-glob`, which implement Git's
+//! wildmatch patterns and macros. This parses files only. Git operations
+//! still shell out to `git`.
 //!
-//! Two construction modes:
+//! An [`AttrSet`] is built in one of three ways:
 //!
-//! - [`AttrSet::from_workdir`] — discover and load every `.gitattributes`
-//!   in the working tree, plus `.git/info/attributes`. Per-directory files
-//!   take precedence over `info/attributes`; deeper directories win over
-//!   shallower (Git's standard "more specific wins").
-//! - [`AttrSet::from_buffer`] — load from a single in-memory buffer. For
-//!   tests and one-shot matching that doesn't need a workdir.
+//! - [`AttrSet::from_workdir`] loads every `.gitattributes` in the working
+//!   tree, plus `.git/info/attributes`. Deeper directories win over
+//!   shallower ones, and every `.gitattributes` wins over
+//!   `.git/info/attributes`. Git gives `.git/info/attributes` the highest
+//!   precedence instead.
+//! - [`AttrSet::from_buffer`] loads a single in-memory buffer.
+//! - [`AttrSet::empty`] followed by [`AttrSet::add_buffer_at`] for each
+//!   directory, for reading attributes out of a commit rather than the
+//!   working tree.
 //!
-//! Once built, query with [`AttrSet::value`] / [`AttrSet::is_set`], plus
-//! the LFS-specific helpers [`AttrSet::is_lfs_tracked`] /
-//! [`AttrSet::is_lockable`].
+//! Query it with [`AttrSet::value`] and [`AttrSet::is_set`], or the LFS
+//! helpers [`AttrSet::is_lfs_tracked`] and [`AttrSet::is_lockable`].
+//!
+//! [`list_lfs_patterns`] is separate. It lists the raw LFS pattern lines
+//! for `git lfs track`, without matching any paths.
 
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -35,18 +39,16 @@ use gix_glob::pattern::Case;
 pub struct AttrSet {
     search: Search,
     collection: MetadataCollection,
-    /// Macro name → list of attribute keys that macro expands to.
-    /// Tracked alongside gix-attributes' internal macro state so we
-    /// can work around its lack of `!<macro>` expansion: when we see
-    /// `<pattern> !<macro>` in a buffer, we rewrite it to
-    /// `<pattern> !attr1 !attr2 … !<macro>` before handing the bytes
-    /// off, since gix only honors the `!<macro>` token literally.
+    /// Attribute keys each macro expands to, by macro name.
+    ///
+    /// `gix-attributes` does not expand `!<macro>`, so
+    /// [`Self::intake_buffer`] uses this to expand it before the buffer is
+    /// handed over.
     macros: HashMap<String, Vec<String>>,
 }
 
 impl AttrSet {
-    /// Empty set, seeded only with Git's built-in `[attr]binary` macro
-    /// (so patterns referencing `binary` resolve correctly).
+    /// Create a set with no patterns, only Git's built-in `binary` macro.
     pub fn empty() -> Self {
         let mut collection = MetadataCollection::default();
         let mut search = Search::default();
@@ -69,7 +71,7 @@ impl AttrSet {
         }
     }
 
-    /// Build from a single `.gitattributes`-format buffer.
+    /// Build a set from one buffer in `.gitattributes` format.
     pub fn from_buffer(bytes: &[u8]) -> Self {
         let mut me = Self::empty();
         let rewritten = me.intake_buffer(bytes);
@@ -83,14 +85,14 @@ impl AttrSet {
         me
     }
 
-    /// Add a `.gitattributes` buffer that should match paths under
-    /// `dir` (forward-slash separated, no trailing slash, `""` for the
-    /// repo root). For per-commit evaluation during streaming
-    /// rewrites where the on-disk working tree isn't authoritative.
-    /// Order of calls matters — gix-attributes iterates lists in
-    /// reverse, so deeper directories should be added *after*
-    /// shallower ones to win precedence (matching Git's "more
-    /// specific path overrides shallower" semantics).
+    /// Add a `.gitattributes` buffer that applies to paths under `dir`.
+    ///
+    /// `dir` uses `/` separators with no trailing slash, and is `""` for
+    /// the repository root. Use this to evaluate attributes from a commit
+    /// rather than the working tree.
+    ///
+    /// Buffers added later win, so add shallower directories before deeper
+    /// ones to get Git's precedence.
     pub fn add_buffer_at(&mut self, bytes: &[u8], dir: &str) {
         let virtual_root = std::path::PathBuf::from("/__lfs_virt");
         let source = if dir.is_empty() {
@@ -108,9 +110,11 @@ impl AttrSet {
         );
     }
 
-    /// Discover every `.gitattributes` reachable from `repo_root` (skipping
-    /// the `.git/` directory) and load them along with `.git/info/attributes`
-    /// if it exists.
+    /// Load every `.gitattributes` under `repo_root`, plus
+    /// `.git/info/attributes` if it exists.
+    ///
+    /// Directories named `.git` are skipped at any depth. See the
+    /// [module docs](self) for precedence.
     pub fn from_workdir(repo_root: &Path) -> io::Result<Self> {
         let mut me = Self::empty();
 
@@ -124,18 +128,15 @@ impl AttrSet {
 
         let mut found = Vec::new();
         walk_for_gitattributes(repo_root, &mut found)?;
-        // Shallow → deep: gix-attributes iterates pattern lists in reverse
-        // when matching, so the last-added (deepest) wins — matching Git's
-        // "more specific path overrides shallower" semantics.
+        // gix-attributes searches pattern lists last to first, so adding
+        // shallow before deep makes deeper files win.
         found.sort_by_key(|p| p.components().count());
         for path in found {
             let bytes = fs::read(&path)?;
             let rewritten = me.intake_buffer(&bytes);
-            // `root` is always the repo root. gix-glob computes each file's
-            // relative `base` by stripping the repo-root prefix from
-            // `source.parent()` — so root.gitattributes ends up with no base
-            // (matches paths directly) while sub/.gitattributes ends up with
-            // base `sub/` (strips `sub/` before matching).
+            // gix-glob strips `repo_root` from the file's parent to get the
+            // directory its patterns are relative to, such as `sub/` for
+            // `sub/.gitattributes`.
             me.search.add_patterns_buffer(
                 &rewritten,
                 path,
@@ -147,36 +148,31 @@ impl AttrSet {
         Ok(me)
     }
 
-    /// Single-pass macro intake: scans `bytes` for `[attr]<name> ...`
-    /// declarations to update [`Self::macros`] and returns a rewritten
-    /// copy with each `<pattern> !<macro>` token expanded to the
-    /// underlying `!attr1 !attr2 … !<macro>` sequence. Lets us work
-    /// around `gix-attributes` not expanding macro negations
-    /// (test 11 of t-fsck: `b.dat !lfs` should leave `filter`
-    /// unspecified, not just unset the literal `lfs` attribute).
-    /// Macros are processed in declaration order — same constraint
-    /// upstream's `MacroProcessor` documents — so a buffer that
-    /// declares and immediately uses a macro is fine.
+    /// Record the macros declared in `bytes` and expand `!<macro>` tokens.
+    ///
+    /// Returns a copy of `bytes` where each `!<macro>` on a pattern line is
+    /// replaced with `!attr1 !attr2 ...` for the macro's attributes.
+    /// `gix-attributes` does not expand macro negations itself, so without
+    /// this `b.dat !lfs` would leave `filter=lfs` in place (t-fsck test 11).
+    /// Lines are processed in order, so a macro must be declared before it
+    /// is negated, as in upstream's `MacroProcessor`.
     fn intake_buffer(&mut self, bytes: &[u8]) -> Vec<u8> {
         let Ok(s) = std::str::from_utf8(bytes) else {
-            // Non-UTF-8 buffer: pass through. We'd rather miss the
-            // negation expansion than corrupt the bytes. Real
-            // .gitattributes files are UTF-8 in practice.
+            // Pass non-UTF-8 input through unchanged, without expanding
+            // negations, rather than risk corrupting it.
             return bytes.to_vec();
         };
         let mut out = Vec::with_capacity(bytes.len());
         for line in s.split('\n') {
             let trimmed = line.trim_start();
             if let Some(rest) = trimmed.strip_prefix("[attr]") {
-                // `[attr]<name> <attr>...` — register macro, pass line
-                // through verbatim so gix-attributes also knows about it.
+                // Record the macro, and pass the line through so
+                // gix-attributes knows it too.
                 let mut tokens = rest.split_whitespace();
                 if let Some(name) = tokens.next() {
                     let attrs: Vec<String> = tokens
                         .map(|t| {
-                            // Strip leading `-`/`!` and any `=value` suffix
-                            // — we only need the bare key for negation
-                            // expansion later.
+                            // Negation only needs the bare key.
                             let key = t.trim_start_matches(['-', '!']);
                             key.split_once('=')
                                 .map(|(k, _)| k)
@@ -198,17 +194,11 @@ impl AttrSet {
                 out.push(b'\n');
                 continue;
             }
-            // Pattern line: tokenize and expand any `!<macro>` references.
-            // First whitespace-separated token is the pattern; remainder
-            // are attribute settings. When we expand `!<macro>`, we
-            // *drop* the literal `!<macro>` token from the rewritten
-            // line — feeding gix-attributes both the expanded
-            // `!filter !diff …` set *and* the literal `!lfs` makes it
-            // re-trigger its own macro expansion at lookup time and
-            // wipe out our `!filter`. The trade-off is that the macro
-            // *name* itself stays Set rather than Unspecified for the
-            // negated path; nothing we ship currently looks the macro
-            // name up directly, so that's acceptable.
+            // The literal `!<macro>` token is dropped after expansion. If
+            // it were kept, gix-attributes would expand the macro again at
+            // lookup time and undo the expanded `!filter`. The cost is
+            // that the macro's own name stays set on the negated path,
+            // which nothing here queries.
             let leading_ws_len = line.len() - trimmed.len();
             out.extend_from_slice(&line.as_bytes()[..leading_ws_len]);
             let mut tokens = trimmed.split_whitespace();
@@ -223,7 +213,6 @@ impl AttrSet {
                             out.push(b'!');
                             out.extend_from_slice(k.as_bytes());
                         }
-                        // Drop the literal `!<macro>` (see comment above).
                         continue;
                     }
                     out.push(b' ');
@@ -235,9 +224,11 @@ impl AttrSet {
         out
     }
 
-    /// Return the resolved value of `attr` for `path` (relative to the
-    /// repo root, with `/` separators). `None` for unspecified or unset.
-    /// `Set`/`Value(v)` map to `Some("true")` / `Some(v)`.
+    /// Return the value of `attr` for `path`.
+    ///
+    /// `path` is relative to the repository root, with `/` separators. A
+    /// bare `attr` gives `"true"`, `attr=v` gives `v`, and an unset or
+    /// unspecified attribute gives `None`.
     pub fn value(&self, path: &str, attr: &str) -> Option<String> {
         let mut out = Outcome::default();
         out.initialize_with_selection(&self.collection, [attr]);
@@ -256,78 +247,76 @@ impl AttrSet {
         None
     }
 
-    /// True iff `attr` is set for `path` — that is, `attr` or `attr=<v>`
-    /// where `v` is anything other than the literal `"false"`.
+    /// Whether `attr` is set for `path` to anything other than `false`.
     pub fn is_set(&self, path: &str, attr: &str) -> bool {
         matches!(self.value(path, attr).as_deref(), Some(v) if v != "false")
     }
 
-    /// True iff `path` matches a `filter=lfs` line.
+    /// Whether `path` resolves to `filter=lfs`.
     pub fn is_lfs_tracked(&self, path: &str) -> bool {
         self.value(path, "filter").as_deref() == Some("lfs")
     }
 
-    /// True iff `path` matches a `lockable` line.
+    /// Whether `lockable` is set for `path`, as with [`Self::is_set`].
     pub fn is_lockable(&self, path: &str) -> bool {
         self.is_set(path, "lockable")
     }
 }
 
-/// A single LFS-related pattern line discovered while listing.
+/// One LFS pattern line found by [`list_lfs_patterns`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PatternEntry {
-    /// The pattern text exactly as it appears in the file (with any
-    /// surrounding `"..."` quotes stripped).
+    /// The pattern, exactly as written in the file.
     pub pattern: String,
-    /// Path of the `.gitattributes` (or `.git/info/attributes`) file the
-    /// pattern was found in, relative to the repo root and with `/`
-    /// separators.
+    /// The file the line came from.
+    ///
+    /// Working tree files are relative to the repository root with `/`
+    /// separators. `.git/info/attributes` is given as that string. The
+    /// user's global attributes file is given by its configured or default
+    /// path.
     pub source: String,
-    /// True if the line establishes LFS tracking (`filter=lfs`); false if
-    /// it explicitly removes / unspecifies the filter (`-filter`,
-    /// `!filter`, `-filter=...`).
+    /// Whether the line sets `filter=lfs`.
+    ///
+    /// False means it clears the filter, with `-filter`, `!filter`,
+    /// `-filter=...`, or by negating a macro that sets `filter=lfs`.
     pub tracked: bool,
-    /// True if the same line carries the `lockable` attribute (in `set`
-    /// form — `lockable=false` is treated as not lockable).
+    /// Whether the line has a bare `lockable` token.
     pub lockable: bool,
 }
 
-/// All LFS-related patterns visible in a workdir, in load order
-/// (`.git/info/attributes` first, then `.gitattributes` from shallow to
-/// deep).
+/// The LFS pattern lines found by [`list_lfs_patterns`], in load order.
+///
+/// The user's global attributes file comes first, then
+/// `.git/info/attributes`, then each `.gitattributes` from shallow to deep.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct PatternListing {
     pub patterns: Vec<PatternEntry>,
 }
 
 impl PatternListing {
-    /// Lines that establish LFS tracking (`filter=lfs`).
+    /// Lines that set `filter=lfs`.
     pub fn tracked(&self) -> impl Iterator<Item = &PatternEntry> {
         self.patterns.iter().filter(|p| p.tracked)
     }
 
-    /// Lines that explicitly remove / unspecify the LFS filter.
+    /// Lines that clear the filter.
     pub fn excluded(&self) -> impl Iterator<Item = &PatternEntry> {
         self.patterns.iter().filter(|p| !p.tracked)
     }
 }
 
-/// Macro table accumulated while walking attribute files. Each macro
-/// name maps to whether the macro's expansion sets `filter=lfs` —
-/// that's the only thing the listing cares about for "already
-/// supported" detection.
+/// Macros seen so far while listing patterns, across files.
 #[derive(Default)]
 struct MacroState {
-    /// Macros that resolve to `filter=lfs` (directly or transitively).
-    /// The bool key in the value position is unused; we store name →
-    /// `()` as a HashSet would, but Vec keeps insertion order
-    /// deterministic for tests.
+    /// Names of macros whose expansion sets `filter=lfs`, directly or
+    /// through another macro.
     enables_lfs: std::collections::HashSet<String>,
 }
 
 impl MacroState {
-    /// If `line` is `[attr]<name> <tokens...>`, register the macro's
-    /// effective filter setting in `self`. No-op for non-macro lines.
+    /// Record whether the macro declared by `line` sets `filter=lfs`.
+    ///
+    /// Does nothing unless `line` is an `[attr]<name>` declaration.
     fn ingest(&mut self, line: &str) {
         let trimmed = line.trim_start();
         let Some(rest) = trimmed.strip_prefix("[attr]") else {
@@ -337,8 +326,7 @@ impl MacroState {
         let Some(name) = tokens.next() else {
             return;
         };
-        // The macro's effective filter setting is the *last* `filter=...`,
-        // `-filter`, `!filter`, or referenced macro that wins.
+        // The last token that affects the filter wins.
         let mut enables = false;
         for tok in tokens {
             match self.classify(tok) {
@@ -354,8 +342,9 @@ impl MacroState {
         }
     }
 
-    /// Classify a single attribute token (post-macro): does it set
-    /// `filter=lfs`, clear filter, or do neither?
+    /// Classify one attribute token by its effect on the filter.
+    ///
+    /// Macro references are resolved against the macros seen so far.
     fn classify(&self, tok: &str) -> FilterEffect {
         if tok == "filter=lfs" {
             return FilterEffect::SetLfs;
@@ -363,9 +352,7 @@ impl MacroState {
         if tok == "-filter" || tok == "!filter" || tok.starts_with("-filter=") {
             return FilterEffect::Clear;
         }
-        // Macro reference: bare name, `-name`, or `!name`. `-NAME` /
-        // `!NAME` unset the macro's attributes (so if it set filter,
-        // we treat this as Clear).
+        // `-<macro>` and `!<macro>` clear whatever the macro sets.
         if let Some(name) = tok.strip_prefix('-').or_else(|| tok.strip_prefix('!')) {
             if self.enables_lfs.contains(name) {
                 return FilterEffect::Clear;
@@ -385,23 +372,20 @@ enum FilterEffect {
     None,
 }
 
-/// Walk `.gitattributes` across the workdir plus `.git/info/attributes`
-/// and the user's `core.attributesfile` (if configured), extracting
-/// LFS-related pattern lines for `git lfs track`'s listing mode.
+/// List the pattern lines that set or clear `filter=lfs`, for
+/// `git lfs track` with no arguments.
 ///
-/// Pattern matching is *not* needed here — we're just enumerating the raw
-/// pattern text per source file — so this uses a simple line tokenizer
-/// rather than [`AttrSet`]'s full wildmatch machinery.
+/// Reads the user's global attributes file, `.git/info/attributes`, and
+/// every `.gitattributes` under `repo_root`, in that order. Lines whose
+/// tokens do not touch the filter are skipped. Macros are followed, and a
+/// macro declared in one file applies to the files read after it.
+///
+/// This only tokenizes lines. It does not match patterns against paths.
 pub fn list_lfs_patterns(repo_root: &Path) -> io::Result<PatternListing> {
     let mut listing = PatternListing::default();
     let mut macros = MacroState::default();
 
-    // The user-level attributes file (`core.attributesfile`, default
-    // `$XDG_CONFIG_HOME/git/attributes`, falling back to
-    // `~/.config/git/attributes`). Looked up before `.git/info/attributes`
-    // and the per-tree files so it shows up first in the listing —
-    // upstream lists global → repo-local → per-dir. Macros declared
-    // here apply to later files.
+    // The global file comes first, as in upstream's listing.
     if let Some((path, bytes)) = read_global_attributes(repo_root) {
         scan_attr_lines(&bytes, &path, &mut listing, &mut macros, true);
     }
@@ -428,20 +412,21 @@ pub fn list_lfs_patterns(repo_root: &Path) -> io::Result<PatternListing> {
             .unwrap_or(&path)
             .to_string_lossy()
             .replace('\\', "/");
-        // Macros are only legal in the repo-root .gitattributes;
-        // subdirectory files emit a "not allowed" warning from git
-        // itself and don't register the macro.
+        // Git ignores macros declared below the root `.gitattributes`.
         let is_root = !rel.contains('/');
         scan_attr_lines(&bytes, &rel, &mut listing, &mut macros, is_root);
     }
     Ok(listing)
 }
 
-/// Locate and read the user-level git attributes file, returning the
-/// display path + content bytes if it exists. Order matches git:
-/// 1. `core.attributesfile` (from any config scope),
-/// 2. `$XDG_CONFIG_HOME/git/attributes`,
-/// 3. `$HOME/.config/git/attributes`.
+/// Read the user's global attributes file, returning its display path and
+/// contents.
+///
+/// Tries `core.attributesfile` from the effective config, then
+/// `$XDG_CONFIG_HOME/git/attributes`, or `$HOME/.config/git/attributes`
+/// when `XDG_CONFIG_HOME` is unset or empty. Unlike Git, a configured
+/// `core.attributesfile` that can't be read falls through to the XDG
+/// path.
 fn read_global_attributes(repo_root: &Path) -> Option<(String, Vec<u8>)> {
     if let Ok(Some(path)) = crate::config::get_effective(repo_root, "core.attributesfile") {
         let expanded = expand_tilde(&path);
@@ -458,9 +443,8 @@ fn read_global_attributes(repo_root: &Path) -> Option<(String, Vec<u8>)> {
     Some((path.to_string_lossy().into_owned(), bytes))
 }
 
-/// Resolve a leading `~` / `~/` to the user's home directory. Git's
-/// `core.attributesfile` accepts both forms, but Rust's `Path` doesn't
-/// expand them itself.
+/// Expand a leading `~` or `~/` to `$HOME`, as Git does for
+/// `core.attributesfile`.
 fn expand_tilde(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/") {
         if let Some(home) = std::env::var_os("HOME") {
@@ -483,18 +467,13 @@ fn scan_attr_lines(
 ) {
     for raw in bytes.split(|&b| b == b'\n') {
         let line = String::from_utf8_lossy(raw);
-        // Per `gitattributes(5)`, `#` only starts a comment when it's
-        // the first non-whitespace character on the line — patterns like
-        // `\#` are valid and must not be cropped here.
+        // `#` starts a comment only as the first non-blank character, so
+        // a pattern like `\#` is kept.
         let body = line.trim();
         if body.is_empty() || body.starts_with('#') {
             continue;
         }
         if body.starts_with("[attr]") {
-            // Git itself rejects `[attr]NAME` declarations in
-            // subdirectory `.gitattributes` ("not allowed:
-            // dir/.gitattributes:1"); only honor them from
-            // top-level sources to match.
             if allow_macros {
                 macros.ingest(body);
             }
@@ -672,7 +651,7 @@ mod tests {
     #[test]
     fn list_lfs_patterns_recursive() {
         // Mirror upstream t-track.sh's "track" test fixture: root
-        // .gitattributes + .git/info/attributes + nested per-directory
+        // .gitattributes, .git/info/attributes, and nested per-directory
         // files, with one nested dir adding `-filter` exclusions.
         let tmp = TempDir::new().unwrap();
         std::fs::create_dir_all(tmp.path().join(".git/info")).unwrap();
@@ -765,7 +744,7 @@ mod tests {
 
     #[test]
     fn list_expands_macro_to_lfs() {
-        // `[attr]lfs filter=lfs ...` registers a macro; `*.dat lfs`
+        // `[attr]lfs filter=lfs ...` registers a macro, and `*.dat lfs`
         // applies it. Upstream's `git lfs track` lists `*.dat` as a
         // tracked pattern because the macro resolves to filter=lfs.
         // Lands t-attributes test 1.
@@ -802,7 +781,7 @@ mod tests {
 
     #[test]
     fn list_negated_macro_marks_excluded() {
-        // `*.dat !lfs` — the `!` negation clears the macro's filter
+        // In `*.dat !lfs`, the `!` negation clears the macro's filter
         // attribute, so the pattern is recorded as excluded rather
         // than tracked. Models the dir-level override in t-attributes
         // "macros with unspecified flag".
@@ -839,8 +818,8 @@ mod tests {
 
     #[test]
     fn workdir_skips_dotgit_directory() {
-        // A .gitattributes inside .git/ must NOT be picked up — only
-        // .git/info/attributes is, and it's loaded explicitly above.
+        // A .gitattributes inside .git/ must not be picked up. Only
+        // .git/info/attributes is, and that is loaded explicitly.
         let tmp = TempDir::new().unwrap();
         std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
         std::fs::write(tmp.path().join(".git/.gitattributes"), "*.bin filter=lfs\n").unwrap();

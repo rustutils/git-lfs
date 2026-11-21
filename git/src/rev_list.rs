@@ -1,14 +1,8 @@
-//! `git rev-list --objects --do-walk --stdin` wrapper.
+//! List the objects reachable from some refs but not others.
 //!
-//! Walks history reachable from `include` refs but not from `exclude`
-//! refs, emitting every commit + tree + blob OID along the way (with the
-//! blob's path appended for blobs and trees that have a name in the
-//! parent tree). This is the entry point upstream uses to find every
-//! object that *could* be an LFS pointer; we then narrow with
-//! `cat-file --batch-check` and read the survivors with `cat-file --batch`.
-//!
-//! Output format from `git rev-list --objects` is one object per line,
-//! either `<oid>` (commit) or `<oid> <name>` (tree/blob with a path).
+//! [`rev_list`] runs `git rev-list --objects` and returns every commit,
+//! tree, and blob it prints. [`scanner`](crate::scanner) uses it to find
+//! the blobs that might be LFS pointers.
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
@@ -16,24 +10,23 @@ use std::process::{Command, Stdio};
 
 use crate::Error;
 
-/// One entry yielded by [`rev_list`].
+/// One object printed by `git rev-list --objects`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RevListEntry {
+    /// Object ID in hex.
     pub oid: String,
-    /// `Some` for trees and blobs that have a path in their parent tree;
-    /// `None` for commits and root trees.
+    /// Path of a tree or blob, `None` for a commit.
+    ///
+    /// A root tree has an empty name, `Some("")`.
     pub name: Option<String>,
 }
 
-/// Run `git rev-list --objects --do-walk --stdin -- ` against `cwd` with
-/// the given include/exclude refs and collect every emitted object.
+/// List the objects reachable from `include` but not from `exclude`.
 ///
-/// Refs are passed via stdin (one per line) so we don't blow the
-/// command-line length limit on big refspecs. Excludes are prefixed with
-/// `^` per `git-rev-list(1)`.
-///
-/// Returns OIDs in the order git emitted them. Callers that need
-/// deduplication should layer it on top.
+/// Runs `git rev-list --objects --do-walk --stdin`, writing the refs to
+/// stdin so a long list can't overflow the command line. Entries come in
+/// the order git prints them. Git's stderr goes to ours, so on failure the
+/// returned error only has the exit status.
 pub fn rev_list(
     cwd: &Path,
     include: &[&str],
@@ -42,14 +35,10 @@ pub fn rev_list(
     rev_list_with_args(cwd, include, exclude, &[])
 }
 
-/// [`rev_list`] with extra command-line args spliced before `--stdin`.
+/// [`rev_list`] with extra arguments placed before `--stdin`.
 ///
-/// Used for the upstream `--not --remotes=<name>` optimization: pre-push
-/// invokes rev-list with that pair on the command line so the trace
-/// (`GIT_TRACE=1`) shows it verbatim — `t-pre-push.sh` greps for
-/// `rev-list.*--not --remotes=origin` to confirm the optimization
-/// kicked in for a `git push <url>` whose URL matches a configured
-/// remote.
+/// Arguments passed here, unlike refs, show up in the `GIT_TRACE` output.
+/// `t-pre-push.sh` checks the trace for `--not --remotes=origin`.
 pub fn rev_list_with_args(
     cwd: &Path,
     include: &[&str],
@@ -61,12 +50,9 @@ pub fn rev_list_with_args(
     cmd.args(["rev-list", "--objects", "--do-walk"]);
     cmd.args(extra_cmdline_args);
     cmd.args(["--stdin", "--"]);
-    // Inherit stderr so `GIT_TRACE=1` users see the rev-list
-    // invocation. t-pre-push 37 greps the trace for a literal
-    // `rev-list.*--not --remotes=origin` to confirm the upstream
-    // optimization fired. The cost is failure messages no longer
-    // appear in our wrapped Error — exit status still tells us
-    // *that* it failed, just not why.
+    // Inherit stderr so `GIT_TRACE` output reaches the user, which
+    // t-pre-push.sh relies on. The cost is that git's error message
+    // doesn't make it into our error.
     let mut child = cmd
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -81,7 +67,7 @@ pub fn rev_list_with_args(
         for r in exclude {
             writeln!(stdin, "^{r}")?;
         }
-        // Dropping `stdin` closes the pipe so rev-list can finish reading.
+        // Close stdin so rev-list starts walking.
     }
 
     let stdout = child.stdout.take().expect("piped");
@@ -162,8 +148,8 @@ mod tests {
         let first = head_oid(&repo);
         commit_file(&repo, "b.txt", b"second");
 
-        // include=HEAD, exclude=first → only the second commit + its tree
-        // + the new blob (a.txt is unchanged so not re-emitted).
+        // include=HEAD, exclude=first → only the second commit, its tree,
+        // and the new blob (a.txt is unchanged so not re-emitted).
         let entries = rev_list(repo.path(), &["HEAD"], &[&first]).unwrap();
         let blobs: Vec<_> = entries.iter().filter_map(|e| e.name.as_deref()).collect();
         assert!(blobs.contains(&"b.txt"), "{entries:?}");
@@ -174,10 +160,9 @@ mod tests {
     fn rev_list_unknown_ref_errors() {
         let repo = init_repo();
         commit_file(&repo, "a.txt", b"x");
-        // We only inspect that it failed — stderr inherits to the
-        // parent (so `GIT_TRACE=1` users see git's error directly),
-        // which means our wrapped message no longer carries git's
-        // text.
+        // We only inspect that it failed. Stderr goes to the parent (so
+        // `GIT_TRACE=1` users see git's error directly), which means our
+        // wrapped message doesn't carry git's text.
         let err = rev_list(repo.path(), &["does-not-exist"], &[]).unwrap_err();
         assert!(matches!(err, Error::Failed(_)), "got {err:?}");
     }

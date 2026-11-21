@@ -1,52 +1,47 @@
-//! `git diff-index -z` parser.
+//! Run and parse `git diff-index`.
 //!
-//! Used by `git lfs status` to enumerate staged + unstaged changes
-//! against HEAD. The `-z` form is mandatory for correctness: paths can
-//! contain spaces, newlines, and quoting metacharacters; without `-z`,
-//! git would render those quoted and we'd have to undo the encoding.
-//!
-//! Output format (one record per change):
-//! ```text
-//! :<src-mode> <dst-mode> <src-sha> <dst-sha> <status>\0<src>\0[<dst>\0]
-//! ```
-//! `<status>` is a single letter A/M/D/R/C/T/U/X, optionally followed by
-//! a 1–3 digit similarity score for `R` and `C`. The trailing `<dst>`
-//! field is only present for renames and copies.
+//! [`diff_index`] lists how the index or the working tree differs from a
+//! commit. `git lfs status` uses it.
 
 use std::path::Path;
 use std::process::Command;
 
 use crate::Error;
 
+/// One changed path from [`diff_index`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffEntry {
+    /// Object ID on the commit side, all zeros if the path is new.
     pub src_sha: String,
+    /// Object ID on the index or working tree side.
+    ///
+    /// All zeros if the path was deleted, or if the working tree content
+    /// differs from the index and git hasn't hashed it.
     pub dst_sha: String,
+    /// Status letter, such as `M` for modified or `R` for renamed.
     pub status: char,
-    /// Present only for `R` (rename) and `C` (copy); the similarity
-    /// score git computed.
+    /// Similarity score in percent, for a rename or copy.
     pub similarity: Option<u16>,
+    /// Path on the commit side.
     pub src_name: String,
-    /// Present only for `R` and `C`.
+    /// New path, for a rename or copy.
     pub dst_name: Option<String>,
 }
 
 impl DiffEntry {
-    /// The "current" path of this entry — `dst_name` for renames/copies
-    /// (which is the path the diff lands at), `src_name` otherwise.
+    /// The path after the change: [`dst_name`](Self::dst_name) for a rename
+    /// or copy, [`src_name`](Self::src_name) otherwise.
     pub fn path(&self) -> &str {
         self.dst_name.as_deref().unwrap_or(&self.src_name)
     }
 }
 
-/// Run `git diff-index -z [--cached] <ref>` and return the parsed entries.
+/// Compare `refname` with the index, or with the working tree.
 ///
-/// `cached = true` reports staged changes (HEAD vs index); `cached = false`
-/// reports working-tree changes (HEAD vs working tree, including unstaged).
-///
-/// `-M` (rename detection) matches upstream's `git lfs status` behavior;
-/// without it, a `git mv` shows up as a delete + add pair instead of an `R`
-/// entry, which the JSON-shape tests rely on.
+/// Runs `git diff-index -M -z`. With `cached`, this compares against the
+/// index, which shows staged changes. Without it, this compares against
+/// the working tree, which shows staged and unstaged changes together.
+/// `-M` detects renames like upstream's `git lfs status`.
 pub fn diff_index(cwd: &Path, refname: &str, cached: bool) -> Result<Vec<DiffEntry>, Error> {
     let mut cmd = Command::new("git");
     cmd.arg("-C").arg(cwd).args(["diff-index", "-M", "-z"]);
@@ -64,9 +59,13 @@ pub fn diff_index(cwd: &Path, refname: &str, cached: bool) -> Result<Vec<DiffEnt
     parse(&out.stdout)
 }
 
+/// Parse `git diff-index -z` output.
+///
+/// Each record is `:<src-mode> <dst-mode> <src-sha> <dst-sha> <status>`,
+/// then a NUL and the path, then for a rename or copy another NUL and the
+/// new path. Each record ends in NUL.
 fn parse(bytes: &[u8]) -> Result<Vec<DiffEntry>, Error> {
-    // Strip the trailing NUL git always emits so the iterator below
-    // doesn't see a phantom empty token at the end.
+    // Drop the final NUL so splitting doesn't yield an empty last token.
     let trimmed = bytes.strip_suffix(b"\0").unwrap_or(bytes);
     if trimmed.is_empty() {
         return Ok(Vec::new());
@@ -194,7 +193,7 @@ mod tests {
 
     #[test]
     fn parse_path_with_embedded_special_chars() {
-        // With -z, paths are emitted raw — including newlines and tabs
+        // With -z, paths are emitted raw, including newlines and tabs
         // that would normally be quote-escaped without -z.
         let raw = b":100644 100644 a 1 M\0name with\nnewline\0";
         let entries = parse(raw).unwrap();
@@ -209,7 +208,7 @@ mod tests {
 
     #[test]
     fn parse_truncated_record_errors() {
-        // Status R, but no dst name follows — malformed.
+        // Status R, but no dst name follows, so it's malformed.
         let raw = b":100644 100644 a 1 R86\0only-src\0";
         assert!(parse(raw).is_err());
     }
@@ -233,11 +232,10 @@ mod tests {
         assert_eq!(staged[0].status, 'M');
         assert_eq!(staged[0].src_name, "a.txt");
 
-        // Working tree matches index, so unstaged diff is empty.
+        // diff_index without --cached compares HEAD with the working
+        // tree, so this includes the staged change. The caller is
+        // responsible for deduping (which `status` does).
         let unstaged = diff_index(repo.path(), "HEAD", false).unwrap();
-        // diff_index without --cached compares HEAD vs working tree, so
-        // this includes the staged change — the caller is responsible
-        // for deduping (which `status` does).
         assert_eq!(unstaged.len(), 1);
     }
 }

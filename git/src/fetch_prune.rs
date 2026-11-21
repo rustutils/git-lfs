@@ -1,45 +1,51 @@
-//! Typed view of the `lfs.fetchrecent*` and `lfs.prune*` config knobs
-//! that govern fetch-recent and prune retention. Mirrors upstream's
-//! `lfs/config.go::FetchPruneConfig` field-for-field so the same
-//! defaults apply.
+//! The `lfs.fetchrecent*` and `lfs.prune*` settings.
+//!
+//! Reads the same keys with the same defaults as upstream's
+//! `NewFetchPruneConfig` in `lfs/config.go`.
 
 use std::path::Path;
 
 use crate::config;
 
-/// Configuration for fetch-recent and prune retention. Built once per
-/// command via [`FetchPruneConfig::from_repo`]; pass by reference into
-/// the scanners + retention logic that consumes it.
+/// Settings for `git lfs fetch --recent` and `git lfs prune`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FetchPruneConfig {
-    /// Days prior to current date for which (local) refs other than
-    /// HEAD will be fetched with `--recent` (default 7, 0 = HEAD only).
+    /// `lfs.fetchrecentrefsdays`: fetch local refs other than `HEAD` with
+    /// commits this many days old or newer. Default 7, and 0 means only
+    /// `HEAD`.
     pub fetch_recent_refs_days: i64,
-    /// Apply [`Self::fetch_recent_refs_days`] to remote-tracking refs
-    /// from the fetch source as well (default true).
+    /// `lfs.fetchrecentremoterefs`: apply
+    /// [`Self::fetch_recent_refs_days`] to the remote's refs too. Default
+    /// true.
     pub fetch_recent_refs_include_remotes: bool,
-    /// Days prior to the latest commit on each kept ref to also fetch
-    /// previous LFS pre-images (default 0 = at-ref only).
+    /// `lfs.fetchrecentcommitsdays`: also fetch objects from commits this
+    /// many days before each ref's latest commit. Default 0, which fetches
+    /// only the ref itself.
     pub fetch_recent_commits_days: i64,
-    /// If true, fetch acts as if `--recent` were always passed.
+    /// `lfs.fetchrecentalways`: act as if `--recent` were always passed.
+    /// Default false.
     pub fetch_recent_always: bool,
-    /// Days added to the fetch-recent windows when computing prune
-    /// retention. Data outside the combined window can be pruned
-    /// (default 3).
+    /// `lfs.pruneoffsetdays`: days added to the fetch-recent windows when
+    /// pruning. Objects outside the combined window can be pruned. Default
+    /// 3.
     pub prune_offset_days: i64,
-    /// Always verify with the remote before pruning reachable objects.
+    /// `lfs.pruneverifyremotealways`: check that reachable objects exist
+    /// on the remote before pruning them. Default false.
     pub prune_verify_remote_always: bool,
-    /// When verifying, also verify unreachable objects (default false).
+    /// `lfs.pruneverifyunreachablealways`: when verifying, check
+    /// unreachable objects too. Default false.
     pub prune_verify_unreachable_always: bool,
-    /// Remote name used for unpushed checks and verify queries.
-    /// Defaults to `origin` if `lfs.pruneremotetocheck` isn't set.
+    /// `lfs.pruneremotetocheck`: the remote checked for unpushed objects
+    /// and verified against. Default `origin`.
     pub prune_remote_name: String,
 }
 
 impl FetchPruneConfig {
-    /// Read every knob from git config under `cwd`, applying upstream's
-    /// defaults where unset. Reads via the effective git config (so
-    /// `.lfsconfig` overlays apply).
+    /// Read the settings with [`config::get_effective`], using the
+    /// defaults for unset keys.
+    ///
+    /// None of these keys are allowed in `.lfsconfig`, so in practice only
+    /// git config is read. An unparsable value is read as the default.
     pub fn from_repo(cwd: &Path) -> Self {
         Self {
             fetch_recent_refs_days: get_int(cwd, "lfs.fetchrecentrefsdays", 7),
@@ -66,10 +72,12 @@ fn get_int(cwd: &Path, key: &str, default: i64) -> i64 {
         .unwrap_or(default)
 }
 
-/// Git-style boolean parsing: `true/yes/on/1` and `false/no/off/0` are
-/// recognized case-insensitively. Anything else falls back to `default`
-/// — upstream errors on garbage, we silently ignore (mirrors
-/// `lfs.skipdownloaderrors`-style read paths elsewhere).
+/// Read a boolean setting.
+///
+/// `true`, `yes`, `on` and `1` are true, and `false`, `no`, `off`, `0` and
+/// the empty string are false, in any case. Anything else gives `default`.
+/// Upstream's `config.Bool` differs: it also accepts `t` and `f`, reads an
+/// empty value as `default`, and reads anything else as false.
 fn get_bool(cwd: &Path, key: &str, default: bool) -> bool {
     let Ok(Some(raw)) = config::get_effective(cwd, key) else {
         return default;

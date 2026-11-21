@@ -1,13 +1,10 @@
-//! `git cat-file --batch[-check]` long-running subprocess wrappers.
+//! Long-running `git cat-file` processes for reading many objects.
 //!
-//! Both flavors keep one git subprocess alive across many queries, which
-//! is critical for scanners that need to inspect thousands of OIDs (one
-//! fork per object would dominate runtime). Send `<oid>\n` on stdin,
-//! parse `<oid> <type> <size>\n` (or `<oid> missing\n`) from stdout.
-//! `--batch` additionally streams `<size>` bytes of content + a trailing
-//! newline after the header.
-//!
-//! See `git-cat-file(1)` § "BATCH OUTPUT".
+//! [`CatFileBatchCheck`] reads object headers (type and size) and
+//! [`CatFileBatch`] reads whole objects. Each keeps one `git cat-file`
+//! process alive across lookups, since starting one per object would
+//! dominate the cost of scanning thousands of them. The process exits
+//! when the value is dropped.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
@@ -15,32 +12,44 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use crate::Error;
 
-/// One header response from `cat-file --batch[-check]`.
+/// An object header, from [`CatFileBatchCheck::check`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CatFileHeader {
-    /// Object exists. `size` is the in-repo content length in bytes.
+    /// The object exists.
     Found {
+        /// Object ID in hex.
         oid: String,
+        /// Object type: `blob`, `tree`, `commit`, or `tag`.
         kind: String,
+        /// Size of the object's content in bytes.
         size: u64,
     },
-    /// Git replied with `<requested-oid> missing`.
-    Missing { oid: String },
+    /// The object isn't in the repository.
+    Missing {
+        /// The object name as requested.
+        oid: String,
+    },
 }
 
-/// Full response from `cat-file --batch`: a header plus exactly `size`
-/// bytes of content (only present when the header is [`CatFileHeader::Found`]).
+/// An object read by [`CatFileBatch::read`].
+///
+/// Any object type can be read, despite the name.
 #[derive(Debug, Clone)]
 pub struct BlobContent {
+    /// Object ID in hex.
     pub oid: String,
+    /// Object type: `blob`, `tree`, `commit`, or `tag`.
     pub kind: String,
+    /// Size of [`content`](Self::content) in bytes.
     pub size: u64,
+    /// The object's content.
     pub content: Vec<u8>,
 }
 
-/// `git cat-file --batch-check` — header-only mode. Use this to decide
-/// whether to spend the I/O on reading a blob's content (e.g. filter to
-/// blobs ≤ MAX_POINTER_SIZE before paying the read cost).
+/// A `git cat-file --batch-check` process, for reading object headers.
+///
+/// Use it to skip objects not worth reading in full, such as blobs too
+/// large to be a pointer.
 pub struct CatFileBatchCheck {
     stdin: Option<ChildStdin>,
     stdout: BufReader<ChildStdout>,
@@ -48,6 +57,7 @@ pub struct CatFileBatchCheck {
 }
 
 impl CatFileBatchCheck {
+    /// Start `git cat-file --batch-check` in `cwd`.
     pub fn spawn(cwd: &Path) -> Result<Self, Error> {
         let mut child = Command::new("git")
             .arg("-C")
@@ -66,7 +76,7 @@ impl CatFileBatchCheck {
         })
     }
 
-    /// Look up one OID. Returns the parsed header.
+    /// Read the header of the object named `oid`.
     pub fn check(&mut self, oid: &str) -> Result<CatFileHeader, Error> {
         let stdin = self
             .stdin
@@ -87,14 +97,13 @@ impl CatFileBatchCheck {
 
 impl Drop for CatFileBatchCheck {
     fn drop(&mut self) {
-        // Closing stdin signals cat-file to exit cleanly.
+        // Closing stdin makes cat-file exit.
         drop(self.stdin.take());
         let _ = self.child.wait();
     }
 }
 
-/// `git cat-file --batch` — header + content mode. Use this once you've
-/// narrowed candidates with [`CatFileBatchCheck`] (typically by size).
+/// A `git cat-file --batch` process, for reading whole objects.
 pub struct CatFileBatch {
     stdin: Option<ChildStdin>,
     stdout: BufReader<ChildStdout>,
@@ -102,6 +111,7 @@ pub struct CatFileBatch {
 }
 
 impl CatFileBatch {
+    /// Start `git cat-file --batch` in `cwd`.
     pub fn spawn(cwd: &Path) -> Result<Self, Error> {
         let mut child = Command::new("git")
             .arg("-C")
@@ -120,9 +130,7 @@ impl CatFileBatch {
         })
     }
 
-    /// Read one OID. Returns `Ok(None)` if git replied "missing"; otherwise
-    /// the full blob content. Reads exactly `size` bytes after the header,
-    /// then consumes the trailing newline git emits between objects.
+    /// Read the object named `oid`, or `None` if it's missing.
     pub fn read(&mut self, oid: &str) -> Result<Option<BlobContent>, Error> {
         let stdin = self
             .stdin
@@ -166,11 +174,9 @@ impl Drop for CatFileBatch {
     }
 }
 
-/// Parse a `cat-file --batch[-check]` header line.
+/// Parse a `git cat-file` header line, without its newline.
 ///
-/// Lines come in two flavors:
-/// - `<oid> <type> <size>` — object found
-/// - `<oid> missing` — object not in the repo
+/// The line is `<oid> <type> <size>`, or `<oid> missing`.
 fn parse_header(line: &str) -> Result<CatFileHeader, Error> {
     let mut parts = line.splitn(3, ' ');
     let oid = parts

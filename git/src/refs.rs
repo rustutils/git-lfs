@@ -1,5 +1,4 @@
-//! Refspec resolution for the LFS lock APIs and ref enumeration
-//! helpers used by fetch-recent and prune retention.
+//! The current refspec, recently updated refs, and linked worktrees.
 
 use std::path::Path;
 use std::process::Command;
@@ -7,8 +6,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::Error;
 
-/// Resolve the refspec to send with lock-API requests, or `None` if
-/// the working tree is on a detached HEAD.
+/// The refspec to send with lock and batch API requests.
+///
+/// This is the current branch's `branch.<name>.merge` if set, or else
+/// `refs/heads/<name>`. Returns `None` on a detached HEAD.
 pub fn current_refspec(cwd: &Path) -> Option<String> {
     let branch = current_branch(cwd)?;
     if let Some(tracked) = tracked_upstream(cwd, &branch) {
@@ -17,8 +18,7 @@ pub fn current_refspec(cwd: &Path) -> Option<String> {
     Some(format!("refs/heads/{branch}"))
 }
 
-/// Short name of the current branch (`git symbolic-ref --short HEAD`),
-/// or `None` for detached HEAD.
+/// Short name of the current branch, or `None` on a detached HEAD.
 fn current_branch(cwd: &Path) -> Option<String> {
     let out = Command::new("git")
         .arg("-C")
@@ -33,9 +33,7 @@ fn current_branch(cwd: &Path) -> Option<String> {
     if s.is_empty() { None } else { Some(s) }
 }
 
-/// `branch.<branch>.merge` if set — the upstream branch that pushes /
-/// pulls of the current branch are routed to. When set, locks should
-/// be scoped to this ref rather than the local branch's ref.
+/// The value of `branch.<branch>.merge`, if set.
 fn tracked_upstream(cwd: &Path, branch: &str) -> Option<String> {
     let key = format!("branch.{branch}.merge");
     let out = Command::new("git")
@@ -54,17 +52,17 @@ fn tracked_upstream(cwd: &Path, branch: &str) -> Option<String> {
 /// One ref returned by [`recent_branches`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecentRef {
-    /// Full ref name (`refs/heads/main`, `refs/remotes/origin/feature`,
-    /// `refs/tags/v1`, ...).
+    /// Full ref name, such as `refs/heads/main`.
     pub full: String,
-    /// Hex commit OID the ref points at.
+    /// Object ID the ref points at, in hex.
     pub oid: String,
+    /// Which namespace the ref is in.
     pub kind: RefKind,
-    /// Committer date as Unix epoch seconds. Useful for the per-ref
-    /// `commits_days` window calculation in prune.
+    /// Committer date of the ref's commit, in seconds since the Unix epoch.
     pub committer_unix: i64,
 }
 
+/// Which namespace a ref is in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefKind {
     /// Under `refs/heads/`.
@@ -77,19 +75,12 @@ pub enum RefKind {
     Other,
 }
 
-/// Refs whose tip commit was authored on or after `since`. Mirrors
-/// upstream's `git.RecentBranches` (`git/git.go::RecentBranches`).
+/// Refs whose commit was committed at or after `since`, newest first.
 ///
-/// Output is filtered:
-/// - if `include_remote_branches` is false, refs under `refs/remotes/`
-///   are dropped entirely.
-/// - if `only_remote` is `Some(name)`, remote refs not under
-///   `refs/remotes/<name>/` are dropped (local refs and tags pass
-///   through regardless).
-///
-/// `git for-each-ref` is asked to sort newest-first; the iteration
-/// stops at the first ref older than `since` so large repos don't
-/// pay for refs they'd discard anyway.
+/// Like upstream's `RecentBranches` in `git/git.go`. Remote-tracking refs
+/// are left out unless `include_remote_branches` is set, and with
+/// `only_remote` only those of that remote are kept. Refs that don't
+/// point directly at a commit, such as annotated tags, are left out.
 pub fn recent_branches(
     cwd: &Path,
     since: SystemTime,
@@ -127,8 +118,7 @@ pub fn recent_branches(
         let Ok(committer_unix) = unix_str.trim().parse::<i64>() else {
             continue;
         };
-        // Sorted newest-first → first ref older than the cutoff means
-        // every remaining one is too.
+        // Sorted newest first, so every remaining ref is older too.
         if committer_unix < since_unix {
             break;
         }
@@ -154,26 +144,26 @@ pub fn recent_branches(
     Ok(result)
 }
 
-/// One entry from `git worktree list --porcelain`. Includes the main
-/// working copy plus every linked worktree.
+/// One worktree from [`worktrees`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeEntry {
     /// Absolute path to the worktree's directory.
     pub dir: std::path::PathBuf,
-    /// Tip commit SHA, or `None` for bare worktrees.
+    /// Commit the worktree's HEAD points at, or `None` if git didn't
+    /// report one.
+    ///
+    /// On an unborn branch git reports the all-zero object ID, which is
+    /// returned as is.
     pub head: Option<String>,
-    /// `true` when git considers this entry prunable — typically the
-    /// worktree's directory has been deleted but `git worktree prune`
-    /// hasn't run. Mirrors upstream's `Prunable` field; prune retention
-    /// keeps the HEAD-state but skips the index scan for prunable
-    /// entries (the index file may still be inaccessible / removed).
+    /// Whether git considers the worktree prunable, usually because its
+    /// directory was deleted and `git worktree prune` hasn't run since.
     pub prunable: bool,
 }
 
-/// Every worktree attached to this repo (`git worktree list
-/// --porcelain -z`). Includes the main working copy. Returns an empty
-/// vec when `git worktree` exits non-zero (older git versions, bare
-/// repos with no linked worktrees, etc.).
+/// The main worktree and every linked worktree.
+///
+/// Runs `git worktree list --porcelain -z`. A bare main repository is left
+/// out. Returns an empty list if the command fails.
 pub fn worktrees(cwd: &Path) -> Vec<WorktreeEntry> {
     let Ok(out) = Command::new("git")
         .arg("-C")
@@ -192,10 +182,7 @@ pub fn worktrees(cwd: &Path) -> Vec<WorktreeEntry> {
 fn parse_worktree_list(bytes: &[u8]) -> Vec<WorktreeEntry> {
     let mut entries = Vec::new();
     let mut current: Option<WorktreeEntry> = None;
-    // Records are NUL-separated lines; an empty record terminates an
-    // entry. With `-z` git emits `\0` between every field, including
-    // an extra `\0` between entries — easiest to split + match by
-    // line-prefix and treat empty splits as separators.
+    // With `-z`, every line ends in NUL and an empty line ends an entry.
     for record in bytes.split(|&b| b == 0) {
         let Ok(line) = std::str::from_utf8(record) else {
             continue;
@@ -207,7 +194,6 @@ fn parse_worktree_list(bytes: &[u8]) -> Vec<WorktreeEntry> {
             continue;
         }
         if let Some(rest) = line.strip_prefix("worktree ") {
-            // Starting a new entry; flush whatever was being built.
             if let Some(entry) = current.take() {
                 entries.push(entry);
             }
@@ -225,8 +211,7 @@ fn parse_worktree_list(bytes: &[u8]) -> Vec<WorktreeEntry> {
         {
             c.prunable = true;
         } else if line == "bare" {
-            // Bare worktree — ignore the entire entry (no index, no
-            // HEAD content to retain).
+            // A bare repository has no index or HEAD tree to look at.
             current = None;
         }
     }

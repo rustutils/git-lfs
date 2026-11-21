@@ -1,50 +1,41 @@
-//! Repository path discovery.
+//! Find the directories of a repository.
 
 use std::path::{Path, PathBuf};
 
 use crate::{Error, run_git};
 
-/// Path to the **per-worktree** `.git` directory of the repository
-/// containing `cwd`. Always returns an absolute path. Errors if `cwd`
-/// isn't inside a git repository.
+/// The absolute path of the Git directory of the worktree containing `cwd`.
 ///
-/// In a linked worktree this is `.git/worktrees/<name>/`, *not* the
-/// shared main `.git/`. Use this when you want per-worktree state
-/// (HEAD, index, info/, hooks-when-`--worktree`-scoped). For shared
-/// storage (objects, packs, LFS cache, alternates), use
-/// [`git_common_dir`].
+/// In a linked worktree this is `.git/worktrees/<name>`, not the main
+/// `.git`. Use it for per-worktree state such as `HEAD` and the index. Use
+/// [`git_common_dir`] for state shared by all worktrees. Errors if `cwd`
+/// isn't in a repository.
 pub fn git_dir(cwd: &Path) -> Result<PathBuf, Error> {
     run_git(cwd, &["rev-parse", "--absolute-git-dir"]).map(PathBuf::from)
 }
 
-/// Path to the **shared** `.git` directory of the repository containing
-/// `cwd`. Equivalent to [`git_dir`] in repos without linked worktrees;
-/// in worktree-having repos it always returns the main `.git/` rather
-/// than the per-worktree subtree.
+/// The Git directory shared by all worktrees of the repository containing
+/// `cwd`.
 ///
-/// Use this for anything stored once per repo: object database,
-/// `objects/info/alternates`, default hooks, and the LFS object cache
-/// at `.git/lfs/`. Mirrors upstream's `git.GitCommonDir()` /
-/// `Configuration.LocalGitStorageDir()`.
+/// This is the main `.git`, even from a linked worktree. Without linked
+/// worktrees it's the same as [`git_dir`]. Use it for state stored once per
+/// repository, such as objects and the LFS directory.
+///
+/// The path is absolute if `cwd` is.
 pub fn git_common_dir(cwd: &Path) -> Result<PathBuf, Error> {
     let raw = run_git(cwd, &["rev-parse", "--git-common-dir"])?;
     let p = PathBuf::from(&raw);
-    // `--git-common-dir` can return a relative path (`.git` from the
-    // worktree root, `.` from inside the .git dir, sometimes `.git/.`).
-    // Anchor against `cwd` so the result is absolute (matching
-    // `git_dir`'s behavior), and lexically clean any leftover
-    // `CurDir` components so `LocalGitStorageDir` doesn't end up with
-    // a stray `/.`.
+    // `--git-common-dir` can print a path relative to `cwd`, such as
+    // `.git`, `.`, or `.git/.`.
     let absolute = if p.is_absolute() { p } else { cwd.join(p) };
     Ok(clean_curdir(&absolute))
 }
 
-/// Lexically clean `p` — drop `CurDir` (`.`) components, collapse
-/// `ParentDir` (`..`) by popping the previous component when one
-/// exists. Pure path-string normalization, no I/O. Mirrors Go's
-/// `path/filepath.Clean` for the cases produced by
-/// `git rev-parse --git-common-dir`: `.git`, `./.git`, `.git/.`,
-/// `a/../.git`, etc.
+/// Remove `.` components from `p`, and `..` components with the component
+/// before them.
+///
+/// This only looks at the path, not the file system, like Go's
+/// `filepath.Clean`.
 fn clean_curdir(p: &Path) -> PathBuf {
     use std::path::Component;
     let mut out: Vec<Component> = Vec::new();
@@ -52,10 +43,7 @@ fn clean_curdir(p: &Path) -> PathBuf {
         match c {
             Component::CurDir => continue,
             Component::ParentDir => {
-                // Only collapse when the previous component is a
-                // poppable normal segment. Don't pop a root or
-                // prefix; don't pop another `..` (would change the
-                // meaning when the path *starts* with `..`).
+                // Keep `..` after a root, a prefix, or another `..`.
                 let pop_ok = matches!(out.last(), Some(Component::Normal(_)));
                 if pop_ok {
                     out.pop();
@@ -73,38 +61,34 @@ fn clean_curdir(p: &Path) -> PathBuf {
     buf
 }
 
-/// Path to the LFS storage directory (`<common-git-dir>/lfs`). The
-/// directory is not created. Routed through [`git_common_dir`] so a
-/// linked worktree shares the same on-disk LFS object cache as its
-/// main repo — `git lfs prune` from one worktree sees the same 100%
-/// of objects as `git lfs fetch` from another.
+/// The LFS directory, `lfs` in the [`git_common_dir`].
+///
+/// All worktrees share it. The directory is not created.
 pub fn lfs_dir(cwd: &Path) -> Result<PathBuf, Error> {
     Ok(git_common_dir(cwd)?.join("lfs"))
 }
 
-/// Path to the working-tree root of the repository containing `cwd`.
-/// Honors `GIT_WORK_TREE`, so this returns the right thing even when
-/// `cwd` is *outside* the work tree (e.g. tests that set both
-/// `GIT_DIR` and `GIT_WORK_TREE` as relative paths from a parent dir).
-/// Errors for bare repos (no work tree) and outside-any-repo callers.
+/// The root of the working tree containing `cwd`.
+///
+/// Honors `GIT_WORK_TREE`, so `cwd` may be outside the working tree.
+/// Errors in a bare repository and outside any repository.
 pub fn work_tree_root(cwd: &Path) -> Result<PathBuf, Error> {
     run_git(cwd, &["rev-parse", "--show-toplevel"]).map(PathBuf::from)
 }
 
-/// LFS-objects directories belonging to alternate object stores
-/// referenced by this repository. Used to satisfy a `git lfs smudge`
-/// or `git lfs fetch` from a `git clone --shared <source>` checkout
-/// without re-downloading bytes the source already has.
+/// The LFS object directories of the repository's alternate object stores.
 ///
-/// Sources, in order:
-/// 1. `GIT_ALTERNATE_OBJECT_DIRECTORIES` env var (path-list separated).
-/// 2. `<git-dir>/objects/info/alternates` — one object directory per
-///    line; blank lines and `#`-comments skipped.
+/// A repository made with `git clone --shared` or `--reference` can read
+/// LFS objects from its source this way instead of downloading them.
 ///
-/// Each entry names a git *objects* directory (e.g.
-/// `/path/to/source/.git/objects`); the matching LFS-objects
-/// directory lives next to it at `<entry>/../lfs/objects`. Only
-/// directories that actually exist are returned.
+/// Alternates come from `GIT_ALTERNATE_OBJECT_DIRECTORIES`, then from
+/// `objects/info/alternates` in the [`git_common_dir`]. Each names a Git
+/// objects directory, such as `/src/.git/objects`, and its LFS objects are
+/// in `lfs/objects` next to it. Only directories that exist are returned,
+/// without duplicates.
+///
+/// Like upstream, relative paths in the alternates file are not resolved
+/// against the objects directory.
 pub fn lfs_alternate_dirs(cwd: &Path) -> Result<Vec<PathBuf>, Error> {
     let mut dirs: Vec<PathBuf> = Vec::new();
     let mut push = |objs_dir: &Path| {
@@ -124,8 +108,6 @@ pub fn lfs_alternate_dirs(cwd: &Path) -> Result<Vec<PathBuf>, Error> {
         }
     }
 
-    // `objects/info/alternates` is shared across linked worktrees —
-    // it lives in the common git-dir, not the per-worktree one.
     let alternates_file = git_common_dir(cwd)?
         .join("objects")
         .join("info")
@@ -144,11 +126,10 @@ pub fn lfs_alternate_dirs(cwd: &Path) -> Result<Vec<PathBuf>, Error> {
     Ok(dirs)
 }
 
-/// Strip C-style quotes from one `objects/info/alternates` line and
-/// expand the common escapes (`\\`, `\"`, `\n`, `\t`, `\r`). Git emits
-/// these when an alternate path contains characters that would
-/// otherwise be ambiguous on the line. Returns the input unchanged
-/// when there's no leading quote, so plain paths are still handled.
+/// Unquote a C-style quoted line of `objects/info/alternates`.
+///
+/// Expands the escapes `\\`, `\"`, `\n`, `\t`, and `\r`, and keeps any
+/// other escape as is. Returns a line without a leading quote unchanged.
 fn unquote_alternate(line: &str) -> std::borrow::Cow<'_, str> {
     if !line.starts_with('"') {
         return std::borrow::Cow::Borrowed(line);
@@ -173,9 +154,8 @@ fn unquote_alternate(line: &str) -> std::borrow::Cow<'_, str> {
             Some('n') => out.push('\n'),
             Some('t') => out.push('\t'),
             Some('r') => out.push('\r'),
-            // Anything else: emit literally — git supports more
-            // (octal, \xNN), but the alternate-paths use case
-            // basically never needs them.
+            // Git also supports octal escapes, which alternate paths
+            // rarely need.
             Some(other) => {
                 out.push('\\');
                 out.push(other);
@@ -193,12 +173,12 @@ mod tests {
     use tempfile::TempDir;
 
     fn init_repo() -> TempDir {
-        // Fail loudly if the test process inherits GIT_DIR / GIT_WORK_TREE.
-        // With those set, `git init <tempdir>` ignores the path arg and
-        // operates on the inherited git-dir instead — so the tempdir
-        // never becomes a real repo and the test silently exercises the
-        // wrong state. The `Justfile` pre-commit recipe strips these
-        // for us; this assertion is the canary if anything else slips.
+        // Fail loudly if the test process inherits GIT_DIR or
+        // GIT_WORK_TREE. With those set, `git init <tempdir>` ignores the
+        // path arg and operates on the inherited git-dir instead, so the
+        // tempdir never becomes a real repo and the test silently
+        // exercises the wrong state. The `Justfile` pre-commit recipe
+        // strips these. This assertion is the canary if anything slips.
         for var in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"] {
             assert!(
                 std::env::var_os(var).is_none(),
@@ -241,15 +221,6 @@ mod tests {
             git_common_dir(tmp.path()).unwrap()
         );
     }
-
-    // Note: the multi-worktree case (verifying that `lfs_dir` from a
-    // linked worktree resolves to the *main* repo's `.git/lfs/`) is
-    // covered end-to-end by the vendored `t-worktree.sh` and
-    // `t-prune-worktree.sh` shell tests. A unit-test version was tried
-    // but flaked under parallel `cargo test` execution because
-    // `git worktree add` touches HOME / global config in ways that
-    // racing threads can perturb. The shell suite runs serially per
-    // file under prove and is the authoritative coverage.
 
     #[test]
     fn outside_repo_errors() {
@@ -335,8 +306,8 @@ mod tests {
 
     #[test]
     fn lfs_alternate_dirs_skips_alternates_without_lfs_storage() {
-        // A .git that has /objects/ but no /lfs/objects/ — common for
-        // repos that don't use LFS — should be silently skipped.
+        // A .git that has objects/ but no lfs/objects/, as in repos that
+        // don't use LFS, should be silently skipped.
         let source = init_repo();
         // Note: deliberately *not* creating .git/lfs/objects.
         let target = init_repo();

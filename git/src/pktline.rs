@@ -1,13 +1,13 @@
-//! Git's packet-line protocol: the framing used by `filter-process` and a
-//! handful of other long-running git subprocess interfaces.
+//! Git's packet-line framing, used by the long-running filter protocol.
 //!
-//! Each packet is `<4-byte hex length><payload>`, where the length includes
-//! the 4 length bytes themselves. The special length `0000` (no payload) is
-//! the **flush packet**, used as a delimiter.
+//! Each packet is a 4-digit hex length followed by the payload. The length
+//! counts its own 4 bytes. The length `0000`, with no payload, is a flush
+//! packet, which marks the end of a list or message.
 
 use std::io::{self, Read, Write};
 
-/// Maximum payload size of a single packet (`65520 − 4` length bytes).
+/// The largest payload of one packet: Git's 65520-byte packet limit minus
+/// the 4 length bytes.
 pub const MAX_PACKET_DATA: usize = 65516;
 
 /// Reads packets from an underlying `Read`.
@@ -20,9 +20,10 @@ impl<R: Read> Reader<R> {
         Self { inner }
     }
 
-    /// Read one packet. Returns `Ok(None)` for a flush packet (`0000`).
-    /// Returns `Err(UnexpectedEof)` if the underlying stream closes mid-frame
-    /// or before a frame begins — callers can treat that as "client done".
+    /// Read one packet, or `None` for a flush packet.
+    ///
+    /// Errors with [`io::ErrorKind::UnexpectedEof`] if the stream ends
+    /// before or within a packet. The lengths `0001` to `0003` are invalid.
     pub fn read_packet(&mut self) -> io::Result<Option<Vec<u8>>> {
         let mut hdr = [0u8; 4];
         self.inner.read_exact(&mut hdr)?;
@@ -45,8 +46,9 @@ impl<R: Read> Reader<R> {
         Ok(Some(buf))
     }
 
-    /// Read one packet as text, stripping a single trailing `\n` if present.
-    /// Returns `Ok(None)` for a flush packet.
+    /// Read one packet as UTF-8 text, or `None` for a flush packet.
+    ///
+    /// Strips one trailing newline, if present.
     pub fn read_text(&mut self) -> io::Result<Option<String>> {
         let Some(mut bytes) = self.read_packet()? else {
             return Ok(None);
@@ -70,7 +72,9 @@ impl<W: Write> Writer<W> {
         Self { inner }
     }
 
-    /// Write a packet of arbitrary bytes. Errors if `data.len() > MAX_PACKET_DATA`.
+    /// Write one packet.
+    ///
+    /// Errors if `data` is longer than [`MAX_PACKET_DATA`].
     pub fn write_packet(&mut self, data: &[u8]) -> io::Result<()> {
         if data.len() > MAX_PACKET_DATA {
             return Err(io::Error::new(
@@ -84,7 +88,7 @@ impl<W: Write> Writer<W> {
         Ok(())
     }
 
-    /// Write a text packet, appending a single `\n` (the convention git uses).
+    /// Write a text packet, appending a newline as Git does.
     pub fn write_text(&mut self, text: &str) -> io::Result<()> {
         let mut buf = String::with_capacity(text.len() + 1);
         buf.push_str(text);
@@ -103,12 +107,12 @@ impl<W: Write> Writer<W> {
     }
 }
 
-/// A `Write` adapter that splits writes into pktline packets, suitable for
-/// streaming smudge content through the filter-process response protocol.
+/// A [`Write`] adapter that sends what's written as packets.
 ///
-/// Buffers up to [`MAX_PACKET_DATA`] bytes between packet boundaries; calling
-/// [`Write::flush`] sends any partial buffered data as a final packet (but
-/// does *not* emit a flush packet — the caller controls that explicitly).
+/// Used to stream file content in a filter response. It buffers up to
+/// [`MAX_PACKET_DATA`] bytes per packet. [`Write::flush`] sends any buffered
+/// data as a shorter packet, but doesn't write a flush packet. Call
+/// [`Writer::write_flush`] for that.
 pub struct Sink<'a, W: Write> {
     writer: &'a mut Writer<W>,
     buf: Vec<u8>,
@@ -196,7 +200,7 @@ mod tests {
         let mut buf = Vec::new();
         let mut writer = Writer::new(&mut buf);
         let mut sink = Sink::new(&mut writer);
-        // Write exactly one full-packet's worth + a little extra, plus flush.
+        // Write one full packet's worth and a little extra, then flush.
         let big = vec![b'x'; MAX_PACKET_DATA + 100];
         sink.write_all(&big).unwrap();
         sink.flush().unwrap();

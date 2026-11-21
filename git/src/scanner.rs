@@ -1,19 +1,20 @@
-//! Scanner: walk git history, find LFS pointer blobs.
+//! Find the LFS pointers in history, a tree, the index, or the stash.
 //!
-//! This is the entry point used by `git lfs fetch`/`pull`/`push` to
-//! enumerate the LFS pointers reachable from a set of refs. The pipeline
-//! mirrors upstream:
+//! Most scanners list candidate blobs with git, drop those too large to be
+//! a pointer using [`CatFileBatchCheck`], then read the rest with
+//! [`CatFileBatch`] and keep the ones that parse as a [`Pointer`].
 //!
-//! 1. [`rev_list`](crate::rev_list::rev_list) emits every reachable object
-//!    (commits, trees, blobs).
-//! 2. [`CatFileBatchCheck`] filters those to blobs whose size could fit in
-//!    a pointer file (≤ [`MAX_POINTER_SIZE`]). Blobs are read from index;
-//!    cheap header-only check, no content I/O.
-//! 3. [`CatFileBatch`] reads the surviving candidates' content. Each is
-//!    parsed as a [`Pointer`]; non-pointers are silently skipped.
-//! 4. The output is deduplicated by LFS OID (the pointer's content OID,
-//!    not the git blob OID): the same LFS object can appear in many
-//!    blobs/paths, but we only need to fetch it once.
+//! - [`scan_pointers`] walks the history reachable from some refs, with
+//!   [`rev_list`](crate::rev_list::rev_list), and returns each LFS object
+//!   once.
+//! - [`scan_tree`] returns one entry per pointer path in a single tree.
+//! - [`scan_index_lfs`] reads the index entries whose path has the
+//!   `filter=lfs` attribute.
+//! - [`scan_index_pointers`] reads what's staged or changed relative to a
+//!   ref.
+//! - [`scan_previous_versions`] and [`scan_stashed`] read pointer text out
+//!   of `git log -p` instead of reading blobs.
+//! - [`scan_tree_blobs`] lists every blob in a tree, pointer or not.
 
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -28,45 +29,38 @@ use crate::cat_file::{CatFileBatch, CatFileBatchCheck, CatFileHeader};
 /// One LFS pointer discovered by the scanner.
 #[derive(Debug, Clone)]
 pub struct PointerEntry {
-    /// LFS object OID (the `oid sha256:...` field of the pointer file).
+    /// The LFS object's OID, from the pointer's `oid` line.
     pub oid: Oid,
-    /// Object size in bytes (per the pointer's `size` field).
+    /// The LFS object's size in bytes, from the pointer's `size` line.
     pub size: u64,
-    /// First working-tree path the pointer was found at. A single LFS
-    /// object can appear under many paths in history; we keep the first.
-    /// Useful for progress display ("downloading foo/bar.bin"); not the
-    /// authoritative source — caller should not rely on it for routing.
+    /// The first path the pointer was found at.
+    ///
+    /// Fine for progress output. To filter by path, use
+    /// [`paths`](Self::paths).
     pub path: Option<PathBuf>,
-    /// Every working-tree path the pointer was seen at (across history
-    /// and refs). Callers that filter by path (`--include`/`--exclude`)
-    /// must check this set rather than just `path`, otherwise an LFS
-    /// OID shared between two paths gets filtered out whenever the
-    /// scanner happens to dedup down to the wrong one. Always
-    /// non-empty when `path` is `Some`.
+    /// Every path the pointer was found at.
+    ///
+    /// Filter by path (`--include`, `--exclude`) against all of these, not
+    /// just [`path`](Self::path). Otherwise an object stored at two paths is
+    /// dropped whenever the first path seen happens to be excluded. Never
+    /// empty when `path` is `Some`.
     pub paths: Vec<PathBuf>,
-    /// `true` if the pointer's source bytes were byte-canonical. Used by
-    /// `git lfs fsck --pointers` to flag pointers that parse but don't
-    /// match the canonical encoding.
+    /// Whether the pointer text was exactly the canonical encoding.
+    ///
+    /// `git lfs fsck --pointers` reports pointers that parse but aren't
+    /// canonical.
     pub canonical: bool,
-    /// Pointer extensions in priority-ascending order, mirroring
-    /// `Pointer::extensions`. Empty for plain pointers; non-empty when
-    /// the file was committed through a configured `lfs.extension.<n>`
-    /// chain. The materialize/checkout paths replay these in reverse to
-    /// reconstruct the working-tree content.
+    /// The pointer's extensions, sorted by priority as in
+    /// [`Pointer::extensions`].
     pub extensions: Vec<Extension>,
 }
 
-/// Walk history reachable from `include` minus `exclude`, return unique
-/// LFS pointers.
+/// Find the LFS pointers reachable from `include` but not from `exclude`.
 ///
-/// Order is undefined and should not be relied on. Callers that want a
-/// stable order should sort the result.
-///
-/// **History semantics**: matches upstream's `ScanRefs` — every blob in
-/// every commit's tree is examined, including blobs that have since been
-/// deleted or modified. This catches LFS objects from the full history
-/// of the named refs, which is what `git lfs fetch <ref>` is documented
-/// to do.
+/// Like upstream's `ScanRefs`, this looks at every blob in history, not
+/// just the tips, so it also finds pointers that were later modified or
+/// deleted. Each LFS object appears once, with every path it was seen at
+/// in [`PointerEntry::paths`]. The order of the result is unspecified.
 pub fn scan_pointers(
     cwd: &Path,
     include: &[&str],
@@ -75,8 +69,9 @@ pub fn scan_pointers(
     scan_pointers_with_args(cwd, include, exclude, &[])
 }
 
-/// [`scan_pointers`] with extra rev-list cmdline args. See
-/// [`rev_list_with_args`](crate::rev_list::rev_list_with_args).
+/// [`scan_pointers`] with extra `git rev-list` arguments.
+///
+/// See [`rev_list_with_args`](crate::rev_list::rev_list_with_args).
 pub fn scan_pointers_with_args(
     cwd: &Path,
     include: &[&str],
@@ -85,8 +80,6 @@ pub fn scan_pointers_with_args(
 ) -> Result<Vec<PointerEntry>, Error> {
     let entries = crate::rev_list::rev_list_with_args(cwd, include, exclude, extra_cmdline_args)?;
 
-    // Phase 1: header-only check. Filter to blobs whose size could plausibly
-    // be a pointer file. Tracking name alongside so we can report it.
     let mut bcheck = CatFileBatchCheck::spawn(cwd)?;
     let mut candidates: Vec<(String, Option<String>)> = Vec::new();
     for entry in entries {
@@ -96,16 +89,11 @@ pub fn scan_pointers_with_args(
             {
                 candidates.push((entry.oid, entry.name));
             }
-            // Trees, commits, oversized blobs, missing — all skipped.
             _ => {}
         }
     }
     drop(bcheck);
 
-    // Phase 2: read content of each candidate, parse as pointer, dedup
-    // by LFS OID. Same LFS object referenced from multiple paths/commits
-    // collapses to one entry — but we accumulate every path it appeared
-    // at so include/exclude filters can match any of them.
     let mut batch = CatFileBatch::spawn(cwd)?;
     let mut by_oid: std::collections::HashMap<Oid, usize> = std::collections::HashMap::new();
     let mut out: Vec<PointerEntry> = Vec::new();
@@ -139,37 +127,31 @@ pub fn scan_pointers_with_args(
     Ok(out)
 }
 
-/// Scan the index for LFS pointers via
-/// `git ls-files --stage -z -- :(attr:filter=lfs)`.
+/// Find the LFS pointers in the index whose path has the `filter=lfs`
+/// attribute.
 ///
-/// Honors sparse-checkout (only entries in the sparse cone are listed)
-/// and works in bare repos against whatever's been written into the
-/// index. Empty result when the index is empty or no path matches the
-/// `filter=lfs` attribute. Symlinks (mode 120000) are skipped — they
-/// can never be LFS pointers.
+/// Runs `git ls-files --stage -z -- :(attr:filter=lfs)` from the top of
+/// the working tree, or from the Git directory in a bare repository.
+/// Symlinks are skipped. In a sparse checkout or a bare repository,
+/// entries whose parent directory doesn't exist in the working tree are
+/// skipped too. Each LFS object appears once.
 ///
-/// This is the discovery path upstream's pull / fetch use on Git 2.42+;
-/// it sidesteps the rev-list traversal that's expensive on partial
-/// clones with `--filter=tree:0` and over-broad in bare repos with no
-/// committed `.gitattributes` reachable via the index.
+/// Upstream's pull and fetch list pointers this way on Git 2.42 and later.
+/// It avoids a history walk, which is slow in a partial clone made with
+/// `--filter=tree:0`.
 pub fn scan_index_lfs(cwd: &Path) -> Result<Vec<PointerEntry>, Error> {
-    // Run from the work-tree top (or git-dir for bare): `git ls-files`
-    // from a subdir restricts output to that subdir's entries, so
-    // running from `repo/dir1/` would miss `repo/a.dat`. Resolve via
-    // `--show-toplevel` first; fall back to the git-dir for bare repos
-    // (which legitimately have no work tree).
+    // `git ls-files` run from a subdirectory lists only that subdirectory.
     let scan_cwd = match crate::run_git(cwd, &["rev-parse", "--show-toplevel"]) {
         Ok(s) if !s.is_empty() => PathBuf::from(s),
         _ => crate::run_git(cwd, &["rev-parse", "--absolute-git-dir"])
             .map(PathBuf::from)
             .unwrap_or_else(|_| cwd.to_path_buf()),
     };
-    // Apply a parent-dir-existence filter only when there's a reason
-    // to: cone-mode sparse-checkout marks out-of-cone entries by
-    // omitting their working-tree parents, and bare repos have no
-    // working-tree subdirs at all. For ordinary checkouts where the
-    // user just `rm`'d a file, we want to fetch and restore — not
-    // skip — so the filter stays off.
+    // Cone-mode sparse checkout leaves out-of-cone directories
+    // uncreated, so a missing parent directory means "out of cone". In a
+    // bare repository only top-level entries pass. In an ordinary
+    // checkout the check stays off, so a file the user deleted is still
+    // restored by `git lfs pull`.
     let filter_by_parent_dir = is_bare_repo(&scan_cwd) || is_sparse_checkout(&scan_cwd);
 
     let out = Command::new("git")
@@ -203,14 +185,6 @@ pub fn scan_index_lfs(cwd: &Path) -> Result<Vec<PointerEntry>, Error> {
             continue;
         }
         let path = PathBuf::from(path);
-        // Skip paths whose parent dir isn't materialized in the work
-        // tree: that's how cone-mode sparse-checkout marks out-of-cone
-        // entries when ls-files emits the *expanded* index (the trees
-        // are local but the working-tree dirs were never created).
-        // The same check naturally drops non-root entries in bare
-        // repos, where only the top-level scan_cwd exists as a
-        // directory. Skipped on plain checkouts so a user `rm`'d
-        // file still gets restored by `git lfs pull`.
         if filter_by_parent_dir
             && let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
@@ -265,31 +239,26 @@ fn is_sparse_checkout(cwd: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// One blob found while walking a tree, before any pointer-parsing or
-/// size-based filtering. Paths and OIDs are reported verbatim from
-/// `git ls-tree`.
+/// One blob from [`scan_tree_blobs`], whether or not it's a pointer.
 #[derive(Debug, Clone)]
 pub struct TreeBlob {
-    /// Working-tree path of the blob.
+    /// Path of the blob in the tree.
     pub path: PathBuf,
-    /// Git blob OID (the SHA-1 of the blob in the object database).
+    /// Git object ID of the blob, in hex.
     pub blob_oid: String,
-    /// Size of the blob in bytes, per `cat-file --batch-check`.
+    /// Size of the blob in bytes.
     pub size: u64,
-    /// Git tree-entry mode in octal (e.g. `100644`, `100755`,
-    /// `120000` for symlinks). Callers that classify entries by
-    /// mode (e.g. `fsck --pointers` skipping symlinks) read this.
+    /// Tree entry mode in octal, such as `100644`, or `120000` for a
+    /// symlink.
     pub mode: String,
 }
 
-/// Walk the tree at `reference` and return *every* blob — no size filter,
-/// no pointer parsing. Used by `fsck --pointers` for its full-tree sweep
-/// when classifying paths against `.gitattributes`.
+/// List every blob in the tree at `reference`, pointer or not.
+///
+/// `reference` may also be a range such as `HEAD^..HEAD`. Then the trees of
+/// all commits in the range are listed, and each path and blob pair
+/// appears once.
 pub fn scan_tree_blobs(cwd: &Path, reference: &str) -> Result<Vec<TreeBlob>, Error> {
-    // `git ls-tree` only takes a tree-ish, not a range. For a `<a>..<b>`
-    // reference (used by `git lfs fsck HEAD^..HEAD`), walk every commit
-    // in the range and union their tree blobs (deduped by path+oid). A
-    // bare ref still takes the cheap one-shot path.
     if reference.contains("..") {
         return scan_blobs_in_range(cwd, reference);
     }
@@ -341,10 +310,8 @@ fn scan_tree_blobs_for_ref(cwd: &Path, reference: &str) -> Result<Vec<TreeBlob>,
     Ok(blobs)
 }
 
-/// Expand a `<a>..<b>` rev-range into the concrete commits it names
-/// and union their tree blobs (deduped by path + blob OID). Mirrors
-/// upstream's behavior for `git lfs fsck HEAD^..HEAD`: every blob
-/// reachable from any commit in the range is checked once.
+/// List the blobs in the tree of every commit in `range`, each path and
+/// blob pair once.
 fn scan_blobs_in_range(cwd: &Path, range: &str) -> Result<Vec<TreeBlob>, Error> {
     let out = Command::new("git")
         .arg("-C")
@@ -373,17 +340,11 @@ fn scan_blobs_in_range(cwd: &Path, range: &str) -> Result<Vec<TreeBlob>, Error> 
     Ok(all)
 }
 
-/// Walk the tree at `reference`, returning one entry per LFS pointer blob.
+/// Find the LFS pointers in the tree at `reference`, one entry per path.
 ///
-/// Unlike [`scan_pointers`], this does *not* walk history and does *not*
-/// dedupe by LFS OID — each path in the tree that points at an LFS
-/// pointer becomes its own entry. Multiple paths pointing at the same
-/// LFS object yield multiple entries, with their working-tree paths
-/// preserved. This matches upstream's `ScanTree` semantics, used by
-/// `ls-files` and `status`.
-///
-/// Paths are read from `git ls-tree -r -z` so embedded newlines or
-/// quoting metacharacters round-trip cleanly.
+/// Unlike [`scan_pointers`], this doesn't walk history, and an LFS object
+/// stored at several paths gets an entry for each, like upstream's
+/// `ScanTree`.
 pub fn scan_tree(cwd: &Path, reference: &str) -> Result<Vec<PointerEntry>, Error> {
     let out = Command::new("git")
         .arg("-C")
@@ -397,8 +358,7 @@ pub fn scan_tree(cwd: &Path, reference: &str) -> Result<Vec<PointerEntry>, Error
         )));
     }
 
-    // Phase 1: parse `<mode> <type> <oid>\t<path>` records, keep blobs
-    // small enough to be a pointer.
+    // Records are `<mode> <type> <oid>\t<path>`.
     let mut bcheck = CatFileBatchCheck::spawn(cwd)?;
     let mut candidates: Vec<(String, String)> = Vec::new();
     for record in out.stdout.split(|&b| b == 0).filter(|s| !s.is_empty()) {
@@ -425,9 +385,6 @@ pub fn scan_tree(cwd: &Path, reference: &str) -> Result<Vec<PointerEntry>, Error
     }
     drop(bcheck);
 
-    // Phase 2: read each candidate blob, parse as pointer, emit one
-    // entry per path. No OID dedup — that's intentional, callers may
-    // want to know every path an object lives at in this tree.
     let mut batch = CatFileBatch::spawn(cwd)?;
     let mut entries = Vec::new();
     for (oid, path) in candidates {
@@ -450,16 +407,15 @@ pub fn scan_tree(cwd: &Path, reference: &str) -> Result<Vec<PointerEntry>, Error
     Ok(entries)
 }
 
-/// LFS pointers in the index or working tree that *differ* from `ref`
-/// (typically `HEAD`). Mirrors upstream's `lfs/gitscanner_index.go::
-/// scanIndex`: runs `git diff-index <ref>` and `git diff-index --cached
-/// <ref>` to surface staged + working-tree changes, then dedupes by
-/// (sha, path).
+/// Find the LFS pointers in the index that differ from `reference`.
 ///
-/// Returns only pointers — small blobs that parse as LFS pointer text.
-/// Symlinks and gitlinks (their dst-mode in diff-index output) are
-/// skipped. Used by prune retention so a staged-but-uncommitted
-/// pointer doesn't get pruned out from under the user.
+/// Runs `git diff-index` and `git diff-index --cached` against
+/// `reference`, like upstream's `scanIndex` in `lfs/gitscanner_index.go`.
+/// Content that git hasn't hashed (an unstaged edit) has no blob to read,
+/// so in practice this finds staged pointers. Deletions, symlinks, and
+/// submodules are skipped. Each LFS object appears once. If `reference`
+/// doesn't resolve, as in a repository with no commits, the result is
+/// empty.
 pub fn scan_index_pointers(cwd: &Path, reference: &str) -> Result<Vec<PointerEntry>, Error> {
     let scan_cwd = match crate::run_git(cwd, &["rev-parse", "--show-toplevel"]) {
         Ok(s) if !s.is_empty() => PathBuf::from(s),
@@ -480,19 +436,15 @@ pub fn scan_index_pointers(cwd: &Path, reference: &str) -> Result<Vec<PointerEnt
             .args(&args)
             .output()?;
         if !out.status.success() {
-            // diff-index against a missing ref is fine — empty repo,
-            // detached HEAD before first commit, etc. Treat like
-            // "no entries" rather than erroring.
+            // Most likely `reference` doesn't exist yet.
             continue;
         }
-        // Format with `-z`:
-        //   `:<src_mode> <dst_mode> <src_sha> <dst_sha> <status>\0<path>\0`
-        // For renames (R*) and copies (C*) two paths follow, but the
-        // dst-sha reflects the new content either way.
+        // Records are `:<src_mode> <dst_mode> <src_sha> <dst_sha>
+        // <status>\0<path>\0`, with a second path for renames (R) and
+        // copies (C). See `crate::diff_index` for a full parser.
         let bytes = &out.stdout;
         let mut i = 0;
         while i < bytes.len() {
-            // Read until next NUL — the meta record.
             let meta_end = bytes[i..]
                 .iter()
                 .position(|&b| b == 0)
@@ -503,7 +455,6 @@ pub fn scan_index_pointers(cwd: &Path, reference: &str) -> Result<Vec<PointerEnt
                 continue;
             };
             i = meta_end + 1;
-            // Then 1-2 NUL-terminated paths depending on status.
             let parts: Vec<&str> = meta.trim_start_matches(':').split_whitespace().collect();
             if parts.len() < 5 {
                 continue;
@@ -511,15 +462,15 @@ pub fn scan_index_pointers(cwd: &Path, reference: &str) -> Result<Vec<PointerEnt
             let dst_mode = parts[1];
             let dst_sha = parts[3];
             let status = parts[4];
-            // Skip symlinks (120000), gitlinks/submodules (160000),
-            // deletions (D), and entries with all-zero dst sha
-            // (deleted in working tree).
+            // Skip symlinks (120000), submodules (160000), deletions,
+            // and an all-zero dst sha, which means the working tree
+            // content differs and git hasn't hashed it.
             if dst_mode == "120000"
                 || dst_mode == "160000"
                 || status.starts_with('D')
                 || dst_sha.bytes().all(|b| b == b'0')
             {
-                // Still need to consume the path(s).
+                // Still consume the paths.
                 let path_count = if status.starts_with('R') || status.starts_with('C') {
                     2
                 } else {
@@ -535,7 +486,7 @@ pub fn scan_index_pointers(cwd: &Path, reference: &str) -> Result<Vec<PointerEnt
                 }
                 continue;
             }
-            // Read the destination path (last NUL-terminated entry).
+            // Keep the last path, which is the destination.
             let path_count = if status.starts_with('R') || status.starts_with('C') {
                 2
             } else {
@@ -563,7 +514,6 @@ pub fn scan_index_pointers(cwd: &Path, reference: &str) -> Result<Vec<PointerEnt
         return Ok(Vec::new());
     }
 
-    // Header check first to avoid reading non-pointer-sized blobs.
     let mut bcheck = CatFileBatchCheck::spawn(cwd)?;
     let mut sized: Vec<(String, PathBuf)> = Vec::new();
     for (oid, path) in candidates {
@@ -607,19 +557,12 @@ pub fn scan_index_pointers(cwd: &Path, reference: &str) -> Result<Vec<PointerEnt
     Ok(out)
 }
 
-/// LFS pointers reachable from `refs/stash` and its associated WIP /
-/// index / untracked merge parents. Mirrors upstream's
-/// `lfs/gitscanner_log.go::scanStashed`.
+/// Find the LFS pointers added by every stash entry.
 ///
-/// Stashes are stored as merge commits whose first parent is the HEAD
-/// at stash time; the other parent(s) are the index commit and (when
-/// `git stash -u` is used) the untracked-files commit. Walking the
-/// reflog for `refs/stash` and reading both sides of each merge diff
-/// is the way to surface every LFS pointer those commits reference.
-///
-/// Returns an empty vec when the repo has no stash entries (the
-/// `git log -g refs/stash` invocation exits non-zero in that case;
-/// upstream silently swallows that error and we do the same).
+/// Covers the stashed working tree, the stashed index, and the untracked
+/// files of `git stash -u`, like upstream's `scanStashed` in
+/// `lfs/gitscanner_log.go`. Returns an empty list when there is no stash.
+/// The same LFS object can appear more than once.
 pub fn scan_stashed(cwd: &Path) -> Result<Vec<PointerEntry>, Error> {
     let stash_shas: Vec<String> = match Command::new("git")
         .arg("-C")
@@ -637,11 +580,12 @@ pub fn scan_stashed(cwd: &Path) -> Result<Vec<PointerEntry>, Error> {
     if stash_shas.is_empty() {
         return Ok(Vec::new());
     }
-    // Each stash entry is walked twice: first with `-m --first-parent`
-    // to surface the WIP merge's diff against HEAD; then with no
-    // extra args to surface the index merge (and the untracked merge
-    // when present). Both runs hit the same parser; pointers are
-    // deduped at the call site.
+    // A stash entry is a merge commit whose first parent is HEAD at
+    // stash time. Its other parents are the index commit and, with
+    // `git stash -u`, the untracked files commit. The first pass, with
+    // `-m --first-parent`, diffs the stash commit against HEAD. The
+    // second pass skips merge diffs, so it shows the index and untracked
+    // commits.
     let mut entries: Vec<PointerEntry> = Vec::new();
     for extra in [&["-m", "--first-parent"][..], &[][..]] {
         let mut args: Vec<String> = vec!["log".into()];
@@ -682,25 +626,19 @@ pub fn scan_stashed(cwd: &Path) -> Result<Vec<PointerEntry>, Error> {
         if let Some(entry) = parser.flush() {
             entries.push(entry);
         }
-        // Swallow the exit status — `git log -g refs/stash^..refs/stash`
-        // can fail when `refs/stash` doesn't exist; upstream's
-        // `scanStashed` ignores it for the same reason.
+        // Upstream's `scanStashed` ignores this exit status too.
         let _ = child.wait();
     }
     Ok(entries)
 }
 
-/// Walk `git log -G "oid sha256:" -p <ref>` since `since`, returning
-/// every LFS pointer that appears as the **previous** state of a
-/// modified file (i.e. lives on the `-` side of a unified diff).
+/// Find the LFS pointers that commits on `reference` since `since`
+/// replaced or deleted.
 ///
-/// Mirrors upstream's `lfs/gitscanner_log.go::logPreviousSHAs`. Used by
-/// fetch-recent (to download pre-images of recently-modified files) and
-/// by prune retention (to keep them on disk).
-///
-/// `-U12` is requested so a small in-place edit still surfaces enough
-/// surrounding context to capture the full pointer body (version, oid,
-/// size, optional ext-N lines).
+/// Reads the removed side of `git log -p` diffs, like upstream's
+/// `logPreviousSHAs` in `lfs/gitscanner_log.go`. Fetch uses this for
+/// `lfs.fetchrecentcommitsdays` and prune to decide what to keep. The
+/// same LFS object can appear more than once.
 pub fn scan_previous_versions(
     cwd: &Path,
     reference: &str,
@@ -755,25 +693,23 @@ pub fn scan_previous_versions(
 /// Which side of a unified diff to capture pointer bodies from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LogDiffDirection {
-    /// `+` lines (new state of the file in this commit). Used by the
-    /// stash walker — the WIP merge's "added" pointer is the one we
-    /// need to keep around if the user later does `git stash pop`.
+    /// `+` lines, the file's state after the commit.
     Additions,
-    /// `-` lines (previous state, before this commit modified it).
+    /// `-` lines, the file's state before the commit.
     Deletions,
 }
 
-/// Line-by-line state machine for `git log -p` output formatted with
-/// `--format=lfs-commit-sha: %H %P`. Mirrors upstream's `logScanner`
-/// (`lfs/gitscanner_log.go`).
+/// Parser for `git log -p --format=lfs-commit-sha: %H %P` output, fed one
+/// line at a time.
+///
+/// Mirrors upstream's `logScanner` in `lfs/gitscanner_log.go`.
 struct LogScanner {
     direction: LogDiffDirection,
-    /// Path of the file currently being diffed, or `None` between
-    /// commits / before the first `diff --git` header.
+    /// Path of the file being diffed, or `None` before the first file
+    /// header or when the header couldn't be parsed.
     current_filename: Option<String>,
-    /// Buffered pointer-body lines (with the diff marker stripped).
-    /// Flushed into a [`PointerEntry`] when the next file/commit
-    /// boundary arrives or the stream ends.
+    /// Pointer lines seen so far for the current file, without their diff
+    /// marker.
     pointer_data: Vec<u8>,
 }
 
@@ -786,9 +722,10 @@ impl LogScanner {
         }
     }
 
-    /// Feed one log line. Returns `Some(entry)` when a complete pointer
-    /// body just got flushed (i.e. a file or commit boundary just
-    /// arrived after we'd buffered some pointer data).
+    /// Feed one line of output.
+    ///
+    /// At a commit or file header, returns the previous file's pointer if
+    /// it parsed.
     fn feed(&mut self, line: &str) -> Option<PointerEntry> {
         if line.starts_with("lfs-commit-sha: ") {
             return self.flush();
@@ -804,15 +741,15 @@ impl LogScanner {
             return entry;
         }
         if self.current_filename.is_some() && is_pointer_data_line(line, self.direction) {
-            // Strip the leading diff marker (`+`, `-`, or ` `).
             self.pointer_data.extend_from_slice(&line.as_bytes()[1..]);
             self.pointer_data.push(b'\n');
         }
         None
     }
 
-    /// Drain the pending pointer buffer into a [`PointerEntry`] if it
-    /// parses as a valid LFS pointer. Resets the buffer either way.
+    /// Parse the buffered lines as a pointer and clear the buffer.
+    ///
+    /// Call once more after the last line.
     fn flush(&mut self) -> Option<PointerEntry> {
         if self.pointer_data.is_empty() {
             return None;
@@ -832,11 +769,11 @@ impl LogScanner {
     }
 }
 
-/// Pointer-body lines start with one of the diff markers (`+`, `-`,
-/// ` `) followed by one of the four pointer-keyword prefixes. We
-/// always include unchanged context lines (` `) so the version/size
-/// lines bracket the changed `oid` line — `-U12` makes that reliable
-/// for typical extension chains too.
+/// Whether a diff line is a pointer line on the side `dir` reads.
+///
+/// Context lines count for both sides, since an edit usually changes only
+/// the `oid` and `size` lines. The callers ask for `-U12` so the rest of
+/// the pointer, extensions included, is in the context.
 fn is_pointer_data_line(line: &str, dir: LogDiffDirection) -> bool {
     let mut chars = line.chars();
     let Some(marker) = chars.next() else {
@@ -856,29 +793,31 @@ fn is_pointer_data_line(line: &str, dir: LogDiffDirection) -> bool {
         || body.starts_with("ext-")
 }
 
-/// Parse a `diff --git a/<path1> b/<path2>` header to the relevant
-/// path. We pick the `b/` path for additions (the "new" name) and
-/// the `a/` path for deletions (the "old" name). Renames are rare in
-/// LFS-tracked binaries; on a rename, additions tracks the new path
-/// and deletions tracks the old, which matches upstream.
+/// Get the path from the rest of a `diff --git a/<old> b/<new>` header.
 ///
-/// Quoted / octal-escaped paths (those with spaces or non-ASCII)
-/// aren't unescaped here — yet. The fetch-recent and prune tests
-/// don't exercise them, so deferring keeps Slice 3 compact.
+/// Returns the new path for additions and the old path for deletions.
+/// Like upstream's `a\/(.+?)\s+"?b\/(.+)`, the old path ends at the first
+/// whitespace followed by `b/`, so paths may contain spaces. Paths that
+/// git quotes (control characters, and non-ASCII unless `core.quotePath`
+/// is off) are returned still quoted and escaped.
 fn parse_diff_git_header(rest: &str, dir: LogDiffDirection) -> Option<String> {
-    let trimmed = rest.trim();
-    let a_idx = trimmed.find("a/")?;
-    let after_a = &trimmed[a_idx + 2..];
-    // Find the boundary between path1 and " b/path2". Upstream's regex
-    // uses `\s+`, so any whitespace run terminates path1.
-    let space_idx = after_a.find(|c: char| c.is_whitespace())?;
-    let path_a = &after_a[..space_idx];
-    let after_space = after_a[space_idx..].trim_start();
-    let after_b = after_space.strip_prefix("b/")?;
-    match dir {
-        LogDiffDirection::Additions => Some(after_b.to_owned()),
-        LogDiffDirection::Deletions => Some(path_a.to_owned()),
+    let rest = rest.trim();
+    let after_a = rest.strip_prefix('"').unwrap_or(rest).strip_prefix("a/")?;
+    // Skip the first character: the old path can't be empty.
+    for (i, c) in after_a.char_indices().skip(1) {
+        if !c.is_whitespace() {
+            continue;
+        }
+        let tail = after_a[i..].trim_start();
+        if let Some(path_b) = tail.strip_prefix('"').unwrap_or(tail).strip_prefix("b/") {
+            let path = match dir {
+                LogDiffDirection::Additions => path_b,
+                LogDiffDirection::Deletions => &after_a[..i],
+            };
+            return Some(path.to_owned());
+        }
     }
+    None
 }
 
 #[cfg(test)]
@@ -915,7 +854,7 @@ mod tests {
     #[test]
     fn finds_pointer_blobs_skips_plain_blobs() {
         let repo = init_repo();
-        // Plain content + LFS pointer side-by-side.
+        // Plain content and an LFS pointer side by side.
         commit_file(&repo, "plain.txt", b"just text");
         let pointer = pointer_text(b"this would be the actual binary content");
         commit_file(&repo, "big.bin", &pointer);
@@ -946,8 +885,8 @@ mod tests {
     fn finds_pointers_in_history_not_just_tip() {
         let repo = init_repo();
         // A pointer that is later overwritten by plain content. ScanRefs
-        // semantics require we still find it — older commits are part of
-        // history reachable from HEAD.
+        // semantics require we still find it, since older commits are part
+        // of the history reachable from HEAD.
         let pointer = pointer_text(b"deleted later");
         commit_file(&repo, "x.bin", &pointer);
         commit_file(&repo, "x.bin", b"plain text now");
@@ -984,7 +923,7 @@ mod tests {
     fn scan_tree_returns_only_tree_entries_not_history() {
         let repo = init_repo();
         // A pointer that exists historically but is gone at HEAD must
-        // NOT show up in scan_tree (this is the point of the helper —
+        // NOT show up in scan_tree (this is the point of the helper:
         // ls-files should only see what's in the named tree).
         let pointer = pointer_text(b"deleted later");
         commit_file(&repo, "x.bin", &pointer);
@@ -998,7 +937,7 @@ mod tests {
     fn scan_tree_emits_one_entry_per_path_not_per_oid() {
         let repo = init_repo();
         // Same pointer at two paths in the current tree → two entries.
-        // (scan_pointers would dedupe to one; scan_tree must not.)
+        // (scan_pointers would dedupe to one, scan_tree must not.)
         let pointer = pointer_text(b"shared payload");
         commit_file(&repo, "first.bin", &pointer);
         commit_file(&repo, "second.bin", &pointer);
@@ -1109,7 +1048,7 @@ mod tests {
     #[test]
     fn log_scanner_skips_non_pointer_diffs() {
         // The pointer-data regex only matches lines starting with one
-        // of the four LFS keywords — random source-file edits don't
+        // of the four LFS keywords, so random source-file edits don't
         // accumulate.
         let lines = [
             "lfs-commit-sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -1132,7 +1071,7 @@ mod tests {
             parse_diff_git_header(h, LogDiffDirection::Deletions).as_deref(),
             Some("foo.bin")
         );
-        // Rename — paths differ; deletions sees the old name.
+        // Rename: paths differ, and deletions sees the old name.
         let renamed = "a/old.bin b/new.bin";
         assert_eq!(
             parse_diff_git_header(renamed, LogDiffDirection::Additions).as_deref(),
@@ -1142,5 +1081,34 @@ mod tests {
             parse_diff_git_header(renamed, LogDiffDirection::Deletions).as_deref(),
             Some("old.bin")
         );
+    }
+
+    #[test]
+    fn parse_diff_git_header_allows_spaces_in_paths() {
+        let h = "a/my file.bin b/my file.bin";
+        assert_eq!(
+            parse_diff_git_header(h, LogDiffDirection::Additions).as_deref(),
+            Some("my file.bin")
+        );
+        assert_eq!(
+            parse_diff_git_header(h, LogDiffDirection::Deletions).as_deref(),
+            Some("my file.bin")
+        );
+    }
+
+    #[test]
+    fn log_scanner_finds_pointer_in_path_with_spaces() {
+        let lines = [
+            "lfs-commit-sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "diff --git a/my file.bin b/my file.bin",
+            " version https://git-lfs.github.com/spec/v1",
+            "-oid sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "-size 1",
+            "+oid sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "+size 2",
+        ];
+        let out = feed_log(LogDiffDirection::Deletions, lines);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0].path.as_deref(), Some(Path::new("my file.bin")));
     }
 }
