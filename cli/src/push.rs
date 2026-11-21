@@ -471,7 +471,7 @@ pub(crate) fn upload_in_range_with_args(
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     let changed_paths = changed_paths_in_range(cwd, includes, excludes, extra_rev_list_args)?;
     let theirs_blockers: Vec<git_lfs_api::Lock> =
-        match fetcher.preflight_verify_locks(cwd, remote, &endpoint)? {
+        match fetcher.preflight_verify_locks(cwd, Some(remote), remote, &endpoint)? {
             crate::locks_verify::Outcome::Aborted => {
                 return Ok(PushOutcome {
                     report: Report::default(),

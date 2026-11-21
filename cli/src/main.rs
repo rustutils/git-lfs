@@ -19,6 +19,7 @@ mod http_client;
 mod install;
 mod lock;
 mod lock_cache;
+mod lock_client;
 mod lockable;
 mod locks_verify;
 mod logs;

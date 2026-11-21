@@ -20,5 +20,6 @@
 
 pub mod adapter;
 pub mod connection;
+pub mod lock;
 pub mod pktline;
 pub mod pool;

@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use git_lfs_api::{
-    Auth, BatchRequest, Client as ApiClient, ObjectSpec, Operation, Ref, SharedSshResolver,
+    Auth, Client as ApiClient, ObjectSpec, Operation, Ref, SharedSshResolver,
     SshAuth as ApiSshAuth, SshOperation as ApiSshOperation, SshResolver,
 };
 use git_lfs_creds::{
@@ -276,27 +276,44 @@ impl LfsFetcher {
 
     /// Run the pre-flight `/locks/verify` check before push, returning
     /// an [`Outcome`](crate::locks_verify::Outcome) the caller acts on.
-    /// Threads the fetcher's runtime + api client through to
-    /// `locks_verify`.
+    /// Builds a [`LockClient`](crate::lock_client::LockClient) that
+    /// dispatches per `lfs.<url>.sshtransfer` config — SSH-shaped
+    /// endpoints with `sshtransfer != never` route through the
+    /// pure-SSH lock pool so the master `-oControlMaster=yes` SSH
+    /// connection upstream's test suite counts on actually spawns
+    /// during preflight.
+    ///
+    /// Reuses [`self.api`] for the HTTP fallback path so the
+    /// SSH-auth cache (and any URL-scoped credentials) carry over
+    /// from the previous transfer setup — without this, the
+    /// `git-lfs-authenticate` invocation count counted by
+    /// `t-batch-transfer.sh` doubles.
     pub fn preflight_verify_locks(
         &self,
         cwd: &Path,
+        remote: Option<&str>,
         remote_label: &str,
         endpoint: &str,
     ) -> Result<crate::locks_verify::Outcome, crate::push::PushCommandError> {
+        let rt = Arc::new(
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| {
+                    crate::push::PushCommandError::Fetch(
+                        format!("build verify runtime: {e}").into(),
+                    )
+                })?,
+        );
         let api = self
             .api
             .as_ref()
             .map_err(|m| -> FetchError { m.clone().into() })
-            .map_err(crate::push::PushCommandError::Fetch)?;
-        crate::locks_verify::run(
-            &self.runtime,
-            api,
-            cwd,
-            remote_label,
-            endpoint,
-            self.refspec.as_ref(),
-        )
+            .map_err(crate::push::PushCommandError::Fetch)?
+            .clone();
+        let client = crate::lock_client::build_lock_client_with_api(cwd, remote, rt, api)
+            .map_err(|e| crate::push::PushCommandError::Fetch(e.into()))?;
+        crate::locks_verify::run(&client, cwd, remote_label, endpoint, self.refspec.as_ref())
     }
 
     /// Ask the server which of the given OIDs it already holds. Used by
@@ -311,17 +328,10 @@ impl LfsFetcher {
         if specs.is_empty() {
             return Ok(HashSet::new());
         }
-        let api = self
-            .api
-            .as_ref()
-            .map_err(|m| -> FetchError { m.clone().into() })?;
-        let mut req = BatchRequest::new(Operation::Upload, specs);
-        if let Some(r) = self.refspec.clone() {
-            req = req.with_ref(r);
-        }
+        let transfer = self.transfer()?;
         let resp = self
             .runtime
-            .block_on(api.batch(&req))
+            .block_on(transfer.batch(Operation::Upload, specs, self.refspec.clone()))
             .map_err(|e| -> FetchError { e.to_string().into() })?;
         Ok(resp
             .objects
@@ -349,17 +359,10 @@ impl LfsFetcher {
         if specs.is_empty() {
             return Ok(HashSet::new());
         }
-        let api = self
-            .api
-            .as_ref()
-            .map_err(|m| -> FetchError { m.clone().into() })?;
-        let mut req = BatchRequest::new(Operation::Download, specs);
-        if let Some(r) = self.refspec.clone() {
-            req = req.with_ref(r);
-        }
+        let transfer = self.transfer()?;
         let resp = self
             .runtime
-            .block_on(api.batch(&req))
+            .block_on(transfer.batch(Operation::Download, specs, self.refspec.clone()))
             .map_err(|e| -> FetchError { e.to_string().into() })?;
         Ok(resp
             .objects
@@ -474,7 +477,7 @@ fn build_api_client_with(
 
 /// Read `lfs.<endpoint>.sshtransfer` falling back to `lfs.sshtransfer`.
 /// Lowercased so callers can pattern-match on `"always" / "never"`.
-fn read_sshtransfer_for(cwd: &Path, endpoint: &str) -> Option<String> {
+pub(crate) fn read_sshtransfer_for(cwd: &Path, endpoint: &str) -> Option<String> {
     let endpoint_key = format!("lfs.{endpoint}.sshtransfer");
     if let Ok(Some(v)) = git_lfs_git::config::get_effective(cwd, &endpoint_key) {
         return Some(v.trim().to_ascii_lowercase());
@@ -592,7 +595,7 @@ enum SshMode {
 /// `GIT_SSH` (single program path) > literal `ssh` on `$PATH`.
 /// `core.sshCommand` is upstream's fallback before `GIT_SSH`; we don't
 /// honor it yet — see NOTES.md.
-fn resolve_ssh_program() -> String {
+pub(crate) fn resolve_ssh_program() -> String {
     if let Some(v) = std::env::var_os("GIT_SSH_COMMAND")
         && !v.is_empty()
     {
@@ -694,6 +697,17 @@ fn transfer_config_for(cwd: &Path, endpoint_url: Option<&str>) -> TransferConfig
         && n > 0
     {
         config.batch_size = n;
+    }
+    // `lfs.concurrenttransfers` overrides the default queue width.
+    // Upstream auto-tunes from CPU count; we still hard-code the
+    // default (see NOTES.md) but honor the user override so test 8
+    // of `t-batch-transfer.sh` (which sets `concurrentTransfers=2`)
+    // exercises a real concurrency cap.
+    if let Ok(Some(raw)) = git_lfs_git::config::get_effective(cwd, "lfs.concurrenttransfers")
+        && let Ok(n) = raw.trim().parse::<usize>()
+        && n > 0
+    {
+        config.concurrency = n;
     }
     // `lfs.transfer.maxverifies` clamps to >= 3, matching upstream's
     // `tq/verify.go` `max(defaultMaxVerifyAttempts, mv)` — so a negative

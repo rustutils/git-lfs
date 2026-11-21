@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `transfer+cli`: pure-SSH lock commands + LockClient + batch
+  routing. Phase 4 of the pure-SSH transfer protocol. Adds
+  `sshtransfer::lock` (the `lock` / `unlock` / `list-lock`
+  protocol commands), introduces `cli::lock_client::LockClient`
+  (an enum-dispatched HTTP / SSH / negotiate client used by
+  `git lfs lock`, `unlock`, `locks`, plus the pre-push
+  `/locks/verify` preflight), and routes
+  `LfsFetcher::check_server_has` and `check_server_can_download`
+  through `Transfer::batch` so SSH-mode pushes don't fall back
+  to HTTP-via-`git-lfs-authenticate` for the "server already
+  has?" probe. Adds `Pool::end_all_available` and an
+  `SshBackend` `Drop` impl that gracefully `quit`s the transfer
+  pool's master at the end of an operation (matches upstream's
+  `terminating pure SSH connection` count). Honors
+  `lfs.concurrentTransfers` so the SSH pool size lines up with
+  the upstream test fixture. Lands `t-batch-transfer` tests 6-8,
+  `t-push-failures-local` tests 2/4/6, `t-lock` test 17,
+  `t-locks` test 4, and the `t-unlock` SSH variant.
 - `transfer+cli`: pure-SSH upload + negotiate dispatch. Phase 3
   of the pure-SSH transfer protocol. Adds `ssh::upload`
   (`put-object` streamed binary data + `verify-object` ack),

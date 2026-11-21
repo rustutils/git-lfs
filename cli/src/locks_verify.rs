@@ -28,9 +28,10 @@
 
 use std::path::Path;
 
-use git_lfs_api::{ApiError, Client as ApiClient, Lock, Ref, VerifyLocksRequest};
+use git_lfs_api::{ApiError, Lock, Ref, VerifyLocksRequest};
 use git_lfs_git::ConfigScope;
 
+use crate::lock_client::{LockClient, LockClientError};
 use crate::push::PushCommandError;
 
 /// Effective `locksverify` setting for `endpoint`. Falls back from
@@ -59,11 +60,12 @@ pub enum Outcome {
 }
 
 /// Pre-flight check called by `push` / `pre-push` before any byte
-/// transfer. `runtime` lets us drive the async API client from the
-/// otherwise-sync push command.
+/// transfer. `client` carries the transport choice (HTTP, SSH, or
+/// negotiate); when SSH is in play the lock pool master spawns here,
+/// which is the connection upstream's test suite expects under the
+/// `-oControlMaster=yes` count on upload.
 pub fn run(
-    runtime: &tokio::runtime::Runtime,
-    api: &ApiClient,
+    client: &LockClient,
     cwd: &Path,
     remote_label: &str,
     endpoint: &str,
@@ -79,75 +81,89 @@ pub fn run(
         req.r#ref = Some(r.clone());
     }
 
-    match runtime.block_on(api.verify_locks(&req)) {
-        Ok(resp) => {
-            // Successful verify. If the user hasn't opted in yet, give
-            // them a one-line nudge — they need to know locking is
-            // available so they can decide whether to enforce it.
-            if matches!(setting, Setting::Unset) {
-                eprintln!(
-                    "Locking support detected on remote \"{remote_label}\". \
-                     Consider enabling it with: "
-                );
-                eprintln!("  $ git config lfs.{endpoint}.locksverify true");
-            }
-            Ok(Outcome::Verified {
-                ours: resp.ours,
-                theirs: resp.theirs,
-            })
+    let resp = match client.verify_locks(&req) {
+        Ok(resp) => resp,
+        Err(LockClientError::Api(boxed)) => {
+            return Ok(handle_api_error(
+                *boxed,
+                setting,
+                cwd,
+                remote_label,
+                endpoint,
+            ));
         }
-        Err(ApiError::Status { status: 501, .. }) => {
-            // 501 Not Implemented — server explicitly doesn't support
-            // locking. Auto-disable the config so we don't ask again.
-            // Best-effort: a missing local repo or read-only config
-            // shouldn't break the push.
+        Err(e) => {
+            eprintln!("warning: lock verify failed: {e}");
+            return Ok(Outcome::Skipped);
+        }
+    };
+    // Successful verify. If the user hasn't opted in yet, give them a
+    // one-line nudge — they need to know locking is available so they
+    // can decide whether to enforce it.
+    if matches!(setting, Setting::Unset) {
+        eprintln!(
+            "Locking support detected on remote \"{remote_label}\". \
+             Consider enabling it with: "
+        );
+        eprintln!("  $ git config lfs.{endpoint}.locksverify true");
+    }
+    Ok(Outcome::Verified {
+        ours: resp.ours,
+        theirs: resp.theirs,
+    })
+}
+
+/// Translate an HTTP-side verify failure into an [`Outcome`], applying
+/// upstream's quirks per status code:
+///
+/// - 501 ⇒ auto-disable `lfs.<endpoint>.locksverify` and skip.
+/// - 5xx other than 501 ⇒ "no locking API" message; abort if verify
+///   is explicitly enabled, else skip with a warning.
+/// - 401 / 403 ⇒ "Authentication error" with the same enabled-vs-not
+///   gating, mirroring `lockverifier.go`.
+/// - 404 ⇒ silently skip (no locking endpoint at all).
+/// - anything else ⇒ warn and skip.
+fn handle_api_error(
+    e: ApiError,
+    setting: Setting,
+    cwd: &Path,
+    remote_label: &str,
+    endpoint: &str,
+) -> Outcome {
+    match &e {
+        ApiError::Status { status: 501, .. } => {
             let key = format!("lfs.{endpoint}.locksverify");
             let _ = git_lfs_git::config::set(cwd, ConfigScope::Local, &key, "false");
-            Ok(Outcome::Skipped)
+            Outcome::Skipped
         }
-        Err(ApiError::Status { status, .. }) if (500..600).contains(&status) => {
-            // 5xx other than 501 — typically transient, but the user
-            // told us to verify, so we abort. Without verify=true we
-            // warn and proceed.
+        ApiError::Status { status, .. } if (500..600).contains(status) => {
             if matches!(setting, Setting::Enabled) {
                 eprintln!(
                     "\"{remote_label}\" does not support the Git LFS locking API. \
                      Consider disabling it with:"
                 );
                 eprintln!("  $ git config lfs.{endpoint}.locksverify false");
-                Ok(Outcome::Aborted)
+                Outcome::Aborted
             } else {
                 eprintln!("\"{remote_label}\" does not support the Git LFS locking API.");
-                Ok(Outcome::Skipped)
+                Outcome::Skipped
             }
         }
-        Err(
-            e @ ApiError::Status {
-                status: 401 | 403, ..
-            },
-        ) => {
-            // Upstream's `lockverifier.go` prefixes auth-class lock
-            // errors with `(error|warning): Authentication error: <e>`,
-            // where `<e>` carries the underlying `Authorization error:
-            // <url>` wording from `defaultError`. Two layers of grep:
-            // pre-push tests look at the outer prefix, askpass tests
-            // look at the URL-bearing inner.
+        ApiError::Status {
+            status: 401 | 403, ..
+        } => {
             if matches!(setting, Setting::Enabled) {
                 eprintln!("error: Authentication error: {e}");
-                Ok(Outcome::Aborted)
+                Outcome::Aborted
             } else {
                 eprintln!("warning: Authentication error: {e}");
-                Ok(Outcome::Skipped)
+                Outcome::Skipped
             }
         }
-        Err(ApiError::Status { status: 404, .. }) => {
-            // 404 = no locking endpoint at all. Treat like 501 minus
-            // the auto-disable — silently skip.
-            Ok(Outcome::Skipped)
-        }
-        Err(e) => {
+        ApiError::Status { status: 404, .. } => Outcome::Skipped,
+        _ => {
             eprintln!("warning: lock verify failed: {e}");
-            Ok(Outcome::Skipped)
+            Outcome::Skipped
         }
     }
 }

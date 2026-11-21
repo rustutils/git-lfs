@@ -143,6 +143,32 @@ impl SshBackend {
     }
 }
 
+impl Drop for SshBackend {
+    /// Gracefully quit each direction's pool on backend drop. The
+    /// `terminating pure SSH connection (#N)` trace this emits is
+    /// what `t-batch-transfer.sh::assert_ssh_transfer_sessions`
+    /// counts on the upload path (`min=max=1` for the transfer
+    /// pool's master). Best-effort: pool errors here would just
+    /// noise up unrelated drop chains.
+    ///
+    /// The lock-side pool isn't owned by `SshBackend` — locking
+    /// lives in `cli::lock_client` and intentionally drops its
+    /// pool without `end()`-ing, matching upstream's "control
+    /// socket SSH connection ... never shut down cleanly" quirk.
+    fn drop(&mut self) {
+        for slot in [&self.download, &self.upload] {
+            let mut state = match slot.lock() {
+                Ok(s) => s,
+                Err(p) => p.into_inner(),
+            };
+            if let TransportState::Pool(p) = &*state {
+                p.end_all_available();
+            }
+            *state = TransportState::Untried;
+        }
+    }
+}
+
 /// One concrete transport choice made by [`SshBackend::dispatch`].
 pub enum Transport {
     /// Use the SSH connection pool.

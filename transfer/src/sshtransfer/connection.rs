@@ -538,6 +538,12 @@ impl Drop for Connection {
     /// leaks file descriptors and (for long-lived multiplex masters) keeps
     /// SSH connections open. We send SIGKILL and reap so the OS frees the
     /// resources before the next test runs in the same `make test` session.
+    ///
+    /// No trace emission — the `terminating pure SSH connection (#N)`
+    /// line is reserved for [`end()`](Self::end) (clean quit). Connections
+    /// that get dropped without going through `end()` (e.g. the lock-pool
+    /// master that upstream's tests expect to "never shut down cleanly")
+    /// stay silent here so the `assert_ssh_transfer_sessions` counts work.
     fn drop(&mut self) {
         // try_wait first — if the child already exited (e.g. after
         // `quit`), the kill is a no-op and wait reaps the zombie.

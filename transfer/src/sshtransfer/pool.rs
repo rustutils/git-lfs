@@ -214,6 +214,31 @@ impl Pool {
             Ok(())
         }
     }
+
+    /// Send `quit` to every currently-available connection without
+    /// consuming the pool. Used by `Drop` on the transfer-side
+    /// backend (which holds the pool behind an `Arc` and so can't
+    /// take `self`). Each connection's `end()` emits the expected
+    /// `terminating pure SSH connection (#N)` trace line that the
+    /// `assert_ssh_transfer_sessions` test helper counts.
+    ///
+    /// Errors are swallowed — the subprocess gets reaped via
+    /// [`Connection`]'s `Drop` impl either way, and we don't want a
+    /// late quit failure to panic out of someone else's drop chain.
+    pub fn end_all_available(&self) {
+        let mut slots = match self.slots.lock() {
+            Ok(s) => s,
+            Err(p) => p.into_inner(),
+        };
+        for slot in slots.iter_mut() {
+            if matches!(slot, SlotState::Available(_)) {
+                let taken = std::mem::replace(slot, SlotState::Vacant);
+                if let SlotState::Available(conn) = taken {
+                    let _ = conn.end();
+                }
+            }
+        }
+    }
 }
 
 fn spawn(

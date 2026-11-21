@@ -9,16 +9,14 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 
-use git_lfs_api::{
-    ApiError, Client as ApiClient, CreateLockError, CreateLockRequest, DeleteLockRequest,
-    ListLocksFilter, Lock, LockList, Ref, VerifyLocksRequest, VerifyLocksResponse,
-};
+use git_lfs_api::{ApiError, ListLocksFilter, Lock, Ref, VerifyLocksRequest};
 use serde::Serialize;
 use tokio::runtime::Runtime;
 
-use crate::fetcher::build_api_client;
 use crate::lock_cache;
+use crate::lock_client::{LockClient, LockClientError, VerifyPage, build_lock_client};
 use crate::lockable;
 
 #[derive(Debug, thiserror::Error)]
@@ -77,8 +75,9 @@ pub fn lock(cwd: &Path, paths: &[String], opts: &LockOptions) -> Result<bool, Lo
             "git lfs lock requires at least one path".into(),
         ));
     }
-    let api = build_api_client(cwd, opts.remote.as_deref()).map_err(LockCommandError::Build)?;
-    let runtime = build_runtime()?;
+    let runtime = Arc::new(build_runtime()?);
+    let client = build_lock_client(cwd, opts.remote.as_deref(), runtime.clone())
+        .map_err(LockCommandError::Build)?;
     let root = repo_root(cwd).map_err(LockCommandError::Build)?;
     let refspec = resolve_refspec(&root, opts.refspec.as_deref());
 
@@ -93,11 +92,7 @@ pub fn lock(cwd: &Path, paths: &[String], opts: &LockOptions) -> Result<bool, Lo
                 continue;
             }
         };
-        let mut req = CreateLockRequest::new(path.clone());
-        if let Some(name) = &refspec {
-            req = req.with_ref(Ref::new(name.clone()));
-        }
-        match runtime.block_on(api.create_lock(&req)) {
+        match client.create_lock(&path, refspec.as_deref()) {
             Ok(lock) => {
                 if !opts.json {
                     println!("Locked {path} ({})", lock.id);
@@ -114,7 +109,7 @@ pub fn lock(cwd: &Path, paths: &[String], opts: &LockOptions) -> Result<bool, Lo
                 lock_cache::add(cwd, &lock);
                 locks.push(lock);
             }
-            Err(CreateLockError::Conflict { existing, message }) => {
+            Err(LockClientError::Conflict { existing, message }) => {
                 // Match upstream's "Locking <path> failed: <reason>"
                 // shape (see `t-lock.sh::locking a previously locked
                 // file`). Owner goes on its own follow-up line.
@@ -124,8 +119,8 @@ pub fn lock(cwd: &Path, paths: &[String], opts: &LockOptions) -> Result<bool, Lo
                 }
                 success = false;
             }
-            Err(CreateLockError::Api(e)) => {
-                eprintln!("Locking {path} failed: {}", api_error_reason(&e));
+            Err(e) => {
+                eprintln!("Locking {path} failed: {}", lock_client_error_reason(&e));
                 success = false;
             }
         }
@@ -179,15 +174,14 @@ pub fn locks(cwd: &Path, opts: &LocksOptions) -> Result<(), LockCommandError> {
         return Ok(());
     }
 
-    let api = build_api_client(cwd, opts.remote.as_deref()).map_err(LockCommandError::Build)?;
-    let runtime = build_runtime()?;
+    let runtime = Arc::new(build_runtime()?);
+    let client = build_lock_client(cwd, opts.remote.as_deref(), runtime.clone())
+        .map_err(LockCommandError::Build)?;
     let refspec = resolve_refspec(&root, opts.refspec.as_deref());
 
     if opts.verify {
-        let resp = runtime
-            .block_on(verify_all(&api, opts.limit, refspec.clone()))
-            .map_err(|e| format_api_error(&e))
-            .map_err(LockCommandError::Api)?;
+        let resp = verify_all(&client, opts.limit, refspec.clone())
+            .map_err(|e| LockCommandError::Api(lock_client_error_reason(&e)))?;
         if opts.json {
             println!(
                 "{}",
@@ -219,9 +213,9 @@ pub fn locks(cwd: &Path, opts: &LocksOptions) -> Result<(), LockCommandError> {
     };
     let mut all_locks: Vec<Lock> = Vec::new();
     loop {
-        let page: LockList = runtime
-            .block_on(api.list_locks(&filter))
-            .map_err(|e| LockCommandError::Api(format_api_error(&e)))?;
+        let page = client
+            .list_locks(&filter)
+            .map_err(|e| LockCommandError::Api(lock_client_error_reason(&e)))?;
         all_locks.extend(page.locks);
         // Check the limit BEFORE the cursor — a server that ignores
         // `?limit=N` and returns more on the last page would otherwise
@@ -247,25 +241,20 @@ pub fn locks(cwd: &Path, opts: &LocksOptions) -> Result<(), LockCommandError> {
     Ok(())
 }
 
-/// Drain `verify_locks` across all pages, since the API paginates the same
-/// way `list_locks` does.
-async fn verify_all(
-    api: &ApiClient,
+/// Drain verify across all pages — paginated the same way list_locks is.
+fn verify_all(
+    client: &LockClient,
     limit: Option<u32>,
     refspec: Option<String>,
-) -> Result<VerifyLocksResponse, git_lfs_api::ApiError> {
+) -> Result<VerifyPage, LockClientError> {
     let mut req = VerifyLocksRequest {
         limit,
         r#ref: refspec.map(Ref::new),
         ..Default::default()
     };
-    let mut combined = VerifyLocksResponse {
-        ours: Vec::new(),
-        theirs: Vec::new(),
-        next_cursor: None,
-    };
+    let mut combined = VerifyPage::default();
     loop {
-        let page = api.verify_locks(&req).await?;
+        let page = client.verify_locks(&req)?;
         combined.ours.extend(page.ours);
         combined.theirs.extend(page.theirs);
         match page.next_cursor {
@@ -305,8 +294,9 @@ pub fn unlock(
         ));
     }
 
-    let api = build_api_client(cwd, opts.remote.as_deref()).map_err(LockCommandError::Build)?;
-    let runtime = build_runtime()?;
+    let runtime = Arc::new(build_runtime()?);
+    let client = build_lock_client(cwd, opts.remote.as_deref(), runtime.clone())
+        .map_err(LockCommandError::Build)?;
     let root = repo_root(cwd).map_err(LockCommandError::Build)?;
     let refspec = resolve_refspec(&root, opts.refspec.as_deref());
     let lockable_readonly = crate::lockable::lockable_readonly_enabled(&root);
@@ -315,9 +305,8 @@ pub fn unlock(
 
     if has_id {
         let id = opts.id.clone().expect("checked above");
-        let req = build_delete_request(opts.force, refspec.as_deref());
         let attrs = git_lfs_git::AttrSet::from_workdir(&root).ok();
-        match runtime.block_on(api.delete_lock(&id, &req)) {
+        match client.delete_lock(&id, refspec.as_deref(), opts.force) {
             Ok(lock) => {
                 if !opts.json {
                     println!("Unlocked Lock {id}");
@@ -340,14 +329,14 @@ pub fn unlock(
                 lock_cache::remove_by_id(cwd, &id);
             }
             Err(e) => {
-                eprintln!("Unlocking {id} failed: {}", api_error_reason(&e));
+                eprintln!("Unlocking {id} failed: {}", lock_client_error_reason(&e));
                 success = false;
                 if opts.json {
                     report.push(UnlockJsonEntry {
                         id: Some(id),
                         path: None,
                         unlocked: false,
-                        reason: Some(api_error_reason(&e)),
+                        reason: Some(lock_client_error_reason(&e)),
                     });
                 }
             }
@@ -410,7 +399,7 @@ pub fn unlock(
                 refspec: refspec.clone(),
                 ..Default::default()
             };
-            let id = match runtime.block_on(api.list_locks(&lookup)) {
+            let id = match client.list_locks(&lookup) {
                 Ok(list) => list
                     .locks
                     .iter()
@@ -419,7 +408,7 @@ pub fn unlock(
                 Err(e) => {
                     eprintln!(
                         "git-lfs: lookup failed for {path}: {}",
-                        format_api_error(&e)
+                        lock_client_error_reason(&e)
                     );
                     success = false;
                     if opts.json {
@@ -427,7 +416,7 @@ pub fn unlock(
                             id: None,
                             path: Some(path.clone()),
                             unlocked: false,
-                            reason: Some(format_api_error(&e)),
+                            reason: Some(lock_client_error_reason(&e)),
                         });
                     }
                     continue;
@@ -446,8 +435,7 @@ pub fn unlock(
                 }
                 continue;
             };
-            let req = build_delete_request(opts.force, refspec.as_deref());
-            match runtime.block_on(api.delete_lock(&id, &req)) {
+            match client.delete_lock(&id, refspec.as_deref(), opts.force) {
                 Ok(_) => {
                     if !opts.json {
                         println!("Unlocked {path}");
@@ -474,14 +462,14 @@ pub fn unlock(
                     }
                 }
                 Err(e) => {
-                    eprintln!("Unlocking {path} failed: {}", api_error_reason(&e));
+                    eprintln!("Unlocking {path} failed: {}", lock_client_error_reason(&e));
                     success = false;
                     if opts.json {
                         report.push(UnlockJsonEntry {
                             id: None,
                             path: Some(path),
                             unlocked: false,
-                            reason: Some(api_error_reason(&e)),
+                            reason: Some(lock_client_error_reason(&e)),
                         });
                     }
                 }
@@ -493,13 +481,6 @@ pub fn unlock(
         println!("{}", serde_json::to_string(&report)?);
     }
     Ok(success)
-}
-
-fn build_delete_request(force: bool, refspec: Option<&str>) -> DeleteLockRequest {
-    DeleteLockRequest {
-        force,
-        r#ref: refspec.map(|n| Ref::new(n.to_string())),
-    }
 }
 
 // --------------------------------------------------------------------------
@@ -535,11 +516,21 @@ fn api_error_reason(e: &ApiError) -> String {
     }
 }
 
-/// Same idea as [`api_error_reason`], used at call sites where the
-/// command is wrapping the error as a string for upper layers (e.g.
-/// `lookup failed for {path}: {…}`).
-fn format_api_error(e: &ApiError) -> String {
-    api_error_reason(e)
+/// Same idea as [`api_error_reason`], generalized to [`LockClientError`].
+/// SSH-side errors (no underlying ApiError) fall back to `Display`.
+fn lock_client_error_reason(e: &LockClientError) -> String {
+    match e {
+        LockClientError::Api(inner) => api_error_reason(inner),
+        LockClientError::Conflict { message, .. } => message.clone(),
+        LockClientError::SshStatus { message, status } => {
+            if message.is_empty() {
+                format!("ssh status {status}")
+            } else {
+                message.clone()
+            }
+        }
+        LockClientError::Ssh(s) => s.clone(),
+    }
 }
 
 /// True if `path` (relative to `root`) has staged or unstaged
@@ -658,7 +649,7 @@ fn print_lock_table(locks: &[Lock], owned: Option<&std::collections::HashSet<Str
     }
 }
 
-fn print_verify_table(resp: &VerifyLocksResponse) {
+fn print_verify_table(resp: &VerifyPage) {
     let mut combined = Vec::with_capacity(resp.ours.len() + resp.theirs.len());
     combined.extend(resp.ours.iter().cloned());
     combined.extend(resp.theirs.iter().cloned());

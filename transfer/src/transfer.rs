@@ -112,6 +112,36 @@ impl Transfer {
         self.run(Dir::Upload, objects, r#ref, events).await
     }
 
+    /// Run just the batch dispatch for `op` and return the server's
+    /// response. Routes through the same backend as
+    /// [`download`](Self::download) / [`upload`](Self::upload): SSH
+    /// goes via the pure-SSH pool (with HTTP fallback in negotiate
+    /// mode), HTTP goes via the API client with retry. Used by
+    /// callers that want to inspect the batch response without
+    /// kicking off any byte transfers (e.g. `push`'s "server already
+    /// has?" check).
+    pub async fn batch(
+        &self,
+        op: Operation,
+        objects: Vec<ObjectSpec>,
+        r#ref: Option<Ref>,
+    ) -> Result<BatchResponse, TransferError> {
+        let mut req = BatchRequest::new(op, objects);
+        if let Some(r) = r#ref {
+            req = req.with_ref(r);
+        }
+        match &self.backend {
+            Backend::Http { api, .. } => self.batch_with_retry(api, &req).await,
+            Backend::Ssh(ssh_backend) => match ssh_backend.dispatch(op) {
+                Transport::Pool(pool) => ssh::batch(pool, &req).await,
+                Transport::Http(http) => self.batch_with_retry(&http.api, &req).await,
+                Transport::NoFallback(e) => {
+                    Err(TransferError::Io(std::io::Error::other(e.to_string())))
+                }
+            },
+        }
+    }
+
     async fn run(
         &self,
         dir: Dir,
