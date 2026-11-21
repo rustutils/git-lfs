@@ -42,6 +42,11 @@ when the docs are ambiguous. Useful places to look:
 
 We left out upstream's how-to guides and man pages, since we write our own.
 
+The vendored files come from upstream's `main` as of late April 2026
+(around `14ae1707`). The local checkout is now at `v3.8.1` (`a662a6db`).
+Compare `docs/` and `tests/` against it, with `git diff 14ae1707 v3.8.1 --
+docs t` in the checkout, and bring over what changed.
+
 ## Known gaps
 
 Grouped by area, with the failing tests each one would fix.
@@ -101,12 +106,6 @@ come from reading the code.
 
 ### Security
 
-- **`http.sslCAInfo` doesn't check handshake signatures.**
-  `PinnedCertVerifier` in `cli/src/http_client.rs` returns success from
-  `verify_tls12_signature` and `verify_tls13_signature` without checking
-  anything, so a server presenting a copy of the pinned certificate is
-  accepted without proving it has the key. Use rustls's own signature
-  checks. Upstream adds the file to a normal certificate pool.
 - **The SSH path isn't shell-quoted.** `creds/src/ssh.rs` runs
   `git-lfs-authenticate {path} {operation}` on the server with the path as
   given, and `build_argv` in `transfer/src/sshtransfer/connection.rs` does

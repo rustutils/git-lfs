@@ -18,6 +18,7 @@ use git_lfs_git::{HttpOptions, extra_headers_for};
 use reqwest::cookie::Jar;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::crypto::WebPkiSupportedAlgorithms;
 use rustls::{DigitallySignedStruct, SignatureScheme};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 
@@ -139,11 +140,15 @@ fn pinned_cert_config(
     }
 
     let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let verifier = PinnedCertVerifier {
+        pinned,
+        algorithms: provider.signature_verification_algorithms,
+    };
     let builder = rustls::ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
         .ok()?
         .dangerous()
-        .with_custom_certificate_verifier(Arc::new(PinnedCertVerifier { pinned }));
+        .with_custom_certificate_verifier(Arc::new(verifier));
 
     let config = match (cert_path, key_path) {
         (Some(cp), Some(kp)) => {
@@ -178,12 +183,15 @@ fn load_client_identity(
 
 /// Accepts a server certificate only if its bytes match a pinned one.
 ///
-/// The host name, chain, and expiry aren't checked. The handshake
-/// signature isn't checked either, so the server never proves it holds the
-/// certificate's private key.
+/// The host name, chain, and expiry aren't checked, but the handshake
+/// signature is, so the server must hold the certificate's private key.
+/// Pinning exact bytes, rather than trusting the file as CAs like upstream,
+/// accepts self-signed CA certificates that rustls's own verifier rejects as
+/// server certificates.
 #[derive(Debug)]
 struct PinnedCertVerifier {
     pinned: Vec<CertificateDer<'static>>,
+    algorithms: WebPkiSupportedAlgorithms,
 }
 
 impl ServerCertVerifier for PinnedCertVerifier {
@@ -210,34 +218,120 @@ impl ServerCertVerifier for PinnedCertVerifier {
 
     fn verify_tls12_signature(
         &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &DigitallySignedStruct,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        Ok(HandshakeSignatureValid::assertion())
+        rustls::crypto::verify_tls12_signature(message, cert, dss, &self.algorithms)
     }
 
     fn verify_tls13_signature(
         &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &DigitallySignedStruct,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        Ok(HandshakeSignatureValid::assertion())
+        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.algorithms)
     }
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        vec![
-            SignatureScheme::RSA_PKCS1_SHA256,
-            SignatureScheme::RSA_PKCS1_SHA384,
-            SignatureScheme::RSA_PKCS1_SHA512,
-            SignatureScheme::ECDSA_NISTP256_SHA256,
-            SignatureScheme::ECDSA_NISTP384_SHA384,
-            SignatureScheme::ECDSA_NISTP521_SHA512,
-            SignatureScheme::RSA_PSS_SHA256,
-            SignatureScheme::RSA_PSS_SHA384,
-            SignatureScheme::RSA_PSS_SHA512,
-            SignatureScheme::ED25519,
-        ]
+        self.algorithms.supported_schemes()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustls::server::{ClientHello, ResolvesServerCert};
+    use rustls::sign::CertifiedKey;
+
+    // A self-signed certificate for `localhost`, its key, and an unrelated
+    // key. Generated once with openssl.
+    const CERT: &str = "-----BEGIN CERTIFICATE-----
+MIIBdDCCARqgAwIBAgIUbDDaPQe0JitNWNZtyXPaOF8VhrMwCgYIKoZIzj0EAwIw
+FDESMBAGA1UEAwwJbG9jYWxob3N0MCAXDTI2MTEyMTEyMzAwNFoYDzIxMjYxMDI4
+MTIzMDA0WjAUMRIwEAYDVQQDDAlsb2NhbGhvc3QwWTATBgcqhkjOPQIBBggqhkjO
+PQMBBwNCAASMWY/4opDRYJtPjAFg8JCeWyef3IQS/o705xYB7usuXqPw8QTl0vOw
++v5FymCgO6j6vxo99PqSy1+8h3DaDfhJo0gwRjAdBgNVHQ4EFgQUN7Gi76lonwhi
+7t/nVioYnt3Ly8wwDwYDVR0TAQH/BAUwAwEB/zAUBgNVHREEDTALgglsb2NhbGhv
+c3QwCgYIKoZIzj0EAwIDSAAwRQIhAPSzpgjN85fZfsHoQ9VH/zCwwsQXB+eVQswq
+9odyYJl3AiBLQgdiX2lsZPf7gxQ86yskFV8a8UjefmA2BI1poMNzzQ==
+-----END CERTIFICATE-----";
+    const CERT_KEY: &str = "-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgiL/YQe/UK/XFaiYJ
+3RvAJZRBbrEtn+eSiiZemVGAcRuhRANCAASMWY/4opDRYJtPjAFg8JCeWyef3IQS
+/o705xYB7usuXqPw8QTl0vOw+v5FymCgO6j6vxo99PqSy1+8h3DaDfhJ
+-----END PRIVATE KEY-----";
+    const OTHER_KEY: &str = "-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgaX/mkUA00glo6KTc
+d+T6QhWlixzjH5Yp4XkTBs/T9j6hRANCAAQzd5YbwUeACPHItktSLJL9/T2sDHMa
+gK5S8+YxJvFLdXrxncZ47Udpx0Y7Hf9UmASWvx2Tfgnth0/rVfoPtZUq
+-----END PRIVATE KEY-----";
+
+    /// A server that presents `CERT` and signs with the given key.
+    #[derive(Debug)]
+    struct FixedCert(Arc<CertifiedKey>);
+
+    impl ResolvesServerCert for FixedCert {
+        fn resolve(&self, _hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+            Some(self.0.clone())
+        }
+    }
+
+    fn pem_cert() -> CertificateDer<'static> {
+        rustls_pemfile::certs(&mut CERT.as_bytes())
+            .next()
+            .unwrap()
+            .unwrap()
+    }
+
+    /// Run a TLS handshake in memory between a client that pins `CERT`
+    /// and a server that presents `CERT` but signs with `server_key`.
+    fn handshake(server_key: &str) -> Result<(), rustls::Error> {
+        let dir = tempfile::tempdir().unwrap();
+        let ca = dir.path().join("ca.pem");
+        std::fs::write(&ca, CERT).unwrap();
+        let client_config = pinned_cert_config(ca.to_str().unwrap(), None, None).unwrap();
+
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let key = rustls_pemfile::private_key(&mut server_key.as_bytes())
+            .unwrap()
+            .unwrap();
+        let signing_key = provider.key_provider.load_private_key(key).unwrap();
+        let certified = CertifiedKey::new(vec![pem_cert()], signing_key);
+        let server_config = rustls::ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_cert_resolver(Arc::new(FixedCert(Arc::new(certified))));
+
+        let mut client = rustls::ClientConnection::new(
+            Arc::new(client_config),
+            ServerName::try_from("localhost").unwrap(),
+        )?;
+        let mut server = rustls::ServerConnection::new(Arc::new(server_config))?;
+        while client.is_handshaking() || server.is_handshaking() {
+            let mut buf = Vec::new();
+            client.write_tls(&mut buf).unwrap();
+            server.read_tls(&mut buf.as_slice()).unwrap();
+            server.process_new_packets()?;
+            let mut buf = Vec::new();
+            server.write_tls(&mut buf).unwrap();
+            client.read_tls(&mut buf.as_slice()).unwrap();
+            client.process_new_packets()?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn pinned_cert_with_its_key_is_accepted() {
+        handshake(CERT_KEY).unwrap();
+    }
+
+    #[test]
+    fn pinned_cert_with_another_key_is_rejected() {
+        // The certificate is public, so an impostor can present it. Without
+        // the private key, its handshake signature must fail.
+        assert!(handshake(OTHER_KEY).is_err());
     }
 }

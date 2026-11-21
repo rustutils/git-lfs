@@ -8,6 +8,12 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ## [Unreleased]
 
+### Security
+
+- With `http.sslCAInfo` set, the server must prove it holds the private key
+  of the certificate in that file. Before, any server presenting a copy of
+  the certificate was accepted.
+
 ### Added
 
 - Pure-SSH transfers. For SSH remotes whose server provides `git-lfs-transfer`,
