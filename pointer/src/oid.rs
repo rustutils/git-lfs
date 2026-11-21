@@ -1,24 +1,22 @@
 use std::fmt;
 use std::str::FromStr;
 
-/// Hex form of the SHA-256 of the empty input.
+/// [`Oid::EMPTY`] in hex: the SHA-256 of empty input.
 ///
-/// Used as the OID of the [empty pointer], which represents an
-/// empty file (see the spec).
+/// This is the OID of the [empty pointer].
 ///
 /// [empty pointer]: crate::Pointer::empty
 pub const EMPTY_HEX: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 /// A SHA-256 object identifier.
 ///
-/// Stored as the raw 32 bytes; rendered as 64 lowercase hex characters by
-/// [`fmt::Display`]. Construction via [`Oid::from_hex`] enforces the spec's
-/// strict-lowercase, exactly-64-hex-character format.
+/// Displayed as 64 lowercase hex characters, the only form [`Oid::from_hex`]
+/// accepts.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Oid([u8; 32]);
 
 impl Oid {
-    /// SHA-256 of the empty input. The OID of the [empty pointer].
+    /// The SHA-256 of empty input, and the OID of the [empty pointer].
     ///
     /// [empty pointer]: crate::Pointer::empty
     pub const EMPTY: Oid = Oid([
@@ -27,13 +25,12 @@ impl Oid {
         0xb8, 0x55,
     ]);
 
-    /// Construct an OID from raw 32 hash bytes (e.g. the output of a
-    /// streaming SHA-256 hasher).
+    /// Build an OID from a SHA-256 hash.
     pub const fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
 
-    /// Parse an OID from its 64-character lowercase hex form.
+    /// Parse an OID from 64 lowercase hex characters.
     pub fn from_hex(s: &str) -> Result<Self, OidParseError> {
         if s.len() != 64 {
             return Err(OidParseError::InvalidLength(s.len()));
@@ -48,7 +45,7 @@ impl Oid {
         Ok(Oid(out))
     }
 
-    /// Borrow the raw 32-byte hash.
+    /// The hash as bytes.
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
@@ -58,7 +55,7 @@ fn hex_digit(b: u8) -> Result<u8, OidParseError> {
     match b {
         b'0'..=b'9' => Ok(b - b'0'),
         b'a'..=b'f' => Ok(b - b'a' + 10),
-        // Uppercase A-F is rejected on purpose: the spec mandates lowercase.
+        // The spec requires lowercase.
         _ => Err(OidParseError::InvalidCharacter(b as char)),
     }
 }
@@ -85,14 +82,13 @@ impl FromStr for Oid {
     }
 }
 
-/// Why [`Oid::from_hex`] (or `Oid::from_str`) failed.
+/// Why [`Oid::from_hex`] failed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum OidParseError {
-    /// Input wasn't exactly 64 characters long.
+    /// The input isn't 64 characters long.
     #[error("oid must be 64 hex characters, got {0}")]
     InvalidLength(usize),
-    /// Input contained a character outside `0-9a-f` (uppercase
-    /// rejected; the spec mandates lowercase).
+    /// The input has a character other than `0-9` and `a-f`.
     #[error("oid contains invalid character {0:?} (must be lowercase 0-9a-f)")]
     InvalidCharacter(char),
 }
@@ -130,7 +126,7 @@ mod tests {
 
     #[test]
     fn rejects_uppercase() {
-        // Spec mandates lowercase; uppercase A-F is not accepted.
+        // The spec requires lowercase.
         let upper = "4D7A214614AB2935C943F9E0FF69D22EADBB8F32B1258DAAA5E2CA24D17E2393";
         assert_eq!(
             Oid::from_hex(upper),

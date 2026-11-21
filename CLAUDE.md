@@ -81,6 +81,9 @@ new one.
 - Use code formatting only for things the reader types or matches exactly.
   Write concepts in prose.
 - Wrap prose at 80 columns.
+- A crate's `README.md` is for someone on crates.io deciding whether the crate
+  solves their problem. Its `lib.rs` docs are for someone using or reading the
+  code: an entry point to the main types and how they fit together.
 - `CHANGELOG.md` is for users of the CLI: what changed for them, and which
   settings control it. No crate internals or test counts.
 - Commit messages are one plain line, with no prefix like `docs:` and no

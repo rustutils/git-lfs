@@ -1,30 +1,19 @@
 //! Parse and encode Git LFS pointer files.
 //!
-//! A pointer is a small UTF-8 text file that stands in for a large
-//! file in a git repository. It carries the file's SHA-256 OID, its
-//! size, and an optional list of extension records. This crate
-//! handles parsing and encoding of that format, with no I/O, no
-//! network, and no git dependency.
+//! A [`Pointer`] records a file's [`Oid`] (its SHA-256 hash), its size, and
+//! any [`Extension`]s that transformed it. The [spec] has the full format.
 //!
-//! The format is a sorted sequence of `key value` lines: the
-//! `version` URL always first, then optional extension records
-//! sorted by single-digit priority, then the `oid` and `size`
-//! lines. The whole file must be under 1024 bytes (see
-//! [`docs/spec.md`] for the full grammar).
+//! [`Pointer::parse`] reads a pointer from a Git blob, and [`Pointer::encode`]
+//! writes one. Parsing accepts some variations that encoding never produces:
+//! CRLF line endings, whitespace at the start or end of the input, extensions
+//! out of order, and older version URLs. [`Pointer::canonical`] says whether
+//! the input was already in canonical form. If it wasn't, re-encoding changes
+//! the bytes and so the blob's Git hash. `git lfs fsck` reports such
+//! pointers.
 //!
-//! [`Pointer::parse`] is permissive (CRLF line endings, trailing
-//! whitespace, unsorted extensions, and older version URLs all
-//! parse cleanly), while [`Pointer::encode`] always emits the
-//! canonical form. Each parsed pointer carries a `canonical` flag
-//! so callers like the smudge filter can pass the original bytes
-//! through verbatim when they already match; re-encoding a
-//! non-canonical pointer would change its git blob hash.
-//!
-//! Parse errors split into [`DecodeError::NotAPointer`] (input
-//! bears no LFS markers; callers should treat the bytes as opaque
-//! content) and [`DecodeError::Malformed`] (input has pointer
-//! shape but invalid contents; callers should surface the error).
-//! [`DecodeError::is_not_a_pointer`] is the predicate test.
+//! A parse can fail in two ways. [`DecodeError::NotAPointer`] means the input
+//! is ordinary content, and [`DecodeError::Malformed`] means it looks like a
+//! pointer but is invalid.
 //!
 //! ```
 //! use git_lfs_pointer::{Oid, Pointer};
@@ -41,7 +30,7 @@
 //! assert!(parsed.canonical);
 //! ```
 //!
-//! [`docs/spec.md`]: https://gitlab.com/rustutils/git-lfs/-/blob/master/docs/spec.md
+//! [spec]: https://gitlab.com/rustutils/git-lfs/-/blob/master/docs/spec.md
 
 mod oid;
 
@@ -50,59 +39,58 @@ pub use oid::{EMPTY_HEX, Oid, OidParseError};
 /// The version URL we always emit. Older aliases parse but re-encode to this.
 pub const VERSION_LATEST: &str = "https://git-lfs.github.com/spec/v1";
 
-/// Hard cap on pointer file size.
+/// The size limit for pointer files.
 ///
-/// Pointer files must be strictly smaller than this value (per the
-/// spec); inputs of this size or larger are not pointers.
+/// A pointer must be smaller than this, so input this size or larger is never a
+/// pointer.
 pub const MAX_POINTER_SIZE: usize = 1024;
 
-/// Recognized version URLs we accept on the read path.
+/// Version URLs accepted when parsing.
 const VERSION_ALIASES: &[&str] = &[
     "http://git-media.io/v/2",            // alpha
     "https://hawser.github.com/spec/v1",  // pre-release
     "https://git-lfs.github.com/spec/v1", // current
 ];
 
-/// A parsed git-lfs pointer.
+/// A Git LFS pointer.
 ///
-/// A pointer with `size == 0` is an *empty pointer*: it represents an empty
-/// file and serializes to the empty byte string. The `oid` field of an empty
-/// pointer is conventionally [`Oid::EMPTY`] (SHA-256 of zero bytes).
+/// A pointer with size 0 is the *empty pointer*. It represents an empty file
+/// and encodes to an empty string. Its OID is normally [`Oid::EMPTY`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pointer {
     /// SHA-256 of the file's content.
     pub oid: Oid,
     /// Size of the file in bytes.
     pub size: u64,
-    /// Pointer extensions, sorted by `priority` ascending. May be empty.
+    /// Extensions, sorted by priority.
     pub extensions: Vec<Extension>,
-    /// `true` if this was decoded from input that exactly matched the
-    /// canonical encoding, or if it was constructed programmatically.
+    /// Whether the parsed input was exactly the canonical encoding.
     ///
-    /// Re-encoding a non-canonical parse produces canonical bytes.
+    /// Always `true` for pointers built with [`Pointer::new`] or
+    /// [`Pointer::empty`].
     pub canonical: bool,
 }
 
 /// A pointer extension.
 ///
-/// Extensions appear between the `version` and `oid` lines in the
-/// encoded form, sorted by `priority`. Priorities are single decimal
-/// digits (0-9). See [`docs/extensions.md`] for the chain semantics.
+/// An extension is a program that transformed the file's content before it
+/// was stored. The [extensions spec] explains how they're chained.
 ///
-/// [`docs/extensions.md`]: https://gitlab.com/rustutils/git-lfs/-/blob/master/docs/extensions.md
+/// [extensions spec]: https://gitlab.com/rustutils/git-lfs/-/blob/master/docs/extensions.md
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Extension {
-    /// Extension name, e.g. `lfs-folderstore`. ASCII alphanumeric or `_`.
+    /// Extension name: ASCII letters, digits, and `_`.
     pub name: String,
-    /// Single decimal digit (0-9). Lower priorities run earlier in
-    /// the extension chain.
+    /// Priority from 0 to 9. Lower priorities run first when cleaning.
     pub priority: u8,
-    /// SHA-256 of the data this extension saw as input during clean.
+    /// SHA-256 of this extension's input when cleaning.
     pub oid: Oid,
 }
 
 impl Pointer {
-    /// Build a non-empty pointer with no extensions.
+    /// Build a pointer with no extensions.
+    ///
+    /// With a size of 0, this is the empty pointer.
     pub fn new(oid: Oid, size: u64) -> Self {
         Self {
             oid,
@@ -112,10 +100,9 @@ impl Pointer {
         }
     }
 
-    /// The empty pointer: size 0, OID [`Oid::EMPTY`], no extensions.
+    /// The empty pointer, which represents an empty file.
     ///
-    /// This is both the parse result for empty input and the pointer
-    /// representation of an empty file.
+    /// Parsing empty input returns this.
     pub fn empty() -> Self {
         Self {
             oid: Oid::EMPTY,
@@ -125,15 +112,15 @@ impl Pointer {
         }
     }
 
-    /// `true` if this is the empty pointer (size 0).
+    /// Whether this is the empty pointer (size 0).
     pub fn is_empty(&self) -> bool {
         self.size == 0
     }
 
-    /// Encode to canonical text form. The empty pointer encodes to `""`.
+    /// Encode in canonical form.
     ///
-    /// Extensions are emitted sorted by priority. The version line is always
-    /// [`VERSION_LATEST`], regardless of what the source used.
+    /// The empty pointer encodes to an empty string. The version line is
+    /// always [`VERSION_LATEST`].
     pub fn encode(&self) -> String {
         use std::fmt::Write as _;
         if self.size == 0 {
@@ -152,12 +139,9 @@ impl Pointer {
         out
     }
 
-    /// Parse a pointer from the raw bytes of a blob.
+    /// Parse a pointer from the contents of a blob.
     ///
-    /// Returns [`DecodeError::NotAPointer`] if the input doesn't look like a
-    /// pointer at all (callers like the smudge filter should pass the bytes
-    /// through unchanged), or [`DecodeError::Malformed`] if the input has
-    /// pointer shape but invalid contents (callers should error out).
+    /// Empty input parses as [`Pointer::empty`].
     pub fn parse(input: &[u8]) -> Result<Self, DecodeError> {
         if input.is_empty() {
             return Ok(Self::empty());
@@ -190,19 +174,19 @@ fn parse_lines(text: &str) -> Result<Pointer, DecodeError> {
     let mut extensions: Vec<Extension> = Vec::new();
 
     for (line_no, raw_line) in text.split('\n').enumerate() {
-        // Tolerate CRLF: bufio.Scanner does this in upstream, so we match.
+        // Upstream's bufio.Scanner accepts CRLF, so we do too.
         let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
         if line.is_empty() {
             continue;
         }
 
         let (key, value) = line.split_once(' ').ok_or(DecodeError::NotAPointer(
-            NotAPointerReason::MalformedLine { line: line_no },
+            NotAPointerReason::MalformedLine { line: line_no + 1 },
         ))?;
 
         if consumed == REQUIRED.len() {
             return Err(DecodeError::NotAPointer(NotAPointerReason::ExtraLine {
-                line: line_no,
+                line: line_no + 1,
                 content: line.into(),
             }));
         }
@@ -225,9 +209,9 @@ fn parse_lines(text: &str) -> Result<Pointer, DecodeError> {
             continue;
         }
 
-        // Not a required key, not an extension. If this happens before the
-        // version line, treat as NotAPointer (matches upstream's
-        // StandardizeBadPointerError); otherwise it's a malformed pointer.
+        // An unknown key before the version line means this isn't a pointer,
+        // as in upstream's StandardizeBadPointerError. After it, the pointer
+        // is malformed.
         return Err(if expected == "version" {
             DecodeError::NotAPointer(NotAPointerReason::NotVersionFirst { got: key.into() })
         } else {
@@ -282,14 +266,13 @@ fn parse_oid_value(value: &str) -> Result<Oid, MalformedReason> {
 }
 
 fn parse_size(value: &str) -> Result<u64, MalformedReason> {
-    // u64 parse already rejects leading '-', '+', whitespace, and non-digits.
+    // Parsing as u64 already rejects signs, whitespace, and non-digits.
     value
         .parse::<u64>()
         .map_err(|_| MalformedReason::InvalidSize(value.into()))
 }
 
-/// Returns `Some((priority, name))` if `key` is a valid extension key in the
-/// form `ext-<digit>-<word>`. Word characters are ASCII alphanumeric or `_`.
+/// Split an `ext-<priority>-<name>` key into its priority and name.
 fn parse_extension_key(key: &str) -> Option<(u8, &str)> {
     let rest = key.strip_prefix("ext-")?;
     let bytes = rest.as_bytes();
@@ -306,92 +289,75 @@ fn parse_extension_key(key: &str) -> Option<(u8, &str)> {
     Some((bytes[0] - b'0', name))
 }
 
-/// Why a [`Pointer::parse`] call failed.
-///
-/// Splits into "not a pointer" (input wasn't intended to be an LFS
-/// pointer; callers should surface the bytes as opaque content) and
-/// "malformed" (input claimed to be a pointer but didn't validate;
-/// callers should surface the error).
+/// Why [`Pointer::parse`] failed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DecodeError {
-    /// The input does not look like a pointer at all.
+    /// The input isn't a pointer. Treat it as ordinary content.
     #[error("not a git-lfs pointer: {0}")]
     NotAPointer(NotAPointerReason),
-    /// The input has pointer shape but is invalid.
+    /// The input looks like a pointer but is invalid. Report it as an error.
     #[error("malformed git-lfs pointer: {0}")]
     Malformed(MalformedReason),
 }
 
 impl DecodeError {
-    /// `true` if the input doesn't look like a pointer.
-    ///
-    /// The smudge filter should pass the bytes through unchanged in
-    /// this case.
+    /// Whether this is [`DecodeError::NotAPointer`].
     pub fn is_not_a_pointer(&self) -> bool {
         matches!(self, DecodeError::NotAPointer(_))
     }
 }
 
-/// Specific reason a [`DecodeError::NotAPointer`] was returned.
-///
-/// Each variant captures one shape that doesn't qualify as a pointer
-/// at all; callers should treat the input as opaque content.
+/// Why input isn't a pointer.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum NotAPointerReason {
-    /// Input is at or above the [`MAX_POINTER_SIZE`] cutoff.
+    /// The input is [`MAX_POINTER_SIZE`] bytes or larger.
     #[error("size {size} bytes is not below the {MAX_POINTER_SIZE}-byte cutoff")]
     TooLarge { size: usize },
-    /// Input bytes aren't valid UTF-8; pointer files are UTF-8 by spec.
+    /// The input isn't valid UTF-8.
     #[error("input is not valid UTF-8")]
     NotUtf8,
-    /// Input doesn't contain any of the recognized git-lfs spec markers.
+    /// The input doesn't mention git-lfs or its older names.
     #[error("missing git-lfs spec marker")]
     MissingHeader,
-    /// A line is missing the `<key> <value>` separator.
+    /// A line (counting from 1) has no space between key and value.
     #[error("line {line} has no key/value separator")]
     MalformedLine { line: usize },
-    /// The input ended without yielding a `version` line.
+    /// There's no version line.
     #[error("missing version line")]
     MissingVersion,
-    /// The first non-empty line's key wasn't `version`.
+    /// The first line isn't the version line.
     #[error("first key is {got:?}, expected version")]
     NotVersionFirst { got: String },
-    /// Trailing content past the `size` line (only `version`, optional
-    /// `ext-N-name`, `oid`, `size` are allowed).
+    /// A line (counting from 1) follows the size line.
     #[error("extra content on line {line}: {content:?}")]
     ExtraLine { line: usize, content: String },
 }
 
-/// Specific reason a [`DecodeError::Malformed`] was returned.
-///
-/// Each variant marks a pointer that passed the not-a-pointer shape
-/// checks but failed deeper validation; callers should surface the
-/// error to the user.
+/// Why a pointer is malformed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum MalformedReason {
-    /// The `version` value isn't one of the recognized spec URLs.
+    /// The version URL isn't one we recognize.
     #[error("unrecognized version: {0:?}")]
     InvalidVersion(String),
-    /// A line's key was unexpected at this point in the parse.
+    /// A line's key is out of place.
     #[error("expected key {expected:?}, got {got:?}")]
     UnexpectedKey { expected: &'static str, got: String },
-    /// A required line (`oid` or `size`) was missing.
+    /// The `oid` or `size` line is missing.
     #[error("missing required {0:?} line")]
     MissingField(&'static str),
-    /// An OID value isn't in `<type>:<hash>` form.
+    /// An OID isn't in `<type>:<hash>` form.
     #[error("oid value {0:?} is not in the form <type>:<hash>")]
     MalformedOidValue(String),
-    /// An OID's type prefix wasn't `sha256` (the only one we support).
+    /// An OID's type isn't `sha256`, the only supported type.
     #[error("unsupported oid type {0:?}; only sha256 is supported")]
     UnsupportedOidType(String),
-    /// An OID hash failed [`OidParseError`] validation (length or
-    /// character set).
+    /// An OID's hash is invalid.
     #[error("invalid oid hash: {0}")]
     InvalidOidHash(#[source] OidParseError),
-    /// The `size` value isn't a non-negative integer.
+    /// The size isn't a non-negative integer.
     #[error("size value {0:?} is not a non-negative integer")]
     InvalidSize(String),
-    /// Two extension records shared the same priority digit.
+    /// Two extensions have the same priority.
     #[error("duplicate extension priority {0}")]
     DuplicateExtensionPriority(u8),
 }
