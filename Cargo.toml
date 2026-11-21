@@ -32,7 +32,7 @@ rust-version = "1.95"
 license      = "MIT"
 authors      = ["Patrick Elsen <pelsen@xfbs.net>"]
 repository   = "https://gitlab.com/rustutils/git-lfs"
-homepage     = "https://gitlab.com/rustutils/git-lfs"
+homepage     = "https://rustutils.gitlab.io/git-lfs/"
 keywords     = ["git", "lfs", "git-lfs"]
 categories   = ["development-tools"]
 
