@@ -234,26 +234,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (the long-standing 5/6 partial). Suite tally moves to 12/20 and
   6/6.
 
-### Changed
-
-- `creds`: rework approve / reject to walk the helper chain like
-  upstream's `CredentialHelpers.Approve` (`creds/creds.go:552`) — stop
-  at the first helper that returns the new `HelperOutcome::Handled`
-  instead of broadcasting to every helper. `CachingHelper` returns
-  `Continue` on the first approve for a query (so the chain reaches a
-  real persistor) and `Handled` on subsequent approves, which
-  short-circuits the duplicate `creds: git credential approve` trace
-  the second request in a push used to emit. `NetrcHelper`,
-  `AskpassHelper`, and `GitCredentialHelper` are updated accordingly,
-  and `GitCredentialHelper::{approve, reject}` now emit the
-  `creds: git credential <sub> (...)` trace they were missing. Lands
-  `t-credentials` tests 2, 3, 6, 9 (10/20 from 6/20). Public API
-  change: `Helper::approve` / `reject` now return
-  `Result<HelperOutcome, HelperError>` instead of `Result<(),
-  HelperError>`.
-
-### Added
-
 - `git lfs track` now writes `lfs.repositoryformatversion = 0` to the
   local git config on first invocation, and errors with
   `Unknown repository format version: <val>` (exit 128) when an existing
@@ -279,6 +259,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Authorization: Basic * * * * *` line so shell tests can confirm
   auth was attached without leaking credentials. Mirrors upstream's
   `lfshttp/verbose.go::traceHTTPDump`.
+
+### Changed
+
+- `ssh://` remotes now try the pure-SSH transfer protocol
+  (`git-lfs-transfer`) first and fall back to `git-lfs-authenticate`
+  plus HTTPS if the server doesn't support it, matching upstream's
+  default. Set `lfs.<url>.sshtransfer` to `never` to keep the old
+  behavior, or `always` to disable the fallback.
+- `creds`: rework approve / reject to walk the helper chain like
+  upstream's `CredentialHelpers.Approve` (`creds/creds.go:552`) — stop
+  at the first helper that returns the new `HelperOutcome::Handled`
+  instead of broadcasting to every helper. `CachingHelper` returns
+  `Continue` on the first approve for a query (so the chain reaches a
+  real persistor) and `Handled` on subsequent approves, which
+  short-circuits the duplicate `creds: git credential approve` trace
+  the second request in a push used to emit. `NetrcHelper`,
+  `AskpassHelper`, and `GitCredentialHelper` are updated accordingly,
+  and `GitCredentialHelper::{approve, reject}` now emit the
+  `creds: git credential <sub> (...)` trace they were missing. Lands
+  `t-credentials` tests 2, 3, 6, 9 (10/20 from 6/20). Public API
+  change: `Helper::approve` / `reject` now return
+  `Result<HelperOutcome, HelperError>` instead of `Result<(),
+  HelperError>`.
 
 ## [0.7.0] - 2026-05-13
 
