@@ -119,11 +119,6 @@ come from reading the code.
   endpoint and uses them for storage hosts too. Upstream looks them up per
   request URL.
 
-### Data loss
-
-- **`git lfs migrate import` converts nested `.gitattributes` files into
-  pointers.** Confirmed. Only the top-level one is excluded.
-
 ### Wrong results or failures
 
 - **`.git/info/attributes` has the lowest precedence instead of the

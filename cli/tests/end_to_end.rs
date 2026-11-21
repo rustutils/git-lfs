@@ -2770,6 +2770,32 @@ fn migrate_everything_leaves_notes_and_stash_alone() {
     assert_eq!(rev("refs/stash"), stash, "stash was rewritten");
 }
 
+#[test]
+fn migrate_import_leaves_nested_gitattributes_alone() {
+    // Every `.gitattributes` is configuration, not content to convert.
+    let repo = fresh_repo_with_identity();
+    std::fs::create_dir(repo.path().join("sub")).unwrap();
+    std::fs::write(repo.path().join("sub/.gitattributes"), "*.txt text\n").unwrap();
+    std::fs::write(repo.path().join("a.bin"), b"binary data\n").unwrap();
+    git_in(repo.path(), &["add", "."]);
+    git_in(repo.path(), &["commit", "-q", "-m", "init"]);
+
+    let out = run_in(repo.path(), &["migrate", "import", "--include", "*"], b"");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let show = Command::new("git")
+        .arg("-C")
+        .arg(repo.path())
+        .args(["show", "HEAD:sub/.gitattributes"])
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&show.stdout), "*.txt text\n");
+}
+
 // ---------- core.hooksPath ----------------------------------------------
 
 /// Run `git-lfs <args>` in `cwd` with `global` as the global Git config.

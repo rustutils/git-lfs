@@ -275,16 +275,17 @@ impl<'a> Transform<'a> {
             self.stats.commit_marks.push((mark, oid.clone()));
         }
 
-        // The original top-level `.gitattributes` is never written out:
-        // it's replaced below. A symlink's blob is its target, so it's
-        // written out unchanged afterwards.
+        // No `.gitattributes` is converted, as in upstream. The original
+        // top-level one is never written out: it's replaced below. Nested
+        // ones, and symlinks, whose blob is their target, are written out
+        // unchanged afterwards.
         for change in &c.file_changes {
             if let FileChange::Modify {
                 dataref: DataRef::Mark(m),
                 path,
                 mode,
             } = change
-                && path != ATTRS_PATH
+                && !is_attrs_path(path)
                 && mode != "120000"
                 && !self.emitted.contains(m)
                 && let Some(content) = self.blob_buffer.remove(m)
@@ -309,10 +310,10 @@ impl<'a> Transform<'a> {
         for change in &c.file_changes {
             if let FileChange::Modify {
                 dataref: DataRef::Mark(m),
-                path: _,
+                path,
                 mode,
             } = change
-                && mode == "120000"
+                && (mode == "120000" || (is_attrs_path(path) && path != ATTRS_PATH))
                 && !self.emitted.contains(m)
                 && let Some(content) = self.blob_buffer.remove(m)
             {

@@ -66,6 +66,8 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- `git lfs migrate import` no longer converts `.gitattributes` files in
+  subdirectories into LFS pointers.
 - `git lfs migrate --everything` no longer rewrites the stash or notes,
   bisect, and replace refs, matching upstream.
 - `git lfs migrate import` keeps non-ASCII file names. Before, a file like
