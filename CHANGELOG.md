@@ -30,6 +30,8 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 - `GIT_CURL_VERBOSE` output masks Basic credentials in all headers, including
   those from `http.extraHeader` and transfer actions, as upstream does. Set
   `LFS_DEBUG_HTTP` to show them.
+- Pure-SSH downloads are written to a temporary file instead of memory. A
+  server announcing a huge object size could crash the client.
 
 ### Added
 

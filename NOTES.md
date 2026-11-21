@@ -118,9 +118,6 @@ come from reading the code.
   `http.<url>.sslVerify`, `sslCAInfo`, `sslCert`, and `sslKey` for the LFS
   endpoint and uses them for storage hosts too. Upstream looks them up per
   request URL.
-- **A pure-SSH server can crash the client.** `download` in
-  `sshtransfer/adapter.rs` calls `Vec::with_capacity` with the `size=` the
-  server sends, so a huge value aborts the process.
 
 ### Data loss
 
@@ -239,7 +236,7 @@ come from reading the code.
   the first line.
 - `git cat-file` stderr is never read, so lots of output could block.
 - Memory: `git lfs filter-process` and standalone `git lfs smudge` read
-  each file fully into memory, and pure-SSH downloads are buffered.
+  each file fully into memory.
 - `git lfs pointer` always computes SHA-1 blob IDs, even in SHA-256
   repositories.
 - `git lfs fetch`: `--all` applies `lfs.fetchinclude`, conflicting flags

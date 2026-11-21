@@ -4,6 +4,7 @@
 //! exchange in `tokio::task::spawn_blocking`. A response with a non-2xx
 //! status discards the connection.
 
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::Arc;
 
 use git_lfs_api::{Action, Actions, BatchRequest, BatchResponse, ObjectResult, Operation};
@@ -13,6 +14,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::error::TransferError;
 use crate::event::Event;
+use crate::sshtransfer::connection::ProtoStream;
 use crate::sshtransfer::pool::Pool;
 
 /// Send a batch request as a `batch` command.
@@ -224,21 +226,7 @@ pub async fn download(
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(size);
 
-        let mut sink = Vec::with_capacity(usize::try_from(advertised_size).unwrap_or(0));
-        let written = conn
-            .stream()
-            .copy_data_until_flush(&mut sink)
-            .map_err(|e| TransferError::Io(std::io::Error::other(e.to_string())))?;
-        if written != advertised_size {
-            return Err(TransferError::Io(std::io::Error::other(format!(
-                "get-object {oid_owned}: expected {advertised_size} bytes, got {written}",
-            ))));
-        }
-
-        let expected_oid = Oid::from_hex(&oid_owned)?;
-        let mut cursor = std::io::Cursor::new(sink);
-        store.insert_verified(expected_oid, &mut cursor)?;
-        Ok(())
+        receive_object(conn.stream(), &store, &oid_owned, advertised_size)
     })
     .await
     .map_err(|e| TransferError::Io(std::io::Error::other(e.to_string())))?;
@@ -254,6 +242,33 @@ pub async fn download(
         (Ok(()), None) => Ok(()),
         (Err(e), _) => Err(e),
     }
+}
+
+/// Read the data of a `get-object` reply into the store as `oid`.
+///
+/// The data goes to a temporary file rather than memory, so neither the
+/// object's size nor the size the server announces decides how much memory
+/// is used. The store checks the hash.
+fn receive_object<R: Read, W: Write>(
+    stream: &mut ProtoStream<R, W>,
+    store: &Store,
+    oid: &str,
+    advertised_size: u64,
+) -> Result<(), TransferError> {
+    let expected_oid = Oid::from_hex(oid)?;
+    store.prepare_incomplete_dir()?;
+    let mut file = tempfile::NamedTempFile::new_in(store.incomplete_dir())?;
+    let written = stream
+        .copy_data_until_flush(file.as_file_mut())
+        .map_err(|e| TransferError::Io(std::io::Error::other(e.to_string())))?;
+    if written != advertised_size {
+        return Err(TransferError::Io(std::io::Error::other(format!(
+            "get-object {oid}: expected {advertised_size} bytes, got {written}",
+        ))));
+    }
+    file.as_file_mut().seek(SeekFrom::Start(0))?;
+    store.insert_verified(expected_oid, file.as_file_mut())?;
+    Ok(())
 }
 
 /// Upload one object from the store with `put-object`, then confirm it
@@ -362,6 +377,48 @@ fn ssh_args(size: u64, action: &Action) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SHA-256 of `abc`.
+    const ABC_OID: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+    /// A stream whose reader yields `data` as one data packet and a flush.
+    fn reply(data: &[u8]) -> ProtoStream<std::io::Cursor<Vec<u8>>, Vec<u8>> {
+        let mut bytes = format!("{:04x}", data.len() + 4).into_bytes();
+        bytes.extend_from_slice(data);
+        bytes.extend_from_slice(b"0000");
+        ProtoStream::new(std::io::Cursor::new(bytes), Vec::new())
+    }
+
+    fn store() -> (tempfile::TempDir, Store) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = Store::new(tmp.path().join("lfs"));
+        (tmp, store)
+    }
+
+    #[test]
+    fn receive_object_stores_verified_data() {
+        let (_tmp, store) = store();
+        receive_object(&mut reply(b"abc"), &store, ABC_OID, 3).unwrap();
+        assert!(store.contains_with_size(ABC_OID.parse().unwrap(), 3));
+    }
+
+    #[test]
+    fn receive_object_rejects_an_announced_size_it_did_not_get() {
+        // Allocating this much up front would abort the process.
+        let (_tmp, store) = store();
+        let huge = 1 << 50;
+        let err = receive_object(&mut reply(b"abc"), &store, ABC_OID, huge);
+        assert!(err.is_err());
+        assert!(!store.contains(ABC_OID.parse().unwrap()));
+    }
+
+    #[test]
+    fn receive_object_rejects_data_with_the_wrong_hash() {
+        let (_tmp, store) = store();
+        let err = receive_object(&mut reply(b"abd"), &store, ABC_OID, 3);
+        assert!(matches!(err, Err(TransferError::Store(_))), "{err:?}");
+        assert!(!store.contains(ABC_OID.parse().unwrap()));
+    }
 
     #[test]
     fn parse_oid_lines_groups_same_oid() {
