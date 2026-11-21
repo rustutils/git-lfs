@@ -145,5 +145,4 @@ inventing a new one.
 
 ## See also
 
-- `NOTES.md`: milestones, vendored-vs-skipped rationale, open questions.
-- `ROADMAP.md`: high-level roadmap for the projects (milestones)
+- `NOTES.md`: the path to 1.0, vendored-vs-skipped rationale, open questions.

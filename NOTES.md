@@ -3,6 +3,19 @@
 Working log for the Rust reimplementation of git-lfs: deferred items, open
 questions, and milestone tracking.
 
+## Path to 1.0
+
+1.0 means full parity with upstream Git LFS:
+
+- All of upstream's shell tests pass.
+- Complete documentation, `--help` output, and man pages.
+- Binary releases for Linux, macOS, and Windows (done since 0.5).
+- An audit of our own code's style and design.
+- A comparison against upstream, to find differences the tests don't catch.
+
+Open question: should the library crates keep sharing the binary's version
+number, and how stable does their API need to be? Decide before 1.0.
+
 ## Upstream reference
 
 The original Go implementation lives at <https://github.com/git-lfs/git-lfs>.
