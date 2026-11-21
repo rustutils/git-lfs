@@ -5,35 +5,31 @@
 
 # Git Large File Storage
 
-A from-scratch Rust port of [Git LFS](https://github.com/git-lfs/git-lfs).
-The goal is feature parity with the upstream Go binary at the CLI and
-wire-protocol level, with a clean library split and a better help output
-in the binaries.
+A from-scratch Rust port of [Git LFS](https://github.com/git-lfs/git-lfs).  The
+goal is feature parity with the upstream Go binary at the CLI and protocol
+level, with better help output and a clean split into libraries.
 
 ## Status
 
-Work in progress. See [`tests/SCOREBOARD.md`](tests/SCOREBOARD.md)
-for the per-suite breakdown. The majority of functionality is already
-implemented and work end-to-end.
+Work in progress, but most of upstream's functionality is implemented and works
+end to end. About 93% of upstream's tests pass (see the
+[scoreboard](tests/SCOREBOARD.md) for details).
 
 ## Why
 
-To be completely honest, the reason I started this was that I didn't
-like how the help output of `git-lfs` looks, and I felt I could do
-better. Naturally, instead of opening a pull request, I started
-reimplementing the whole thing, as one does. And now that I've
-started, quitting isn't an option — so Rust is gaining a native
-git-lfs.
+To be completely honest, the reason I started this was that I didn't like how
+the help output of `git-lfs` looks, and I felt I could do better. Naturally,
+instead of opening a pull request, I started reimplementing the whole thing, as
+one does. And now that I've started, quitting isn't an option. So Rust is
+gaining a native git-lfs.
 
-Jokes aside, implementing git-lfs has been quite a learning exercise.
-It's more complex than I would have imagined, but it's also
-well-scoped, and the upstream test suite is genuinely good. The aim
-is reasonably clean Rust code that can serve as a basis for future
-experimentation.
+Jokes aside, implementing git-lfs has been quite a learning exercise.  It's
+more complex than I would have imagined, but it's also well-scoped, and the
+upstream test suite is genuinely good. The aim is reasonably clean Rust code
+that can serve as a basis for future experimentation.
 
-Down the line that could mean plugging into `gitoxide`'s `gix`, or
-hosting Git LFS extensions — for example, content-defined chunking to
-reduce how much data needs uploading when large files change.
+Down the line that could mean using gitoxide, or adding Git LFS extensions such
+as content-defined chunking, which uploads less data when large files change.
 
 ## Installing
 
@@ -60,30 +56,25 @@ reduce how much data needs uploading when large files change.
 
     cargo install git-lfs
 
-After installing, run `git lfs install` once per machine to register
-the clean, smudge, and process filters in your global git config. See
+After installing, run `git lfs install` once per machine to register the clean,
+smudge, and process filters in your global git config. See
 [docs/install.md](docs/install.md) for more details.
 
 ## Building and testing
 
-This codebase has two sets of tests. The in-tree Rust tests run
-through cargo:
+Build with cargo:
+
+    cargo build --release
+
+There are two sets of tests. The Rust tests run with cargo:
 
     cargo test
 
-We also ship the upstream git-lfs test suite. Running it requires
-`go`, `prove`, and `perl` — see the
-[tests README](tests/README.md) for the full setup. Once those are
-in place, our xtask runs the suite and prints a per-suite summary:
+The repository also includes upstream's shell test suite, which needs Go,
+`prove`, and Perl (see the [tests README](tests/README.md) for setup). This
+runs it and prints a summary per suite:
 
     cargo xtask test
-
-For the failing suites, the summary includes a count of failing
-tests so you can spot near-misses.
-
-Building is done using regular cargo builds:
-
-    cargo build --release
 
 ## License
 
