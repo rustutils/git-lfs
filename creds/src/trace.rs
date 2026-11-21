@@ -1,7 +1,9 @@
-//! Shared `GIT_TRACE` gate for the creds crate's tracerx-style logs.
+//! Whether to print trace lines.
 
-/// Mirrors git's `GIT_TRACE` semantics: any value other than `""`,
-/// `0`, `false`, `no`, `off` enables tracing.
+/// Whether `GIT_TRACE` is set to enable tracing.
+///
+/// Any value enables it except empty, `0`, `false`, `no`, or `off`,
+/// ignoring case and surrounding whitespace.
 pub(crate) fn trace_enabled() -> bool {
     match std::env::var_os("GIT_TRACE") {
         None => false,

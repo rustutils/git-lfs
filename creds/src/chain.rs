@@ -1,21 +1,23 @@
-//! Run a sequence of helpers, passing successes/failures back to all of them.
-//!
-//! Mirrors upstream's `CredentialHelpers`: the first helper to return
-//! creds wins for `fill`; `approve`/`reject` are broadcast to every
-//! helper so caches stay in sync with the upstream source of truth
-//! (`git credential`).
+//! Ask several credential helpers in order.
 
 use std::io::Write as _;
 
 use crate::helper::{Credentials, FillContext, Helper, HelperError, HelperOutcome};
 use crate::query::Query;
 
-/// Try each helper in order on `fill`, broadcast `approve` / `reject`.
+/// A [`Helper`] that asks a list of helpers in order.
 ///
-/// Typical wiring puts a [`CachingHelper`] before a
-/// [`GitCredentialHelper`]: the cache short-circuits the slow
-/// shell-out path once a working pair has resolved, and approvals
-/// propagate so subsequent calls hit the cache.
+/// Fill returns the first credentials found. Approve and reject stop at the
+/// first helper that returns [`HelperOutcome::Handled`], like upstream's
+/// `CredentialHelpers` in `creds/creds.go`.
+///
+/// A helper that fails doesn't stop the chain. Fill prints
+/// `credential fill error: <err>` to stderr and moves on. If no helper
+/// finds credentials, it returns the last error. Approve and reject return
+/// the first error, unless a later helper handles the call.
+///
+/// Put a [`CachingHelper`] before a [`GitCredentialHelper`] so that
+/// `git credential` runs only once per query.
 ///
 /// [`CachingHelper`]: crate::CachingHelper
 /// [`GitCredentialHelper`]: crate::GitCredentialHelper
@@ -24,28 +26,20 @@ pub struct HelperChain {
 }
 
 impl HelperChain {
-    /// Build a chain from a list of boxed helpers, applied in order.
+    /// Build a chain that asks `helpers` in order.
     pub fn new(helpers: Vec<Box<dyn Helper>>) -> Self {
         Self { helpers }
     }
 
-    /// `true` if no helpers are configured.
+    /// Whether the chain has no helpers.
     ///
-    /// Calls into [`Helper::fill`] will always return `Ok(None)` for
-    /// an empty chain.
+    /// Fill on an empty chain always returns `Ok(None)`.
     pub fn is_empty(&self) -> bool {
         self.helpers.is_empty()
     }
 }
 
 impl Helper for HelperChain {
-    /// Walk helpers in order. The first to return creds wins; helpers
-    /// that error out are logged and skipped so a busted askpass program
-    /// can't lock the user out of `git credential` further down the
-    /// chain. Mirrors upstream's `CredentialHelpers.Fill` at
-    /// `creds/creds.go:502`. If nothing returned creds and at least one
-    /// helper errored, surface the last error so callers see *why*
-    /// nothing worked rather than a bare "credentials not found".
     fn fill(&self, query: &Query) -> Result<Option<Credentials>, HelperError> {
         self.fill_with_context(query, &FillContext::default())
     }
@@ -61,10 +55,8 @@ impl Helper for HelperChain {
                 Ok(Some(c)) => return Ok(Some(c)),
                 Ok(None) => continue,
                 Err(e) => {
-                    // Upstream's `credential fill error: <err>` trace
-                    // at `creds/creds.go:513`. Always-on; `GIT_TRACE`
-                    // gating isn't worth the extra branch for a path
-                    // that already only fires when something failed.
+                    // Upstream prints this only under `GIT_TRACE`. Here it
+                    // always prints, since it only fires on failure.
                     let mut err = std::io::stderr().lock();
                     let _ = writeln!(err, "credential fill error: {e}");
                     last_err = Some(e);
@@ -78,11 +70,6 @@ impl Helper for HelperChain {
         }
     }
 
-    /// Walk helpers in order; stop at the first
-    /// [`HelperOutcome::Handled`]. Mirrors upstream's
-    /// `CredentialHelpers.Approve` at `creds/creds.go:552`. The cache
-    /// helper returning `Handled` on a repeat call is what stops
-    /// `git credential approve` from firing twice within a single push.
     fn approve(&self, query: &Query, creds: &Credentials) -> Result<HelperOutcome, HelperError> {
         let mut first_err = None;
         for h in &self.helpers {
@@ -169,10 +156,8 @@ mod tests {
 
     #[test]
     fn approve_stops_at_first_handled() {
-        // Cache returns Continue on first approve so the chain reaches
-        // the persistor; second approve returns Handled and short-
-        // circuits the persistor. Verify the persistor sees one call,
-        // not two.
+        // The cache returns Continue on the first approve, so a helper
+        // after it would run, and Handled on the second, so it wouldn't.
         let cache = crate::CachingHelper::new();
         let chain = HelperChain::new(vec![Box::new(cache)]);
         let c = Credentials::new("u", "p");

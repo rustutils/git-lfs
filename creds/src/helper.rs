@@ -1,46 +1,43 @@
-//! The `Helper` trait and shared types.
+//! The [`Helper`] trait and the types it uses.
 
 use crate::query::Query;
 
 /// Credentials returned by a credential helper.
 ///
-/// Two flavors. The classic form is `username` + `password`: empty
-/// username is fine (token-as-password setups like GitHub personal
-/// access tokens), but the password is required. The newer form
-/// carries `authtype` + `credential`, which the API client applies as
-/// a literal `Authorization: <authtype> <credential>` header — used
-/// by Bearer tokens and multistage handshakes that don't fit Basic.
-///
-/// Helpers return `authtype` + `credential` only when the input
-/// advertised `capability[]=authtype`. When both forms are absent the
-/// helper returns `Ok(None)`.
+/// Usually a username and password. The username may be empty, as with
+/// tokens used as passwords. Instead, a helper can return an auth scheme and
+/// credential (such as a Bearer token). Git credential helpers do that only
+/// when the input advertised `capability[]=authtype`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Credentials {
-    /// Username string. May be empty for token-as-password setups.
+    /// Username, possibly empty.
     pub username: String,
-    /// Password (or token) string.
+    /// Password or token.
     pub password: String,
-    /// Optional auth scheme name from `authtype=…` in the helper
-    /// response. When `Some`, paired with [`credential`](Self::credential)
-    /// to drive a literal `Authorization: <authtype> <credential>`
-    /// header rather than Basic auth.
+    /// Auth scheme from `authtype=` in the helper response.
+    ///
+    /// With [`credential`](Self::credential), sent as a literal
+    /// `Authorization: <authtype> <credential>` header instead of Basic
+    /// auth.
     pub authtype: Option<String>,
-    /// Opaque credential value from `credential=…` in the helper
-    /// response. Used together with [`authtype`](Self::authtype).
+    /// Credential from `credential=` in the helper response, used with
+    /// [`authtype`](Self::authtype).
     pub credential: Option<String>,
-    /// `state[]` values returned by a multistage helper. The API
-    /// client carries these forward into the next fill on a 401, so
-    /// the helper can resume mid-handshake.
+    /// `state[]` values from the helper response.
+    ///
+    /// The API client passes them to the next fill after a 401, so a
+    /// multistage helper can resume its handshake.
     pub state: Vec<String>,
-    /// `continue=1` in the helper response — the multistage helper
-    /// signals that this is an intermediate stage. The API client
-    /// uses this to suppress reject() on the next 401 (the creds
-    /// aren't "wrong", they're just mid-handshake).
+    /// Set by `continue=1` or `continue=true` in the helper response.
+    ///
+    /// Marks an intermediate stage of a multistage handshake. The API
+    /// client doesn't reject these credentials on a 401, since they aren't
+    /// wrong, just incomplete.
     pub multistage: bool,
 }
 
 impl Credentials {
-    /// Build basic credentials (username + password).
+    /// Build username and password credentials.
     pub fn new(username: impl Into<String>, password: impl Into<String>) -> Self {
         Self {
             username: username.into(),
@@ -52,7 +49,8 @@ impl Credentials {
         }
     }
 
-    /// Build authtype-style credentials (e.g. Bearer + token).
+    /// Build credentials from an auth scheme and credential, such as a
+    /// Bearer token.
     pub fn from_authtype(authtype: impl Into<String>, credential: impl Into<String>) -> Self {
         Self {
             username: String::new(),
@@ -65,87 +63,69 @@ impl Credentials {
     }
 }
 
-/// Things that can go wrong while invoking a credential helper.
+/// An error from a credential helper.
 #[derive(Debug, thiserror::Error)]
 pub enum HelperError {
-    /// Failed to spawn or talk to the helper subprocess.
+    /// Failed to start or talk to the helper program.
     #[error("io error invoking credential helper: {0}")]
     Io(#[from] std::io::Error),
-    /// The helper ran but reported a failure (non-zero exit, malformed
-    /// stdout, refused input, etc).
+    /// The helper ran but failed, or the input couldn't be sent safely.
     #[error("credential helper failed: {0}")]
     Failed(String),
 }
 
-/// Extra context piggybacking on a `fill` call.
+/// Extra input for a [`Helper::fill_with_context`] call.
 ///
-/// Carries the per-attempt details that upstream forwards to
-/// `git credential fill` via the `wwwauth[]`, `state[]`, and
-/// `capability[]` input lines. Default-constructed for the first
-/// attempt; populated by the API client's auth loop on subsequent
-/// retries from the prior 401's `WWW-Authenticate` response headers
-/// (`wwwauth`) and the prior helper response's continuation tokens
-/// (`state`). `capabilities` advertises which protocol extensions
-/// (`authtype`, `state`) we as a client understand.
-///
-/// Helpers that don't speak any of these knobs (cache, netrc,
-/// askpass) ignore the context entirely — the default
-/// [`Helper::fill_with_context`] impl just forwards to [`Helper::fill`].
+/// The API client's auth loop starts with the default and fills it in on
+/// retries after a 401. [`GitCredentialHelper`](crate::GitCredentialHelper)
+/// sends it to `git credential fill`. The other bundled helpers ignore it.
 #[derive(Debug, Clone, Default)]
 pub struct FillContext {
-    /// `WWW-Authenticate` response header values from the prior 401,
-    /// or empty on the first attempt. Forwarded as `wwwauth[]=…` lines
-    /// on the `git credential fill` input so helpers can pick the
-    /// right scheme.
+    /// `WWW-Authenticate` header values from the previous 401.
+    ///
+    /// Sent as `wwwauth[]` lines so the helper can pick a scheme.
     pub wwwauth: Vec<String>,
 
-    /// `state[]` values returned by the helper in the previous
-    /// response, or empty on the first attempt. Forwarded back as
-    /// `state[]=…` lines so multistage helpers can resume where they
-    /// left off.
+    /// `state[]` values from the previous helper response.
+    ///
+    /// Sent back as `state[]` lines so a multistage helper can resume.
     pub state: Vec<String>,
 
-    /// `capability[]` values to advertise on the input. Today we send
-    /// `authtype` and `state` so multistage-capable helpers know they
-    /// can use those extensions; passive helpers ignore them.
+    /// Protocol extensions to advertise as `capability[]` lines, such as
+    /// `authtype` and `state`.
     pub capabilities: Vec<String>,
 }
 
-/// What a helper did with an `approve` / `reject` call.
+/// What a helper did with an approve or reject call.
 ///
-/// The [`HelperChain`](crate::HelperChain) iterates in order and stops
-/// at the first [`Handled`](HelperOutcome::Handled) result, mirroring
-/// upstream's `CredentialHelpers.Approve` semantics in
-/// `creds/creds.go:552`. This is how `CachingHelper` short-circuits the
-/// chain on the second approve for the same query — the trace fires
-/// once per push from `GitCredentialHelper`, not once per request.
+/// [`HelperChain`](crate::HelperChain) stops at the first
+/// [`Handled`](HelperOutcome::Handled), like upstream's
+/// `CredentialHelpers.Approve` in `creds/creds.go`. This is how
+/// [`CachingHelper`](crate::CachingHelper) keeps `git credential approve`
+/// from running again for every request with the same credentials.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HelperOutcome {
-    /// This helper handled the call; do not consult further helpers.
+    /// This helper handled the call. Don't consult further helpers.
     Handled,
-    /// This helper has nothing to add; consult the next helper.
+    /// This helper has nothing to add. Consult the next helper.
     Continue,
 }
 
-/// Resolve credentials for a given query, and report success/failure back
-/// so the helper can persist or invalidate its state.
+/// A source of credentials.
 ///
-/// `Send + Sync` so a single helper can be shared across the async
-/// transfer queue. Implementations that aren't naturally thread-safe
-/// (e.g. wrap a `Cell`) should layer their own synchronization.
+/// Helpers are `Send + Sync` so one can be shared across concurrent
+/// transfers.
 pub trait Helper: Send + Sync {
-    /// Try to fetch credentials for `query`.
+    /// Look up credentials for `query`.
     ///
-    /// `Ok(None)` means "I don't know"; the chain should consult the
-    /// next helper. `Err` is a hard failure (e.g. helper subprocess
-    /// crashed) and aborts the chain.
+    /// Returns `Ok(None)` when this helper has none.
+    /// [`HelperChain`](crate::HelperChain) moves on to the next helper on
+    /// `Ok(None)` and also on `Err`.
     fn fill(&self, query: &Query) -> Result<Option<Credentials>, HelperError>;
 
-    /// Like [`fill`](Self::fill) but accepting a [`FillContext`] from
-    /// the calling auth loop. The default implementation ignores the
-    /// context and delegates to `fill`; helpers that consume the
-    /// extra fields (notably [`GitCredentialHelper`](crate::GitCredentialHelper))
-    /// override this.
+    /// Like [`fill`](Self::fill), with extra input from the auth loop.
+    ///
+    /// The default ignores `ctx` and calls `fill`.
     fn fill_with_context(
         &self,
         query: &Query,
@@ -154,21 +134,18 @@ pub trait Helper: Send + Sync {
         self.fill(query)
     }
 
-    /// Tell the helper that `creds` worked for `query`.
+    /// Report that `creds` worked for `query`.
     ///
-    /// Helpers that can persist (git credential, OS keychain via
-    /// `git credential`) should store the pair and return
-    /// [`HelperOutcome::Handled`]; pure caches use this to populate
-    /// themselves and typically return [`HelperOutcome::Continue`] so
-    /// the chain reaches a real persistor.
+    /// A helper that stores credentials, such as `git credential`, stores
+    /// them and returns [`HelperOutcome::Handled`]. Return
+    /// [`HelperOutcome::Continue`] to let the next helper see the call.
     fn approve(&self, query: &Query, creds: &Credentials) -> Result<HelperOutcome, HelperError>;
 
-    /// Tell the helper that `creds` did **not** work for `query`.
+    /// Report that `creds` did not work for `query`.
     ///
-    /// Helpers should drop the credentials so we don't loop on stale
-    /// entries. Return [`HelperOutcome::Handled`] when the rejection
-    /// is authoritative for this helper (e.g. `git credential reject`
-    /// ran); return [`HelperOutcome::Continue`] when it's a soft
-    /// invalidation (e.g. evicting a cache entry).
+    /// The helper should forget them so the next fill doesn't return them
+    /// again. Return [`HelperOutcome::Continue`] to let the next helper see
+    /// the call too, as a cache does so that `git credential reject` still
+    /// runs.
     fn reject(&self, query: &Query, creds: &Credentials) -> Result<HelperOutcome, HelperError>;
 }

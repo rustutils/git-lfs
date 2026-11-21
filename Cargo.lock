@@ -555,7 +555,6 @@ dependencies = [
 name = "git-lfs-creds"
 version = "0.7.0"
 dependencies = [
- "git-lfs-git",
  "serde",
  "serde_json",
  "tempfile",

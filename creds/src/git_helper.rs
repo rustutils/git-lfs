@@ -1,19 +1,15 @@
-//! `git credential fill/approve/reject` bridge.
+//! Bridge to `git credential fill`, `approve` and `reject`.
 //!
-//! The wire protocol is documented at <https://git-scm.com/docs/git-credential>:
+//! The protocol is documented at <https://git-scm.com/docs/git-credential>.
+//! Each command reads `key=value` lines on stdin, ended by a blank line.
+//! `fill` writes the same format on stdout with the credentials filled in.
+//! `approve` and `reject` also take the credentials as input.
 //!
-//! * `git credential fill` reads `key=value` lines on stdin terminated by a
-//!   blank line, and writes the same on stdout (with `username` /
-//!   `password` filled in).
-//! * `git credential approve` and `reject` take the same key/value input
-//!   and produce no useful stdout.
-//!
-//! Fills can additionally carry [`FillContext`](crate::FillContext)
-//! lines (`capability[]`, `wwwauth[]`, `state[]`) that the API
-//! client's auth loop populates from the prior 401's
-//! `WWW-Authenticate` / `Lfs-Authenticate` headers and the helper's
-//! previous `state[]` response. Multi-stage credential helpers need
-//! those to pick a scheme and resume between fills.
+//! A fill can also carry [`FillContext`](crate::FillContext) lines
+//! (`capability[]`, `wwwauth[]`, `state[]`). The API client fills them
+//! from the last 401's `Lfs-Authenticate` and `WWW-Authenticate` headers
+//! and from the `state[]` the helper returned last time. Multistage
+//! credential helpers need them to pick a scheme and resume between fills.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -22,17 +18,16 @@ use crate::helper::{Credentials, FillContext, Helper, HelperError, HelperOutcome
 use crate::query::Query;
 use crate::trace::trace_enabled;
 
-/// Shells out to the `git` binary's credential subsystem.
+/// Runs `git credential` to fill, approve and reject credentials.
 ///
-/// `git_program` defaults to `"git"`. Override for tests via
-/// [`Self::with_program`] — point at a fake `git` that records its input
-/// or scripts a response.
+/// Values containing a newline or null byte are never sent, because they
+/// could inject extra lines into the protocol. Carriage returns are also
+/// refused unless [`with_protect_protocol`](Self::with_protect_protocol)
+/// turns that off.
 ///
-/// `protect_protocol` mirrors `credential.protectProtocol` (default
-/// `true`). When set, every value written to `git credential` stdin is
-/// rejected if it contains a carriage return — preventing newline-based
-/// protocol smuggling. Newlines and null bytes are rejected
-/// unconditionally regardless of this flag.
+/// [`approve`](Helper::approve) and [`reject`](Helper::reject) always
+/// return [`HelperOutcome::Handled`], so a
+/// [`HelperChain`](crate::HelperChain) stops here.
 #[derive(Debug, Clone)]
 pub struct GitCredentialHelper {
     git_program: String,
@@ -65,11 +60,10 @@ impl GitCredentialHelper {
         }
     }
 
-    /// Toggle `credential.protectProtocol` for this helper.
+    /// Set whether values containing a carriage return are refused.
     ///
-    /// Default is `true`. Pass `false` only when the user has
-    /// explicitly opted out; carriage returns in URLs are otherwise
-    /// a known smuggling vector.
+    /// Mirrors `credential.protectProtocol`, which defaults to `true`.
+    /// Pass `false` only when the user has set it to false.
     pub fn with_protect_protocol(mut self, protect: bool) -> Self {
         self.protect_protocol = protect;
         self
@@ -99,9 +93,8 @@ impl GitCredentialHelper {
 
         let out = child.wait_with_output()?;
         if !out.status.success() {
-            // `git credential fill` exits 128 when no helper is configured
-            // to provide credentials. Treat that as "I don't know" rather
-            // than a hard failure so the chain can fall through.
+            // `git credential fill` exits 128 when it can't get
+            // credentials. Treat that as "none" so the chain moves on.
             if subcommand == "fill" && out.status.code() == Some(128) {
                 return Ok(String::new());
             }
@@ -165,9 +158,10 @@ impl Helper for GitCredentialHelper {
     }
 }
 
-/// Upstream's `creds: git credential <sub> (%q, %q, %q)` trace at
-/// `creds/creds.go:328`. Gated on `GIT_TRACE` so commands run with
-/// tracing off (notably `git lfs lock`) leave stderr clean.
+/// Print upstream's `creds: git credential <sub> (%q, %q, %q)` trace line.
+///
+/// Only with `GIT_TRACE` set, so commands such as `git lfs lock` keep
+/// stderr clean otherwise.
 fn trace_call(subcommand: &str, query: &Query) {
     if !trace_enabled() {
         return;
@@ -202,24 +196,21 @@ fn write_input(
     write_field(sink, "path", &query.path, protect_protocol)?;
     if let Some(c) = creds {
         if let (Some(at), Some(cred)) = (&c.authtype, &c.credential) {
-            // Authtype-style creds round-trip via the same field names
-            // they came back on; username/password are omitted entirely
-            // (matching upstream's `Creds.buffer` behavior).
+            // Send back the fields the helper returned, without username
+            // and password, like upstream.
             write_field(sink, "authtype", at, protect_protocol)?;
             write_field(sink, "credential", cred, protect_protocol)?;
         } else {
             write_field(sink, "username", &c.username, protect_protocol)?;
-            // password is required for approve/reject to be meaningful, even
-            // if empty — let git decide. Empty values still get a key= line.
+            // Always send the password line, even when empty, and let git
+            // decide what that means.
             validate_value("password", &c.password, protect_protocol)?;
             writeln!(sink, "password={}", c.password)?;
         }
     }
     if let Some(ctx) = ctx {
-        // Order matches upstream's `getCreds` write order:
-        // capability[] first so the helper knows what we speak, then
-        // wwwauth[] and state[] for the actual handshake. Each is a
-        // multi-value input — emit one line per entry.
+        // Same order as upstream: capability[] first so the helper knows
+        // what we support, then wwwauth[] and state[]. One line per entry.
         for cap in &ctx.capabilities {
             write_field(sink, "capability[]", cap, protect_protocol)?;
         }
@@ -230,15 +221,15 @@ fn write_input(
             write_field(sink, "state[]", s, protect_protocol)?;
         }
     }
-    // Trailing blank line tells git "end of input".
+    // A blank line ends the input.
     writeln!(sink)?;
     Ok(())
 }
 
-/// Emit a `key=value` line to the credential helper's stdin if `value`
-/// is non-empty. Empty fields are skipped to match git-credential's own
-/// "absent = no constraint" semantics. Returns an error if `value`
-/// contains bytes that would break the line-based protocol.
+/// Write a `key=value` line, or nothing if `value` is empty.
+///
+/// Fails if `value` contains bytes that would break the line-based
+/// protocol (see [`validate_value`]).
 fn write_field(
     sink: &mut impl Write,
     key: &str,
@@ -253,17 +244,11 @@ fn write_field(
     Ok(())
 }
 
-/// Reject any byte in `value` that would let an attacker inject extra
-/// `key=value` lines into the credential-helper stream. Mirrors
-/// upstream's `Creds.buffer` checks (`creds/creds.go`):
+/// Refuse a value that could inject extra lines into the protocol.
 ///
-/// - `\n` (newline) and `\0` (null) are rejected unconditionally.
-/// - `\r` (carriage return) is rejected when `protect_protocol` is set
-///   (the default); disabling it is the documented escape hatch for
-///   pre-existing setups whose URLs contain CRs.
-///
-/// Error wording matches upstream verbatim so `t-credentials-protect`
-/// can grep for it.
+/// Newlines and null bytes are always refused. Carriage returns are
+/// refused when `protect_protocol` is set. The error messages use
+/// upstream's wording, which `t-credentials-protect` checks for.
 fn validate_value(key: &str, value: &str, protect_protocol: bool) -> Result<(), HelperError> {
     if value.contains('\n') {
         return Err(HelperError::Failed(format!(
@@ -284,11 +269,11 @@ fn validate_value(key: &str, value: &str, protect_protocol: bool) -> Result<(), 
     Ok(())
 }
 
-/// Parse the `key=value\n…\n` response from `git credential fill`.
+/// Parse the `key=value` lines written by `git credential fill`.
 ///
-/// Returns `None` if no password was provided — git can return a partial
-/// response (e.g. just a username) when a helper bails halfway through;
-/// a usable credential needs at least the password.
+/// Returns `None` unless the response has a password, or both `authtype`
+/// and `credential`. Git can return only a username when no helper had
+/// the password.
 fn parse_response(stdout: &str) -> Option<Credentials> {
     let mut username = String::new();
     let mut password: Option<String> = None;
@@ -306,17 +291,13 @@ fn parse_response(stdout: &str) -> Option<Credentials> {
             "authtype" => authtype = Some(v.to_owned()),
             "credential" => credential = Some(v.to_owned()),
             "state[]" => state.push(v.to_owned()),
-            // `continue` is a bool; upstream's `Creds.IsMultistage`
-            // accepts `1` or `true` (everything else is `false`).
+            // Like upstream, only `1` and `true` count as true.
             "continue" => multistage = matches!(v.trim(), "1" | "true"),
             _ => {}
         }
     }
-    // Authtype + credential takes precedence: when both are present
-    // we drive `Authorization: <authtype> <credential>` literally and
-    // ignore any username/password the helper may have also emitted.
-    // Mirrors upstream's `Creds.IsAuthtype()` precedence in
-    // `creds/creds.go::Creds.buffer`.
+    // When both authtype and credential are present they win over any
+    // username and password, as upstream's `Creds.IsAuthtype` does.
     if let (Some(at), Some(cred)) = (authtype, credential) {
         let mut c = Credentials::from_authtype(at, cred);
         c.state = state;
@@ -346,8 +327,8 @@ mod tests {
 
     #[test]
     fn parse_response_returns_none_without_password() {
-        // `git credential fill` can spit out everything but a password if
-        // every helper bailed. A username-only response isn't usable.
+        // `git credential fill` can return everything but a password if
+        // no helper had one. A username-only response isn't usable.
         let out = "protocol=https\nhost=git.example.com\nusername=alice\n";
         assert_eq!(parse_response(out), None);
     }

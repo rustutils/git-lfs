@@ -1,39 +1,36 @@
-//! Per-request input to the credential helpers.
+//! The key credential helpers look credentials up by.
 
 use url::Url;
 
-/// The fields `git credential` expects on stdin, and that [`Helper`]
-/// implementations key on.
+/// What a [`Helper`] looks credentials up by.
 ///
-/// Mirrors the subset of git-credential input upstream LFS sends:
-/// `protocol`, `host`, `path`. `username` is intentionally not
-/// pre-populated from the URL; helpers may fill it in themselves.
+/// These are the `protocol`, `host`, and `path` fields of `git credential`
+/// input. A username in the URL is not included.
 ///
 /// [`Helper`]: crate::Helper
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Query {
-    /// URL scheme (`https`, `http`, `ssh`, …).
+    /// URL scheme, such as `https`.
     pub protocol: String,
-    /// Host portion, with `:port` suffix when the URL specifies one.
+    /// Host, with `:port` when the URL has a port other than the scheme's
+    /// default.
     pub host: String,
-    /// Path portion. Empty string means "no path", which omits the
-    /// `path=` line on stdin to git-credential. Helpers that key on path
-    /// (e.g. `credential.<url>.useHttpPath`) only see this when the
-    /// caller decides to pass it.
+    /// Path without the leading slash, or empty for none.
+    ///
+    /// An empty path isn't sent to `git credential`, so helpers match on
+    /// host alone.
     pub path: String,
 }
 
 impl Query {
-    /// Build a query from a URL.
+    /// Build a query from a URL, including its path.
     ///
-    /// `path` is included by default; callers that want host-only
-    /// matching (the upstream default) should clear it via
-    /// [`Self::without_path`]. The path is **percent-decoded** to
-    /// match what upstream LFS sends to `git credential` (Go's
-    /// `url.URL.Path` is the decoded form), which lets
-    /// `git credential`'s `protectProtocol` check see real
-    /// newlines / NULs / CRs in hostile URLs rather than their `%0a` /
-    /// `%00` / `%0d` forms.
+    /// Call [`without_path`](Self::without_path) for host-only matching,
+    /// which is what `git credential` does unless `useHttpPath` is set.
+    ///
+    /// The path is percent-decoded, as upstream sends it. That way a
+    /// newline, NUL, or carriage return hidden as `%0a`, `%00`, or `%0d`
+    /// reaches the check that rejects it.
     pub fn from_url(url: &Url) -> Self {
         let raw_path = url.path().trim_start_matches('/');
         Self {
@@ -43,20 +40,16 @@ impl Query {
         }
     }
 
-    /// Variant with the path cleared.
-    ///
-    /// Matches the default `git credential` behavior, which scopes by
-    /// host only unless `useHttpPath` is set.
+    /// The same query with the path cleared.
     pub fn without_path(mut self) -> Self {
         self.path.clear();
         self
     }
 }
 
-/// Decode `%xx` byte triples in `s`, leaving everything else verbatim.
-/// Lossy on invalid UTF-8 (replaces with `U+FFFD`) — matches Go's
-/// `url.URL.Path`, which always returns a string. Real-world LFS paths
-/// are ASCII, so the lossy edge case is academic.
+/// Decode `%xx` escapes in `s`, leaving everything else as is.
+///
+/// Bytes that aren't valid UTF-8 after decoding become `U+FFFD`.
 fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
@@ -81,8 +74,8 @@ fn host_with_port(url: &Url) -> String {
     match (url.host_str(), url.port()) {
         (Some(h), Some(p)) => format!("{h}:{p}"),
         (Some(h), None) => h.to_owned(),
-        // url::Url enforces a host on http/https, so this branch only fires
-        // for unusual schemes. Empty string keeps the type non-optional.
+        // Only reachable for schemes without a host, since `url` requires
+        // one for http and https.
         _ => String::new(),
     }
 }
@@ -124,8 +117,7 @@ mod tests {
 
     #[test]
     fn from_url_preserves_invalid_percent_sequences() {
-        // A bare `%` with non-hex following stays as-is rather than
-        // crashing or eating bytes.
+        // `%25` decodes to a literal `%`, which isn't decoded again.
         let q = Query::from_url(&Url::parse("https://h.example/100%25done").unwrap());
         assert_eq!(q.path, "100%done");
     }

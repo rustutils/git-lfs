@@ -13,7 +13,6 @@ keywords               = ["git", "lfs", "git-lfs", "credentials", "auth"]
 categories             = ["authentication", "development-tools"]
 
 [dependencies]
-git-lfs-git = { workspace = true }
 serde       = { workspace = true }
 serde_json  = { workspace = true }
 thiserror   = { workspace = true }

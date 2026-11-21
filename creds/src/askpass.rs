@@ -1,22 +1,4 @@
-//! `GIT_ASKPASS` / `core.askpass` / `SSH_ASKPASS` credential helper.
-//!
-//! Spawns the configured program once per credential field, with a single
-//! argument formatted as `Username for "<url>"` or `Password for "<url>"`,
-//! and reads the result from stdout. The askpass protocol has no
-//! approve/reject step — both are no-ops.
-//!
-//! Selection priority (resolved by the caller before constructing this
-//! helper):
-//!
-//! 1. `GIT_ASKPASS` env var — interactive Git's standard hook.
-//! 2. `core.askpass` git config — same idea, persisted in config.
-//! 3. `SSH_ASKPASS` env var — last-resort fallback that pre-existed Git.
-//!
-//! Skipped entirely when `credential.<url>.helper` is set, so callers
-//! can keep this slot in the helper chain without it stomping on a
-//! purpose-built credential helper. Trace lines (`creds: filling with
-//! GIT_ASKPASS: <argv>`) match upstream's wording — `t-askpass.sh`
-//! greps them verbatim.
+//! Prompt for credentials with an askpass program.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -24,20 +6,30 @@ use std::process::{Command, Stdio};
 use crate::helper::{Credentials, Helper, HelperError, HelperOutcome};
 use crate::query::Query;
 
-/// Spawns `program` per call with a single prompt argument and reads
-/// the username or password from stdout.
+/// A [`Helper`] that asks an askpass program for the username and password.
 ///
-/// `program` is the raw command string, split on whitespace the same
-/// way upstream's `subprocess.ExecCommand` shells expand it: the
-/// first token is the executable and subsequent tokens are passed as
-/// additional args before the prompt.
+/// The program runs once per field, with the prompt `Username for "<url>"`
+/// or `Password for "<url>"` as its last argument, and prints the answer on
+/// stdout. If it exits non-zero or writes anything to stderr, fill fails. An
+/// empty answer makes fill return `Ok(None)`. Approve and reject do nothing.
+///
+/// Before each run, `creds: filling with GIT_ASKPASS: <command>` is printed
+/// to stderr, even without `GIT_TRACE`.
+///
+/// The Git LFS CLI takes the program from `GIT_ASKPASS`, `core.askpass`, or
+/// `SSH_ASKPASS`, in that order, and uses this helper only when no
+/// `credential.helper` is configured.
 #[derive(Debug, Clone)]
 pub struct AskpassHelper {
     program: String,
 }
 
 impl AskpassHelper {
-    /// Build a helper around the given askpass command.
+    /// Build a helper that runs `program`.
+    ///
+    /// `program` is split on whitespace: the first word is the executable
+    /// and the rest are arguments before the prompt. A path containing
+    /// spaces can't be used.
     pub fn new(program: impl Into<String>) -> Self {
         Self {
             program: program.into(),
@@ -52,10 +44,6 @@ impl AskpassHelper {
         let mut args: Vec<&str> = parts.collect();
         args.push(prompt);
 
-        // Trace line greppable by upstream's shell tests:
-        // `creds: filling with GIT_ASKPASS: <prog> <args...>`.
-        // Stderr (not stdout) — stdout is reserved for the helper's
-        // own protocol output.
         let mut e = std::io::stderr().lock();
         let _ = write!(e, "creds: filling with GIT_ASKPASS: {prog}");
         for a in &args {
@@ -73,11 +61,7 @@ impl AskpassHelper {
         {
             Ok(o) => o,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                // Mirrors upstream's `creds: failed to find GIT_ASKPASS
-                // command: <prog>` trace at `creds/creds.go:284`.
-                // `t-credentials-no-prompt.sh::askpass: push with bad
-                // askpass` greps for this line when the configured
-                // askpass program isn't on PATH.
+                // t-credentials-no-prompt.sh greps for this line.
                 let mut e2 = std::io::stderr().lock();
                 let _ = writeln!(e2, "creds: failed to find GIT_ASKPASS command: {prog}");
                 return Err(e.into());
@@ -91,8 +75,7 @@ impl AskpassHelper {
                 String::from_utf8_lossy(&out.stderr).trim(),
             )));
         }
-        // A non-empty stderr from the askpass program is treated as an
-        // error message (matches upstream's `getFromProgram`).
+        // Like upstream, any stderr output means failure.
         if !out.stderr.is_empty() {
             return Err(HelperError::Failed(
                 String::from_utf8_lossy(&out.stderr).trim().to_owned(),
@@ -104,9 +87,8 @@ impl AskpassHelper {
 
 impl Helper for AskpassHelper {
     fn fill(&self, query: &Query) -> Result<Option<Credentials>, HelperError> {
-        // Prompts mirror upstream byte-for-byte:
-        // `Username for "<scheme>://<host>[/<path>]"`
-        // `Password for "<scheme>://<username>@<host>[/<path>]"`
+        // The password prompt's URL includes the username, as upstream's
+        // does.
         let bare_url = format_url(query, None);
         let username = self.spawn(&format!("Username for \"{bare_url}\""))?;
         if username.is_empty() {
@@ -120,21 +102,17 @@ impl Helper for AskpassHelper {
         Ok(Some(Credentials::new(username, password)))
     }
 
-    /// Askpass has no persistence, so approve is a no-op.
     fn approve(&self, _query: &Query, _creds: &Credentials) -> Result<HelperOutcome, HelperError> {
         Ok(HelperOutcome::Continue)
     }
 
-    /// Askpass has no persistence, so reject is a no-op.
     fn reject(&self, _query: &Query, _creds: &Credentials) -> Result<HelperOutcome, HelperError> {
         Ok(HelperOutcome::Continue)
     }
 }
 
-/// Build the URL string that goes into the prompt argument. With
-/// `username = Some(...)`, the URL is rendered as
-/// `<scheme>://<user>@<host>[/<path>]` — same form upstream's
-/// `net/url.URL.String()` produces for a `User`-bearing URL.
+/// Format `query` as a URL for a prompt, with `username` before the host
+/// if given.
 fn format_url(query: &Query, username: Option<&str>) -> String {
     let mut s = String::with_capacity(query.host.len() + query.path.len() + 16);
     s.push_str(&query.protocol);
@@ -190,8 +168,7 @@ mod tests {
 
     #[test]
     fn fill_runs_program_and_returns_credentials() {
-        // Stand-in askpass: a shell script that echoes a fixed value
-        // based on the argv so we can verify both prompts ran.
+        // Answers each prompt differently, so both must have run.
         let tmp = tempfile::TempDir::new().unwrap();
         let prog = tmp.path().join("ask");
         std::fs::write(

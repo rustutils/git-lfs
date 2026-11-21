@@ -1,10 +1,4 @@
-//! Process-local credential cache.
-//!
-//! Avoids re-shelling-out to `git credential` for every request once we've
-//! resolved a working set of credentials for a given (protocol, host, path).
-//!
-//! Scope is a single CLI invocation — for a long-running daemon you'd want
-//! a TTL on top of this. Not relevant for our short-lived CLI subcommands.
+//! In-memory credential cache.
 
 use std::collections::HashMap;
 use std::io::Write as _;
@@ -14,12 +8,10 @@ use crate::helper::{Credentials, Helper, HelperError, HelperOutcome};
 use crate::query::Query;
 use crate::trace::trace_enabled;
 
-/// Process-local credential cache, keyed on the full [`Query`] tuple.
+/// In-memory credential cache, keyed on the whole [`Query`].
 ///
-/// Populated by [`Helper::approve`] and consulted on [`Helper::fill`];
-/// [`Helper::reject`] drops the corresponding entry. Lives for one
-/// CLI invocation; a long-running daemon would want a TTL layered on
-/// top.
+/// Approve stores credentials, fill returns them, and reject drops them.
+/// Entries never expire, so the cache suits a short-lived process.
 #[derive(Debug, Default)]
 pub struct CachingHelper {
     cache: Mutex<HashMap<Query, Credentials>>,
@@ -36,10 +28,8 @@ impl Helper for CachingHelper {
     fn fill(&self, query: &Query) -> Result<Option<Credentials>, HelperError> {
         let hit = self.cache.lock().unwrap().get(query).cloned();
         if hit.is_some() && trace_enabled() {
-            // Mirrors upstream's `creds: git credential cache (%q, %q, %q)`
-            // trace at `creds/creds.go:435`. t-credentials's "bad netrc
-            // creds will retry" greps this to confirm the second request
-            // reused the just-cached askpass result.
+            // Same wording as upstream's trace. t-credentials.sh greps
+            // for it.
             let mut e = std::io::stderr().lock();
             let _ = writeln!(
                 e,
@@ -50,13 +40,13 @@ impl Helper for CachingHelper {
         Ok(hit)
     }
 
-    /// Cache the working credentials so the next request skips the helper
-    /// chain entirely. Returns [`HelperOutcome::Continue`] on the first
-    /// approve for a query (so a persisting helper downstream still
-    /// gets a turn) and [`HelperOutcome::Handled`] on subsequent calls,
-    /// short-circuiting duplicate `git credential approve` invocations
-    /// across requests in the same push. Mirrors upstream's
-    /// `credentialCacher.Approve` at `creds/creds.go:445`.
+    /// Cache `creds` for `query`.
+    ///
+    /// Returns [`HelperOutcome::Continue`] the first time, so a helper
+    /// that stores credentials still sees the call. Later calls for the
+    /// same query return [`HelperOutcome::Handled`] without replacing the
+    /// cached entry, so `git credential approve` doesn't run per request.
+    /// Same as upstream's `credentialCacher.Approve` in `creds/creds.go`.
     fn approve(&self, query: &Query, creds: &Credentials) -> Result<HelperOutcome, HelperError> {
         let mut cache = self.cache.lock().unwrap();
         if cache.contains_key(query) {
@@ -66,9 +56,10 @@ impl Helper for CachingHelper {
         Ok(HelperOutcome::Continue)
     }
 
-    /// Drop the cached entry — whatever's in there clearly didn't work.
-    /// Returns [`HelperOutcome::Continue`] so the chain reaches the
-    /// real persistor (typically `git credential reject`).
+    /// Drop the cached entry for `query`.
+    ///
+    /// Returns [`HelperOutcome::Continue`] so later helpers, such as
+    /// `git credential`, also reject the credentials.
     fn reject(&self, query: &Query, _creds: &Credentials) -> Result<HelperOutcome, HelperError> {
         self.cache.lock().unwrap().remove(query);
         Ok(HelperOutcome::Continue)

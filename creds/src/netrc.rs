@@ -1,40 +1,30 @@
-//! `~/.netrc` (or `_netrc` on Windows) credential lookup.
+//! Credential lookup in `~/.netrc` (or `_netrc` on Windows).
 //!
-//! Sits in the helper chain between the in-process cache and
-//! `git credential` so a user with a populated netrc never has to
-//! round-trip through `git credential fill` for hosts it covers.
-//! Mirrors upstream's `creds/netrc.go::netrcCredentialHelper`.
+//! Mirrors upstream's `netrcCredentialHelper` in `creds/netrc.go`.
 //!
 //! # Behavior
 //!
-//! - On `fill`: look up the request host (port stripped) in the
-//!   parsed netrc. If a `machine` entry matches — or a `default`
-//!   entry is present and no specific match was found — return its
-//!   `login` + `password`. Hosts that previously hit `reject` are
-//!   skipped until the next `approve`.
-//! - On `approve`: if the creds match a netrc entry for this host,
-//!   clear the host's skip flag and emit the trace line. Doesn't
-//!   touch the file (netrc is read-only).
-//! - On `reject`: same matching check, then set the skip flag so
-//!   future fills bypass us — netrc's contents won't change between
-//!   calls, so re-issuing the same wrong creds would loop.
+//! - `fill` looks up the request host, without its port. It returns the
+//!   `login` and `password` of the matching `machine` entry, or of the
+//!   `default` entry if no machine matches. Hosts that were rejected are
+//!   skipped until they are approved again.
+//! - `approve` and `reject` act only when the credentials equal the
+//!   netrc entry for the host, so credentials from another helper are
+//!   left to the rest of the chain. `reject` makes later fills skip the
+//!   host, since the file would keep returning the same wrong password.
+//!   `approve` undoes that. The file itself is never written.
 //!
-//! Trace lines (`netrc: git credential fill (…)` / `approve (…)` /
-//! `reject (…)`) match upstream's `tracerx.Printf` format — the
-//! quoting is Go's `%q` (backslash-escaped, wrapped in double quotes)
-//! so the `t-credentials.sh` `netrc:` greps line up.
+//! All three print upstream's `netrc: git credential <command> (…)` trace
+//! lines, which `t-credentials.sh` checks for.
 //!
 //! # Parser
 //!
-//! Tokens are whitespace-separated. Recognized keywords are
-//! `machine`, `default`, `login`, `password`, `account`, `macdef`.
-//! Anything else is treated as one orphan token and skipped — that
-//! makes the parser permissive enough to ignore unknown keywords
-//! introduced by other tools (matches the upstream
-//! `t-credentials.sh::credentials from netrc with unknown keyword`
-//! test). `macdef` body parsing isn't implemented; we skip the
-//! `macdef <name>` pair and continue, which is enough for the
-//! test fixtures.
+//! Tokens are separated by whitespace, and quoting isn't supported. The
+//! keywords are `machine`, `default`, `login`, `password`, `account` and
+//! `macdef`, in any case. Other tokens are skipped one at a time, so an
+//! unknown keyword and its value are ignored. A `macdef` skips only the
+//! macro name. The words of the macro body are then skipped as unknown
+//! tokens, unless one of them is a keyword.
 
 use std::collections::HashSet;
 use std::io::Write as _;
@@ -45,8 +35,9 @@ use crate::helper::{Credentials, Helper, HelperError, HelperOutcome};
 use crate::query::Query;
 use crate::trace::trace_enabled;
 
-/// One `machine <name> login <user> password <pass>` block from a
-/// netrc file. `machine == "*"` represents a `default` block.
+/// One `machine` or `default` block from a netrc file.
+///
+/// A `default` block has the machine name `*`.
 #[derive(Debug, Clone)]
 struct NetrcEntry {
     machine: String,
@@ -54,11 +45,9 @@ struct NetrcEntry {
     password: String,
 }
 
-/// Netrc-backed credential helper.
+/// Credential helper that reads a netrc file.
 ///
-/// Cheap to construct: the file is read and parsed once at
-/// construction, and lookups walk the parsed list linearly (netrc
-/// files are small in practice).
+/// The file is read once, when the helper is built.
 #[derive(Debug)]
 pub struct NetrcCredentialHelper {
     entries: Vec<NetrcEntry>,
@@ -66,7 +55,7 @@ pub struct NetrcCredentialHelper {
 }
 
 impl NetrcCredentialHelper {
-    /// Build from a parsed-and-already-decoded netrc body.
+    /// Build from the text of a netrc file.
     pub fn from_contents(content: &str) -> Self {
         Self {
             entries: parse_netrc(content),
@@ -74,13 +63,11 @@ impl NetrcCredentialHelper {
         }
     }
 
-    /// Read the user's default netrc file.
+    /// Read the user's netrc file.
     ///
-    /// Tries `$HOME/.netrc`, falling back to `$HOME/_netrc` on
-    /// Windows when `.netrc` isn't present. Returns `None` when no
-    /// netrc file exists, when `$HOME` isn't set, or when the file
-    /// is unreadable; these are not user errors, just "no creds from
-    /// this source".
+    /// Reads `$HOME/.netrc`, or on Windows `$HOME/_netrc` if `.netrc`
+    /// doesn't exist. Returns `None` if `HOME` isn't set or the file is
+    /// missing or can't be read as UTF-8.
     pub fn from_default_location() -> Option<Self> {
         let home = std::env::var_os("HOME")?;
         let primary = PathBuf::from(&home).join(".netrc");
@@ -95,17 +82,19 @@ impl NetrcCredentialHelper {
         Self::from_path(&path)
     }
 
-    /// Read + parse `path`. Returns `None` when the file is missing
-    /// or unreadable; logging a parse error is upstream's choice but
-    /// "no creds from this source" matches Helper-trait semantics.
+    /// Read the netrc file at `path`.
+    ///
+    /// Returns `None` if the file is missing or can't be read as UTF-8.
+    /// Parsing itself never fails.
     pub fn from_path(path: &Path) -> Option<Self> {
         let content = std::fs::read_to_string(path).ok()?;
         Some(Self::from_contents(&content))
     }
 
-    /// Find a netrc entry matching `host`. Tries exact match first,
-    /// then falls back to the `default` block (if any). Matches
-    /// upstream's `netrc.FindMachine` semantics.
+    /// Find the entry for `host`.
+    ///
+    /// Returns the first `machine` whose name equals `host` ignoring ASCII
+    /// case, or else the first `default` block.
     fn find_machine(&self, host: &str) -> Option<&NetrcEntry> {
         self.entries
             .iter()
@@ -133,9 +122,7 @@ impl Helper for NetrcCredentialHelper {
             return Ok(HelperOutcome::Continue);
         };
         if entry.login != creds.username || entry.password != creds.password {
-            // Different creds — they must have come from another
-            // helper. Stay silent (no trace, no skip mutation) and let
-            // the chain continue.
+            // These came from another helper.
             return Ok(HelperOutcome::Continue);
         }
         trace_netrc_simple("approve", &query.protocol, &query.host, &query.path);
@@ -157,10 +144,10 @@ impl Helper for NetrcCredentialHelper {
     }
 }
 
-/// Pop the `:port` suffix off `host` so a netrc `machine localhost`
-/// entry matches a query for `localhost:12345`. Mirrors upstream's
-/// `getNetrcHostname` (which uses `net.SplitHostPort`). Returns the
-/// input unchanged when no `:` is present.
+/// Remove a `:port` suffix, so `machine localhost` matches `localhost:8080`.
+///
+/// Cuts at the last colon. Unlike upstream's `net.SplitHostPort`, this
+/// keeps the brackets of an IPv6 address: `[::1]:8080` gives `[::1]`.
 fn strip_port(host: &str) -> &str {
     match host.rsplit_once(':') {
         Some((h, _)) => h,
@@ -197,11 +184,10 @@ fn trace_netrc_simple(verb: &str, protocol: &str, host: &str, path: &str) {
     );
 }
 
-/// Format `s` like Go's `fmt.Sprintf("%q", s)` for the subset that
-/// matters here: ASCII strings with no control characters. Wraps in
-/// double quotes and escapes embedded `"` / `\` — enough for the
-/// netrc trace lines, where every input is a URL-derived ASCII
-/// string. Full `%q` (unicode escapes, control bytes) is overkill.
+/// Quote `s` like Go's `%q` verb, for strings without control characters.
+///
+/// Escapes only `"` and `\`. That covers the URL parts and logins in the
+/// trace lines.
 fn go_quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
@@ -216,10 +202,9 @@ fn go_quote(s: &str) -> String {
     out
 }
 
-/// Parse a netrc file body into entries. Permissive: unknown
-/// keywords are silently skipped so other tools' annotations don't
-/// break the parse. Keyword recognition is case-insensitive, matching
-/// the common Go and curl netrc parsers.
+/// Parse the text of a netrc file into entries.
+///
+/// See the module docs for the rules.
 fn parse_netrc(content: &str) -> Vec<NetrcEntry> {
     let mut tokens = content.split_whitespace();
     let mut entries: Vec<NetrcEntry> = Vec::new();
@@ -259,27 +244,19 @@ fn parse_netrc(content: &str) -> Vec<NetrcEntry> {
                 }
             }
             "account" => {
-                // Recognized keyword we don't use — skip its value
-                // (otherwise we'd treat the value as an unknown
-                // token and behave correctly, but consuming the
-                // pair explicitly is what netrc parsers do).
+                // Skip the value, so it isn't read as a keyword.
                 tokens.next();
             }
             "macdef" => {
-                // Macro definition: `macdef <name>\n<body>\n\n`.
-                // We don't execute macros; skip the name and discard
-                // the body up to the next blank-line-equivalent.
-                // Whitespace-tokenized stream can't see blank lines,
-                // so this is approximate — but the upstream test
-                // fixtures don't exercise macdef.
+                // The body ends at a blank line, which the tokenizer
+                // can't see. Skip the name and let the body's words fall
+                // through as unknown tokens.
                 tokens.next();
             }
             _ => {
-                // Unknown token. Skip it singly: if it's a stray
-                // keyword followed by a value, the value lands here
-                // on the next iteration and gets skipped too. The
-                // upstream "credentials from netrc with unknown
-                // keyword" test relies on this.
+                // Unknown token. Its value, if any, is skipped on the
+                // next iteration. Upstream's "credentials from netrc
+                // with unknown keyword" test relies on this.
             }
         }
     }

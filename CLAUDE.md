@@ -26,7 +26,7 @@ rates, and `NOTES.md` has the known gaps, open questions, and the path to 1.0.
 | `pointer/`  | `git-lfs-pointer`  | Pointer file parsing and encoding (`docs/spec.md`)       |                               |
 | `store/`    | `git-lfs-store`    | Local object store under `.git/lfs/objects/`             | pointer                       |
 | `git/`      | `git-lfs-git`      | Git config, attributes, refs, scanners, packet lines     | pointer                       |
-| `creds/`    | `git-lfs-creds`    | Credential helpers                                       | git                           |
+| `creds/`    | `git-lfs-creds`    | Credential helpers                                       |                               |
 | `api/`      | `git-lfs-api`      | Batch and locking HTTP client (`docs/api/`)              | creds                         |
 | `transfer/` | `git-lfs-transfer` | Transfer queue, HTTPS and pure-SSH adapters              | api, store, pointer           |
 | `filter/`   | `git-lfs-filter`   | Clean and smudge filters, filter-process                 | pointer, store, transfer, git |

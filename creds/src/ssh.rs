@@ -1,28 +1,27 @@
-//! SSH-based credential resolution via the `git-lfs-authenticate` command.
+//! Auth for SSH remotes, from the `git-lfs-authenticate` command.
 //!
-//! For SSH remotes, upstream LFS shells out to `ssh user@host
-//! git-lfs-authenticate <path> <upload|download>` and parses a JSON
-//! response containing a replacement HTTPS endpoint plus headers to
-//! merge into batch/locks requests. The SSH key is the only credential
-//! the user has to manage — no separate HTTPS password.
+//! [`SshAuthClient`] runs `ssh [-p <port>] <user@host> "git-lfs-authenticate
+//! <path> <operation>"` and parses the JSON it prints: an HTTPS endpoint and
+//! headers to send to it. The user's SSH key is the only credential needed.
 //!
-//! Selection priority (resolved by the caller before constructing this
-//! helper):
+//! The caller picks the SSH program. The CLI uses `GIT_SSH_COMMAND`, then
+//! `GIT_SSH`, then `ssh`, and doesn't read `core.sshCommand`. The program
+//! string is split on whitespace and run without a shell. The user, host
+//! and path are passed as given: a host starting with `-` reaches ssh as an
+//! option, and the path isn't quoted for the remote shell.
 //!
-//! 1. `GIT_SSH_COMMAND` env var (full command line).
-//! 2. `GIT_SSH` env var (single program path).
-//! 3. Default: `ssh`.
+//! Responses are cached per user and host, port, path, and operation.
+//! Unlike upstream, the client doesn't read `lfs.ssh.retries`,
+//! `lfs.ssh.automultiplex` or `lfs.defaulttokenttl`, and a failed command is
+//! an error, with no fallback to HTTP Basic auth.
 //!
-//! Caching is per `(user_and_host, port, path, operation)` with a
-//! 5-second buffer before expiry — matches upstream's `sshCache` in
-//! `lfshttp/ssh.go`. Trace lines (`exec: <prog> <args>`,
-//! `ssh cache: ...`, `ssh cache expired: ...`) match upstream
-//! verbatim — `t-batch-transfer.sh:161`, `t-expired.sh`, and
-//! `t-locks.sh:74` grep them by name.
+//! The `exec: …`, `ssh cache: …` and `ssh cache expired: …` trace lines use
+//! upstream's wording, which `t-batch-transfer.sh`, `t-expired.sh` and
+//! `t-locks.sh` check for.
 //!
 //! # Wire format
 //!
-//! `git-lfs-authenticate` stdout is one JSON object:
+//! `git-lfs-authenticate` prints one JSON object:
 //!
 //! ```json
 //! {
@@ -33,9 +32,11 @@
 //! }
 //! ```
 //!
-//! All four fields are optional. `expires_in` is seconds; when both
-//! `expires_at` and `expires_in` are present we pick the earlier one
-//! (matches `tools.IsExpiredAtOrIn`).
+//! All fields are optional, and `header` may be `null`. `expires_in` is in
+//! seconds and may be negative. When both expiry fields are set, the
+//! earlier time wins. Upstream uses `expires_in` whenever it isn't 0, and
+//! `expires_at` otherwise. Here, an `expires_in` of 0 means expired at once.
+//! An `expires_at` that isn't RFC 3339 or is before 1970 counts as unset.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -47,14 +48,12 @@ use serde::Deserialize;
 
 use crate::trace::trace_enabled;
 
-/// `git-lfs-authenticate <path> <operation>` operation argument.
-///
-/// Wire form is lowercase `upload` / `download`.
+/// The operation argument of `git-lfs-authenticate`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SshOperation {
-    /// Upload operation; auth token must be scoped for sending objects.
+    /// Sent as `upload`.
     Upload,
-    /// Download operation; auth token must be scoped for fetching objects.
+    /// Sent as `download`.
     Download,
 }
 
@@ -67,39 +66,42 @@ impl SshOperation {
     }
 }
 
-/// Parsed `git-lfs-authenticate` response with absolute expiry resolved.
+/// A parsed `git-lfs-authenticate` response.
 #[derive(Debug, Clone)]
 pub struct SshAuth {
-    /// Replacement HTTPS endpoint. Empty when the server expects the
-    /// original URL to be used as-is.
+    /// LFS API endpoint to use instead of the remote's URL.
+    ///
+    /// Empty if the server didn't send one.
     pub href: String,
-    /// Headers to merge into LFS API requests (commonly `Authorization`).
+    /// Headers to add to LFS API requests, usually `Authorization`.
     pub header: HashMap<String, String>,
-    /// Absolute expiration time. `None` means "no server-side TTL" — we
-    /// keep the entry until process exit.
+    /// When the response expires.
+    ///
+    /// `None` means no expiry: the response stays cached for the life of the
+    /// [`SshAuthClient`].
     pub expires_at: Option<SystemTime>,
 }
 
-/// Things that can go wrong while resolving SSH-based credentials.
+/// Error from [`SshAuthClient::resolve`].
 #[derive(Debug, thiserror::Error)]
 pub enum SshAuthError {
-    /// Failed to spawn or talk to the ssh subprocess.
+    /// The SSH program couldn't be run.
     #[error("io error invoking ssh: {0}")]
     Io(#[from] std::io::Error),
-    /// `git-lfs-authenticate` ran but exited non-zero.
+    /// The SSH program string is empty, or the command exited non-zero.
+    ///
+    /// Holds the command's stderr, or its exit status if stderr was empty.
     #[error("ssh git-lfs-authenticate failed: {0}")]
     Failed(String),
-    /// `git-lfs-authenticate` stdout wasn't a parseable JSON response.
+    /// The command's output wasn't a valid JSON response.
     #[error("ssh git-lfs-authenticate returned malformed JSON: {0}")]
     Json(String),
 }
 
-/// Spawns `ssh user@host git-lfs-authenticate <path> <operation>` and
-/// caches the result. Cloneable (cache is `Arc`-backed via `Mutex`).
+/// Runs `git-lfs-authenticate` over SSH and caches the responses.
 ///
-/// Cache key is `(user_and_host, port, path, operation)`. Entries with
-/// less than 5s remaining are considered expired — same buffer upstream
-/// uses to absorb network delay between cache check and HTTP send.
+/// A cached response with less than 5 seconds left counts as expired, as in
+/// upstream, so it doesn't expire between the cache check and the request.
 #[derive(Debug)]
 pub struct SshAuthClient {
     program: String,
@@ -118,11 +120,10 @@ struct CacheKey {
 struct WireResponse {
     #[serde(default)]
     href: String,
-    /// Optional so we tolerate `"header": null` — that's what Go's
-    /// `json.Marshal` emits for a nil `map[string]string`, and the
-    /// reference test server (`lfs-ssh-echo`) does exactly that for
-    /// repos that don't override headers. `#[serde(default)]` alone
-    /// only handles the *missing* case, not an explicit null.
+    /// An `Option` so that `"header": null` parses.
+    ///
+    /// Go encodes a nil map as `null`, and the test server `lfs-ssh-echo`
+    /// sends it. `#[serde(default)]` alone only covers a missing field.
     #[serde(default)]
     header: Option<HashMap<String, String>>,
     #[serde(default)]
@@ -132,11 +133,11 @@ struct WireResponse {
 }
 
 impl SshAuthClient {
-    /// Build with a resolved SSH program string. Whitespace-separated —
-    /// the first token is the executable, subsequent tokens are extra
-    /// args prepended before the per-call `[-p PORT] user@host
-    /// git-lfs-authenticate ...` arguments. Same shape as upstream's
-    /// `subprocess.ExecCommand`.
+    /// Build a client that runs `program`.
+    ///
+    /// `program` is split on whitespace, with no quoting. The first word is
+    /// the executable and the rest go before the `-p`, host and command
+    /// arguments.
     pub fn new(program: impl Into<String>) -> Self {
         Self {
             program: program.into(),
@@ -144,9 +145,11 @@ impl SshAuthClient {
         }
     }
 
-    /// Resolve auth for `(user_and_host, port, path, operation)`. Hits
-    /// the cache first; on miss or expired entry, spawns ssh and stores
-    /// the new response.
+    /// Get the auth response for an SSH remote and operation.
+    ///
+    /// Returns the cached response unless it's missing or expired.
+    /// Otherwise runs the command and caches the result. Errors aren't
+    /// cached.
     pub fn resolve(
         &self,
         user_and_host: &str,
@@ -161,8 +164,7 @@ impl SshAuthClient {
             operation,
         };
 
-        // Cache check. Clone out so we drop the lock before maybe
-        // spawning ssh (which can take a while).
+        // Clone so the lock is released before running ssh.
         let cached = self.cache.lock().unwrap().get(&key).cloned();
         if let Some(c) = cached {
             if !is_expired_within(c.expires_at, Duration::from_secs(5)) {
@@ -190,13 +192,7 @@ impl SshAuthClient {
         path: &str,
         operation: SshOperation,
     ) -> Result<SshAuth, SshAuthError> {
-        // Argv mirrors `ssh.GetLFSExeAndArgs` in upstream:
-        //   <ssh_program> [<extra args from $GIT_SSH_COMMAND>]
-        //                 [-p <port>] <user@host>
-        //                 "git-lfs-authenticate <path> <operation>"
-        // Remote command goes as ONE argument — ssh's standard "shell on
-        // remote" form. (Mirrors `t-batch-transfer.sh:161`'s grep
-        // pattern.)
+        // The remote command is one argument, for the remote shell.
         let mut parts = self.program.split_whitespace();
         let prog = parts
             .next()
@@ -212,8 +208,8 @@ impl SshAuthClient {
             operation.as_str()
         ));
 
-        // `exec: <prog> <args>` matches upstream's `subprocess.ExecCommand`
-        // tracing — `t-batch-transfer.sh:161` greps for it.
+        // Upstream shell-quotes arguments that contain special characters.
+        // The shell tests only match parts that need no quoting.
         if trace_enabled() {
             let mut e = std::io::stderr().lock();
             let _ = write!(e, "exec: {prog}");
@@ -250,9 +246,9 @@ impl SshAuthClient {
     }
 }
 
-/// Combine `expires_at` (absolute) and `expires_in` (seconds-from-now)
-/// into a single `SystemTime`. When both are set, the earlier wins —
-/// upstream's `tools.IsExpiredAtOrIn` evaluates both conditions.
+/// Combine `expires_at` and `expires_in` into one expiry time.
+///
+/// When both are set, the earlier wins.
 fn compute_expires_at(
     now: SystemTime,
     expires_at: Option<&str>,
@@ -290,15 +286,12 @@ fn is_expired_within(expires_at: Option<SystemTime>, buffer: Duration) -> bool {
     }
 }
 
-/// Minimal RFC 3339 parser — accepts `YYYY-MM-DDThh:mm:ss[.fff][Z|±hh:mm]`.
-/// Returns `Some(SystemTime)` for valid post-epoch timestamps, `None`
-/// for malformed input *or* pre-epoch values. Pre-epoch is the
-/// "no expiry set" sentinel: Go's `time.Time` zero value
-/// (`0001-01-01T00:00:00Z`) is what `lfs-ssh-echo` emits when
-/// `expires_at` was never assigned, since `omitempty` doesn't omit
-/// struct fields. Treating it as "unset" (rather than "epoch =
-/// expired") matches upstream's `IsExpiredAtOrIn` IsZero gate, so the
-/// cache doesn't pessimistically refresh after every request.
+/// Parse an RFC 3339 timestamp such as `2026-05-04T12:34:56.789+02:00`.
+///
+/// Returns `None` for malformed input and for times before 1970. Go
+/// encodes an unset `time.Time` as `0001-01-01T00:00:00Z`, and
+/// `lfs-ssh-echo` sends that, so it has to mean no expiry rather than
+/// expired. Field ranges aren't checked.
 fn parse_rfc3339(s: &str) -> Option<SystemTime> {
     let bytes = s.as_bytes();
     if bytes.len() < 20 {
@@ -341,14 +334,15 @@ fn parse_rfc3339(s: &str) -> Option<SystemTime> {
     let secs_of_day = (hour as i64) * 3600 + (min as i64) * 60 + (sec as i64);
     let unix = days * 86400 + secs_of_day - tz_secs;
     if unix < 0 {
-        // Pre-epoch ⇒ treat as "no expiry set" (see fn doc).
+        // Before 1970 means unset (see the function docs).
         return None;
     }
     Some(SystemTime::UNIX_EPOCH + Duration::from_secs(unix as u64))
 }
 
-/// Howard Hinnant's days-from-civil algorithm. Returns days since
-/// 1970-01-01 for the proleptic Gregorian date `(y, m, d)`.
+/// Days since 1970-01-01 for a Gregorian date.
+///
+/// Howard Hinnant's `days_from_civil` algorithm.
 fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
     let y = (if month <= 2 { year - 1 } else { year }) as i64;
     let era = (if y >= 0 { y } else { y - 399 }) / 400;
@@ -375,7 +369,7 @@ mod tests {
     fn parse_rfc3339_z() {
         let t = parse_rfc3339("2026-05-04T12:34:56Z").unwrap();
         let unix = t.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
-        // 2026-05-04 12:34:56 UTC = 1777898096 (verifiable via `date -u -d ...`).
+        // `date -u -d 2026-05-04T12:34:56Z +%s` gives 1777898096.
         assert_eq!(unix, 1777898096);
     }
 
@@ -395,10 +389,7 @@ mod tests {
 
     #[test]
     fn parse_rfc3339_zero_value_is_unset() {
-        // Go's `time.Time` zero value JSON-encodes to this. We map it
-        // to None so `compute_expires_at` treats the field as "no
-        // expiry set" — matches upstream's `IsExpiredAtOrIn` IsZero
-        // gate (see parse_rfc3339 doc comment).
+        // Go's zero `time.Time` encodes to this. It means no expiry.
         assert_eq!(parse_rfc3339("0001-01-01T00:00:00Z"), None);
     }
 
@@ -414,10 +405,6 @@ mod tests {
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
         // `expires_in` says +60s, `expires_at` says +30s. Earlier wins.
         let in_60 = Some(60);
-        let at_30 = Some("1970-01-12T13:46:40Z"); // 1_000_000 + 30 seconds = 1_000_030
-        // Recompute manually: 1_000_030 unix = 1970-01-12T13:47:10Z
-        // Let's use a value we can verify: 30s after epoch+1M.
-        let _ = at_30;
         let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_030);
         let at_str = format_unix_for_test(at);
         let combined = compute_expires_at(now, Some(&at_str), in_60).unwrap();
@@ -452,19 +439,19 @@ mod tests {
             Some(now + Duration::from_secs(2)),
             Duration::from_secs(5),
         ));
-        // Already past — expired.
+        // Already past, so expired.
         assert!(is_expired_within(
             Some(now - Duration::from_secs(1)),
             Duration::from_secs(5),
         ));
-        // No expiry set — never expired.
+        // No expiry set, so never expired.
         assert!(!is_expired_within(None, Duration::from_secs(5)));
     }
 
     #[test]
     fn fill_invokes_ssh_and_parses_response() {
         // Stand-in ssh: a shell script that prints a fixed JSON response
-        // regardless of args, so we can verify the spawn + parse path.
+        // regardless of args, to test running and parsing.
         let tmp = tempfile::TempDir::new().unwrap();
         let prog = tmp.path().join("fakessh");
         std::fs::write(
@@ -499,9 +486,8 @@ mod tests {
 
     #[test]
     fn cache_returns_same_response_within_ttl() {
-        // Two calls, but the script writes a fresh timestamp into a file
-        // each invocation — if the cache works, the file should have one
-        // line, not two.
+        // Two calls, but the script appends a line to a file each time it
+        // runs. If the cache works, the file has one line, not two.
         let tmp = tempfile::TempDir::new().unwrap();
         let counter = tmp.path().join("count");
         let prog = tmp.path().join("fakessh");
@@ -601,9 +587,7 @@ mod tests {
         }
     }
 
-    /// Test helper: format a `SystemTime` as an RFC 3339 string in UTC.
-    /// We only use this for round-trip tests, so the implementation is
-    /// the inverse of [`days_from_civil`] / [`parse_rfc3339`] above.
+    /// Format a `SystemTime` as an RFC 3339 string in UTC.
     fn format_unix_for_test(t: SystemTime) -> String {
         let secs = t.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs() as i64;
         let days = secs.div_euclid(86400);
@@ -615,7 +599,7 @@ mod tests {
         format!("{y:04}-{m:02}-{d:02}T{h:02}:{mi:02}:{se:02}Z")
     }
 
-    /// Inverse of [`days_from_civil`] — Howard Hinnant's algorithm.
+    /// Inverse of [`days_from_civil`], also by Howard Hinnant.
     fn civil_from_days(z: i64) -> (i32, u32, u32) {
         let z = z + 719468;
         let era = if z >= 0 { z } else { z - 146096 } / 146097;

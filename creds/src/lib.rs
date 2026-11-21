@@ -1,32 +1,22 @@
-//! Credential helper bridge for Git LFS (git credential fill/approve/reject).
+//! Find credentials for Git LFS requests.
 //!
-//! LFS endpoints are usually HTTPS, and HTTPS auth needs a username
-//! and password. Rather than maintaining a separate credential store,
-//! this crate defers to git's existing one: whatever the user has
-//! already configured for their git remote (osxkeychain, libsecret,
-//! manager, store, plain `cache`, …) is what LFS uses too.
+//! A [`Helper`] is one source of credentials. Given a [`Query`] (protocol,
+//! host, and optional path, usually built with [`Query::from_url`]), its
+//! [`fill`](Helper::fill) returns [`Credentials`] or nothing. After the
+//! request, the caller reports the outcome with [`approve`](Helper::approve)
+//! or [`reject`](Helper::reject) so the source can store or forget them.
 //!
-//! The [`Helper`] trait represents one credential source. A
-//! [`HelperChain`] tries multiple sources in order, broadcasting
-//! [`Helper::approve`] / [`Helper::reject`] to every helper so caches
-//! stay in sync. The bundled implementations are:
+//! A [`HelperChain`] is itself a helper that asks several in order. Fill
+//! returns the first credentials found. Approve and reject stop at the first
+//! helper that returns [`HelperOutcome::Handled`]. The Git LFS CLI chains
+//! [`NetrcCredentialHelper`], [`CachingHelper`], [`AskpassHelper`] (only when
+//! no `credential.helper` is configured), and [`GitCredentialHelper`], which
+//! runs `git credential` so LFS uses whatever store the user set up for Git.
 //!
-//! - [`CachingHelper`]: in-process cache keyed on the [`Query`]
-//!   tuple (protocol, host, path).
-//! - [`GitCredentialHelper`]: shells out to `git credential
-//!   fill/approve/reject`, picking up whatever helper the user has
-//!   configured.
-//! - [`AskpassHelper`]: spawns the `GIT_ASKPASS` / `core.askpass` /
-//!   `SSH_ASKPASS` program for interactive prompts.
-//! - [`NetrcCredentialHelper`]: parses `~/.netrc` (or `_netrc` on
-//!   Windows) for host-keyed login/password pairs.
-//!
-//! SSH remotes follow a different flow. [`SshAuthClient`] runs
-//! `git-lfs-authenticate <path> <operation>` over SSH and parses an
-//! [`SshAuth`] response containing a replacement HTTPS endpoint plus
-//! short-lived authorization headers; no username/password is asked
-//! of the user. Results are cached per request key with the
-//! server-supplied expiry honored.
+//! SSH remotes authenticate differently. [`SshAuthClient`] runs
+//! `git-lfs-authenticate` on the server and returns an [`SshAuth`]: headers
+//! to send to the LFS API, and optionally an HTTPS endpoint to use instead.
+//! Responses are cached until they expire.
 
 mod askpass;
 mod chain;

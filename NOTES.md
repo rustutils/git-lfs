@@ -97,6 +97,12 @@ Gaps no test covers:
 
 Found during the docs review, not fixed yet. None has a failing test.
 
+- **The SSH path isn't shell-quoted.** `creds/src/ssh.rs` runs
+  `git-lfs-authenticate {path} {operation}` on the server with the path as
+  given, and `build_argv` in `transfer/src/sshtransfer/connection.rs` does
+  the same for `git-lfs-transfer`. A path like `/repo;touch x` runs extra
+  commands on the server. A cloned repository can set this through
+  `lfs.url` in `.lfsconfig`. Upstream quotes it with `ShellQuote`.
 - **`http.sslVerify` typos disable TLS verification.** `parse_bool` in
   `git/src/http_options.rs` reads any value other than true, 1, yes, or on
   as false, so `http.sslVerify = ture` turns certificate checks off
@@ -124,6 +130,25 @@ Found during the docs review, not fixed yet. None has a failing test.
 - **Boolean settings:** `get_bool` in `git/src/fetch_prune.rs` returns false
   for an empty value and the default for anything unrecognized. Upstream's
   `config.Bool` does the opposite, and also accepts `t` and `f`.
+- **The SSH program is split on whitespace.** `GIT_SSH=/opt/my tools/ssh`
+  runs `/opt/my`, and quoted arguments in `GIT_SSH_COMMAND` break. Upstream
+  runs `GIT_SSH_COMMAND` through a shell and treats `GIT_SSH` as one path.
+  Same in `creds/src/ssh.rs` and the pure-SSH `build_argv`. The askpass
+  program is split the same way (`creds/src/askpass.rs`).
+- **`expires_in: 0` from `git-lfs-authenticate` means expired at once**, so
+  ssh runs again before every request. Upstream treats 0 as no expiry, and
+  prefers `expires_in` over `expires_at` where we take the earlier one.
+- **The askpass trace line always prints.** `creds/src/askpass.rs` writes
+  *creds: filling with GIT_ASKPASS* to stderr on every prompt, without
+  checking `GIT_TRACE`.
+- **Askpass differs from upstream:** an empty username returns no
+  credentials without asking for a password, and an empty password is
+  rejected. Upstream accepts both.
+- **Failed approves aren't rolled back.** If `git credential approve` fails,
+  the in-memory cache keeps the credentials. Upstream rejects them from the
+  helpers before the failing one.
+- **netrc and IPv6:** `strip_port("[::1]:8080")` keeps the brackets, so
+  `machine ::1` doesn't match.
 - **`git cat-file` stderr is piped but never read** (`git/src/cat_file.rs`).
   If Git writes more than a pipe buffer to it, the process blocks.
 
