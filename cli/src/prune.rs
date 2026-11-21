@@ -183,6 +183,11 @@ pub fn run(cwd: &Path, opts: &Options) -> Result<(), PruneError> {
     let mut deleted = 0usize;
     let mut failed: Vec<(Oid, std::io::Error)> = Vec::new();
     for (oid, _) in &delete_list {
+        // The store maps the empty object to the null device. Never remove
+        // that, as upstream's `pruneDeleteFiles` doesn't.
+        if *oid == Oid::EMPTY {
+            continue;
+        }
         let path = store.object_path(*oid);
         match std::fs::remove_file(&path) {
             Ok(()) => deleted += 1,

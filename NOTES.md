@@ -121,9 +121,6 @@ come from reading the code.
 
 ### Data loss
 
-- **Prune can try to delete `/dev/null`** when an object file named after
-  the empty OID exists, since `Store::object_path` maps that OID to the null
-  device. Confirmed (as a normal user it fails, and prune exits 0).
 - **A global `core.hooksPath` is ignored, so pushes skip uploads.**
   Confirmed. `effective_hooks_dir` in `cli/src/install.rs` only reads the
   local scope, so hooks go to `.git/hooks` where Git never runs them. The

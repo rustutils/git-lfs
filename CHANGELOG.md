@@ -74,6 +74,8 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 - `git lfs prune --verify-remote` checks the remote set by
   `lfs.pruneremotetocheck`, as its documentation says, instead of the
   default remote.
+- `git lfs prune` no longer tries to delete the null device when the store
+  holds a file named after the empty object.
 - `git lfs fetch` with refs lists objects in the same order on every run.
 
 ## [0.7.0] - 2026-05-13

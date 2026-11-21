@@ -3013,6 +3013,25 @@ async fn prune_verify_remote_asks_the_prune_remote() {
 }
 
 #[test]
+fn prune_never_touches_the_null_device() {
+    // The store maps the empty object to the null device, so a stray file
+    // named after the empty OID must not make prune remove `/dev/null`.
+    const EMPTY: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    let repo = fresh_repo_with_identity();
+    std::fs::write(repo.path().join("plain.txt"), b"hi").unwrap();
+    git_in(repo.path(), &["add", "plain.txt"]);
+    git_in(repo.path(), &["commit", "-q", "-m", "plain"]);
+    let dir = repo.path().join(".git/lfs/objects/e3/b0");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(EMPTY), b"").unwrap();
+
+    let out = run_in(repo.path(), &["prune"], b"");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "stderr: {stderr}");
+    assert!(!stderr.contains("failed to remove"), "stderr: {stderr}");
+}
+
+#[test]
 fn prune_dry_run_does_not_delete() {
     let repo = fresh_repo_with_identity();
     std::fs::write(repo.path().join("plain.txt"), b"hi").unwrap();
