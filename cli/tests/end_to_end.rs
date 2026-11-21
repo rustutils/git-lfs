@@ -2697,6 +2697,45 @@ fn migrate_import_fixup_refuses_a_dirty_working_tree() {
     }
 }
 
+#[test]
+fn migrate_import_keeps_non_ascii_file_names() {
+    // fast-export writes non-ASCII bytes as octal escapes, such as
+    // `"caf\303\251.bin"`, which must be decoded, not kept as text.
+    let repo = fresh_repo_with_identity();
+    std::fs::write(repo.path().join("café.bin"), b"binary data\n").unwrap();
+    git_in(repo.path(), &["add", "."]);
+    git_in(repo.path(), &["commit", "-q", "-m", "init"]);
+
+    let out = run_in(
+        repo.path(),
+        &["migrate", "import", "--include", "*.bin"],
+        b"",
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let ls = Command::new("git")
+        .arg("-C")
+        .arg(repo.path())
+        .args([
+            "-c",
+            "core.quotePath=false",
+            "ls-tree",
+            "--name-only",
+            "HEAD",
+        ])
+        .output()
+        .unwrap();
+    let names = String::from_utf8(ls.stdout).unwrap();
+    assert_eq!(
+        names.lines().collect::<Vec<_>>(),
+        [".gitattributes", "café.bin"]
+    );
+}
+
 // ---------- core.hooksPath ----------------------------------------------
 
 /// Run `git-lfs <args>` in `cwd` with `global` as the global Git config.

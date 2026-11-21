@@ -121,10 +121,6 @@ come from reading the code.
 
 ### Data loss
 
-- **`git lfs migrate import` corrupts non-ASCII file names.** Confirmed.
-  `unquote_path` in `migrate/fast_export.rs` doesn't decode octal escapes,
-  so `café.bin` becomes a file named `caf\303\251.bin` in the rewritten
-  history.
 - **`git lfs migrate --everything` rewrites `refs/notes`.** Confirmed.
   Upstream skips stash, notes, bisect, and replace refs, and includes
   remote branches (`all_local_refs` in `migrate/mod.rs`).

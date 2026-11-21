@@ -481,45 +481,60 @@ enum FileChangeStart {
     Raw(String),
 }
 
-/// Undo Git's C-style quoting of a path in an `M` line.
+/// Undo Git's C-style quoting of a path in an `M` line, like Git's
+/// `unquote_c_style`.
 ///
 /// fast-export quotes a path that has a space, double quote, backslash,
 /// control character, or, with the default `core.quotePath`, a non-ASCII
-/// byte.
-/// Unlike Git's `unquote_c_style`, this doesn't decode octal escapes:
-/// `\303\251` stays as those eight characters, so non-ASCII paths come
-/// out renamed. Other unknown escapes are also kept as they are.
+/// byte. Non-ASCII bytes are written as three-digit octal escapes, so
+/// `café` arrives as `caf\303\251`. The decoded bytes are read as UTF-8,
+/// replacing invalid sequences. Unknown escapes are kept as they are.
 fn unquote_path(raw: &str) -> String {
     if !raw.starts_with('"') || !raw.ends_with('"') || raw.len() < 2 {
         return raw.to_owned();
     }
-    let inner = &raw[1..raw.len() - 1];
-    let mut out = String::with_capacity(inner.len());
-    let mut chars = inner.chars();
-    while let Some(c) = chars.next() {
-        if c != '\\' {
-            out.push(c);
+    let inner = &raw.as_bytes()[1..raw.len() - 1];
+    let mut out: Vec<u8> = Vec::with_capacity(inner.len());
+    let mut i = 0;
+    while i < inner.len() {
+        let b = inner[i];
+        i += 1;
+        if b != b'\\' {
+            out.push(b);
             continue;
         }
-        match chars.next() {
-            Some('"') => out.push('"'),
-            Some('\\') => out.push('\\'),
-            Some('n') => out.push('\n'),
-            Some('t') => out.push('\t'),
-            Some('r') => out.push('\r'),
-            Some('a') => out.push('\x07'),
-            Some('b') => out.push('\x08'),
-            Some('f') => out.push('\x0c'),
-            Some('v') => out.push('\x0b'),
-            Some('0') => out.push('\0'),
-            Some(other) => {
-                out.push('\\');
-                out.push(other);
+        let Some(&e) = inner.get(i) else {
+            out.push(b'\\');
+            break;
+        };
+        i += 1;
+        let decoded = match e {
+            b'"' => b'"',
+            b'\\' => b'\\',
+            b'n' => b'\n',
+            b't' => b'\t',
+            b'r' => b'\r',
+            b'a' => 0x07,
+            b'b' => 0x08,
+            b'f' => 0x0c,
+            b'v' => 0x0b,
+            b'0'..=b'3' if is_octal(inner.get(i)) && is_octal(inner.get(i + 1)) => {
+                let value = (e - b'0') * 64 + (inner[i] - b'0') * 8 + (inner[i + 1] - b'0');
+                i += 2;
+                value
             }
-            None => out.push('\\'),
-        }
+            other => {
+                out.push(b'\\');
+                other
+            }
+        };
+        out.push(decoded);
     }
-    out
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn is_octal(b: Option<&u8>) -> bool {
+    b.is_some_and(|b| (b'0'..=b'7').contains(b))
 }
 
 fn parse_file_change_start(line: &str) -> Option<FileChangeStart> {
@@ -569,6 +584,16 @@ fn parse_file_change_start(line: &str) -> Option<FileChangeStart> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unquote_path_decodes_octal_escapes() {
+        assert_eq!(unquote_path(r#""caf\303\251.bin""#), "café.bin");
+        assert_eq!(unquote_path(r#""a b\tc\"d\\e""#), "a b\tc\"d\\e");
+        assert_eq!(unquote_path(r#""nul\000""#), "nul\0");
+        assert_eq!(unquote_path("plain.bin"), "plain.bin");
+        // Not a full octal escape, so kept as is.
+        assert_eq!(unquote_path(r#""x\39""#), "x\\39");
+    }
 
     fn read_all(input: &[u8]) -> Vec<Command> {
         let mut reader = Reader::new(input);
