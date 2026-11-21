@@ -137,8 +137,6 @@ come from reading the code.
 
 ### Security
 
-- **`.lfsconfig` accepts any key ending in `.access`** (`t-config` 11),
-  because `is_safe_key` only checks the last part.
 - **An action's `Transfer-Encoding: chunked` is sent with `Content-Length`**
   on uploads (`t-batch-storage-encoding` 6). Sending both is
   request-smuggling-shaped.

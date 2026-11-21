@@ -195,9 +195,9 @@ fn is_safe_key(key: &str) -> bool {
         return true;
     }
 
-    // Any key of three or more parts ending in `access`, such as
-    // `lfs.<url>.access`, which sets the auth scheme for a URL.
-    if parts.len() >= 3 && *parts.last().unwrap() == "access" {
+    // `lfs.<url>.access`, which sets the auth scheme for a URL. As in
+    // upstream, only under `lfs.`.
+    if parts.len() >= 3 && parts[0] == "lfs" && *parts.last().unwrap() == "access" {
         return true;
     }
 
@@ -459,6 +459,9 @@ mod tests {
         // Per-URL access setting, where the middle component is a URL.
         assert!(is_safe_key("lfs.http://example.com/repo.git.access"));
         assert!(is_safe_key("lfs.https://host.access"));
+        // `access` keys are only safe under `lfs.`.
+        assert!(!is_safe_key("other.example.access"));
+        assert!(!is_safe_key("http.https://host.access"));
 
         // Only `lfsurl` is safe under `remote.*`.
         assert!(is_safe_key("remote.origin.lfsurl"));

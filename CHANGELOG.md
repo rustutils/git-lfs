@@ -20,6 +20,9 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 - An SSH host starting with `-`, such as `-oProxyCommand=...` in an `ssh://`
   URL, is no longer read by ssh as an option when running
   `git-lfs-authenticate`.
+- `.lfsconfig` can only set `access` keys under `lfs.`, such as
+  `lfs.<url>.access`, as in upstream. Other keys ending in `.access` are
+  ignored with a warning.
 
 ### Changed
 
