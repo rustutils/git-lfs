@@ -6,9 +6,9 @@
 //!
 //! The caller picks the SSH program. The CLI uses `GIT_SSH_COMMAND`, then
 //! `GIT_SSH`, then `ssh`, and doesn't read `core.sshCommand`. The program
-//! string is split on whitespace and run without a shell. The user, host
-//! and path are passed as given: a host starting with `-` reaches ssh as an
-//! option, and the path isn't quoted for the remote shell.
+//! string is split on whitespace and run without a shell. The user and host
+//! are passed as given, so a host starting with `-` reaches ssh as an option.
+//! The remote command is quoted for the server's shell with [`shell_quote`].
 //!
 //! Responses are cached per user and host, port, path, and operation.
 //! Unlike upstream, the client doesn't read `lfs.ssh.retries`,
@@ -38,6 +38,7 @@
 //! `expires_at` otherwise. Here, an `expires_in` of 0 means expired at once.
 //! An `expires_at` that isn't RFC 3339 or is before 1970 counts as unset.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -203,10 +204,7 @@ impl SshAuthClient {
             argv.push(p.to_owned());
         }
         argv.push(user_and_host.to_owned());
-        argv.push(format!(
-            "git-lfs-authenticate {path} {}",
-            operation.as_str()
-        ));
+        argv.push(remote_command(path, operation));
 
         // Upstream shell-quotes arguments that contain special characters.
         // The shell tests only match parts that need no quoting.
@@ -359,6 +357,33 @@ fn trace(args: std::fmt::Arguments) {
     }
     let mut e = std::io::stderr().lock();
     let _ = writeln!(e, "{args}");
+}
+
+/// The command run on the server, with each word quoted for its shell.
+fn remote_command(path: &str, operation: SshOperation) -> String {
+    format!(
+        "{} {} {}",
+        shell_quote("git-lfs-authenticate"),
+        shell_quote(path),
+        shell_quote(operation.as_str())
+    )
+}
+
+/// Quote a word for a POSIX shell, like upstream's `ShellQuoteSingle`.
+///
+/// ssh passes the remote command to the server's shell, so paths from
+/// remote URLs must be quoted. Words made only of ASCII letters, digits, and
+/// `_@/.-` are returned unchanged. Anything else is wrapped in single quotes.
+pub fn shell_quote(word: &str) -> Cow<'_, str> {
+    let plain = !word.is_empty()
+        && word
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_@/.-".contains(&b));
+    if plain {
+        Cow::Borrowed(word)
+    } else {
+        Cow::Owned(format!("'{}'", word.replace('\'', "'\\''")))
+    }
 }
 
 #[cfg(test)]
@@ -612,5 +637,31 @@ mod tests {
         let m = if mp < 10 { mp + 3 } else { mp - 9 };
         let y = if m <= 2 { y + 1 } else { y };
         (y as i32, m as u32, d as u32)
+    }
+
+    #[test]
+    fn shell_quote_leaves_plain_words() {
+        assert_eq!(shell_quote("/foo/bar.git"), "/foo/bar.git");
+        assert_eq!(shell_quote("git@host-1_x"), "git@host-1_x");
+    }
+
+    #[test]
+    fn shell_quote_quotes_everything_else() {
+        assert_eq!(shell_quote(""), "''");
+        assert_eq!(shell_quote("/my repo"), "'/my repo'");
+        assert_eq!(shell_quote("/a;touch x"), "'/a;touch x'");
+        assert_eq!(shell_quote("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn remote_command_quotes_the_path() {
+        assert_eq!(
+            remote_command("/repo;touch x", SshOperation::Upload),
+            "git-lfs-authenticate '/repo;touch x' upload"
+        );
+        assert_eq!(
+            remote_command("/foo/bar.git", SshOperation::Download),
+            "git-lfs-authenticate /foo/bar.git download"
+        );
     }
 }

@@ -106,12 +106,6 @@ come from reading the code.
 
 ### Security
 
-- **The SSH path isn't shell-quoted.** `creds/src/ssh.rs` runs
-  `git-lfs-authenticate {path} {operation}` on the server with the path as
-  given, and `build_argv` in `transfer/src/sshtransfer/connection.rs` does
-  the same for `git-lfs-transfer`. A path like `/repo;touch x` runs extra
-  commands, and a cloned repository can set it through `lfs.url` in
-  `.lfsconfig`. Upstream quotes it with `ShellQuote`.
 - **Redirected uploads send credentials to the new host.** Confirmed.
   `upload` in `transfer/src/basic.rs` follows redirects itself and sends
   every action header, including `Authorization`, to the new `Location`.

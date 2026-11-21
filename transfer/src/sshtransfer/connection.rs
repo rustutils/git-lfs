@@ -23,6 +23,8 @@ use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
+use git_lfs_creds::shell_quote;
+
 use crate::sshtransfer::pktline::{self, Packet, Reader, TextPacket, Writer};
 
 /// The operation a connection is opened for, passed to the remote
@@ -97,9 +99,6 @@ pub struct Metadata {
     /// Port, passed as `-p` (or `-P` for PuTTY and TortoisePlink).
     pub port: Option<String>,
     /// Repository path on the server.
-    ///
-    /// It is pasted into the remote command line as is, without shell
-    /// quoting.
     pub path: String,
 }
 
@@ -561,8 +560,8 @@ fn parse_status(line: &str) -> Result<u16, ConnectionError> {
 
 /// Build the ssh command line, following upstream's `GetLFSExeAndArgs`.
 ///
-/// Unlike upstream, the remote command is not shell-quoted and the
-/// program is split on whitespace instead of being run through a shell.
+/// Unlike upstream, the program is split on whitespace instead of being run
+/// through a shell.
 fn build_argv(config: &Config) -> Vec<String> {
     let mut parts = config.program.split_whitespace();
     let prog = parts.next().unwrap_or("ssh").to_owned();
@@ -609,11 +608,12 @@ fn build_argv(config: &Config) -> Vec<String> {
         argv.push(user_and_host.to_owned());
     }
 
+    // ssh hands this to the server's shell, so quote each word.
     argv.push(format!(
-        "{cmd} {path} {op}",
-        cmd = config.remote_command,
-        path = config.metadata.path,
-        op = config.operation.as_str(),
+        "{} {} {}",
+        shell_quote(&config.remote_command),
+        shell_quote(&config.metadata.path),
+        shell_quote(config.operation.as_str()),
     ));
 
     argv
@@ -684,6 +684,18 @@ mod tests {
                 "git@host".to_owned(),
                 "git-lfs-transfer /repo download".to_owned(),
             ],
+        );
+    }
+
+    #[test]
+    fn argv_quotes_the_path_for_the_remote_shell() {
+        let mut m = meta("git@host");
+        m.path = "/my repo;touch x".to_owned();
+        let c = Config::new(0, "ssh", m, Operation::Upload);
+        let argv = build_argv(&c);
+        assert_eq!(
+            argv.last().unwrap(),
+            "git-lfs-transfer '/my repo;touch x' upload"
         );
     }
 

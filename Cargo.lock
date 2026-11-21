@@ -611,6 +611,7 @@ version = "0.7.0"
 dependencies = [
  "futures",
  "git-lfs-api",
+ "git-lfs-creds",
  "git-lfs-pointer",
  "git-lfs-store",
  "reqwest",

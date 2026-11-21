@@ -13,6 +13,9 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 - With `http.sslCAInfo` set, the server must prove it holds the private key
   of the certificate in that file. Before, any server presenting a copy of
   the certificate was accepted.
+- SSH remotes quote the repository path for the server's shell, as upstream
+  does. Before, a path containing shell syntax, which a cloned repository's
+  `.lfsconfig` can set through `lfs.url`, could run commands on the server.
 
 ### Added
 
