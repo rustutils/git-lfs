@@ -66,6 +66,8 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- `git lfs prune` refuses to run when a worktree is on a branch with no
+  commits. Before, `--force` deleted the objects of staged files.
 - `git lfs fetch` with refs lists objects in the same order on every run.
 
 ## [0.7.0] - 2026-05-13

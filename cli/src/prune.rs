@@ -8,12 +8,14 @@
 //! 3. Earlier versions of files changed on HEAD or one of those refs
 //!    within `lfs.fetchrecentcommitsdays` plus `lfs.pruneoffsetdays` of
 //!    that ref's tip commit.
-//! 4. The index of every worktree that has a commit checked out and
-//!    still exists.
+//! 4. The index of every worktree that still exists.
 //! 5. The stash.
 //! 6. Commits on local branches and tags that aren't on any
 //!    `refs/remotes/<remote>/` ref, where the remote is
 //!    `lfs.pruneremotetocheck`.
+//!
+//! Prune refuses to run if any worktree is on a branch with no commits,
+//! since it can't tell what that worktree needs. Upstream fails there too.
 //!
 //! `--recent` drops 2 and 3. `--force` also drops 1. Sources 1 to 4 skip
 //! pointers whose paths are all filtered out by `lfs.fetchinclude` and
@@ -50,6 +52,10 @@ pub enum PruneError {
     Fetch(#[from] crate::fetch::FetchCommandError),
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    /// A worktree is on a branch with no commits, so prune can't tell which
+    /// objects it needs.
+    #[error("cannot prune: {} is on a branch with no commits yet", .0.display())]
+    UnbornBranch(std::path::PathBuf),
     /// The server is missing objects and `--when-unverified=continue`
     /// wasn't given.
     ///
@@ -272,21 +278,31 @@ fn build_retain_set(cwd: &Path, opts: &Options) -> Result<HashSet<Oid>, PruneErr
         }
     };
 
-    // 1. The HEAD tree of each worktree, scanning each commit once. An
-    // unborn branch in any worktree is listed with an all-zero HEAD,
-    // which makes `scan_tree` fail.
-    let head_present = head_exists(cwd);
+    // 1. The HEAD tree of each worktree, scanning each commit once.
+    //
+    // On an unborn branch there's no tree to keep objects from, so refuse,
+    // as upstream does when it can't resolve HEAD. Otherwise `--force`
+    // would delete the objects of staged files.
+    if !head_exists(cwd) {
+        return Err(PruneError::UnbornBranch(cwd.to_path_buf()));
+    }
     let wts = git_lfs_git::refs::worktrees(cwd);
-    let head_sha = head_present.then(|| current_head_sha(cwd)).flatten();
+    // A linked worktree on an unborn branch reports an all-zero HEAD.
+    if let Some(wt) = wts.iter().find(|wt| {
+        wt.head
+            .as_deref()
+            .is_some_and(|h| h.bytes().all(|b| b == b'0'))
+    }) {
+        return Err(PruneError::UnbornBranch(wt.dir.clone()));
+    }
+    let head_sha = current_head_sha(cwd);
     if !opts.force {
         let mut seen_shas: HashSet<String> = HashSet::new();
-        if head_present {
-            for entry in scan_tree(cwd, "HEAD")? {
-                keep(entry, &mut retained);
-            }
-            if let Some(sha) = &head_sha {
-                seen_shas.insert(sha.clone());
-            }
+        for entry in scan_tree(cwd, "HEAD")? {
+            keep(entry, &mut retained);
+        }
+        if let Some(sha) = &head_sha {
+            seen_shas.insert(sha.clone());
         }
         for wt in &wts {
             let Some(head) = wt.head.as_deref() else {
@@ -303,11 +319,7 @@ fn build_retain_set(cwd: &Path, opts: &Options) -> Result<HashSet<Oid>, PruneErr
 
     // 2 and 3: recent refs, and earlier versions on HEAD and on them.
     let do_recent = !opts.force && !opts.recent;
-    let mut anchors: Vec<String> = if head_present {
-        vec!["HEAD".to_owned()]
-    } else {
-        Vec::new()
-    };
+    let mut anchors: Vec<String> = vec!["HEAD".to_owned()];
 
     if do_recent && cfg.fetch_recent_refs_days > 0 {
         let day = Duration::from_secs(86_400);
@@ -346,12 +358,9 @@ fn build_retain_set(cwd: &Path, opts: &Options) -> Result<HashSet<Oid>, PruneErr
     }
 
     // 4. The index of each worktree, even with `--force`. Skip worktrees
-    // marked prunable, whose directory is gone. Without a HEAD commit
-    // the current worktree's index isn't scanned.
-    if head_present {
-        for entry in scan_index_pointers(cwd, "HEAD")? {
-            keep(entry, &mut retained);
-        }
+    // marked prunable, whose directory is gone.
+    for entry in scan_index_pointers(cwd, "HEAD")? {
+        keep(entry, &mut retained);
     }
     for wt in &wts {
         if wt.prunable {
@@ -363,7 +372,6 @@ fn build_retain_set(cwd: &Path, opts: &Options) -> Result<HashSet<Oid>, PruneErr
         let Some(head) = wt.head.as_deref() else {
             continue;
         };
-        // A worktree on an unborn branch has no commit to diff against.
         for entry in scan_index_pointers(&wt.dir, head).unwrap_or_default() {
             keep(entry, &mut retained);
         }
@@ -376,17 +384,14 @@ fn build_retain_set(cwd: &Path, opts: &Options) -> Result<HashSet<Oid>, PruneErr
     }
 
     // 6. Unpushed commits, even with `--force` and without the path
-    // filter, like upstream's `scanUnpushed`. Skipped without a HEAD
-    // commit.
-    if head_present {
-        let excludes = remote_tracking_refs(cwd, &cfg.prune_remote_name).unwrap_or_default();
-        let includes = local_branches_and_tags(cwd).unwrap_or_else(|_| vec!["HEAD".to_owned()]);
-        if !includes.is_empty() {
-            let include_refs: Vec<&str> = includes.iter().map(String::as_str).collect();
-            let exclude_refs: Vec<&str> = excludes.iter().map(String::as_str).collect();
-            for entry in scan_pointers(cwd, &include_refs, &exclude_refs)? {
-                retained.insert(entry.oid);
-            }
+    // filter, like upstream's `scanUnpushed`.
+    let excludes = remote_tracking_refs(cwd, &cfg.prune_remote_name).unwrap_or_default();
+    let includes = local_branches_and_tags(cwd).unwrap_or_else(|_| vec!["HEAD".to_owned()]);
+    if !includes.is_empty() {
+        let include_refs: Vec<&str> = includes.iter().map(String::as_str).collect();
+        let exclude_refs: Vec<&str> = excludes.iter().map(String::as_str).collect();
+        for entry in scan_pointers(cwd, &include_refs, &exclude_refs)? {
+            retained.insert(entry.oid);
         }
     }
 

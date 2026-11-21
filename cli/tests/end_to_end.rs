@@ -2893,6 +2893,26 @@ fn prune_deletes_object_not_referenced_anywhere() {
 }
 
 #[test]
+fn prune_refuses_on_an_unborn_branch() {
+    // Nothing is committed yet, so HEAD doesn't resolve. The staged file's
+    // object is still needed, even with --force.
+    let repo = fresh_repo_with_identity();
+    let oid = put_object_in_store(repo.path(), b"hello world\n");
+    std::fs::write(repo.path().join("x.bin"), pointer_text(&oid, 12)).unwrap();
+    git_in(repo.path(), &["add", "x.bin"]);
+
+    let out = run_in(repo.path(), &["prune", "--force"], b"");
+    assert!(!out.status.success(), "prune should refuse");
+    let path = repo
+        .path()
+        .join(".git/lfs/objects")
+        .join(&oid[0..2])
+        .join(&oid[2..4])
+        .join(&oid);
+    assert!(path.is_file(), "staged object was deleted");
+}
+
+#[test]
 fn prune_dry_run_does_not_delete() {
     let repo = fresh_repo_with_identity();
     std::fs::write(repo.path().join("plain.txt"), b"hi").unwrap();
