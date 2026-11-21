@@ -2939,6 +2939,79 @@ fn prune_ignores_fetchinclude_for_retained_objects() {
     assert!(path.is_file(), "object used by HEAD was deleted");
 }
 
+#[tokio::test]
+async fn prune_verify_remote_asks_the_prune_remote() {
+    use serde_json::json;
+    use wiremock::matchers::{method as m_method, path as m_path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let repo = fresh_repo_with_identity();
+    std::fs::write(repo.path().join("plain.txt"), b"hi").unwrap();
+    git_in(repo.path(), &["add", "plain.txt"]);
+    git_in(repo.path(), &["commit", "-q", "-m", "plain"]);
+    let oid = put_object_in_store(repo.path(), b"orphan content");
+
+    // origin has the object, backup doesn't.
+    let origin = MockServer::start().await;
+    Mock::given(m_method("POST"))
+        .and(m_path("/objects/batch"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "objects": [{
+                "oid": oid, "size": 14,
+                "actions": { "download": { "href": format!("{}/o", origin.uri()) } }
+            }]
+        })))
+        .mount(&origin)
+        .await;
+    let backup = MockServer::start().await;
+    Mock::given(m_method("POST"))
+        .and(m_path("/objects/batch"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "objects": [{
+                "oid": oid, "size": 14,
+                "error": { "code": 404, "message": "not found" }
+            }]
+        })))
+        .mount(&backup)
+        .await;
+
+    for (name, server) in [("origin", &origin), ("backup", &backup)] {
+        git_in(
+            repo.path(),
+            &["remote", "add", name, "https://example.invalid/r.git"],
+        );
+        let key = format!("remote.{name}.lfsurl");
+        git_in(repo.path(), &["config", &key, &server.uri()]);
+    }
+    git_in(repo.path(), &["config", "lfs.pruneremotetocheck", "backup"]);
+    git_in(
+        repo.path(),
+        &["update-ref", "refs/remotes/backup/main", "HEAD"],
+    );
+
+    let path = repo.path().to_owned();
+    let args = ["prune", "--verify-remote", "--verify-unreachable"];
+    let out = tokio::task::spawn_blocking(move || run_in(&path, &args, b""))
+        .await
+        .unwrap();
+
+    assert!(
+        !out.status.success(),
+        "prune should stop: backup lacks the object"
+    );
+    assert_eq!(backup.received_requests().await.unwrap().len(), 1);
+    let stored = repo
+        .path()
+        .join(".git/lfs/objects")
+        .join(&oid[0..2])
+        .join(&oid[2..4])
+        .join(&oid);
+    assert!(
+        stored.is_file(),
+        "object missing on the prune remote was deleted"
+    );
+}
+
 #[test]
 fn prune_dry_run_does_not_delete() {
     let repo = fresh_repo_with_identity();

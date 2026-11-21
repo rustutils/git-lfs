@@ -121,8 +121,6 @@ come from reading the code.
 
 ### Data loss
 
-- **`git lfs prune --verify-remote` asks the wrong remote.** It checks the
-  default remote, not `lfs.pruneremotetocheck`.
 - **Prune can try to delete `/dev/null`** when an object file named after
   the empty OID exists, since `Store::object_path` maps that OID to the null
   device. Confirmed (as a normal user it fails, and prune exits 0).

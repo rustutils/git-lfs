@@ -71,6 +71,9 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 - `git lfs prune` no longer applies `lfs.fetchinclude`, which made it delete
   objects that the current checkout needs. As in upstream, only
   `lfs.fetchexclude` affects what it keeps.
+- `git lfs prune --verify-remote` checks the remote set by
+  `lfs.pruneremotetocheck`, as its documentation says, instead of the
+  default remote.
 - `git lfs fetch` with refs lists objects in the same order on every run.
 
 ## [0.7.0] - 2026-05-13

@@ -21,8 +21,8 @@
 //! pointers whose paths all match `lfs.fetchexclude`, as in upstream.
 //! `lfs.fetchinclude` isn't applied.
 //!
-//! `--verify-remote` asks the server, with a download batch, which
-//! prunable objects it still has. An object it doesn't have stops the
+//! `--verify-remote` asks the LFS server of `lfs.pruneremotetocheck`, with a
+//! download batch, which prunable objects it still has. An object it doesn't have stops the
 //! prune, or with `--when-unverified=continue` is kept. Objects that no
 //! commit references are only checked with `--verify-unreachable`.
 
@@ -126,7 +126,7 @@ pub fn run(cwd: &Path, opts: &Options) -> Result<(), PruneError> {
         && (opts.verify_unreachable || cfg.prune_verify_unreachable_always);
 
     let (mut delete_list, missing_on_remote, verify_count) = if verify_remote {
-        verify_prunable(cwd, &prunable, verify_unreachable)?
+        verify_prunable(cwd, &prunable, verify_unreachable, &cfg.prune_remote_name)?
     } else {
         (prunable.clone(), Vec::new(), 0usize)
     };
@@ -208,17 +208,18 @@ type VerifyOutcome = (Vec<(Oid, u64)>, Vec<Oid>, usize);
 /// Objects the server has go in the delete list. Objects it's missing go
 /// in the missing list if some commit references them or
 /// `verify_unreachable` is set, and in the delete list otherwise. Same
-/// rules as upstream's `pruneGetVerifiedPrunableObjects`, but the batch
-/// goes to the default remote, where upstream uses
-/// `lfs.pruneremotetocheck`.
+/// rules as upstream's `pruneGetVerifiedPrunableObjects`. The batch goes
+/// to `remote`, which is `lfs.pruneremotetocheck`.
 fn verify_prunable(
     cwd: &Path,
     prunable: &[(Oid, u64)],
     verify_unreachable: bool,
+    remote: &str,
 ) -> Result<VerifyOutcome, PruneError> {
     use git_lfs_api::ObjectSpec;
 
-    let fetcher = LfsFetcher::from_repo(cwd, &Store::new(git_lfs_git::lfs_dir(cwd)?))?;
+    let store = Store::new(git_lfs_git::lfs_dir(cwd)?);
+    let fetcher = LfsFetcher::from_repo_with_remote(cwd, &store, Some(remote))?;
     let specs: Vec<ObjectSpec> = prunable
         .iter()
         .map(|(oid, size)| ObjectSpec {
