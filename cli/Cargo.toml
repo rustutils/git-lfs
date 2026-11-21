@@ -1,16 +1,17 @@
 [package]
-name                 = "git-lfs"
-description          = "Large file storage for git, implemented in Rust"
-version.workspace    = true
-edition.workspace    = true
-license.workspace    = true
-authors.workspace    = true
-repository.workspace = true
-homepage.workspace   = true
-readme               = "README.md"
-keywords             = ["git", "lfs", "git-lfs", "vcs", "cli"]
-categories           = ["command-line-utilities", "development-tools"]
-default-run          = "git-lfs"
+name                   = "git-lfs"
+description            = "Large file storage for git, implemented in Rust"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+readme                 = "README.md"
+keywords               = ["git", "lfs", "git-lfs", "vcs", "cli"]
+categories             = ["command-line-utilities", "development-tools"]
+default-run            = "git-lfs"
 
 
 [dependencies]

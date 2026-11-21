@@ -1,6 +1,6 @@
 # git-lfs (Rust port)
 
-A from-scratch Rust port of [Git LFS](https://github.com/git-lfs/git-lfs).  The
+A from-scratch Rust port of [Git LFS](https://github.com/git-lfs/git-lfs). The
 goal is parity with the upstream Go binary at the CLI and protocol level, with
 better help output and a clean split into library crates.
 
@@ -44,7 +44,9 @@ new one.
   rev-list, cat-file). Upstream shells out too, and the shell tests are written
   against that behavior. Using gix crates to parse file formats, like
   gix-attributes and gix-glob, is fine.
-- **Rust 2024 edition**, no MSRV.
+- **Rust 2024 edition.** The minimum Rust version is `rust-version` in the
+  root `Cargo.toml`, and CI checks that it still builds. Raise it when you
+  need a newer feature, and note it in `CHANGELOG.md`.
 - **tokio and reqwest with rustls.** Code is synchronous where disk I/O
   dominates (`pointer`, `store`, `git`, `filter`) and async for HTTP (`api`,
   `transfer`). Async code calls into `store` through `spawn_blocking`.

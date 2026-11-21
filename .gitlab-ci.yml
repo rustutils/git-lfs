@@ -77,6 +77,16 @@ test:
     - cargo test --workspace
     - sccache --show-stats || true
 
+# Builds with the rust-version declared in Cargo.toml, so it stays accurate.
+msrv:
+  extends: .rust
+  stage: test
+  script:
+    - MSRV=$(sed -n 's/^rust-version *= *"\(.*\)"/\1/p' Cargo.toml)
+    - rustup toolchain install "$MSRV" --profile minimal
+    - cargo "+$MSRV" check --workspace --all-targets --locked
+    - sccache --show-stats || true
+
 package:
   extends: .rust
   stage: package

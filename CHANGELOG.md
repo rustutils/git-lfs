@@ -31,6 +31,7 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Changed
 
+- Building from source needs Rust 1.95 or newer.
 - SSH remotes now try pure-SSH transfers first, and fall back to
   `git-lfs-authenticate` and HTTPS if the server doesn't support them. This
   matches upstream. Set `lfs.<url>.sshtransfer` to `never` for the old
