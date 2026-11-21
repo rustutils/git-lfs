@@ -1,15 +1,3 @@
-# GitLab CI for git-lfs.
-#
-# Pipeline shape:
-#   lint     -> rustfmt + clippy + cargo doc warnings
-#   test     -> cargo test --workspace
-#   package  -> just package (.deb / .rpm / tarballs / zips, 6 targets + source)
-#   release  -> create GitLab release on tag, link package artifacts
-#   deploy   -> mdbook -> GitLab Pages (master only)
-#
-# All Rust jobs run on Alpine + rustup; the toolchain pin in
-# rust-toolchain.toml is picked up automatically on first invocation.
-
 stages:
   - lint
   - test
@@ -27,38 +15,18 @@ variables:
   RUSTUP_HOME: $CI_PROJECT_DIR/.rustup
   CARGO_INCREMENTAL: "0"
   CARGO_TERM_COLOR: always
-  # sccache caches per-rustc-invocation outputs on local disk under
-  # SCCACHE_DIR, which GitLab's cache carries between runs (see
-  # cache-sccache below). The size cap keeps the cache upload small.
   RUSTC_WRAPPER: sccache
   SCCACHE_DIR: $CI_PROJECT_DIR/.sccache
   SCCACHE_CACHE_SIZE: "2G"
-  # Pinned versions of cargo-installed packaging tools. Bump to upgrade;
-  # `cargo install --version` is a no-op when the cached install matches.
+  # Bumping these also invalidates the bin cache, which is keyed on this file.
   CARGO_DEB_VERSION: "3.6.4"
   CARGO_GENERATE_RPM_VERSION: "0.20.0"
   ALPINE_VERSION: "3.23"
 
-# Cache definitions, split by invalidation cadence. Composed per-job
-# via YAML anchors below — extends:cache array merging is finicky in
-# GitLab CI, anchors are unambiguous.
-#
-# - registry: downloaded crate sources + index. Invalidates on
-#   Cargo.lock change. Small (~tens of MB), shared across all Rust jobs.
-# - bin: cargo-installed binaries (cargo-deb, cargo-generate-rpm).
-#   Invalidates on .gitlab-ci.yml change (where versions are pinned).
-#   Only the package job needs these.
-# - sccache: sccache's on-disk cache. Keyed per job, since lint, test,
-#   and package compile different artifacts and a shared key would let
-#   each job's upload overwrite the others'.
-#
-# target/ is deliberately not cached — sccache handles per-rustc cache
-# hits across runs, which makes target/ reconstruction cheap. The 2GB
-# upload was eating a full minute per job.
-#
-# .rustup is also not cached — rustup-init from apk + a fresh download
-# of the stable toolchain is ~30-60s, on par with what cache restore
-# would cost for ~300MB. Not worth the upload churn.
+# Jobs pick caches with these anchors, because GitLab merges cache lists
+# from `extends` unpredictably. target/ and .rustup aren't cached:
+# restoring them is no faster than rebuilding target/ with sccache, or
+# downloading the toolchain.
 .cache-defs:
   cache:
     - &cache-registry
@@ -74,6 +42,7 @@ variables:
         - .cargo/bin
         - .cargo/.crates.toml
         - .cargo/.crates2.json
+    # One per job, so jobs don't overwrite each other's entries.
     - &cache-sccache
       key: sccache-$CI_JOB_NAME
       paths:
@@ -98,8 +67,7 @@ lint:
     - cargo fmt --all --check
     - RUSTDOCFLAGS="-Dwarnings" cargo doc --no-deps --workspace
     - cargo clippy --workspace --all-targets -- -Dwarnings
-    # sccache stats — must run inside script (not after_script) so we
-    # query the same daemon cargo populated, not a freshly-spawned one.
+    # In script, not after_script, so it queries the server cargo used.
     - sccache --show-stats || true
 
 test:
@@ -112,20 +80,14 @@ test:
 package:
   extends: .rust
   stage: package
-  # Override the .rust cache list to add the bin cache, which only
-  # this job needs (cargo-deb, cargo-generate-rpm). YAML anchors keep
-  # the registry and sccache entries in sync with the .rust default.
   cache:
     - *cache-registry
     - *cache-bin
     - *cache-sccache
   rules:
-    # Auto on tags — feeds the release job.
     - if: $CI_COMMIT_TAG
       when: on_success
-    # Manual button on branch pushes so you can verify packaging
-    # without cutting a tag. allow_failure keeps the pipeline green
-    # when nobody clicks.
+    # Lets you test packaging on a branch without tagging.
     - when: manual
       allow_failure: true
   before_script:
@@ -139,13 +101,9 @@ package:
   artifacts:
     paths:
       - target/dist/
-    # Linked from GitLab releases — keep them around indefinitely so
-    # the release page's download links don't 404 after a month.
+    # Release pages link to these.
     expire_in: never
 
-# Tag-only. scripts/release.rb reads the matching CHANGELOG block,
-# attaches every artifact under target/dist/ as a release asset link,
-# and shells out to release-cli. See the script for details.
 release:
   stage: release
   image: registry.gitlab.com/gitlab-org/release-cli:latest
@@ -158,10 +116,8 @@ release:
     - apk add --no-cache ruby
     - ruby scripts/release.rb
 
-# Mirror release to github.com/<CI_PROJECT_PATH> via gh CLI. Independent
-# of the GitLab release above (different blast radius — a GitHub flake
-# shouldn't fail the GitLab side). Requires GITHUB_TOKEN as an org-level
-# protected variable on the rustutils group.
+# Separate job, so a GitHub failure doesn't fail the GitLab release.
+# Needs GITHUB_TOKEN from the rustutils group variables.
 release-github:
   stage: release
   image: alpine:$ALPINE_VERSION
