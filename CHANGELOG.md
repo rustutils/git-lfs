@@ -66,6 +66,10 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- Hooks go where Git runs them when `core.hooksPath` is set in the global or
+  system config. Before, they went to `.git/hooks`, so the pre-push hook
+  never ran and pushes left LFS objects behind. A relative `core.hooksPath`
+  in a bare repository is resolved inside the repository, as Git does.
 - `git lfs prune` refuses to run when a worktree is on a branch with no
   commits. Before, `--force` deleted the objects of staged files.
 - `git lfs prune` no longer applies `lfs.fetchinclude`, which made it delete

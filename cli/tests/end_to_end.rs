@@ -2668,6 +2668,85 @@ fn install_then_real_git_checkout_does_not_fail_via_post_checkout_hook() {
     );
 }
 
+// ---------- core.hooksPath ----------------------------------------------
+
+/// Run `git-lfs <args>` in `cwd` with `global` as the global Git config.
+fn run_with_global_config(cwd: &Path, global: &Path, args: &[&str]) -> Output {
+    let bin_dir = Path::new(BIN).parent().unwrap();
+    let path_var = std::env::var("PATH").unwrap_or_default();
+    Command::new(BIN)
+        .args(args)
+        .current_dir(cwd)
+        .env("PATH", format!("{}:{path_var}", bin_dir.display()))
+        .env("GIT_CONFIG_GLOBAL", global)
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn hooks_follow_a_global_core_hookspath() {
+    // Git runs hooks from core.hooksPath in any scope. Hooks written to
+    // .git/hooks instead would never run, so pushes would skip uploads.
+    let home = TempDir::new().unwrap();
+    let hooks = home.path().join("hooks");
+    let global = home.path().join("gitconfig");
+    std::fs::write(
+        &global,
+        format!("[core]\n\thooksPath = {}\n", hooks.display()),
+    )
+    .unwrap();
+
+    for args in [&["update"][..], &["track", "*.bin"][..]] {
+        let repo = fresh_repo();
+        let out = run_with_global_config(repo.path(), &global, args);
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            hooks.join("pre-push").is_file(),
+            "{args:?}: no hook in core.hooksPath"
+        );
+        assert!(
+            !repo.path().join(".git/hooks/pre-push").exists(),
+            "{args:?}: hook written to .git/hooks"
+        );
+        std::fs::remove_dir_all(&hooks).unwrap();
+    }
+}
+
+#[test]
+fn relative_hookspath_in_a_bare_repo_stays_inside_it() {
+    // Git resolves a relative core.hooksPath against the Git directory of a
+    // bare repository.
+    let tmp = TempDir::new().unwrap();
+    let bare = tmp.path().join("bare.git");
+    let status = Command::new("git")
+        .args(["init", "--quiet", "--bare"])
+        .arg(&bare)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    git_in(&bare, &["config", "core.hooksPath", "hooks2"]);
+
+    let out = run_in(&bare, &["update"], b"");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        bare.join("hooks2/pre-push").is_file(),
+        "hook not in bare.git/hooks2"
+    );
+    assert!(
+        !tmp.path().join("hooks2").exists(),
+        "hook written outside the repo"
+    );
+}
+
 // ---------- checkout -----------------------------------------------------
 
 /// `git lfs install --local` so the smudge filter is configured. Without

@@ -6,7 +6,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use git_lfs_git::{ConfigScope, config, git_common_dir, git_dir};
+use git_lfs_git::{config, git_common_dir, git_dir};
 
 /// The config file install and uninstall write to, passed to `git config`
 /// as `--global`, `--system`, `--local`, `--worktree`, or `--file`.
@@ -328,14 +328,14 @@ pub fn print_hook_conflict(hook: &str, existing: &str) {
     eprintln!("  2: run `git lfs update --force` to overwrite your hook.");
 }
 
-/// The directory to write hooks to.
+/// The directory Git runs hooks from, and so where to write them.
 ///
-/// That's the repository's own `core.hooksPath` or else `hooks` in the
-/// common Git directory. Upstream reads `core.hooksPath` from every
-/// config scope.
+/// That's `core.hooksPath` from any config scope, as in upstream's
+/// `HookDir`, or else `hooks` in the common Git directory. A relative
+/// `core.hooksPath` is resolved the way Git does: against the working tree
+/// root, or against the Git directory in a bare repository.
 pub fn effective_hooks_dir(cwd: &Path) -> Result<std::path::PathBuf, InstallError> {
-    let common = git_common_dir(cwd)?;
-    if let Ok(Some(hookspath)) = config::get(cwd, ConfigScope::Local, "core.hookspath")
+    if let Ok(Some(hookspath)) = config::get_effective(cwd, "core.hookspath")
         && !hookspath.is_empty()
     {
         let expanded = expand_home(&hookspath);
@@ -343,13 +343,13 @@ pub fn effective_hooks_dir(cwd: &Path) -> Result<std::path::PathBuf, InstallErro
         if hp.is_absolute() {
             return Ok(hp.to_path_buf());
         }
-        // This is the working tree root when the Git directory is
-        // `<root>/.git`. In a bare repository it's the directory above
-        // the repository, where Git would use the repository itself.
-        let base = common.parent().unwrap_or(&common);
+        let base = match git_lfs_git::work_tree_root(cwd) {
+            Ok(root) => root,
+            Err(_) => git_dir(cwd)?,
+        };
         return Ok(base.join(hp));
     }
-    Ok(common.join("hooks"))
+    Ok(git_common_dir(cwd)?.join("hooks"))
 }
 
 /// Expand a leading `~` or `~/` to `$HOME`.
@@ -376,10 +376,9 @@ fn expand_home(raw: &str) -> String {
 /// Commands such as `clean`, `smudge`, and `track` call this on every
 /// run and ignore its errors, as upstream does.
 pub fn try_install_hooks(cwd: &Path) -> Result<(), InstallError> {
-    // Unlike `effective_hooks_dir`, this ignores `core.hooksPath`.
-    // From a linked worktree the hooks go in the main `.git/hooks`, as
-    // t-worktree.sh checks.
-    let hooks_dir = git_common_dir(cwd)?.join("hooks");
+    // Without `core.hooksPath`, hooks from a linked worktree go in the
+    // main `.git/hooks`, as t-worktree.sh checks.
+    let hooks_dir = effective_hooks_dir(cwd)?;
     fs::create_dir_all(&hooks_dir)?;
     for hook in HOOKS {
         let path = hooks_dir.join(hook);

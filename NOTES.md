@@ -121,11 +121,6 @@ come from reading the code.
 
 ### Data loss
 
-- **A global `core.hooksPath` is ignored, so pushes skip uploads.**
-  Confirmed. `effective_hooks_dir` in `cli/src/install.rs` only reads the
-  local scope, so hooks go to `.git/hooks` where Git never runs them. The
-  automatic install in `try_install_hooks` ignores `core.hooksPath`
-  entirely.
 - **`git lfs migrate import --fixup` discards uncommitted changes.**
   Confirmed. It skips the dirty-tree check and then runs
   `git checkout -f HEAD`. `--no-rewrite` also skips the check. Upstream
@@ -186,8 +181,6 @@ come from reading the code.
   in `git/src/fetch_prune.rs`, `lfs_url_bool` in `git/src/http_options.rs`,
   `lfs.allowincompletepush`, and `lfs.locksverify` each parse booleans
   differently from Git and upstream.
-- **A relative `core.hooksPath` in a bare repository** resolves outside it.
-  Confirmed.
 - **`git lfs uninstall` stops at the first config error** and leaves the
   hooks in place, exiting 0.
 - **`git lfs clone`:** a failed pull in a submodule exits 0, `-bmain` is
