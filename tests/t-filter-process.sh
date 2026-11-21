@@ -190,17 +190,22 @@ begin_test "filter-process: pointer extension"
 )
 end_test
 
-# https://github.com/git-lfs/git-lfs/issues/1697
-begin_test "filter process: add a file with 1024 bytes"
+begin_test "filter process: non-pointer file of maximum pointer size"
 (
   set -e
 
-  mkdir repo-issue-1697
-  cd repo-issue-1697
+  mkdir repo-file-max-pointer-size
+  cd repo-file-max-pointer-size
   git init
   git lfs track "*.dat"
-  dd if=/dev/zero of=first.dat bs=1024 count=1
+
+  # Test with a file size equal to the size of the read buffer used when
+  # decoding pointers.  See https://github.com/git-lfs/git-lfs/issues/1697
+  # and https://github.com/git-lfs/git-lfs/pull/1699.
+  max_pointer_size="$(lfstest-getlimit --max-pointer-size)"
+  head -c "$max_pointer_size" /dev/zero >first.dat
   printf "any contents" > second.dat
+
   git add .
 )
 end_test
@@ -215,25 +220,36 @@ begin_test "filter process: hash-object --stdin --path does not hang"
   git lfs track "*.dat"
   contents="test"
   contents_oid="$(calc_oid "$contents")"
-  expected=$(pointer "$contents_oid" 4 | git hash-object --stdin)
+  expected="$(pointer "$contents_oid" "${#contents}" | git hash-object --stdin)"
 
-  dd if=/dev/zero of=first.dat bs=1000 count=1
-  echo a > second.dat
-  # Works for existing file longer than this one.
-  output=$(printf test | git hash-object --path first.dat --stdin)
+  # Test with a file size smaller than the size of the read buffer used when
+  # decoding pointers.  See https://github.com/git-lfs/git-lfs/issues/3884
+  # and https://github.com/git-lfs/git-lfs/pull/3902.
+  max_pointer_size="$(lfstest-getlimit --max-pointer-size)"
+  head -c $((max_pointer_size * 1000 / 1024)) /dev/zero >first.dat
+  echo "a" >second.dat
+
+  # Works for existing file longer than the input data.
+  output="$(printf "%s" "$contents"| git hash-object --path first.dat --stdin)"
   [ "$expected" = "$output" ]
-  # Works for existing file shorter than this one.
-  output=$(printf test | git hash-object --path second.dat --stdin)
+  # Works for existing file shorter than the input data.
+  output="$(printf "%s" "$contents" | git hash-object --path second.dat --stdin)"
   [ "$expected" = "$output" ]
   # Works for absent file.
-  output=$(printf test | git hash-object --path third.dat --stdin)
+  output="$(printf "%s" "$contents" | git hash-object --path third.dat --stdin)"
   [ "$expected" = "$output" ]
 
-  dd if=/dev/zero of=large.dat bs=65537 count=1
-  oid=$(calc_oid_file large.dat)
-  expected=$(pointer "$oid" 65537 | git hash-object --stdin)
-  output=$(git hash-object --path third.dat --stdin <large.dat)
+  # Test with a file size larger than the maximum length of a Git packet line
+  # (plus some arbitrary additional padding).
+  max_pktline_len="$(lfstest-getlimit --max-pktline-len)"
+  contents_size=$((max_pktline_len + max_pointer_size + 1))
+  head -c "$contents_size" /dev/zero >large.dat
+  contents_oid="$(calc_oid_file large.dat)"
+
+  expected="$(pointer "$contents_oid" "$contents_size" | git hash-object --stdin)"
+  output="$(git hash-object --path large.dat --stdin <large.dat)"
   [ "$expected" = "$output" ]
+
   git add .
 )
 end_test
@@ -310,10 +326,53 @@ begin_test "filter process: git archive does not invoke SSH"
   git push origin main 2>&1
   cd ..
   GIT_TRACE=1 git clone "$sshurl" "$reponame-2" 2>&1 | tee trace.log
-  grep "lfs-ssh-echo.*git-lfs-transfer .*$reponame.git download" trace.log
+  grep "lfs-ssh-echo.*git-lfs-transfer .*$reponame.git.* download" trace.log
   cd "$reponame-2"
   GIT_TRACE=1 GIT_TRACE_PACKET=1 git archive -o foo.tar HEAD 2>&1 | tee archive.log
   grep 'pure SSH' archive.log && exit 1
   true
+)
+end_test
+
+begin_test "filter process: ignore file size on disk when cleaning"
+(
+  set -e
+
+  reponame="filter-process-ignore-file-size"
+  setup_remote_repo "$reponame"
+  clone_repo "$reponame" "$reponame"
+
+  git lfs track "*.dat"
+  git add .gitattributes
+  git commit -m "initial commit"
+
+  # Test with a file size larger than the size of the read buffer used when
+  # decoding pointers.  See the secondary issue reported in
+  # https://github.com/git-lfs/git-lfs/issues/4974#issuecomment-2717907543
+  # and https://github.com/git-lfs/git-lfs/pull/6011.
+  max_pointer_size="$(lfstest-getlimit --max-pointer-size)"
+  contents_size=$((max_pointer_size * 2))
+  head -c "$contents_size" /dev/zero >large.dat
+  contents_oid="$(calc_oid_file "large.dat")"
+
+  # To replicate the reported issue, the "git-lfs filter-process" command's
+  # input from Git should be larger than the size of the pointer read buffer,
+  # but the file on disk should be smaller, so the lfstest-badlocalfile helper
+  # renames the initial file after Git has started piping its data, and then
+  # replaces the file with an empty file.
+  GIT_TRACE_PACKET=1 git \
+    -c "filter.lfs.process=lfstest-badlocalfile | git-lfs filter-process" \
+    -c "filter.lfs.clean=false"\
+    -c "filter.lfs.smudge=false" \
+    -c "filter.lfs.required=true" \
+    add large.dat 2>&1 | tee filter.log
+  [ 0 -eq "${PIPESTATUS[0]}" ]
+
+  [ 0 -eq "$(grep -c "unknown command" filter.log)" ]
+
+  expected="$(pointer "$contents_oid" "$contents_size")"
+  got="$(git cat-file -p :large.dat)"
+
+  diff -u <(echo "$expected") <(echo "$got")
 )
 end_test

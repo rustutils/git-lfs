@@ -42,16 +42,24 @@ when the docs are ambiguous. Useful places to look:
 
 We left out upstream's how-to guides and man pages, since we write our own.
 
-The vendored files come from upstream's `main` as of late April 2026
-(around `14ae1707`). The local checkout is now at `v3.8.1` (`a662a6db`).
-Compare `docs/` and `tests/` against it, with `git diff 14ae1707 v3.8.1 --
-docs t` in the checkout, and bring over what changed.
+The vendored files come from upstream's `v3.8.1` (`a662a6db`). To update,
+diff upstream's `docs/` and `t/` between `v3.8.1` and the new release, and
+bring over what changed. The JSON schemas in `docs/api/schemas/` are
+symlinks upstream, into `tq/schemas/` and `locking/schemas/`.
 
-Local changes to the vendored tests, which a sync must keep:
+Local changes to the vendored tests, which an update must keep:
 
+- `tests/testenv.sh`: paths under `tests/` instead of `t/`, `export
+  GIT_TERMINAL_PROMPT`, and `sha256sum` on Linux when `shasum` is missing.
+- `tests/testhelpers.sh`: `setup_pure_ssh` uses `tests/scutiger/bin`.
 - `tests/t-fetch.sh`, "fetch --json with remote and branches": the b-a
   fallback compares `fetch.json`, not `fetch-dry-run.json`. Upstream's
   version checks the wrong file. Not yet reported.
+- `tests/cmd/lfstest-getlimit.go`: defines two constants itself instead of
+  importing upstream's internal packages.
+- `tests/cmd/`: `lfstest-customadapter` and
+  `lfstest-standalonecustomadapter` are left out, and `lfstest-testutils` is
+  ported to Rust.
 
 ## Known gaps
 

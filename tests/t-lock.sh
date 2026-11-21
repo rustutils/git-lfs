@@ -50,6 +50,92 @@ begin_test "lock with good tracked ref"
 )
 end_test
 
+begin_test "lock with good ref (--remote overrides push default)"
+(
+  set -e
+
+  reponame="lock-remote"
+  setup_remote_repo_with_file "$reponame" "a.dat"
+  clone_repo "$reponame" "$reponame"
+
+  # Check invalid "remote.pushDefault" configuration causes error.
+  git remote add bad-remote "invalid-url"
+  git config remote.pushDefault bad-remote
+
+  git lfs lock "a.dat" 2>&1 | tee lock.log
+  if [ "0" -eq "${PIPESTATUS[0]}" ]; then
+    echo >&2 "fatal: expected 'git lfs lock' to fail ..."
+    exit 1
+  fi
+
+  # Check --remote option overrides "remote.pushDefault" configuration.
+  git lfs lock --remote origin --json "a.dat" | tee lock.log
+  if [ "0" -ne "${PIPESTATUS[0]}" ]; then
+    echo >&2 "fatal: expected 'git lfs lock' to succeed ..."
+    exit 1
+  fi
+
+  id=$(assert_lock lock.log "a.dat")
+  assert_server_lock "$reponame" "$id" "refs/heads/main"
+
+  # Remove "remote.pushDefault" configuration and unlock.
+  git config --unset remote.pushDefault
+
+  git lfs unlock "a.dat"
+  refute_server_lock "$reponame" "$id" "refs/heads/main"
+
+  # Check invalid "branch.<name>.pushRemote" configuration causes error.
+  git config branch.main.pushRemote bad-remote
+
+  git lfs lock "a.dat" 2>&1 | tee lock.log
+  if [ "0" -eq "${PIPESTATUS[0]}" ]; then
+    echo >&2 "fatal: expected 'git lfs lock' to fail ..."
+    exit 1
+  fi
+
+  # Check --remote option overrides "branch.<name>.pushRemote" configuration.
+  git lfs lock --remote origin --json "a.dat" | tee lock.log
+  if [ "0" -ne "${PIPESTATUS[0]}" ]; then
+    echo >&2 "fatal: expected 'git lfs lock' to succeed ..."
+    exit 1
+  fi
+
+  id=$(assert_lock lock.log "a.dat")
+  assert_server_lock "$reponame" "$id" "refs/heads/main"
+)
+end_test
+
+begin_test "lock with invalid default push remote in .lfsconfig"
+(
+  set -e
+
+  reponame="fetch-invalid-remote-push-default"
+  setup_remote_repo "$reponame"
+  clone_repo "$reponame" "$reponame"
+
+  # Both of these invalid configurations should be ignored and the "origin"
+  # remote should be used instead.
+  #
+  # The repository name in this URL announces to the server that it should
+  # respond to all Locking API requests with a 404 Not Found status code,
+  # unless an X-Check-Lock header is provided with the value "1".
+  git config --file .lfsconfig remote.other.origin.url \
+    "$GITSERVER/locksunsupported.git"
+  git config --file .lfsconfig remote.pushDefault other.origin
+
+  GIT_CURL_VERBOSE=1 git lfs lock --json "test.bin" 2>lock.log | tee lock.json
+  [ 0 -eq "${PIPESTATUS[0]}" ]
+
+  id="$(assert_lock lock.json "test.bin")"
+  assert_server_lock "$reponame" "$id" "refs/heads/main"
+
+  refute_server_lock "locksunsupported" "$id" "refs/heads/main"
+
+  [ 0 -eq "$(grep -c "locksunsupported" lock.log)" ]
+  [ 0 -eq "$(grep -c "404 Not Found" lock.log)" ]
+)
+end_test
+
 begin_test "lock with bad ref"
 (
   set -e

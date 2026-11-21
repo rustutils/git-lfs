@@ -16,22 +16,23 @@ else
 X ?=
 endif
 
-# Helper binaries the upstream shell tests rely on. Most are built
-# from vendored Go sources under `cmd/`. Two upstream helpers
-# (lfstest-customadapter, lfstest-standalonecustomadapter) depend on
-# upstream-internal Go packages and are not built here; the tests
-# that exercise them are skipped — see NOTES.md. `lfstest-testutils`
-# is reimplemented in Rust under `tests/cmd/src/bin/`.
+# Helper binaries the upstream shell tests rely on, built from the Go
+# sources vendored in `cmd/`. Two upstream helpers depend on upstream's
+# internal Go packages and aren't built here: lfstest-customadapter and
+# lfstest-standalonecustomadapter (see NOTES.md). `lfstest-testutils` is
+# ported to Rust in `cmd/src/bin/`.
 TEST_CMDS =
 TEST_CMDS += ../bin/git-credential-lfsnoop$X
 TEST_CMDS += ../bin/git-credential-lfstest$X
 TEST_CMDS += ../bin/lfs-askpass$X
 TEST_CMDS += ../bin/lfs-ssh-echo$X
 TEST_CMDS += ../bin/lfs-ssh-proxy-test$X
-TEST_CMDS += ../bin/lfstest-badpathcheck$X
+TEST_CMDS += ../bin/lfstest-badlocalfile$X
 TEST_CMDS += ../bin/lfstest-caseinverterextension$X
 TEST_CMDS += ../bin/lfstest-count-tests$X
+TEST_CMDS += ../bin/lfstest-exploitcheck$X
 TEST_CMDS += ../bin/lfstest-genrandom$X
+TEST_CMDS += ../bin/lfstest-getlimit$X
 TEST_CMDS += ../bin/lfstest-getnumcpu$X
 TEST_CMDS += ../bin/lfstest-gitserver$X
 TEST_CMDS += ../bin/lfstest-nanomtime$X

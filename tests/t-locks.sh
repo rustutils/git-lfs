@@ -50,6 +50,100 @@ begin_test "list a single lock"
 )
 end_test
 
+begin_test "list a single lock (--remote overrides push default)"
+(
+  set -e
+
+  reponame="locks-list-remote"
+  setup_remote_repo_with_file "$reponame" "a.dat"
+  clone_repo "$reponame" "$reponame"
+
+  git lfs lock --json "a.dat" | tee lock.log
+
+  id=$(assert_lock lock.log "a.dat")
+  assert_server_lock "$reponame" "$id" "refs/heads/main"
+
+  # Check invalid "remote.pushDefault" configuration causes error.
+  git remote add bad-remote "invalid-url"
+  git config remote.pushDefault bad-remote
+
+  git lfs locks 2>&1 | tee locks.log
+  if [ "0" -eq "${PIPESTATUS[0]}" ]; then
+    echo >&2 "fatal: expected 'git lfs locks' to fail ..."
+    exit 1
+  fi
+
+  # Check --remote option overrides "remote.pushDefault" configuration.
+  git lfs locks --remote origin --path "a.dat" | tee locks.log
+  if [ "0" -ne "${PIPESTATUS[0]}" ]; then
+    echo >&2 "fatal: expected 'git lfs locks' to succeed ..."
+    exit 1
+  fi
+
+  [ 1 -eq "$(wc -l <locks.log)" ]
+  grep -F "a.dat" locks.log
+  grep -F "ID:$id" locks.log
+
+  # Remove "remote.pushDefault" configuration.
+  git config --unset remote.pushDefault
+
+  # Check invalid "branch.<name>.pushRemote" configuration causes error.
+  git config branch.main.pushRemote bad-remote
+
+  git lfs locks 2>&1 | tee locks.log
+  if [ "0" -eq "${PIPESTATUS[0]}" ]; then
+    echo >&2 "fatal: expected 'git lfs locks' to fail ..."
+    exit 1
+  fi
+
+  # Check --remote option overrides "branch.<name>.pushRemote" configuration.
+  git lfs locks --remote origin --path "a.dat" | tee locks.log
+  if [ "0" -ne "${PIPESTATUS[0]}" ]; then
+    echo >&2 "fatal: expected 'git lfs locks' to succeed ..."
+    exit 1
+  fi
+
+  [ 1 -eq "$(wc -l <locks.log)" ]
+  grep -F "a.dat" locks.log
+  grep -F "ID:$id" locks.log
+)
+end_test
+
+begin_test "list a single lock with invalid default push remote in .lfsconfig"
+(
+  set -e
+
+  reponame="locks-list-invalid-remote-push-default"
+  setup_remote_repo "$reponame"
+  clone_repo "$reponame" "$reponame"
+
+  git lfs lock --json "test.bin" | tee lock.json
+
+  id="$(assert_lock lock.json "test.bin")"
+  assert_server_lock "$reponame" "$id" "refs/heads/main"
+
+  # Both of these invalid configurations should be ignored and the "origin"
+  # remote should be used instead.
+  #
+  # The repository name in this URL announces to the server that it should
+  # respond to all Locking API requests with a 404 Not Found status code,
+  # unless an X-Check-Lock header is provided with the value "1".
+  git config --file .lfsconfig remote.other.origin.url \
+    "$GITSERVER/locksunsupported.git"
+  git config --file .lfsconfig remote.pushDefault other.origin
+
+  GIT_CURL_VERBOSE=1 git lfs locks --path "test.bin" 2>trace.log | tee locks.log
+  [ 0 -eq "${PIPESTATUS[0]}" ]
+
+  [ 1 -eq "$(wc -l <locks.log)" ]
+  grep -F "test.bin" locks.log
+  grep -F "ID:$id" locks.log
+
+  [ 0 -eq "$(grep -c "locksunsupported" trace.log)" ]
+  [ 0 -eq "$(grep -c "404 Not Found" trace.log)" ]
+)
+end_test
+
 begin_test "list a single lock (SSH; git-lfs-authenticate)"
 (
   set -e
@@ -107,17 +201,17 @@ begin_test "list a single lock (SSH; git-lfs-transfer)"
   cat trace.log
   [ $(wc -l < locks.log) -eq 1 ]
   grep "f.dat" locks.log
-  grep "lfs-ssh-echo.*git-lfs-transfer .*$reponame.git download" trace.log
+  grep "lfs-ssh-echo.*git-lfs-transfer .*$reponame.git.* download" trace.log
 
   GIT_TRACE=1 git -c lfs."$sshurl".sshtransfer=always lfs locks --path "f.dat" 2>trace.log | tee locks.log
   [ $(wc -l < locks.log) -eq 1 ]
   grep "f.dat" locks.log
-  grep "lfs-ssh-echo.*git-lfs-transfer .*$reponame.git download" trace.log
+  grep "lfs-ssh-echo.*git-lfs-transfer .*$reponame.git.* download" trace.log
 
   GIT_TRACE=1 git -c lfs."$sshurl".sshtransfer=negotiate lfs locks --path "f.dat" 2>trace.log | tee locks.log
   [ $(wc -l < locks.log) -eq 1 ]
   grep "f.dat" locks.log
-  grep "lfs-ssh-echo.*git-lfs-transfer .*$reponame.git download" trace.log
+  grep "lfs-ssh-echo.*git-lfs-transfer .*$reponame.git.* download" trace.log
 )
 end_test
 
