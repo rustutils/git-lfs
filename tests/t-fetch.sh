@@ -279,7 +279,7 @@ EOF
 }
 EOF
   diff -u expected-a-b.json fetch-dry-run.json || diff -u expected-b-a.json fetch-dry-run.json || exit 1
-  diff -u expected-a-b.json fetch.json || diff -u expected-b-a.json fetch-dry-run.json || exit 1
+  diff -u expected-a-b.json fetch.json || diff -u expected-b-a.json fetch.json || exit 1
 )
 end_test
 

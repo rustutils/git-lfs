@@ -54,6 +54,10 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 - Approved and rejected credentials now go only to the first credential helper
   that handles them, not to every helper, matching upstream.
 
+### Fixed
+
+- `git lfs fetch` with refs lists objects in the same order on every run.
+
 ## [0.7.0] - 2026-05-13
 
 ### Added

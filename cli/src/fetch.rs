@@ -147,24 +147,30 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
         scan_pointers(cwd, &ref_strs, &[])?
     } else {
         // Like upstream's `fetchRef`, only each ref's tree. Merge the
-        // paths of an object found in several refs.
+        // paths of an object found in several refs, keeping the order objects
+        // were first found in so the output is the same on every run.
         use std::collections::HashMap;
-        let mut by_oid: HashMap<git_lfs_pointer::Oid, PointerEntry> = HashMap::new();
+        let mut entries: Vec<PointerEntry> = Vec::new();
+        let mut index: HashMap<git_lfs_pointer::Oid, usize> = HashMap::new();
         for r in &walk_refs {
             for e in git_lfs_git::scanner::scan_tree(cwd, r)? {
-                by_oid
-                    .entry(e.oid)
-                    .and_modify(|existing| {
+                match index.get(&e.oid) {
+                    Some(&i) => {
+                        let existing = &mut entries[i];
                         for p in &e.paths {
                             if !existing.paths.contains(p) {
                                 existing.paths.push(p.clone());
                             }
                         }
-                    })
-                    .or_insert(e);
+                    }
+                    None => {
+                        index.insert(e.oid, entries.len());
+                        entries.push(e);
+                    }
+                }
             }
         }
-        by_oid.into_values().collect()
+        entries
     };
 
     // `git rev-list --objects` gives each blob only one of its paths, so

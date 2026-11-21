@@ -47,6 +47,12 @@ The vendored files come from upstream's `main` as of late April 2026
 Compare `docs/` and `tests/` against it, with `git diff 14ae1707 v3.8.1 --
 docs t` in the checkout, and bring over what changed.
 
+Local changes to the vendored tests, which a sync must keep:
+
+- `tests/t-fetch.sh`, "fetch --json with remote and branches": the b-a
+  fallback compares `fetch.json`, not `fetch-dry-run.json`. Upstream's
+  version checks the wrong file. Not yet reported.
+
 ## Known gaps
 
 Grouped by area, with the failing tests each one would fix.
