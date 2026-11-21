@@ -137,9 +137,6 @@ come from reading the code.
 
 ### Security
 
-- **SSH hosts starting with `-` reach ssh as options** in `creds/src/ssh.rs`,
-  which runs `git-lfs-authenticate` (`t-ssh` 1 and 2). The pure-SSH
-  `build_argv` already guards against this. Port the same check.
 - **`.lfsconfig` accepts any key ending in `.access`** (`t-config` 11),
   because `is_safe_key` only checks the last part.
 - **An action's `Transfer-Encoding: chunked` is sent with `Content-Length`**
@@ -157,16 +154,15 @@ come from reading the code.
   percent-decoded (`t-ssh` 8 and 12), and an `href` from
   `git-lfs-authenticate` containing a newline is accepted, because the `url`
   crate strips it (`t-ssh` 6). Upstream rejects it.
-- **The `exec:` trace format** differs from upstream's, which quotes each
-  argument and logs embedded newlines on `exec (cont.):` lines (`t-ssh` 7
-  and 11).
 - **Corrupt downloads** report `expected OID X, got Y` instead of
   upstream's `expected OID X, got Y after N bytes written`
   (`t-batch-storage-corrupt` 1 and 2).
 - **An invalid `.gitattributes` pattern is ignored** instead of reported
   (`t-post-checkout` 3).
-- **`t-migrate-export` is flaky**: test 2 or 15 sometimes fails with
-  "Expanded 0 pointer(s)". Not investigated.
+- **Flaky tests**: `t-migrate-export` test 2 or 15 sometimes fails with
+  "Expanded 0 pointer(s)". `t-status` test 17 (permission change) sometimes
+  lists `a.dat` as changed with the same OID, probably Git's racy-timestamp
+  check. Neither investigated further.
 - **`.git/info/attributes` has the lowest precedence instead of the
   highest** (`AttrSet::from_workdir` in `git/src/attr.rs`), and is assumed
   to be under the working tree, which is wrong in linked worktrees.
@@ -240,7 +236,9 @@ come from reading the code.
   and passwords are rejected. A failed `git credential approve` isn't
   rolled back from the cache.
 - `lfs.ssh.automultiplex` and the SSH variant settings aren't read, so the
-  PuTTY, TortoisePlink, and simple code paths in `build_argv` are unused.
+  PuTTY, TortoisePlink, and simple code paths in `build_argv` are unused,
+  and `git-lfs-authenticate` always guards a host starting with `-` with
+  OpenSSH's `--` (`t-ssh` 2 expects the simple variant's stripping).
 - IPv6: SSH URLs split at the wrong colon, `ssh://host:/path` gives an
   empty port, and netrc keeps the brackets.
 - `read_fetch_head_url` reads the first line containing " of ", not just

@@ -17,6 +17,14 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
   upstream's rules: credentials aren't sent on after a redirect to another
   origin, including from HTTP to HTTPS on the same host and port, and
   redirects from HTTPS to HTTP are refused. Uploads already worked this way.
+- An SSH host starting with `-`, such as `-oProxyCommand=...` in an `ssh://`
+  URL, is no longer read by ssh as an option when running
+  `git-lfs-authenticate`.
+
+### Changed
+
+- `exec:` lines in `GIT_TRACE` output quote each argument, like upstream, so
+  they show exactly what was run.
 
 ## [0.8.0] - 2026-11-21
 

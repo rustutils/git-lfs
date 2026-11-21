@@ -6,8 +6,9 @@
 //!
 //! The caller picks the SSH program. The CLI uses `GIT_SSH_COMMAND`, then
 //! `GIT_SSH`, then `ssh`, and doesn't read `core.sshCommand`. The program
-//! string is split on whitespace and run without a shell. The user and host
-//! are passed as given, so a host starting with `-` reaches ssh as an option.
+//! string is split on whitespace and run without a shell. A host starting
+//! with `-` is preceded by `--`, so ssh doesn't read it as an option. This
+//! assumes OpenSSH: other SSH variants, such as PuTTY's, aren't detected.
 //! The remote command is quoted for the server's shell with [`shell_quote`].
 //!
 //! Responses are cached per user and host, port, path, and operation.
@@ -203,18 +204,16 @@ impl SshAuthClient {
             argv.push("-p".to_owned());
             argv.push(p.to_owned());
         }
+        // A host such as `-oProxyCommand=...` from an `ssh://` URL would be
+        // read as an option. OpenSSH takes `--` to end the options.
+        if user_and_host.starts_with('-') {
+            argv.push("--".to_owned());
+        }
         argv.push(user_and_host.to_owned());
         argv.push(remote_command(path, operation));
 
-        // Upstream shell-quotes arguments that contain special characters.
-        // The shell tests only match parts that need no quoting.
         if trace_enabled() {
-            let mut e = std::io::stderr().lock();
-            let _ = write!(e, "exec: {prog}");
-            for a in &argv {
-                let _ = write!(e, " {a}");
-            }
-            let _ = writeln!(e);
+            let _ = writeln!(std::io::stderr().lock(), "{}", exec_trace(prog, &argv));
         }
 
         let now = SystemTime::now();
@@ -367,6 +366,28 @@ fn remote_command(path: &str, operation: SshOperation) -> String {
         shell_quote(path),
         shell_quote(operation.as_str())
     )
+}
+
+/// Format the `exec:` trace of a command, like upstream's `subprocess.Trace`.
+///
+/// Each argument is quoted with [`shell_quote`], so the line shows exactly
+/// what was run. A line break inside an argument continues the trace on an
+/// `exec (cont.):` line.
+pub fn exec_trace(program: &str, args: &[String]) -> String {
+    let mut command = program.to_owned();
+    for arg in args {
+        command.push(' ');
+        command.push_str(&shell_quote(arg));
+    }
+    command
+        .split('\n')
+        .enumerate()
+        .map(|(i, line)| {
+            let prefix = if i == 0 { "exec" } else { "exec (cont.)" };
+            format!("{prefix}: {line}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Quote a word for a POSIX shell, like upstream's `ShellQuoteSingle`.
@@ -635,5 +656,53 @@ mod tests {
             remote_command("/foo/bar.git", SshOperation::Download),
             "git-lfs-authenticate /foo/bar.git download"
         );
+    }
+
+    #[test]
+    fn exec_trace_quotes_arguments() {
+        let args = [
+            "-p".to_owned(),
+            "22".to_owned(),
+            "git-lfs-authenticate /r upload".to_owned(),
+        ];
+        assert_eq!(
+            exec_trace("ssh", &args),
+            "exec: ssh -p 22 'git-lfs-authenticate /r upload'"
+        );
+    }
+
+    #[test]
+    fn exec_trace_continues_after_a_newline() {
+        let args = ["a\nb".to_owned()];
+        assert_eq!(exec_trace("ssh", &args), "exec: ssh 'a\nexec (cont.): b'");
+    }
+
+    #[test]
+    fn host_starting_with_a_dash_is_not_an_option() {
+        // The fake ssh records its arguments, one per line.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let prog = tmp.path().join("fakessh");
+        let args_file = tmp.path().join("args");
+        std::fs::write(
+            &prog,
+            format!(
+                "for a in \"$@\"; do echo \"$a\"; done > {}\n\
+                 echo '{{\"href\":\"https://lfs.example/r\"}}'\n",
+                args_file.display()
+            ),
+        )
+        .unwrap();
+
+        let client = SshAuthClient::new(format!("sh {}", prog.display()));
+        client
+            .resolve("-oProxyCommand=evil", None, "/repo", SshOperation::Upload)
+            .unwrap();
+        let args = std::fs::read_to_string(&args_file).unwrap();
+        let args: Vec<&str> = args.lines().collect();
+        let host = args
+            .iter()
+            .position(|a| *a == "-oProxyCommand=evil")
+            .unwrap();
+        assert_eq!(args[host - 1], "--", "{args:?}");
     }
 }

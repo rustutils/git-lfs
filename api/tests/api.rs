@@ -617,7 +617,7 @@ async fn batch_unauthorized_with_no_creds_returns_credentials_not_found() {
 }
 
 /// Batch through `first`, which redirects to `target`, with Basic auth.
-async fn batch_via_redirect(first: &MockServer, target: &str) -> Result<BatchResponse, ApiError> {
+async fn batch_via_redirect(first: &MockServer, target: &str) -> BatchResponse {
     Mock::given(method("POST"))
         .and(path("/objects/batch"))
         .respond_with(ResponseTemplate::new(307).insert_header("Location", target))
@@ -635,7 +635,7 @@ async fn batch_via_redirect(first: &MockServer, target: &str) -> Result<BatchRes
             size: 10,
         }],
     );
-    Client::new(endpoint, auth).batch(&req).await
+    Client::new(endpoint, auth).batch(&req).await.unwrap()
 }
 
 fn batch_ok() -> ResponseTemplate {
@@ -653,7 +653,7 @@ async fn redirect_to_another_origin_drops_credentials() {
         .await;
 
     let target = format!("{}/objects/batch", other.uri());
-    batch_via_redirect(&first, &target).await.unwrap();
+    batch_via_redirect(&first, &target).await;
     let received = other.received_requests().await.unwrap();
     assert_eq!(received.len(), 1, "redirect wasn't followed as a POST");
     assert!(!received[0].headers.contains_key("authorization"));
@@ -670,7 +670,7 @@ async fn redirect_on_the_same_origin_keeps_credentials() {
         .await;
 
     let target = format!("{}/moved/objects/batch", server.uri());
-    batch_via_redirect(&server, &target).await.unwrap();
+    batch_via_redirect(&server, &target).await;
 }
 
 #[tokio::test]

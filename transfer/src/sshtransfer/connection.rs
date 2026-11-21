@@ -23,7 +23,7 @@ use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
-use git_lfs_creds::shell_quote;
+use git_lfs_creds::{exec_trace, shell_quote};
 
 use crate::sshtransfer::pktline::{self, Packet, Reader, TextPacket, Writer};
 
@@ -635,12 +635,7 @@ fn trace_exec(prog: &str, args: &[String]) {
     if !trace_enabled() {
         return;
     }
-    let mut e = std::io::stderr().lock();
-    let _ = write!(e, "exec: {prog}");
-    for a in args {
-        let _ = write!(e, " {a}");
-    }
-    let _ = writeln!(e);
+    let _ = writeln!(std::io::stderr().lock(), "{}", exec_trace(prog, args));
 }
 
 #[cfg(test)]
