@@ -62,3 +62,50 @@ impl Auth {
         }
     }
 }
+
+/// Format a header for the `GIT_CURL_VERBOSE` dump.
+///
+/// Basic credentials are masked, as in upstream's `traceHTTPDump`, unless
+/// `LFS_DEBUG_HTTP` is set. Other schemes, such as Bearer, are shown, as
+/// upstream does.
+pub fn verbose_header_line(name: &str, value: &str) -> String {
+    let debug = std::env::var("LFS_DEBUG_HTTP")
+        .is_ok_and(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "" | "0" | "false"));
+    header_line(name, value, debug)
+}
+
+fn header_line(name: &str, value: &str, unmasked: bool) -> String {
+    let basic = name.eq_ignore_ascii_case("authorization")
+        && value.trim_start().to_ascii_lowercase().starts_with("basic");
+    if basic && !unmasked {
+        "Authorization: Basic * * * * *".to_owned()
+    } else {
+        format!("{name}: {value}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn basic_credentials_are_masked() {
+        assert_eq!(
+            header_line("authorization", "Basic YWxpY2U6czNjcmV0", false),
+            "Authorization: Basic * * * * *"
+        );
+        assert_eq!(
+            header_line("Authorization", "Basic YWxpY2U6czNjcmV0", true),
+            "Authorization: Basic YWxpY2U6czNjcmV0"
+        );
+    }
+
+    #[test]
+    fn other_headers_are_shown() {
+        assert_eq!(
+            header_line("Authorization", "Bearer token", false),
+            "Authorization: Bearer token"
+        );
+        assert_eq!(header_line("X-Foo", "bar", false), "X-Foo: bar");
+    }
+}

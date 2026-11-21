@@ -94,6 +94,19 @@ pub fn run(cwd: &Path) -> Result<(), EnvError> {
     Ok(())
 }
 
+/// `url` with any password removed, for display.
+///
+/// Other URLs are returned unchanged, so their formatting is kept exactly.
+fn without_password(url: &str) -> String {
+    match url::Url::parse(url) {
+        Ok(mut parsed) if parsed.password().is_some() => {
+            let _ = parsed.set_password(None);
+            parsed.to_string()
+        }
+        _ => url.to_owned(),
+    }
+}
+
 /// Print the `Endpoint=` line and an `Endpoint (<remote>)=` line for each
 /// remote other than `origin`.
 ///
@@ -112,7 +125,7 @@ fn emit_endpoints(cwd: &Path) {
         && let Ok(info) = resolve_endpoint(cwd, None)
     {
         let auth = access_for(cwd, &info.url);
-        println!("Endpoint={} (auth={auth})", info.url);
+        println!("Endpoint={} (auth={auth})", without_password(&info.url));
         print_ssh_line(&info.ssh);
     }
     for r in &remotes {
@@ -121,7 +134,10 @@ fn emit_endpoints(cwd: &Path) {
         }
         if let Ok(info) = resolve_endpoint(cwd, Some(r)) {
             let auth = access_for(cwd, &info.url);
-            println!("Endpoint ({r})={} (auth={auth})", info.url);
+            println!(
+                "Endpoint ({r})={} (auth={auth})",
+                without_password(&info.url)
+            );
             print_ssh_line(&info.ssh);
         }
     }
@@ -335,4 +351,20 @@ fn remotes(cwd: &Path) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn endpoint_passwords_are_removed() {
+        assert_eq!(
+            without_password("https://alice:s3cret@host/repo.git/info/lfs"),
+            "https://alice@host/repo.git/info/lfs"
+        );
+        // Without a password, the URL is printed as it was.
+        assert_eq!(without_password("http://foo/bar"), "http://foo/bar");
+        assert_eq!(without_password("git@host:repo.git"), "git@host:repo.git");
+    }
 }

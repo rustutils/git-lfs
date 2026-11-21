@@ -8,7 +8,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use url::Url;
 
-use crate::auth::Auth;
+use crate::auth::{Auth, verbose_header_line};
 use crate::error::ApiError;
 use crate::ssh::{SharedSshResolver, SshAuth, SshOperation};
 
@@ -285,9 +285,11 @@ impl Client {
         }
     }
 
-    /// The credential URL as a string, for the credentials-not-found error.
+    /// The credential URL as shown in errors, without any password.
     fn cred_url_string(&self) -> String {
-        self.cred_url.as_ref().unwrap_or(&self.endpoint).to_string()
+        let mut url = self.cred_url.as_ref().unwrap_or(&self.endpoint).clone();
+        let _ = url.set_password(None);
+        url.to_string()
     }
 
     /// POST a JSON body and decode the JSON response, with the auth retry
@@ -318,7 +320,7 @@ impl Client {
             let _ = writeln!(err, "> Content-Type: {LFS_MEDIA_TYPE}");
             // `t-extra-header.sh` greps for lines like `> X-Foo: bar`.
             for (name, value) in self.extra_headers_for(url.as_str()) {
-                let _ = writeln!(err, "> {name}: {value}");
+                let _ = writeln!(err, "> {}", verbose_header_line(&name, &value));
             }
             // The retry loop prints the `Authorization` line, once per
             // attempt.

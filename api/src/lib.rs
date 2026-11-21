@@ -70,7 +70,7 @@ mod locks;
 mod models;
 mod ssh;
 
-pub use auth::Auth;
+pub use auth::{Auth, verbose_header_line};
 pub use batch::{
     Action, Actions, BatchRequest, BatchResponse, ObjectError, ObjectResult, ObjectSpec, Operation,
 };

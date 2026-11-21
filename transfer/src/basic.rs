@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use futures::StreamExt;
-use git_lfs_api::{Action, Actions};
+use git_lfs_api::{Action, Actions, verbose_header_line};
 use git_lfs_pointer::Oid;
 use git_lfs_store::Store;
 use reqwest::header::{CONTENT_LENGTH, RANGE};
@@ -196,7 +196,7 @@ fn dump_verbose_request(
         let _ = writeln!(err, "> Range: {r}");
     }
     for (k, v) in extra_headers {
-        let _ = writeln!(err, "> {k}: {v}");
+        let _ = writeln!(err, "> {}", verbose_header_line(k, v));
     }
     let _ = writeln!(err);
 }
@@ -387,7 +387,7 @@ pub(crate) async fn upload(
                 if k.eq_ignore_ascii_case("content-type") {
                     continue;
                 }
-                let _ = writeln!(err, "> {k}: {v}");
+                let _ = writeln!(err, "> {}", verbose_header_line(k, v));
             }
             let _ = writeln!(err);
             verbose_logged = true;

@@ -617,6 +617,35 @@ async fn batch_unauthorized_with_no_creds_returns_credentials_not_found() {
 }
 
 #[tokio::test]
+async fn credentials_not_found_hides_the_url_password() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/objects/batch"))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&server)
+        .await;
+
+    let mut cred_url = Url::parse(&server.uri()).unwrap();
+    cred_url.set_username("alice").unwrap();
+    cred_url.set_password(Some("s3cret")).unwrap();
+    let endpoint = Url::parse(&server.uri()).unwrap();
+    let client = Client::new(endpoint, Auth::None)
+        .with_credential_helper(StubHelper::empty())
+        .with_cred_url(cred_url);
+
+    let req = BatchRequest::new(
+        Operation::Download,
+        vec![ObjectSpec {
+            oid: "abc".into(),
+            size: 10,
+        }],
+    );
+    let message = client.batch(&req).await.unwrap_err().to_string();
+    assert!(message.contains("alice@"), "{message}");
+    assert!(!message.contains("s3cret"), "{message}");
+}
+
+#[tokio::test]
 async fn batch_persistent_unauthorized_rejects_filled_creds() {
     // Server always 401s, even with the right header. Helper hands out
     // creds that the server doesn't accept → multi-attempt loop tries

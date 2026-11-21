@@ -118,14 +118,6 @@ come from reading the code.
   `http.<url>.sslVerify`, `sslCAInfo`, `sslCert`, and `sslKey` for the LFS
   endpoint and uses them for storage hosts too. Upstream looks them up per
   request URL.
-- **A password in the remote URL can appear in an error.** Confirmed. With
-  `https://alice:s3cret@host/repo.git`, a 401 that no helper can answer
-  gives *Git credentials for https://alice:s3cret@host/ not found*
-  (`cred_url_string` in `api/src/client.rs`). `git lfs env` also prints the
-  password, as upstream does.
-- **`GIT_CURL_VERBOSE` prints credentials.** `http.extraHeader` values
-  (`api/src/client.rs`) and transfer action headers (`transfer/src/basic.rs`)
-  are printed unmasked. Upstream masks Basic credentials.
 - **A pure-SSH server can crash the client.** `download` in
   `sshtransfer/adapter.rs` calls `Vec::with_capacity` with the `size=` the
   server sends, so a huge value aborts the process.

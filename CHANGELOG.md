@@ -25,6 +25,11 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 - An `http.sslVerify` value that isn't a boolean, such as a typo, no longer
   turns off certificate verification. A warning names the value. Upstream
   turns verification off in this case.
+- Passwords in remote URLs no longer appear in error messages or in
+  `git lfs env`.
+- `GIT_CURL_VERBOSE` output masks Basic credentials in all headers, including
+  those from `http.extraHeader` and transfer actions, as upstream does. Set
+  `LFS_DEBUG_HTTP` to show them.
 
 ### Added
 
