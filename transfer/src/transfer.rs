@@ -286,6 +286,14 @@ impl Transfer {
                         return Err(TransferError::BatchResponse(Box::new(e)));
                     }
                     let server_delay = e.retry_after();
+                    if let Some(wait) = server_delay
+                        && wait > self.config.max_retry_time
+                    {
+                        for obj in &req.objects {
+                            trace_retry_refused(&obj.oid, wait, self.config.max_retry_time);
+                        }
+                        return Err(TransferError::BatchResponse(Box::new(e)));
+                    }
                     let delay = server_delay.unwrap_or(backoff);
                     retry_count += 1;
                     if trace_enabled() {
@@ -454,7 +462,8 @@ fn check_not_expired(rel: &str, action: &git_lfs_api::Action) -> Result<(), Tran
 /// or uses up `max_attempts`.
 ///
 /// Waits for the error's `Retry-After` delay when it has one, and
-/// otherwise for the exponential backoff.
+/// otherwise for the exponential backoff. A `Retry-After` delay longer than
+/// `max_retry_time` ends the retries.
 async fn with_retry<F, Fut>(
     config: &TransferConfig,
     oid: &str,
@@ -477,6 +486,13 @@ where
                     last_err = Some(e);
                     break;
                 }
+                if let Some(wait) = e.retry_after()
+                    && wait > config.max_retry_time
+                {
+                    trace_retry_refused(oid, wait, config.max_retry_time);
+                    last_err = Some(e);
+                    break;
+                }
                 let delay = e.retry_after().unwrap_or(backoff);
                 retry_count += 1;
                 emit_retry_trace(oid, size, retry_count, delay, &e);
@@ -494,6 +510,18 @@ where
         }
     }
     Err(last_err.expect("loop ran at least once"))
+}
+
+/// Log under `GIT_TRACE` that a `Retry-After` delay was too long, in
+/// upstream's format.
+fn trace_retry_refused(oid: &str, wait: Duration, max: Duration) {
+    if trace_enabled() {
+        eprintln!(
+            "tq: refusing to retry {oid:?}, retry after {:.0}s exceeds maximum {}s",
+            wait.as_secs_f64(),
+            max.as_secs()
+        );
+    }
 }
 
 /// Log a retry under `GIT_TRACE` in upstream's format.

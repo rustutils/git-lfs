@@ -14,6 +14,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use git_lfs_api::{
     Auth, Client as ApiClient, ObjectSpec, Operation, Ref, SharedSshResolver,
@@ -703,6 +704,13 @@ fn transfer_config_for(cwd: &Path, endpoint_url: Option<&str>) -> TransferConfig
         && n >= 3
     {
         config.max_verifies = n;
+    }
+    // As in upstream, a value below 1 keeps the default.
+    if let Ok(Some(raw)) = git_lfs_git::config::get_effective(cwd, "lfs.transfer.maxretrytime")
+        && let Ok(n) = raw.trim().parse::<u64>()
+        && n > 0
+    {
+        config.max_retry_time = Duration::from_secs(n);
     }
     // Defaults to true. Without an endpoint only `lfs.contenttype` is read.
     config.detect_content_type = match endpoint_url {

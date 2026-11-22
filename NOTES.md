@@ -75,10 +75,6 @@ Grouped by area, with the failing tests each one would fix.
   connection reuse with `lfs.ssh.automultiplex`, or `lfs.defaulttokenttl`,
   and don't fall back to the guessed HTTPS endpoint when the command is
   missing (`t-ssh` tests 3 to 5).
-- **`lfs.transfer.maxRetryTime`** isn't implemented, so a long
-  `Retry-After` is waited out instead of failing
-  (`t-batch-retries-ratelimit` 6, `t-batch-storage-retries-ratelimit` 6
-  and 7).
 - **Compressed downloads**: `lfs.transfer.httpDownloadEncoding` (gzip,
   zstd) isn't implemented (`t-batch-storage-encoding` 1 to 5, and part of
   `t-progress`).

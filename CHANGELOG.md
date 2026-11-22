@@ -33,6 +33,9 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
   `remote.pushDefault`) and its push URL, like upstream.
 - `core.sshCommand` is read when neither `GIT_SSH_COMMAND` nor `GIT_SSH` is
   set.
+- `lfs.transfer.maxRetryTime` limits how long a `Retry-After` delay is
+  waited for, 300 seconds by default. A server asking for longer fails the
+  transfer instead.
 
 ### Changed
 

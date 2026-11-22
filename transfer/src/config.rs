@@ -28,6 +28,11 @@ pub struct TransferConfig {
     pub initial_backoff: Duration,
     /// Upper bound for the backoff delay. Default 30 s.
     pub backoff_max: Duration,
+    /// The longest `Retry-After` delay to wait for.
+    ///
+    /// A server asking for a longer wait fails the request instead.
+    /// Follows `lfs.transfer.maxRetryTime`. Default 300 s.
+    pub max_retry_time: Duration,
     /// Rewriter for download action URLs.
     pub url_rewriter: Option<UrlRewriter>,
     /// Rewriter for upload and verify action URLs.
@@ -67,6 +72,7 @@ impl Default for TransferConfig {
             max_attempts: 9,
             initial_backoff: Duration::from_millis(100),
             backoff_max: Duration::from_secs(30),
+            max_retry_time: Duration::from_secs(300),
             url_rewriter: None,
             upload_url_rewriter: None,
             batch_size: 100,
@@ -84,6 +90,7 @@ impl std::fmt::Debug for TransferConfig {
             .field("max_attempts", &self.max_attempts)
             .field("initial_backoff", &self.initial_backoff)
             .field("backoff_max", &self.backoff_max)
+            .field("max_retry_time", &self.max_retry_time)
             .field("url_rewriter", &self.url_rewriter.as_ref().map(|_| "<fn>"))
             .field(
                 "upload_url_rewriter",

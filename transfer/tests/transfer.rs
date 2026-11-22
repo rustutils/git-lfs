@@ -840,3 +840,36 @@ impl Respond for FlakyResponder {
         guard.pop().unwrap_or_else(|| self.fallback.clone())
     }
 }
+
+// ---------- Retry-After limit ----------------------------------------------
+
+#[tokio::test]
+async fn retry_after_beyond_max_retry_time_fails_at_once() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/objects/batch"))
+        .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "10"))
+        .mount(&server)
+        .await;
+    let tmp = TempDir::new().unwrap();
+    let store = Store::new(tmp.path().join("lfs"));
+    let api = ApiClient::new(Url::parse(&server.uri()).unwrap(), Auth::None);
+    let config = TransferConfig {
+        max_retry_time: Duration::from_secs(5),
+        ..fast_config()
+    };
+    let transfer = Transfer::new(api, store, config);
+    let spec = ObjectSpec {
+        oid: ABC_OID.into(),
+        size: 3,
+    };
+
+    let started = std::time::Instant::now();
+    let result = transfer.download(vec![spec], None, None).await;
+    assert!(result.is_err(), "{result:?}");
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "waited for Retry-After"
+    );
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+}
