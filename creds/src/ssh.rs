@@ -96,6 +96,31 @@ pub enum SshAuthError {
     /// The command's output wasn't a valid JSON response.
     #[error("ssh git-lfs-authenticate returned malformed JSON: {0}")]
     Json(String),
+    /// The server has no `git-lfs-authenticate` command.
+    ///
+    /// Callers should use the endpoint guessed from the SSH URL instead.
+    /// Holds the command's stderr.
+    #[error("git-lfs-authenticate isn't available on the server: {0}")]
+    Unavailable(String),
+}
+
+/// Stderr messages, in lowercase, that mean the server has no
+/// `git-lfs-authenticate`, as in upstream. Some servers, such as Gerrit,
+/// exit with 1 instead of the shell's 127.
+const NOT_FOUND_MESSAGES: &[&str] = &[
+    "git-lfs-authenticate: not found",
+    "git-lfs-authenticate: command not found",
+    "git-lfs-authenticate: no such file",
+    "command not found: git-lfs-authenticate",
+];
+
+/// Whether a failed run means the server has no `git-lfs-authenticate`.
+fn is_unavailable(status: std::process::ExitStatus, stderr: &str) -> bool {
+    if status.code() == Some(127) {
+        return true;
+    }
+    let stderr = stderr.to_lowercase();
+    NOT_FOUND_MESSAGES.iter().any(|m| stderr.contains(m))
 }
 
 /// The SSH program to run, as chosen by Git's rules.
@@ -253,6 +278,9 @@ impl SshAuthClient {
             .output()?;
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr).trim().to_owned();
+            if is_unavailable(out.status, &stderr) {
+                return Err(SshAuthError::Unavailable(stderr));
+            }
             return Err(SshAuthError::Failed(if stderr.is_empty() {
                 format!("ssh {prog:?} exited {}", out.status)
             } else {
@@ -732,5 +760,31 @@ mod tests {
             .position(|a| *a == "-oProxyCommand=evil")
             .unwrap();
         assert_eq!(args[host - 1], "--", "{args:?}");
+    }
+
+    #[test]
+    fn missing_command_is_unavailable() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cases = [
+            ("exit 127", true),
+            (
+                "echo 'fatal: Gerrit: git-lfs-authenticate: not found' >&2; exit 1",
+                true,
+            ),
+            ("echo 'repository not found' >&2; exit 1", false),
+        ];
+        for (script, unavailable) in cases {
+            let prog = tmp.path().join("fakessh");
+            std::fs::write(&prog, script).unwrap();
+            let client = SshAuthClient::new(SshProgram::Shell(format!("sh {}", prog.display())));
+            let err = client
+                .resolve("git@host", None, "/repo", SshOperation::Upload)
+                .unwrap_err();
+            assert_eq!(
+                matches!(err, SshAuthError::Unavailable(_)),
+                unavailable,
+                "{script}: {err}"
+            );
+        }
     }
 }

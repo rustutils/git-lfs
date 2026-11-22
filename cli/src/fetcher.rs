@@ -22,7 +22,7 @@ use git_lfs_api::{
 };
 use git_lfs_creds::{
     AskpassHelper, CachingHelper, GitCredentialHelper, Helper, HelperChain, NetrcCredentialHelper,
-    SshAuthClient, SshOperation as CredsSshOperation, SshProgram,
+    SshAuthClient, SshAuthError, SshOperation as CredsSshOperation, SshProgram,
 };
 use git_lfs_filter::FetchError;
 use git_lfs_git::ConfigScope;
@@ -480,12 +480,18 @@ impl SshResolver for DisabledSshResolver {
 
 /// Turn an endpoint into an HTTP or HTTPS URL for the API client.
 ///
-/// HTTP and HTTPS URLs are kept. Others, such as `ssh://` or `git@host:repo`,
-/// get their HTTPS form from
-/// [`derive_lfs_url`](git_lfs_git::endpoint::derive_lfs_url).
+/// HTTP and HTTPS URLs are kept. An SSH URL gets the HTTPS form from
+/// [`guessed_https_url`](git_lfs_git::endpoint::guessed_https_url), which
+/// requests use unless `git-lfs-authenticate` gives another. Anything else
+/// goes through [`derive_lfs_url`](git_lfs_git::endpoint::derive_lfs_url).
 fn http_compatible_endpoint(url_str: &str) -> Result<String, git_lfs_git::endpoint::EndpointError> {
     if url_str.starts_with("http://") || url_str.starts_with("https://") {
         return Ok(url_str.to_owned());
+    }
+    // A clone URL has already become an HTTPS URL, so an SSH URL here was
+    // configured as the LFS URL itself.
+    if let Some(url) = git_lfs_git::endpoint::guessed_https_url(url_str) {
+        return Ok(url);
     }
     git_lfs_git::endpoint::derive_lfs_url(url_str)
 }
@@ -607,15 +613,31 @@ impl SshResolver for SshAuthAdapter {
             ApiSshOperation::Upload => CredsSshOperation::Upload,
             ApiSshOperation::Download => CredsSshOperation::Download,
         };
-        let resolved = self
-            .client
-            .resolve(
-                &self.ssh.user_and_host,
-                self.ssh.port.as_deref(),
-                &self.ssh.path,
-                creds_op,
-            )
-            .map_err(|e| git_lfs_api::ApiError::Decode(format!("ssh git-lfs-authenticate: {e}")))?;
+        let resolved = match self.client.resolve(
+            &self.ssh.user_and_host,
+            self.ssh.port.as_deref(),
+            &self.ssh.path,
+            creds_op,
+        ) {
+            Ok(resolved) => resolved,
+            // The server discovery spec says to use the guessed endpoint,
+            // which an empty href keeps.
+            Err(SshAuthError::Unavailable(_)) => {
+                ssh_trace(format_args!(
+                    "ssh: {} does not provide git-lfs-authenticate, falling back to guessed LFS endpoint",
+                    self.ssh.user_and_host
+                ));
+                return Ok(ApiSshAuth {
+                    href: String::new(),
+                    headers: HashMap::new(),
+                });
+            }
+            Err(e) => {
+                return Err(git_lfs_api::ApiError::Decode(format!(
+                    "ssh git-lfs-authenticate: {e}"
+                )));
+            }
+        };
         Ok(ApiSshAuth {
             href: resolved.href,
             headers: resolved.header,

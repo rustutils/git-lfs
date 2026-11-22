@@ -438,6 +438,30 @@ fn ssh_to_https(rest: &str, scheme_for_error: &str) -> Result<String, EndpointEr
     )))
 }
 
+/// The HTTPS URL of an SSH LFS URL such as `ssh://git@host:22/repo`.
+///
+/// This is the host and path, as in upstream's `EndpointFromSshUrl`, without
+/// the `.git/info/lfs` that [`derive_lfs_url`] adds to a clone URL. A client
+/// uses it when the server has no `git-lfs-authenticate`. `None` if `url`
+/// isn't an SSH URL.
+pub fn guessed_https_url(url: &str) -> Option<String> {
+    let trimmed = url.trim();
+    let (authority, path) = match ["ssh://", "git+ssh://", "ssh+git://"]
+        .iter()
+        .find_map(|scheme| trimmed.strip_prefix(scheme))
+    {
+        Some(rest) => rest.split_once('/').unwrap_or((rest, "")),
+        None if trimmed.contains("://") => return None,
+        None => bare_ssh_split(trimmed)?,
+    };
+    let host = authority.rsplit('@').next().unwrap_or(authority);
+    let host = host.split(':').next().unwrap_or(host);
+    if host.is_empty() {
+        return None;
+    }
+    Some(format!("https://{host}/{}", path.trim_start_matches('/')))
+}
+
 /// Append `/info/lfs` to a URL, adding `.git` first if it isn't there.
 ///
 /// Trailing slashes are removed first.
@@ -461,6 +485,19 @@ mod tests {
         // A bare URL isn't a URL, so its path is kept.
         let info = parse_ssh_url("git@host:my%20repo").unwrap();
         assert_eq!(info.path, "my%20repo");
+    }
+
+    #[test]
+    fn guessed_https_url_keeps_the_path() {
+        let cases = [
+            ("ssh://git@host:2222/repo", Some("https://host/repo")),
+            ("ssh://host/a/b%0Ac", Some("https://host/a/b%0Ac")),
+            ("git@host:org/repo.git", Some("https://host/org/repo.git")),
+            ("https://host/repo", None),
+        ];
+        for (url, want) in cases {
+            assert_eq!(guessed_https_url(url).as_deref(), want, "{url}");
+        }
     }
 
     // ---- derive_lfs_url ---------------------------------------------------

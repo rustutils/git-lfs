@@ -36,6 +36,9 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 - `lfs.transfer.maxRetryTime` limits how long a `Retry-After` delay is
   waited for, 300 seconds by default. A server asking for longer fails the
   transfer instead.
+- When an SSH server has no `git-lfs-authenticate`, requests go to the
+  HTTPS endpoint guessed from the SSH URL, as the server discovery spec
+  says, instead of failing.
 - `lfs.transfer.maxRetries` and `lfs.transfer.maxRetryDelay` set the number
   of retries and the longest delay between them. The defaults are
   upstream's: 8 retries, with a delay starting at 250 milliseconds and
