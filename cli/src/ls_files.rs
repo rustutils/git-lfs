@@ -130,10 +130,12 @@ pub fn run(cwd: &Path, refs: &[String], opts: &Options) -> Result<(), LsFilesErr
         merge_by_path(index, tree)
     };
 
+    // Like upstream, empty files aren't listed.
     let pointers: Vec<PointerEntry> = pointers
         .into_iter()
         .filter(|p| {
-            crate::fetch::path_passes_filter(p.path.as_deref(), &opts.include, &opts.exclude)
+            p.size > 0
+                && crate::fetch::path_passes_filter(p.path.as_deref(), &opts.include, &opts.exclude)
         })
         .collect();
 

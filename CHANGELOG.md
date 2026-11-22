@@ -92,6 +92,13 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- `git lfs ls-files` no longer lists empty files, as in upstream.
+- `git lfs track` prints `Touching` lines only with `--verbose` or
+  `--dry-run`, as upstream does.
+- `git lfs track` and `untrack` pick the line ending for `.gitattributes`
+  like upstream: the file's own, if it already has `filter` or `lockable`
+  lines, then CRLF if `core.autocrlf` is true, then the platform's. On
+  Windows, that's now CRLF by default.
 - `git lfs migrate import` and `export` handle the same file content at two
   paths when only one of them matches `--include` and `--exclude`. Before,
   the first path decided for both. With `--above`, each path gets its own

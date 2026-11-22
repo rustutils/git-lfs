@@ -97,7 +97,8 @@ impl Default for TrackOptions {
 /// line endings.
 pub struct Attributes {
     lines: Vec<String>,
-    had_crlf: bool,
+    /// The file's line ending, if any line sets `filter` or `lockable`.
+    eol: Option<Eol>,
 }
 
 impl Attributes {
@@ -105,23 +106,26 @@ impl Attributes {
         let path = cwd.join(ATTRIBUTES_FILE);
         match fs::read(&path) {
             Ok(bytes) => {
-                let had_crlf = bytes.windows(2).any(|w| w == b"\r\n");
                 let s = String::from_utf8_lossy(&bytes).into_owned();
-                Ok(Self {
-                    lines: s.lines().map(String::from).collect(),
-                    had_crlf,
-                })
+                let lines: Vec<String> = s.lines().map(String::from).collect();
+                let eol = lines
+                    .iter()
+                    .any(|l| sets_filter_or_lockable(l))
+                    .then(|| majority_eol(&s))
+                    .flatten();
+                Ok(Self { lines, eol })
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Self {
                 lines: Vec::new(),
-                had_crlf: false,
+                eol: None,
             }),
             Err(e) => Err(e.into()),
         }
     }
 
-    pub fn had_crlf(&self) -> bool {
-        self.had_crlf
+    /// The file's line ending, if any line sets `filter` or `lockable`.
+    pub fn eol(&self) -> Option<Eol> {
+        self.eol
     }
 
     fn find_lfs_line(&self, pattern: &str) -> Option<usize> {
@@ -210,18 +214,60 @@ impl Attributes {
     }
 }
 
-/// Pick the line ending for writing `.gitattributes`.
+/// Pick the line ending for writing `.gitattributes`, in upstream's order.
 ///
-/// CRLF if `core.autocrlf` is `true`, or `input` on Windows, or if the file
-/// already has a CRLF. LF otherwise.
+/// The file's own line ending wins if it has a line that sets `filter` or
+/// `lockable`. Otherwise CRLF if `core.autocrlf` is true, and then the
+/// platform's: CRLF on Windows, LF elsewhere.
 pub fn detect_eol(cwd: &Path, attrs: &Attributes) -> Eol {
-    let autocrlf = git_autocrlf(cwd);
-    match autocrlf.as_deref() {
-        Some("true") => return Eol::Crlf,
-        Some("input") if cfg!(windows) => return Eol::Crlf,
-        _ => {}
+    if let Some(eol) = attrs.eol() {
+        return eol;
     }
-    if attrs.had_crlf() { Eol::Crlf } else { Eol::Lf }
+    let autocrlf = git_autocrlf(cwd).map(|v| v.to_ascii_lowercase());
+    if matches!(autocrlf.as_deref(), Some("true" | "t" | "1")) || cfg!(windows) {
+        Eol::Crlf
+    } else {
+        Eol::Lf
+    }
+}
+
+/// CRLF if more lines end in CRLF than in a bare LF, otherwise LF. `None`
+/// if no line ends in either.
+///
+/// A last line without a line ending isn't counted, as in upstream.
+fn majority_eol(text: &str) -> Option<Eol> {
+    let (mut lf, mut crlf) = (0usize, 0usize);
+    for line in text.split_inclusive('\n').filter(|l| l.ends_with('\n')) {
+        if line.ends_with("\r\n") {
+            crlf += 1;
+        } else {
+            lf += 1;
+        }
+    }
+    if crlf > lf {
+        Some(Eol::Crlf)
+    } else if lf == 0 {
+        None
+    } else {
+        Some(Eol::Lf)
+    }
+}
+
+/// Whether an attributes line sets `filter`, in any form, or `lockable`.
+///
+/// Macro definitions are skipped, and macros aren't expanded.
+fn sets_filter_or_lockable(line: &str) -> bool {
+    let Some(body) = uncommented(line) else {
+        return false;
+    };
+    if body.starts_with("[attr]") {
+        return false;
+    }
+    body.split_whitespace().skip(1).any(|attr| {
+        let name = attr.trim_start_matches(['-', '!']);
+        let name = name.split_once('=').map_or(name, |(k, _)| k);
+        name == "filter" || attr == "lockable" || attr == "lockable=true"
+    })
 }
 
 /// The trimmed line, or `None` for a blank line or comment.
@@ -586,7 +632,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         write_bytes(tmp.path(), b"*.mov filter=lfs -text\r\n");
         let attrs = Attributes::read(tmp.path()).unwrap();
-        assert!(attrs.had_crlf());
+        assert_eq!(attrs.eol(), Some(Eol::Crlf));
         let mut attrs = attrs;
         attrs.track("*.gif", LockableMode::Default);
         attrs.write(tmp.path(), Eol::Crlf).unwrap();
@@ -598,11 +644,31 @@ mod tests {
     }
 
     #[test]
+    fn eol_comes_from_lines_with_filter_or_lockable() {
+        let tmp = TempDir::new().unwrap();
+        let eol = |content: &[u8]| {
+            write_bytes(tmp.path(), content);
+            Attributes::read(tmp.path()).unwrap().eol()
+        };
+        // Without a filter or lockable line, the file doesn't decide.
+        assert_eq!(eol(b"* text=auto\r\n"), None);
+        assert_eq!(eol(b"*.a -filter\r\n"), Some(Eol::Crlf));
+        assert_eq!(eol(b"*.a lockable\r\n"), Some(Eol::Crlf));
+        // The majority wins, and a tie is LF.
+        assert_eq!(
+            eol(b"*.a filter=lfs\r\n*.b filter=lfs\r\n*.c filter=lfs\n"),
+            Some(Eol::Crlf)
+        );
+        assert_eq!(eol(b"*.a filter=lfs\r\n*.b filter=lfs\n"), Some(Eol::Lf));
+    }
+
+    #[test]
     fn write_uses_lf_when_no_crlf_seen() {
         let tmp = TempDir::new().unwrap();
         write_bytes(tmp.path(), b"*.mov filter=lfs -text");
         let mut attrs = Attributes::read(tmp.path()).unwrap();
-        assert!(!attrs.had_crlf());
+        // The only line has no line ending.
+        assert_eq!(attrs.eol(), None);
         attrs.track("*.gif", LockableMode::Default);
         attrs.write(tmp.path(), Eol::Lf).unwrap();
         let bytes = fs::read(tmp.path().join(ATTRIBUTES_FILE)).unwrap();

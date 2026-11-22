@@ -200,9 +200,6 @@ come from reading the code.
   read as `-n` and skips the pull, and `--bare` skips the fetch and hooks.
 - **Pre-push to a local path** ignores `--dry-run` and skips objects
   missing locally instead of failing.
-- **`git lfs ls-files` lists empty files.** Confirmed.
-- **`git lfs track`** prints *Touching* without `--verbose`, and picks line
-  endings in a different order from upstream.
 - **`create_lock` drops `Retry-After`** on rate-limit and server errors.
 - **`http.sslCert` and `http.sslKey` only work with `http.sslCAInfo`.**
 

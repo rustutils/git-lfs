@@ -162,8 +162,8 @@ pub fn run(args: Args<'_>) -> Result<u8, Box<dyn std::error::Error>> {
 
     // Files in the index that an added or changed pattern matches get a
     // new mtime, so Git sees them as modified. Like upstream, they aren't
-    // staged again. Unlike upstream, `Touching` is printed without
-    // `--verbose`. With `--lockable` or `--not-lockable`, permissions are
+    // staged again. `Touching` is printed with `--verbose` or
+    // `--dry-run`. With `--lockable` or `--not-lockable`, permissions are
     // set for the files of every pattern, including ones already tracked.
     // `--dry-run` changes no files.
     //
@@ -184,7 +184,9 @@ pub fn run(args: Args<'_>) -> Result<u8, Box<dyn std::error::Error>> {
                 );
             }
             for path in &matches {
-                println!("Touching \"{path}\"");
+                if args.verbose || args.dry_run {
+                    println!("Touching \"{path}\"");
+                }
                 if !args.dry_run {
                     let _ = touch_mtime(args.cwd, path);
                 }
