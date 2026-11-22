@@ -78,13 +78,14 @@ fn warn_invalid_ssl_verify(value: &str) {
 ///
 /// Lines starting with `#` are comments, except for the `#HttpOnly_`
 /// prefix on a domain. Malformed lines are skipped. The subdomain and
-/// expiry fields are ignored. Returns `None` if the file can't be read or
-/// has no cookies.
+/// expiry fields are ignored. Returns `None` if the file can't be read.
+///
+/// Even an empty file gives a jar, which then keeps the cookies that
+/// responses set, as upstream does.
 fn load_netscape_cookies(path: &str) -> Option<Jar> {
     let bytes = std::fs::read(path).ok()?;
     let text = String::from_utf8_lossy(&bytes);
     let jar = Jar::default();
-    let mut added = 0usize;
     for raw in text.lines() {
         let line = raw.trim_end_matches('\r');
         // HttpOnly only matters to browsers, so the cookie is used like any
@@ -115,9 +116,8 @@ fn load_netscape_cookies(path: &str) -> Option<Jar> {
         let secure_attr = if secure { "; Secure" } else { "" };
         let cookie = format!("{name}={value}; Domain={domain}; Path={path}{secure_attr}");
         jar.add_cookie_str(&cookie, &url);
-        added += 1;
     }
-    if added == 0 { None } else { Some(jar) }
+    Some(jar)
 }
 
 /// Build a rustls config that trusts exactly the PEM certificates in

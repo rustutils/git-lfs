@@ -67,9 +67,6 @@ Ordered by failing tests fixed per effort, from the triage after the
 v3.8.1 update. Small means under an hour or so, medium a few hours, large
 a feature.
 
-- **An empty `http.cookieFile`** (tiny, `t-header-redirect` 7). With no
-  cookies to load, no cookie jar is installed, so cookies the server sets
-  are dropped.
 - **`git lfs env`** doesn't warn about clashing `git config` values
   (small, `t-config` 13).
 - **`git lfs migrate import`, the same blob at two paths.**
