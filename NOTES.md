@@ -63,44 +63,86 @@ Local changes to the vendored tests, which an update must keep:
 
 ## Known gaps
 
-Grouped by area, with the failing tests each one would fix.
+Ordered by failing tests fixed per effort, from the triage after the
+v3.8.1 update. Small means under an hour or so, medium a few hours, large
+a feature.
 
-- **Custom transfer adapters and tus.** `t-custom-transfers`,
-  `t-batch-storage-upload-tus`, `t-standalone-file`, `t-multiple-remotes`.
-  The protocol is in `docs/custom-transfers.md`. Two test helpers
-  (`lfstest-customadapter` and `lfstest-standalonecustomadapter`) import
-  upstream's internal Go packages, so they aren't built here and the tests
-  that use them can't pass yet.
+- **Messages and traces** (small):
+  - `t-batch-error-handling` 1 wants `Unable to parse HTTP response for
+    POST <url>: ...` where we print `malformed response body: ...`.
+  - `t-custom-transfers-protect` 1 and 3 only need the trace line
+    `tq: starting transfer adapter "basic"`.
+  - Corrupt downloads, under Known bugs.
+- **`git lfs completion`** (small, `t-completion`). Tests 1 to 3 compare
+  against the scripts in `tests/fixtures/completions/`, and 4 and 5 check
+  argument errors. The scripts call `git lfs __completeNoDesc`, so working
+  completion also needs that command (medium).
+- **`git lfs migrate` with a dirty working copy** (small,
+  `t-migrate-import` 44 to 47). We refuse. Upstream asks
+  *override changes in your working copy?* and proceeds on yes. Export
+  refuses too.
+- **`git lfs dedup`** (small, `t-dedup`). Each test stops early when the
+  output says the system can't deduplicate, so a correct capability check
+  passes them. Copying with reflinks is medium.
+- **An empty `http.cookieFile`** (tiny, `t-header-redirect` 7). With no
+  cookies to load, no cookie jar is installed, so cookies the server sets
+  are dropped.
+- **`git lfs env`** doesn't warn about clashing `git config` values
+  (small, `t-config` 13).
+- **`git lfs migrate import`, the same blob at two paths.**
+  `cli/src/migrate/transform.rs` converts each blob once. With `--above`,
+  the second path gets no `.gitattributes` line (small, `t-migrate-import`
+  49). When only one path matches the filter, both become pointers
+  (medium, 37).
+- **`git lfs ls-files`**: `--include` and `--exclude`, and the form that
+  takes two refs (small to medium, `t-ls-files` 13 to 15 and 25).
+- **Custom transfer adapters and `file://` remotes** (large, about 16
+  tests). There's no custom adapter protocol (`docs/custom-transfers.md`),
+  no `lfs.standaloneTransferAgent`, and no built-in `lfs-standalone-file`
+  adapter or `git lfs standalone-file` command, so `file://` and
+  local-path remotes fail. Only pushing to a local path works, through a
+  shortcut in `cli/src/pre_push.rs`. Covers `t-standalone-file` 1 to 7,
+  `t-custom-transfers` 1 and 5 to 9, `t-custom-transfers-protect` 2 and 4,
+  and `t-submodule-lfsconfig` 3. The protect tests check that adapter
+  settings can't come from `.lfsconfig` or a submodule URL, so the
+  implementation must keep the safe-key filtering.
+- **`lfs.remote.autodetect` and `lfs.remote.searchall`** (medium, after the
+  adapters). `t-multiple-remotes` 1 to 12 all push to a `file://` remote in
+  setup, and 1 to 6 also need these settings.
+- **Compressed downloads** (medium, `t-batch-storage-encoding` 1 to 5).
+  `Accept-Encoding: gzip` isn't sent by default, and
+  `lfs.transfer.httpDownloadEncoding` (gzip, zstd) isn't implemented.
+  reqwest's `gzip` and `zstd` features are off.
+- **`GIT_LFS_PROGRESS`** (medium, `t-progress` 1 to 4). The progress log
+  isn't written. Tests 3 and 4 also need compressed downloads.
+- **Storage requests don't authenticate** (medium, `t-credentials` 19 and
+  20). A 401 from an upload, download, or verify URL fails the object.
+  Upstream sends these through `DoWithAuth`: it fills credentials for the
+  action URL, retries, and saves `lfs.<url>.access` for that URL so later
+  runs send them up front.
+- **tus uploads** (medium, `t-batch-storage-upload-tus` 1 and 2), with
+  `lfs.tusTransfers`. Built into upstream, so no test helper is needed.
+- **Encrypted client certificate keys** (medium, `t-clone` 3 and 4).
+  Test 4 also needs `~` expanded in `http.sslCert` and `http.sslKey`.
+- **Expired actions on push** (medium, `t-push` 18). We retry with the
+  same URL instead of sending a new batch request.
+- **`git lfs migrate import` with a tag of a tag** (medium,
+  `t-migrate-import` 35). `git fast-export` refuses it, so the migrate
+  fails before rewriting anything.
+- **SSH variants** (small to medium, `t-ssh` 2). `GIT_SSH_VARIANT` and
+  `ssh.variant` aren't read, and see Minor differences.
 - **`git-lfs-authenticate` options.** We don't support `lfs.ssh.retries`,
   connection reuse with `lfs.ssh.automultiplex`, or `lfs.defaulttokenttl`.
-- **Storage requests don't authenticate.** A 401 from an upload, download,
-  or verify URL fails the object. Upstream sends these through
-  `DoWithAuth`: it fills credentials for the action URL, retries, and saves
-  `lfs.<url>.access` for that URL so later runs send them up front
-  (`t-credentials` 19 and 20).
-- **Compressed downloads**: `lfs.transfer.httpDownloadEncoding` (gzip,
-  zstd) isn't implemented (`t-batch-storage-encoding` 1 to 5, and part of
-  `t-progress`).
-- **`GIT_LFS_PROGRESS`**: the progress log isn't written (`t-progress`).
-- **Cookies set by the server** aren't kept between requests
-  (`t-header-redirect` 7).
-- **`git lfs env`** doesn't warn about clashing `git config` values
-  (`t-config` 13).
 - **NTLM and Negotiate authentication**, and acting on `LFS-Authenticate`
   access modes. Wait for someone who needs it.
-- **Encrypted client certificate keys.** `t-clone` tests 3 and 4.
-- **`git lfs ls-files`**: `--include` and `--exclude`, and the form that
-  takes two refs. `t-ls-files` tests 13 to 15 and 25.
-- **`git lfs migrate import`**: `--no-rewrite`, `--object-map`, and some
-  pattern edge cases. `t-migrate-import` tests 35, 37, 44 to 47, and 49.
-- **Expired actions on push.** `t-push` test 18. When an action URL has
-  expired, we retry with the same URL instead of sending a new batch
-  request.
-- **Missing commands**: `git lfs completion` (`t-completion`) and
-  `git lfs dedup` (`t-dedup`).
-- **Single failing tests**: `t-batch-error-handling`,
-  `t-batch-unknown-oids`.
-- **`t-usage`** expects upstream's usage line. Our help output comes from
+
+Tests that won't pass:
+
+- `t-custom-transfers` 2 to 4 and `t-batch-storage-corrupt` 3 need
+  `lfstest-customadapter` and `lfstest-standalonecustomadapter`, which
+  import upstream's internal Go packages and aren't built here. They could
+  be ported to Rust once custom adapters exist.
+- `t-usage` expects upstream's usage line. Our help output comes from
   clap, so this test stays failing on purpose.
 
 Gaps no test covers:
@@ -111,8 +153,6 @@ Gaps no test covers:
 - `git lfs locks --cached`.
 - `git lfs update` doesn't migrate old `lfs.<url>.access` values.
 - `git lfs fsck` without a ref checks HEAD but not the index.
-- `git lfs migrate import`: if the same blob appears at two paths and only
-  one matches the filter, the first commit that uses it decides.
 - `git lfs migrate info --fixup` reads `.gitattributes` from the tip commit
   only, not from each commit.
 
