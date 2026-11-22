@@ -319,9 +319,20 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
         };
 
     fetcher.set_progress_names(&paths);
-    let report = fetcher
-        .download_many(to_fetch.clone())
-        .map_err(FetchCommandError::Fetch)?;
+    if !opts.json {
+        print_starting_progress("Downloading", total);
+    }
+    let report = match fetcher.download_many(to_fetch.clone()) {
+        Ok(report) => report,
+        Err(e) => {
+            // Like upstream's meter, which ends with its line even when
+            // the batch request fails.
+            if !opts.json {
+                eprintln!("Downloading LFS objects:   0% (0/{total}), 0 B");
+            }
+            return Err(FetchCommandError::Fetch(e));
+        }
+    };
     fetcher.persist_access_mode();
 
     let succeeded = report.succeeded.len();
@@ -603,6 +614,17 @@ fn matches_with_prefix(path: &Path, set: &GlobSet) -> bool {
         ancestor = a.parent();
     }
     false
+}
+
+/// Print a progress meter's first line, `<verb> LFS objects:   0% (0/N), 0
+/// B`, when `GIT_LFS_FORCE_PROGRESS` asks for every update. Only the final
+/// line is printed otherwise.
+pub(crate) fn print_starting_progress(verb: &str, total: usize) {
+    let forced = std::env::var_os("GIT_LFS_FORCE_PROGRESS")
+        .is_some_and(|v| !v.is_empty() && v != "0" && v != "false");
+    if forced {
+        eprintln!("{verb} LFS objects:   0% (0/{total}), 0 B");
+    }
 }
 
 /// Format a byte count in decimal units, like go-humanize's `Bytes`.

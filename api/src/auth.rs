@@ -45,6 +45,23 @@ impl Auth {
         }
     }
 
+    /// The value of the `Authorization` header this sends, if any.
+    pub fn header_value(&self) -> Option<String> {
+        use base64::Engine as _;
+        match self {
+            Auth::None => None,
+            Auth::Basic { username, password } => Some(format!(
+                "Basic {}",
+                base64::engine::general_purpose::STANDARD.encode(format!("{username}:{password}"))
+            )),
+            Auth::Bearer(token) => Some(format!("Bearer {token}")),
+            Auth::Custom {
+                authtype,
+                credential,
+            } => Some(format!("{authtype} {credential}")),
+        }
+    }
+
     /// The `Authorization` line for the `GIT_CURL_VERBOSE` dump.
     ///
     /// Only Basic is masked, as in upstream's `traceHTTPDump`. Bearer and

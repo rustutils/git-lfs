@@ -107,6 +107,9 @@ impl LfsFetcher {
             &config.custom_adapters,
         );
         let standalone = config.standalone.is_some();
+        config.action_auth = endpoint_url
+            .as_deref()
+            .and_then(|url| storage_auth(cwd, url, remote, operation));
 
         // SSH endpoints pick a backend from `lfs.<url>.sshtransfer`.
         // `always` uses only pure SSH, `never` uses only HTTP with
@@ -505,6 +508,45 @@ fn build_api_client_with(
         }
     }
     Ok(client)
+}
+
+/// Credentials for storage requests that answer 401. See
+/// [`crate::action_auth`].
+fn storage_auth(
+    cwd: &Path,
+    endpoint_url: &str,
+    remote: Option<&str>,
+    operation: EndpointOperation,
+) -> Option<Arc<dyn git_lfs_transfer::ActionAuth>> {
+    let endpoint = url::Url::parse(&http_compatible_endpoint(endpoint_url).ok()?).ok()?;
+    let remote_name = remote.unwrap_or("origin");
+    let remote_url = match operation {
+        EndpointOperation::Upload => {
+            git_lfs_git::config::get_effective(cwd, &format!("remote.{remote_name}.pushurl"))
+                .ok()
+                .flatten()
+        }
+        EndpointOperation::Download => None,
+    }
+    .or_else(|| {
+        git_lfs_git::endpoint::remote_url(cwd, remote_name)
+            .ok()
+            .flatten()
+    })
+    .and_then(|u| url::Url::parse(&u).ok());
+    let mut helper_url = remote_url
+        .clone()
+        .filter(|r| r.scheme() == endpoint.scheme() && r.host_str() == endpoint.host_str())
+        .unwrap_or_else(|| endpoint.clone());
+    let _ = helper_url.set_username("");
+    let _ = helper_url.set_password(None);
+    Some(Arc::new(crate::action_auth::StorageAuth::new(
+        cwd,
+        endpoint,
+        remote_url,
+        default_helper_chain(cwd, &helper_url),
+        read_bool_default(cwd, "credential.useHttpPath", false),
+    )))
 }
 
 /// Read `lfs.<endpoint>.sshtransfer`, falling back to `lfs.sshtransfer`.

@@ -7,6 +7,7 @@ use git_lfs_filter::{
 };
 use git_lfs_store::Store;
 
+mod action_auth;
 mod checkout;
 mod clone;
 mod completion;

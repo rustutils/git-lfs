@@ -36,6 +36,7 @@
 //! [custom-spec]: https://gitlab.com/rustutils/git-lfs/-/blob/master/docs/custom-transfers.md
 //! [ssh-spec]: https://gitlab.com/rustutils/git-lfs/-/blob/master/docs/proposals/ssh_adapter.md
 
+mod action_auth;
 pub mod backend;
 mod basic;
 mod config;
@@ -45,6 +46,7 @@ mod event;
 pub mod sshtransfer;
 mod transfer;
 
+pub use action_auth::ActionAuth;
 pub use config::{HeaderSource, TransferConfig, UrlRewriter, UrlSetting};
 pub use custom::CustomAdapter;
 pub use error::{Report, TransferError};

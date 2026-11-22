@@ -546,6 +546,7 @@ pub(crate) fn upload_in_range_with_args(
         Ok(Report::default())
     } else {
         fetcher.set_progress_names(&paths);
+        crate::fetch::print_starting_progress("Uploading", total);
         let uploaded = fetcher.upload_many(to_upload);
         fetcher.persist_access_mode();
         uploaded

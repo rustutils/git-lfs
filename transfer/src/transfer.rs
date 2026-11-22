@@ -469,6 +469,7 @@ async fn process_object(
     }
 
     let transport = resolve_transport(backend, dir);
+    let action_auth = action_auth(config, &obj);
 
     if let Some(workers) = custom {
         let standalone = config
@@ -499,6 +500,7 @@ async fn process_object(
                         config.extra_headers.as_ref(),
                         config.download_encoding.as_ref(),
                         zstd_slot,
+                        action_auth,
                         events,
                     )
                     .await
@@ -541,6 +543,7 @@ async fn process_object(
                             config.detect_content_type,
                             config.max_verifies,
                             config.extra_headers.as_ref(),
+                            action_auth,
                             events,
                         )
                         .await
@@ -622,6 +625,7 @@ async fn process_custom(
                         v,
                         config.max_verifies,
                         config.extra_headers.as_ref(),
+                        action_auth(config, obj),
                     )
                     .await
                 }
@@ -629,6 +633,18 @@ async fn process_custom(
             }
         }
     }
+}
+
+/// The credentials source for `obj`'s actions, unless the server said
+/// they're already authenticated.
+fn action_auth<'a>(
+    config: &'a TransferConfig,
+    obj: &ObjectResult,
+) -> Option<&'a Arc<dyn crate::ActionAuth>> {
+    if obj.authenticated == Some(true) {
+        return None;
+    }
+    config.action_auth.as_ref()
 }
 
 /// Pick the transport for `dir`.

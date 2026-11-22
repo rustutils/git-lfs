@@ -113,6 +113,14 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- Uploads, downloads, and verify requests that get a 401 are sent again
+  with credentials, as upstream does. They come from the LFS or remote URL
+  when it's on the same host, or else from the credential helpers.
+  `lfs.<url>.access` is then set to `basic` for the storage URL, so later
+  runs send credentials up front.
+- With `GIT_LFS_FORCE_PROGRESS`, transfers print their meter's starting
+  line too, and `git lfs fetch` prints its line when the batch request
+  fails, as upstream does.
 - `git lfs fsck` checks the objects in the ref's tree, not in its whole
   history, as in upstream. `git lfs fsck a..b` still checks the commits in
   the range.

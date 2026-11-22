@@ -78,6 +78,9 @@ pub struct TransferConfig {
     /// Unset means `gzip`. Any other value fails the download, as in
     /// upstream. A resumed download asks for no encoding.
     pub download_encoding: Option<UrlSetting>,
+    /// Credentials for action URLs that answer 401. Without it, a 401
+    /// fails the object.
+    pub action_auth: Option<Arc<dyn crate::ActionAuth>>,
     /// Custom transfer adapters to offer the server, from
     /// `lfs.customtransfer.<name>.*`.
     pub custom_adapters: Vec<CustomAdapter>,
@@ -135,6 +138,7 @@ impl Default for TransferConfig {
             max_verifies: 3,
             extra_headers: None,
             download_encoding: None,
+            action_auth: None,
             custom_adapters: Vec::new(),
             basic_transfers_only: false,
             remote: "origin".to_owned(),
@@ -167,6 +171,7 @@ impl std::fmt::Debug for TransferConfig {
                 "download_encoding",
                 &self.download_encoding.as_ref().map(|_| "<fn>"),
             )
+            .field("action_auth", &self.action_auth.as_ref().map(|_| "<auth>"))
             .field("custom_adapters", &self.custom_adapters)
             .field("basic_transfers_only", &self.basic_transfers_only)
             .field("remote", &self.remote)

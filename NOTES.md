@@ -66,11 +66,6 @@ Ordered by failing tests fixed per effort, from the triage after the
 v3.8.1 update. Small means under an hour or so, medium a few hours, large
 a feature.
 
-- **Storage requests don't authenticate** (medium, `t-credentials` 19 and
-  20). A 401 from an upload, download, or verify URL fails the object.
-  Upstream sends these through `DoWithAuth`: it fills credentials for the
-  action URL, retries, and saves `lfs.<url>.access` for that URL so later
-  runs send them up front.
 - **tus uploads** (medium, `t-batch-storage-upload-tus` 1 and 2), with
   `lfs.tusTransfers`. Built into upstream, so no test helper is needed.
 - **Encrypted client certificate keys** (medium, `t-clone` 3 and 4).

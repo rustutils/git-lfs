@@ -14,13 +14,14 @@ use git_lfs_api::{
 };
 use git_lfs_pointer::Oid;
 use git_lfs_store::Store;
-use reqwest::header::{ACCEPT_ENCODING, CONTENT_ENCODING, CONTENT_LENGTH, RANGE};
+use reqwest::header::{ACCEPT_ENCODING, AUTHORIZATION, CONTENT_ENCODING, CONTENT_LENGTH, RANGE};
 use reqwest::{Body, Method, Response};
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::io::{ReaderStream, StreamReader, SyncIoBridge};
 
+use crate::action_auth::{ActionAuth, RequestAuth};
 use crate::config::{HeaderSource, UrlSetting};
 use crate::error::TransferError;
 use crate::event::Event;
@@ -59,6 +60,7 @@ pub(crate) async fn download(
     extra_headers: Option<&HeaderSource>,
     encoding: Option<&UrlSetting>,
     zstd_slot: Option<&ZstdSlot>,
+    auth: Option<&Arc<dyn ActionAuth>>,
     events: Option<&UnboundedSender<Event>>,
 ) -> Result<u64, TransferError> {
     let expected = Oid::from_hex(oid)?;
@@ -119,9 +121,21 @@ pub(crate) async fn download(
         &action.header,
     );
 
-    let resp = send_with_redirects(http, req.build()?, 0)
-        .await
-        .map_err(from_api)?;
+    let mut request_auth =
+        RequestAuth::start(auth_for(auth, &action.header, &extra), &action.href, oid).await;
+    let resp = loop {
+        let mut attempt = req.try_clone().expect("a GET has no body to clone");
+        if let Some(h) = request_auth.header() {
+            attempt = attempt.header(AUTHORIZATION, h);
+        }
+        let resp = send_with_redirects(http, attempt.build()?, 0)
+            .await
+            .map_err(from_api)?;
+        if request_auth.retry_after(resp.status().as_u16()).await {
+            continue;
+        }
+        break resp;
+    };
     let content_encoding = resp
         .headers()
         .get(CONTENT_ENCODING)
@@ -154,6 +168,7 @@ pub(crate) async fn download(
             extra_headers,
             encoding,
             zstd_slot,
+            auth,
             events,
         ))
         .await;
@@ -445,6 +460,7 @@ pub(crate) async fn upload(
     detect_content_type: bool,
     max_verifies: u32,
     extra_headers: Option<&HeaderSource>,
+    auth: Option<&Arc<dyn ActionAuth>>,
     events: Option<&UnboundedSender<Event>>,
 ) -> Result<(), TransferError> {
     let upload_action = actions
@@ -492,6 +508,12 @@ pub(crate) async fn upload(
     let mut send_credentials = true;
     // Looked up for the action URL and kept across redirects, like upstream.
     let extra = extra_for(extra_headers, &upload_action.href);
+    let mut request_auth = RequestAuth::start(
+        auth_for(auth, &upload_action.header, &extra),
+        &upload_action.href,
+        oid,
+    )
+    .await;
     let resp = loop {
         let file = tokio::fs::File::open(&path).await?;
         let oid_owned = oid.to_owned();
@@ -531,6 +553,9 @@ pub(crate) async fn upload(
                 sniffed_content_type.unwrap_or(OCTET_STREAM),
             );
         }
+        if send_credentials && let Some(h) = request_auth.header() {
+            req = req.header(AUTHORIZATION, h);
+        }
 
         // Log only the first request, not the redirected ones.
         if !verbose_logged && verbose_enabled() {
@@ -566,6 +591,9 @@ pub(crate) async fn upload(
             href = new_href;
             continue;
         }
+        if send_credentials && request_auth.retry_after(resp.status().as_u16()).await {
+            continue;
+        }
         break resp;
     };
 
@@ -586,7 +614,16 @@ pub(crate) async fn upload(
     check_status(&resp, &upload_action.href)?;
 
     if let Some(verify_action) = &actions.verify {
-        verify(http, oid, size, verify_action, max_verifies, extra_headers).await?;
+        verify(
+            http,
+            oid,
+            size,
+            verify_action,
+            max_verifies,
+            extra_headers,
+            auth,
+        )
+        .await?;
     }
     Ok(())
 }
@@ -671,33 +708,25 @@ pub(crate) async fn verify(
     action: &Action,
     max_attempts: u32,
     extra_headers: Option<&HeaderSource>,
+    auth: Option<&Arc<dyn ActionAuth>>,
 ) -> Result<(), TransferError> {
     let short = oid.get(..7).unwrap_or(oid);
+    let extra = extra_for(extra_headers, &action.href);
+    let mut request_auth =
+        RequestAuth::start(auth_for(auth, &action.header, &extra), &action.href, oid).await;
     let mut last_err: Option<TransferError> = None;
     for attempt in 1..=max_attempts {
         if trace_enabled() {
             eprintln!("tq: verify {short} attempt #{attempt} (max: {max_attempts})");
         }
-        let mut req = http
-            .request(Method::POST, &action.href)
-            .header(reqwest::header::ACCEPT, "application/vnd.git-lfs+json")
-            .header(
-                reqwest::header::CONTENT_TYPE,
-                "application/vnd.git-lfs+json",
-            );
-        let extra = extra_for(extra_headers, &action.href);
-        for (k, v) in action
-            .header
-            .iter()
-            .chain(extra.iter().map(|(k, v)| (k, v)))
-        {
-            req = req.header(k, v);
-        }
-        let sent = match req.json(&VerifyBody { oid, size }).build() {
-            Ok(request) => send_with_redirects(http, request, 0)
-                .await
-                .map_err(from_api),
-            Err(e) => Err(TransferError::from(e)),
+        let sent = loop {
+            let sent = send_verify(http, oid, size, action, &extra, request_auth.header()).await;
+            if let Ok(resp) = &sent
+                && request_auth.retry_after(resp.status().as_u16()).await
+            {
+                continue;
+            }
+            break sent;
         };
         match sent {
             Ok(resp) => match check_status(&resp, &action.href) {
@@ -720,6 +749,56 @@ pub(crate) async fn verify(
     let last = last_err
         .unwrap_or_else(|| TransferError::Io(std::io::Error::other("verify exhausted retries")));
     Err(TransferError::VerifyExhausted(Box::new(last)))
+}
+
+/// Send one verify request.
+async fn send_verify(
+    http: &reqwest::Client,
+    oid: &str,
+    size: u64,
+    action: &Action,
+    extra: &[(String, String)],
+    authorization: Option<&str>,
+) -> Result<Response, TransferError> {
+    {
+        let mut req = http
+            .request(Method::POST, &action.href)
+            .header(reqwest::header::ACCEPT, "application/vnd.git-lfs+json")
+            .header(
+                reqwest::header::CONTENT_TYPE,
+                "application/vnd.git-lfs+json",
+            );
+        for (k, v) in action
+            .header
+            .iter()
+            .chain(extra.iter().map(|(k, v)| (k, v)))
+        {
+            req = req.header(k, v);
+        }
+        if let Some(h) = authorization {
+            req = req.header(AUTHORIZATION, h);
+        }
+        match req.json(&VerifyBody { oid, size }).build() {
+            Ok(request) => send_with_redirects(http, request, 0)
+                .await
+                .map_err(from_api),
+            Err(e) => Err(TransferError::from(e)),
+        }
+    }
+}
+
+/// `auth`, unless the action or `http.extraHeader` already sets an
+/// `Authorization` header, as upstream's `requestHasAuth` checks.
+fn auth_for<'a>(
+    auth: Option<&'a Arc<dyn ActionAuth>>,
+    action_headers: &std::collections::HashMap<String, String>,
+    extra: &[(String, String)],
+) -> Option<&'a Arc<dyn ActionAuth>> {
+    let has_own = action_headers
+        .keys()
+        .chain(extra.iter().map(|(k, _)| k))
+        .any(|k| k.eq_ignore_ascii_case("authorization"));
+    if has_own { None } else { auth }
 }
 
 fn check_status(resp: &Response, url: &str) -> Result<(), TransferError> {
