@@ -9,6 +9,7 @@ use git_lfs_store::Store;
 
 mod checkout;
 mod clone;
+mod completion;
 mod env;
 mod ext;
 mod fetch;
@@ -39,12 +40,12 @@ mod update;
 use fetcher::LfsFetcher;
 
 use git_lfs::args::{
-    CheckoutArgs, CleanArgs, Cli, CloneArgs, Command, EnvArgs, ExtArgs, ExtCmd, ExtListArgs,
-    FetchArgs, FilterProcessArgs, FsckArgs, InstallArgs, LockArgs, LocksArgs, LogsArgs, LogsSub,
-    LsFilesArgs, MergeDriverArgs, MigrateArgs, MigrateCmd, MigrateExportArgs, MigrateImportArgs,
-    MigrateInfoArgs, PointerArgs, PostCheckoutArgs, PostCommitArgs, PostMergeArgs, PrePushArgs,
-    PruneArgs, PullArgs, PushArgs, SmudgeArgs, StatusArgs, TrackArgs, UninstallArgs, UnlockArgs,
-    UntrackArgs, UpdateArgs, VersionArgs,
+    CheckoutArgs, CleanArgs, Cli, CloneArgs, Command, CompletionArgs, EnvArgs, ExtArgs, ExtCmd,
+    ExtListArgs, FetchArgs, FilterProcessArgs, FsckArgs, InstallArgs, LockArgs, LocksArgs,
+    LogsArgs, LogsSub, LsFilesArgs, MergeDriverArgs, MigrateArgs, MigrateCmd, MigrateExportArgs,
+    MigrateImportArgs, MigrateInfoArgs, PointerArgs, PostCheckoutArgs, PostCommitArgs,
+    PostMergeArgs, PrePushArgs, PruneArgs, PullArgs, PushArgs, SmudgeArgs, StatusArgs, TrackArgs,
+    UninstallArgs, UnlockArgs, UntrackArgs, UpdateArgs, VersionArgs,
 };
 
 /// Strip the backticks from all help text in the clap command tree.
@@ -79,6 +80,19 @@ fn strip_backticks_in_arg(arg: Arg) -> Arg {
 
 fn main() -> ExitCode {
     let cmd = strip_backticks_in_help(Cli::command());
+    // The completion scripts' request, handled before clap so that the
+    // words being completed aren't parsed as our own arguments.
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    if let Some((first, rest)) = argv.split_first() {
+        let descriptions = match first.as_str() {
+            "__complete" => Some(true),
+            "__completeNoDesc" => Some(false),
+            _ => None,
+        };
+        if let Some(descriptions) = descriptions {
+            return ExitCode::from(completion::run_complete(cmd, rest, descriptions));
+        }
+    }
     let matches = cmd.get_matches();
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
     if cli.version {
@@ -699,6 +713,9 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 filename,
                 no_modify_attrs,
             });
+        }
+        Command::Completion(CompletionArgs { shell }) => {
+            return Ok(completion::run(shell.as_deref()));
         }
         Command::Version(VersionArgs) => {
             println!("git-lfs/{} (rust)", env!("CARGO_PKG_VERSION"));

@@ -67,10 +67,6 @@ Ordered by failing tests fixed per effort, from the triage after the
 v3.8.1 update. Small means under an hour or so, medium a few hours, large
 a feature.
 
-- **`git lfs completion`** (small, `t-completion`). Tests 1 to 3 compare
-  against the scripts in `tests/fixtures/completions/`, and 4 and 5 check
-  argument errors. The scripts call `git lfs __completeNoDesc`, so working
-  completion also needs that command (medium).
 - **`git lfs migrate` with a dirty working copy** (small,
   `t-migrate-import` 44 to 47). We refuse. Upstream asks
   *override changes in your working copy?* and proceeds on yes. Export

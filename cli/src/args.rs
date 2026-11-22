@@ -72,6 +72,7 @@ pub enum Command {
     PostMerge(PostMergeArgs),
     PrePush(PrePushArgs),
     Version(VersionArgs),
+    Completion(CompletionArgs),
     Pointer(PointerArgs),
     Env(EnvArgs),
     Ext(ExtArgs),
@@ -637,6 +638,48 @@ pub struct PrePushArgs {
 /// Print the git-lfs version banner and exit
 #[derive(Args)]
 pub struct VersionArgs;
+
+/// Print a shell completion script
+///
+/// Print a script that completes Git LFS commands and options in the
+/// given shell, for both `git lfs` and `git-lfs`. Load it from your
+/// shell's startup file, for example with
+/// `source <(git lfs completion bash)` in `~/.bashrc`, or save it where
+/// your shell looks for completions.
+#[derive(Args)]
+pub struct CompletionArgs {
+    /// The shell to print the script for.
+    #[arg(value_name = "SHELL", value_parser = ShellParser)]
+    pub shell: Option<String>,
+}
+
+/// Accepts any value, so `completion` can report a wrong one with
+/// upstream's message, but lists the shells for help and completion.
+#[derive(Clone)]
+struct ShellParser;
+
+impl clap::builder::TypedValueParser for ShellParser {
+    type Value = String;
+
+    fn parse_ref(
+        &self,
+        _cmd: &clap::Command,
+        _arg: Option<&clap::Arg>,
+        value: &std::ffi::OsStr,
+    ) -> Result<String, clap::Error> {
+        Ok(value.to_string_lossy().into_owned())
+    }
+
+    fn possible_values(
+        &self,
+    ) -> Option<Box<dyn Iterator<Item = clap::builder::PossibleValue> + '_>> {
+        Some(Box::new(
+            ["bash", "fish", "zsh"]
+                .into_iter()
+                .map(clap::builder::PossibleValue::new),
+        ))
+    }
+}
 
 /// Build, compare, and check pointers
 ///

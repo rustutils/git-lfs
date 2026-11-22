@@ -29,6 +29,9 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Added
 
+- `git lfs completion bash|fish|zsh` prints a shell completion script for
+  `git lfs` and `git-lfs`. It completes commands, options, and the values
+  some options take. Scripts installed from upstream Git LFS work too.
 - Pushes use `lfs.pushurl`, `remote.<name>.lfspushurl`, and
   `remote.<name>.pushurl` when set, and `url.<base>.pushInsteadOf` aliases.
 - The lock commands, and lock verification on push, use the push remote
