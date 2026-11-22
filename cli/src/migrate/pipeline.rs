@@ -58,6 +58,7 @@ pub fn run_pipeline_with_export_marks(
         transform_opts.info_attrs = read_info_attrs(cwd).unwrap_or_default();
         transform_opts.global_attrs = read_global_attrs(cwd).unwrap_or_default();
     }
+    transform_opts.cwd = cwd.to_path_buf();
     let mut export = spawn_fast_export(cwd, include_refs, exclude_refs)?;
     let mut import = spawn_fast_import(cwd, marks_path.map(PathBuf::from).as_deref())?;
 

@@ -2,9 +2,10 @@
 //!
 //! A blob's path is only known once a commit references it, so blobs
 //! are buffered by mark and written out, converted or not, just before
-//! the first commit that uses them. Each blob is converted at most once,
-//! so if the same content is at two paths and only one matches the
-//! filter, the first commit to use it decides for both.
+//! the first commit that uses them. If the same content is at two paths
+//! and only one of them is converted, the other path gets the blob's
+//! other version: the original blob, by its ID, or the converted one,
+//! written under a new mark.
 //!
 //! In import and export mode, each commit also gets a rewritten
 //! top-level `.gitattributes`: its own lines, minus the lines being
@@ -13,6 +14,7 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
 
 use git_lfs_pointer::{Oid, Pointer};
 use git_lfs_store::Store;
@@ -70,6 +72,9 @@ pub struct Options {
     ///
     /// It has the lowest precedence.
     pub global_attrs: Vec<u8>,
+    /// The repository, to read a blob again when a second path needs its
+    /// other version.
+    pub cwd: PathBuf,
 }
 
 #[derive(Debug, Default)]
@@ -93,6 +98,12 @@ pub struct Transform<'a> {
     blob_buffer: HashMap<u32, Vec<u8>>,
     /// Marks of blobs already written out.
     emitted: HashSet<u32>,
+    /// Original blob IDs, by mark, from `--show-original-ids`.
+    original_ids: HashMap<u32, String>,
+    /// How each blob written out by [`Self::process_commit`] was written.
+    written: HashMap<u32, Written>,
+    /// The other version of a written blob, and whether it's converted.
+    alternates: HashMap<u32, (DataRef, bool)>,
     /// Next free mark for a rewritten `.gitattributes`.
     next_fresh: u32,
     /// `.gitattributes` lines for the paths converted so far, in
@@ -118,6 +129,9 @@ impl<'a> Transform<'a> {
             mode,
             blob_buffer: HashMap::new(),
             emitted: HashSet::new(),
+            original_ids: HashMap::new(),
+            written: HashMap::new(),
+            alternates: HashMap::new(),
             next_fresh: FRESH_MARK_BASE,
             attrs_add: BTreeSet::new(),
             attrs_add_initial,
@@ -146,6 +160,9 @@ impl<'a> Transform<'a> {
         match cmd {
             Command::Blob(b) => {
                 if let Some(mark) = b.mark {
+                    if let Some(id) = b.original_oid {
+                        self.original_ids.insert(mark, id);
+                    }
                     self.blob_buffer.insert(mark, b.data);
                 } else {
                     // Nothing can refer to a blob without a mark.
@@ -279,31 +296,60 @@ impl<'a> Transform<'a> {
         // top-level one is never written out: it's replaced below. Nested
         // ones, and symlinks, whose blob is their target, are written out
         // unchanged afterwards.
-        for change in &c.file_changes {
-            if let FileChange::Modify {
-                dataref: DataRef::Mark(m),
+        for change in &mut c.file_changes {
+            let FileChange::Modify {
+                dataref,
                 path,
                 mode,
             } = change
-                && !is_attrs_path(path)
-                && mode != "120000"
-                && !self.emitted.contains(m)
-                && let Some(content) = self.blob_buffer.remove(m)
-            {
-                let (out, was_converted) = self.transform_blob(path, content)?;
+            else {
+                continue;
+            };
+            let DataRef::Mark(m) = *dataref else {
+                continue;
+            };
+            if is_attrs_path(path) || mode == "120000" {
+                continue;
+            }
+            let (converted, new) = if let Some(content) = self.blob_buffer.remove(&m) {
+                let written = Written {
+                    converted: false,
+                    size: content.len() as u64,
+                    pointer: Pointer::parse(&content).is_ok(),
+                };
+                let (out, converted) = self.transform_blob(path, content)?;
                 writer.write(&Command::Blob(Blob {
-                    mark: Some(*m),
+                    mark: Some(m),
                     original_oid: None,
                     data: out,
                 }))?;
-                self.emitted.insert(*m);
-                if was_converted {
-                    self.add_pattern_for_path(path);
-                    if self.opts.verbose
-                        && let Some(oid) = c.original_oid.as_deref()
-                    {
-                        eprintln!("  commit {oid}: {path}");
-                    }
+                self.emitted.insert(m);
+                self.written.insert(
+                    m,
+                    Written {
+                        converted,
+                        ..written
+                    },
+                );
+                (converted, true)
+            } else if let Some(written) = self.written.get(&m).copied() {
+                if self.converts(path, &written) == written.converted {
+                    (written.converted, false)
+                } else {
+                    let (alternate, converted, new) = self.alternate(m, path, writer)?;
+                    *dataref = alternate;
+                    (converted, new)
+                }
+            } else {
+                continue;
+            };
+            if converted {
+                self.add_pattern_for_path(path);
+                if new
+                    && self.opts.verbose
+                    && let Some(oid) = c.original_oid.as_deref()
+                {
+                    eprintln!("  commit {oid}: {path}");
                 }
             }
         }
@@ -344,6 +390,58 @@ impl<'a> Transform<'a> {
         }
 
         writer.write(&Command::Commit(c))
+    }
+
+    /// Whether a blob written as `written` would be converted at `path`.
+    fn converts(&self, path: &str, written: &Written) -> bool {
+        let matches = path_matches(path, &self.opts.include, &self.opts.exclude);
+        match self.mode {
+            Mode::Import => matches && !written.pointer && written.size >= self.opts.above,
+            Mode::Export => matches && written.pointer,
+            Mode::Fixup => written.converted,
+        }
+    }
+
+    /// The other version of blob `m`, for a path that needs it, as the
+    /// dataref to use, whether it's converted, and whether it was just
+    /// made.
+    ///
+    /// The original blob is referred to by its ID. The converted one is
+    /// made from the original, read with `git cat-file`, and written
+    /// under a new mark. Without the original ID, or if the blob can't
+    /// be converted, such as a pointer whose object is missing, `m` is
+    /// used as it is.
+    fn alternate<W: Write>(
+        &mut self,
+        m: u32,
+        path: &str,
+        writer: &mut Writer<W>,
+    ) -> io::Result<(DataRef, bool, bool)> {
+        if let Some((dataref, converted)) = self.alternates.get(&m) {
+            return Ok((dataref.clone(), *converted, false));
+        }
+        let converted_before = self.written[&m].converted;
+        let alternate = match self.original_ids.get(&m).cloned() {
+            None => (DataRef::Mark(m), converted_before),
+            Some(id) if converted_before => (DataRef::Sha(id), false),
+            Some(id) => {
+                let content = read_blob(&self.opts.cwd, &id)?;
+                match self.transform_blob(path, content)? {
+                    (out, true) => {
+                        let mark = self.alloc_fresh();
+                        writer.write(&Command::Blob(Blob {
+                            mark: Some(mark),
+                            original_oid: None,
+                            data: out,
+                        }))?;
+                        (DataRef::Mark(mark), true)
+                    }
+                    (_, false) => (DataRef::Mark(m), false),
+                }
+            }
+        };
+        self.alternates.insert(m, alternate.clone());
+        Ok((alternate.0, alternate.1, true))
     }
 
     /// Convert a blob if its path matches, returning the content to write
@@ -451,6 +549,32 @@ impl<'a> Transform<'a> {
         self.next_fresh += 1;
         m
     }
+}
+
+/// How a blob was written out.
+#[derive(Debug, Clone, Copy)]
+struct Written {
+    converted: bool,
+    /// The original blob's size.
+    size: u64,
+    /// Whether the original blob is a pointer.
+    pointer: bool,
+}
+
+/// Read blob `id` from the repository at `cwd`.
+fn read_blob(cwd: &Path, id: &str) -> io::Result<Vec<u8>> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["cat-file", "blob", id])
+        .output()?;
+    if !out.status.success() {
+        return Err(io::Error::other(format!(
+            "git cat-file blob {id} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(out.stdout)
 }
 
 /// Whether `path` is a `.gitattributes` file in any directory.
@@ -641,6 +765,70 @@ mod tests {
         assert!(
             s.contains(".gitattributes"),
             "expected commit to gain a .gitattributes M: {s}",
+        );
+    }
+
+    /// A stream with one blob, with `original-oid` `id`, at two paths.
+    fn shared_blob_stream(id: &str, first: &str, second: &str) -> Vec<u8> {
+        format!(
+            "blob\nmark :1\noriginal-oid {id}\ndata 12\nhello world\n\
+             commit refs/heads/main\nmark :2\n\
+             committer A <a@b> 1 +0000\ndata 1\nm\n\
+             M 100644 :1 {first}\nM 100644 :1 {second}\n\n"
+        )
+        .into_bytes()
+    }
+
+    #[test]
+    fn shared_blob_keeps_original_at_unmatched_path() {
+        let id = "3b18e512dba79e4c8300dd08aeb37f8e728b8dad";
+        let opts = Options {
+            include: Some(glob("*.bin")),
+            ..Default::default()
+        };
+        let (out, stats) = run_transform(&shared_blob_stream(id, "a.bin", "a.txt"), opts);
+        assert_eq!(stats.blobs_converted, 1);
+        let s = String::from_utf8(out).unwrap();
+        assert!(s.contains("M 100644 :1 a.bin"), "{s}");
+        assert!(s.contains(&format!("M 100644 {id} a.txt")), "{s}");
+    }
+
+    #[test]
+    fn shared_blob_converts_at_matching_path_after_unmatched_one() {
+        let repo = tempfile::tempdir().unwrap();
+        let git = |args: &[&str], input: Option<&[u8]>| {
+            let mut child = std::process::Command::new("git")
+                .arg("-C")
+                .arg(repo.path())
+                .args(args)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            if let Some(input) = input {
+                child.stdin.take().unwrap().write_all(input).unwrap();
+            }
+            let out = child.wait_with_output().unwrap();
+            assert!(out.status.success());
+            String::from_utf8(out.stdout).unwrap().trim().to_owned()
+        };
+        git(&["init", "--quiet"], None);
+        let id = git(&["hash-object", "-w", "--stdin"], Some(b"hello world"));
+        let opts = Options {
+            include: Some(glob("*.bin")),
+            cwd: repo.path().to_path_buf(),
+            ..Default::default()
+        };
+        let (out, stats) = run_transform(&shared_blob_stream(&id, "a.txt", "a.bin"), opts);
+        assert_eq!(stats.blobs_converted, 1);
+        let s = String::from_utf8(out).unwrap();
+        assert!(s.contains("M 100644 :1 a.txt"), "{s}");
+        let fresh = format!("M 100644 :{FRESH_MARK_BASE} a.bin");
+        assert!(s.contains(&fresh), "{s}");
+        assert!(
+            stats
+                .patterns
+                .contains("*.bin filter=lfs diff=lfs merge=lfs -text")
         );
     }
 

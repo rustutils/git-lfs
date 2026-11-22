@@ -67,11 +67,6 @@ Ordered by failing tests fixed per effort, from the triage after the
 v3.8.1 update. Small means under an hour or so, medium a few hours, large
 a feature.
 
-- **`git lfs migrate import`, the same blob at two paths.**
-  `cli/src/migrate/transform.rs` converts each blob once. With `--above`,
-  the second path gets no `.gitattributes` line (small, `t-migrate-import`
-  49). When only one path matches the filter, both become pointers
-  (medium, 37).
 - **`git lfs ls-files`**: `--include` and `--exclude`, and the form that
   takes two refs (small to medium, `t-ls-files` 13 to 15 and 25).
 - **Custom transfer adapters and `file://` remotes** (large, about 16

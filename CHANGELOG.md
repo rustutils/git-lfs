@@ -88,6 +88,10 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- `git lfs migrate import` and `export` handle the same file content at two
+  paths when only one of them matches `--include` and `--exclude`. Before,
+  the first path decided for both. With `--above`, each path gets its own
+  `.gitattributes` line.
 - `git lfs env` warns when an `lfs.*` setting is set more than once with
   different values, as upstream does.
 - With `http.cookieFile` set to an empty file, cookies that the server sets
