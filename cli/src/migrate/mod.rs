@@ -17,6 +17,7 @@ mod transform;
 pub use export::{ExportOptions, export};
 pub use import::{ImportOptions, import};
 pub use info::{InfoOptions, PointerMode, info};
+pub(crate) use pipeline::working_tree_dirty;
 
 use std::path::Path;
 use std::process::Command;

@@ -29,6 +29,10 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Added
 
+- `git lfs dedup` replaces LFS files in the working tree with
+  copy-on-write clones of their stored objects, on file systems that
+  support it, such as Btrfs, XFS, APFS, and ReFS. `--test` only checks for
+  support.
 - `git lfs completion bash|fish|zsh` prints a shell completion script for
   `git lfs` and `git-lfs`. It completes commands, options, and the values
   some options take. Scripts installed from upstream Git LFS work too.

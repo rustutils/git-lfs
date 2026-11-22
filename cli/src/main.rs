@@ -10,6 +10,7 @@ use git_lfs_store::Store;
 mod checkout;
 mod clone;
 mod completion;
+mod dedup;
 mod env;
 mod ext;
 mod fetch;
@@ -40,8 +41,8 @@ mod update;
 use fetcher::LfsFetcher;
 
 use git_lfs::args::{
-    CheckoutArgs, CleanArgs, Cli, CloneArgs, Command, CompletionArgs, EnvArgs, ExtArgs, ExtCmd,
-    ExtListArgs, FetchArgs, FilterProcessArgs, FsckArgs, InstallArgs, LockArgs, LocksArgs,
+    CheckoutArgs, CleanArgs, Cli, CloneArgs, Command, CompletionArgs, DedupArgs, EnvArgs, ExtArgs,
+    ExtCmd, ExtListArgs, FetchArgs, FilterProcessArgs, FsckArgs, InstallArgs, LockArgs, LocksArgs,
     LogsArgs, LogsSub, LsFilesArgs, MergeDriverArgs, MigrateArgs, MigrateCmd, MigrateExportArgs,
     MigrateImportArgs, MigrateInfoArgs, PointerArgs, PostCheckoutArgs, PostCommitArgs,
     PostMergeArgs, PrePushArgs, PruneArgs, PullArgs, PushArgs, SmudgeArgs, StatusArgs, TrackArgs,
@@ -713,6 +714,12 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 filename,
                 no_modify_attrs,
             });
+        }
+        Command::Dedup(DedupArgs { test }) => {
+            if let Some(code) = bail_if_outside_repo(&cwd) {
+                return Ok(code);
+            }
+            return dedup::run(&cwd, test);
         }
         Command::Completion(CompletionArgs { shell }) => {
             return Ok(completion::run(shell.as_deref()));

@@ -67,9 +67,6 @@ Ordered by failing tests fixed per effort, from the triage after the
 v3.8.1 update. Small means under an hour or so, medium a few hours, large
 a feature.
 
-- **`git lfs dedup`** (small, `t-dedup`). Each test stops early when the
-  output says the system can't deduplicate, so a correct capability check
-  passes them. Copying with reflinks is medium.
 - **An empty `http.cookieFile`** (tiny, `t-header-redirect` 7). With no
   cookies to load, no cookie jar is installed, so cookies the server sets
   are dropped.

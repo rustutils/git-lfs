@@ -17,6 +17,7 @@ default-run            = "git-lfs"
 [dependencies]
 clap       = { version = "4", features = ["derive", "wrap_help"] }
 globset    = { workspace = true }
+reflink-copy = "0.1.33"
 reqwest    = { workspace = true }
 rustls         = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
 rustls-pemfile = "2"

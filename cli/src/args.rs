@@ -73,6 +73,7 @@ pub enum Command {
     PrePush(PrePushArgs),
     Version(VersionArgs),
     Completion(CompletionArgs),
+    Dedup(DedupArgs),
     Pointer(PointerArgs),
     Env(EnvArgs),
     Ext(ExtArgs),
@@ -638,6 +639,23 @@ pub struct PrePushArgs {
 /// Print the git-lfs version banner and exit
 #[derive(Args)]
 pub struct VersionArgs;
+
+/// Deduplicate LFS files in the working tree
+///
+/// Replace each LFS file in the working tree with a copy-on-write clone
+/// of its object in the local store, so the two share disk space until
+/// one of them changes. This needs a file system that supports cloning,
+/// such as Btrfs, XFS, APFS, or ReFS.
+///
+/// The working tree must be clean, and no pointer extensions may be
+/// configured, since their files differ from the stored objects.
+#[derive(Args)]
+pub struct DedupArgs {
+    /// Only check whether this system and repository support
+    /// deduplication.
+    #[arg(short, long)]
+    pub test: bool,
+}
 
 /// Print a shell completion script
 ///
