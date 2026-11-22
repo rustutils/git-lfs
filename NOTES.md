@@ -87,8 +87,6 @@ Grouped by area, with the failing tests each one would fix.
   (`t-header-redirect` 7).
 - **`git lfs env`** doesn't warn about clashing `git config` values
   (`t-config` 13).
-- **`core.sshCommand`** isn't read. Only `GIT_SSH_COMMAND` and `GIT_SSH`
-  are.
 - **NTLM and Negotiate authentication**, and acting on `LFS-Authenticate`
   access modes. Wait for someone who needs it.
 - **Encrypted client certificate keys.** `t-clone` tests 3 and 4.
@@ -135,10 +133,9 @@ come from reading the code.
 
 ### Wrong results or failures
 
-- **SSH URLs with escapes or newlines.** The path of an `ssh://` URL isn't
-  percent-decoded (`t-ssh` 10, 12, and 14), and an `href` from
-  `git-lfs-authenticate` containing a newline is accepted, because the `url`
-  crate strips it (`t-ssh` 6). Upstream rejects it.
+- **An `href` with a newline is accepted.** One from `git-lfs-authenticate`
+  passes because the `url` crate strips the newline (`t-ssh` 6). Upstream
+  rejects it.
 - **Corrupt downloads** report `expected OID X, got Y` instead of
   upstream's `expected OID X, got Y after N bytes written`
   (`t-batch-storage-corrupt` 1 and 2).
@@ -181,10 +178,8 @@ come from reading the code.
 - **SSH remotes can send two `Authorization` headers** after a 401, because
   reqwest appends the helper's credentials to the header from
   `git-lfs-authenticate`. Confirmed.
-- **Programs are split on whitespace.** `GIT_SSH=/opt/my tools/ssh` runs
-  `/opt/my`, and quoted `GIT_SSH_COMMAND` arguments break. Same for the
-  askpass program. Upstream runs `GIT_SSH_COMMAND` with `sh -c`, which
-  `t-ssh` 8, 9, 12, and 13 look for in the trace.
+- **The askpass program is split on whitespace**, so a path with a space
+  or a quoted argument breaks.
 - **`expires_in: 0` from `git-lfs-authenticate` means expired at once**,
   so ssh runs before every request. Confirmed. Upstream treats 0 as no
   expiry.

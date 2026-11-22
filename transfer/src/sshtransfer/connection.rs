@@ -23,7 +23,7 @@ use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
-use git_lfs_creds::{exec_trace, shell_quote};
+use git_lfs_creds::{SshProgram, exec_trace, shell_quote};
 
 use crate::sshtransfer::pktline::{self, Packet, Reader, TextPacket, Writer};
 
@@ -123,12 +123,8 @@ pub enum ConnectionError {
 pub struct Config {
     /// Connection number shown in trace lines as `#N`.
     pub id: u32,
-    /// SSH command, such as the value of `GIT_SSH_COMMAND`.
-    ///
-    /// It is split on whitespace: the first word is the program and the
-    /// rest are arguments placed before any others. Quotes are not
-    /// honored and no shell is involved.
-    pub program: String,
+    /// The SSH program.
+    pub program: SshProgram,
     /// SSH client variant.
     pub variant: Variant,
     /// Where to connect.
@@ -155,15 +151,10 @@ pub enum Multiplex {
 
 impl Config {
     /// Build a config for the default variant, without multiplexing.
-    pub fn new(
-        id: u32,
-        program: impl Into<String>,
-        metadata: Metadata,
-        operation: Operation,
-    ) -> Self {
+    pub fn new(id: u32, program: SshProgram, metadata: Metadata, operation: Operation) -> Self {
         Self {
             id,
-            program: program.into(),
+            program,
             variant: Variant::default(),
             metadata,
             operation,
@@ -436,17 +427,16 @@ impl Connection {
     ///
     /// On failure the subprocess is killed.
     pub fn spawn(config: &Config) -> Result<Self, ConnectionError> {
-        let argv = build_argv(config);
-        let (prog, args) = argv.split_first().expect("argv is non-empty");
+        let (prog, args) = config.program.command_line(build_argv(config));
 
         trace(format_args!(
             "spawning pure SSH connection (#{id})",
             id = config.id
         ));
-        trace_exec(prog, args);
+        trace_exec(&prog, &args);
 
-        let mut cmd = Command::new(prog);
-        cmd.args(args);
+        let mut cmd = Command::new(&prog);
+        cmd.args(&args);
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
@@ -558,16 +548,10 @@ fn parse_status(line: &str) -> Result<u16, ConnectionError> {
         .map_err(|_| ConnectionError::Protocol(format!("malformed status code in {line:?}")))
 }
 
-/// Build the ssh command line, following upstream's `GetLFSExeAndArgs`.
-///
-/// Unlike upstream, the program is split on whitespace instead of being run
-/// through a shell.
+/// Build the arguments to the SSH program, following upstream's
+/// `GetLFSExeAndArgs`.
 fn build_argv(config: &Config) -> Vec<String> {
-    let mut parts = config.program.split_whitespace();
-    let prog = parts.next().unwrap_or("ssh").to_owned();
-    let mut argv: Vec<String> = std::iter::once(prog)
-        .chain(parts.map(str::to_owned))
-        .collect();
+    let mut argv = Vec::new();
 
     if config.variant == Variant::Tortoise {
         argv.push("-batch".to_owned());
@@ -642,6 +626,10 @@ fn trace_exec(prog: &str, args: &[String]) {
 mod tests {
     use super::*;
 
+    fn exe(program: &str) -> SshProgram {
+        SshProgram::Exe(program.to_owned())
+    }
+
     fn meta(user_and_host: &str) -> Metadata {
         Metadata {
             user_and_host: user_and_host.to_owned(),
@@ -652,12 +640,11 @@ mod tests {
 
     #[test]
     fn argv_default_variant_simple_host() {
-        let c = Config::new(0, "ssh", meta("git@host"), Operation::Upload);
+        let c = Config::new(0, exe("ssh"), meta("git@host"), Operation::Upload);
         let argv = build_argv(&c);
         assert_eq!(
             argv,
             vec![
-                "ssh".to_owned(),
                 "git@host".to_owned(),
                 "git-lfs-transfer /repo upload".to_owned(),
             ],
@@ -668,12 +655,11 @@ mod tests {
     fn argv_with_port() {
         let mut m = meta("git@host");
         m.port = Some("2222".to_owned());
-        let c = Config::new(0, "ssh", m, Operation::Download);
+        let c = Config::new(0, exe("ssh"), m, Operation::Download);
         let argv = build_argv(&c);
         assert_eq!(
             argv,
             vec![
-                "ssh".to_owned(),
                 "-p".to_owned(),
                 "2222".to_owned(),
                 "git@host".to_owned(),
@@ -686,7 +672,7 @@ mod tests {
     fn argv_quotes_the_path_for_the_remote_shell() {
         let mut m = meta("git@host");
         m.path = "/my repo;touch x".to_owned();
-        let c = Config::new(0, "ssh", m, Operation::Upload);
+        let c = Config::new(0, exe("ssh"), m, Operation::Upload);
         let argv = build_argv(&c);
         assert_eq!(
             argv.last().unwrap(),
@@ -698,7 +684,7 @@ mod tests {
     fn argv_putty_uses_uppercase_p() {
         let mut m = meta("git@host");
         m.port = Some("2222".to_owned());
-        let mut c = Config::new(0, "plink", m, Operation::Download);
+        let mut c = Config::new(0, exe("plink"), m, Operation::Download);
         c.variant = Variant::Putty;
         let argv = build_argv(&c);
         assert!(argv.contains(&"-P".to_owned()));
@@ -707,15 +693,15 @@ mod tests {
 
     #[test]
     fn argv_tortoise_prepends_batch() {
-        let mut c = Config::new(0, "tortoiseplink", meta("git@host"), Operation::Upload);
+        let mut c = Config::new(0, exe("tortoiseplink"), meta("git@host"), Operation::Upload);
         c.variant = Variant::Tortoise;
         let argv = build_argv(&c);
-        assert_eq!(argv[1], "-batch");
+        assert_eq!(argv[0], "-batch");
     }
 
     #[test]
     fn argv_multiplex_master() {
-        let mut c = Config::new(0, "ssh", meta("git@host"), Operation::Upload);
+        let mut c = Config::new(0, exe("ssh"), meta("git@host"), Operation::Upload);
         c.multiplex = Multiplex::Master {
             path: PathBuf::from("/tmp/sock"),
         };
@@ -726,7 +712,7 @@ mod tests {
 
     #[test]
     fn argv_multiplex_client() {
-        let mut c = Config::new(1, "ssh", meta("git@host"), Operation::Download);
+        let mut c = Config::new(1, exe("ssh"), meta("git@host"), Operation::Download);
         c.multiplex = Multiplex::Client {
             path: PathBuf::from("/tmp/sock"),
         };
@@ -739,7 +725,7 @@ mod tests {
     fn argv_multiplex_ignored_for_non_default_variant() {
         // PuTTY and TortoisePlink don't speak OpenSSH multiplexing, so the
         // -oControl* options would error out. Builder drops them.
-        let mut c = Config::new(0, "plink", meta("git@host"), Operation::Upload);
+        let mut c = Config::new(0, exe("plink"), meta("git@host"), Operation::Upload);
         c.variant = Variant::Putty;
         c.multiplex = Multiplex::Master {
             path: PathBuf::from("/tmp/sock"),
@@ -750,7 +736,12 @@ mod tests {
 
     #[test]
     fn argv_dash_leading_host_uses_separator_in_default() {
-        let c = Config::new(0, "ssh", meta("-oProxyCommand=evil"), Operation::Upload);
+        let c = Config::new(
+            0,
+            exe("ssh"),
+            meta("-oProxyCommand=evil"),
+            Operation::Upload,
+        );
         let argv = build_argv(&c);
         let host_pos = argv
             .iter()
@@ -764,7 +755,7 @@ mod tests {
     fn argv_dash_leading_host_stripped_for_simple() {
         let mut c = Config::new(
             0,
-            "dropbear",
+            exe("dropbear"),
             meta("-oProxyCommand=evil"),
             Operation::Upload,
         );
@@ -777,16 +768,31 @@ mod tests {
     }
 
     #[test]
-    fn argv_program_split_passes_extra_args() {
-        // `GIT_SSH_COMMAND="ssh -i mykey -v"` style: split on
-        // whitespace, first token is the program, rest are
-        // pre-arguments.
-        let c = Config::new(0, "ssh -i mykey -v", meta("git@host"), Operation::Upload);
-        let argv = build_argv(&c);
-        assert_eq!(argv[0], "ssh");
-        assert!(argv.iter().any(|a| a == "-i"));
-        assert!(argv.iter().any(|a| a == "mykey"));
-        assert!(argv.iter().any(|a| a == "-v"));
+    fn shell_program_runs_with_quoted_arguments() {
+        let program = SshProgram::Shell("ssh -i 'my key'".to_owned());
+        let c = Config::new(0, program, meta("git@host"), Operation::Upload);
+        let (prog, args) = c.program.command_line(build_argv(&c));
+        assert_eq!(prog, "sh");
+        assert_eq!(
+            args,
+            vec![
+                "-c".to_owned(),
+                "ssh -i 'my key' git@host 'git-lfs-transfer /repo upload'".to_owned(),
+            ],
+        );
+    }
+
+    #[test]
+    fn exe_program_is_run_directly() {
+        let c = Config::new(
+            0,
+            exe("/opt/my tools/ssh"),
+            meta("git@host"),
+            Operation::Upload,
+        );
+        let (prog, args) = c.program.command_line(build_argv(&c));
+        assert_eq!(prog, "/opt/my tools/ssh");
+        assert_eq!(args[0], "git@host");
     }
 
     #[test]
@@ -1004,9 +1010,8 @@ mod tests {
     /// shell script. We invoke it as `sh <path>` rather than chmod
     /// +x'ing it because the +x path races with the kernel under
     /// parallel test execution (ETXTBSY between chmod and exec).
-    /// The `program` field is set to `"sh"`, and the script path
-    /// goes through as a pre-argument via whitespace splitting on
-    /// the program string, as with `GIT_SSH_COMMAND="sh /path/to/script"`.
+    /// The program is the shell command `sh <path>`, as with
+    /// `GIT_SSH_COMMAND="sh /path/to/script"`.
     ///
     /// Wire sizes in bytes, including the flush:
     /// - client "version 1": 4 + len("version 1\n") + 4 = 18
@@ -1036,7 +1041,7 @@ mod tests {
 
         let mut config = Config::new(
             0,
-            format!("sh {}", script.to_string_lossy()),
+            SshProgram::Shell(format!("sh {}", script.to_string_lossy())),
             meta("git@host"),
             Operation::Upload,
         );
@@ -1061,7 +1066,7 @@ mod tests {
 
         let config = Config::new(
             0,
-            format!("sh {}", script.to_string_lossy()),
+            SshProgram::Shell(format!("sh {}", script.to_string_lossy())),
             meta("git@host"),
             Operation::Upload,
         );

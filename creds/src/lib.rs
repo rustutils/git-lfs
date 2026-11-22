@@ -35,4 +35,6 @@ pub use helper::{Credentials, FillContext, Helper, HelperError, HelperOutcome};
 pub use memory::CachingHelper;
 pub use netrc::NetrcCredentialHelper;
 pub use query::Query;
-pub use ssh::{SshAuth, SshAuthClient, SshAuthError, SshOperation, exec_trace, shell_quote};
+pub use ssh::{
+    SshAuth, SshAuthClient, SshAuthError, SshOperation, SshProgram, exec_trace, shell_quote,
+};

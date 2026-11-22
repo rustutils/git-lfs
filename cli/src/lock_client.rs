@@ -520,7 +520,7 @@ pub(crate) fn build_lock_client_with_api(
     let Some(ssh) = info.ssh else {
         return Ok(LockClient::http(api, runtime));
     };
-    let pools = ssh_pools.unwrap_or_else(|| Arc::new(SshPools::new(ssh)));
+    let pools = ssh_pools.unwrap_or_else(|| Arc::new(SshPools::new(cwd, ssh)));
     // Lock requests are sent one at a time, so one connection is enough.
     let spawner: SshLockPoolSpawner = Arc::new(move |operation| pools.get(operation, 1));
     match crate::fetcher::read_sshtransfer_for(cwd, &info.url).as_deref() {

@@ -21,7 +21,7 @@ use git_lfs_api::{
 };
 use git_lfs_creds::{
     AskpassHelper, CachingHelper, GitCredentialHelper, Helper, HelperChain, NetrcCredentialHelper,
-    SshAuthClient, SshOperation as CredsSshOperation,
+    SshAuthClient, SshOperation as CredsSshOperation, SshProgram,
 };
 use git_lfs_filter::FetchError;
 use git_lfs_git::ConfigScope;
@@ -114,7 +114,7 @@ impl LfsFetcher {
             });
         let ssh_pools = ssh_mode
             .as_ref()
-            .map(|(ssh, _)| Arc::new(SshPools::new(ssh.clone())));
+            .map(|(ssh, _)| Arc::new(SshPools::new(cwd, ssh.clone())));
         let transfer = match ssh_mode {
             Some((_, SshMode::Always)) => {
                 let pools = ssh_pools.clone().expect("SSH endpoint has pools");
@@ -417,10 +417,10 @@ fn build_api_client_with(
             }
             Some("never") => {
                 ssh_trace(format_args!("skipping pure SSH protocol"));
-                client = client.with_ssh_resolver(build_ssh_resolver(ssh_info));
+                client = client.with_ssh_resolver(build_ssh_resolver(cwd, ssh_info));
             }
             _ => {
-                client = client.with_ssh_resolver(build_ssh_resolver(ssh_info));
+                client = client.with_ssh_resolver(build_ssh_resolver(cwd, ssh_info));
             }
         }
     }
@@ -491,8 +491,8 @@ fn http_compatible_endpoint(url_str: &str) -> Result<String, git_lfs_git::endpoi
 
 /// Build the [`SshResolver`] that runs git-lfs-authenticate for an SSH
 /// endpoint, with the program from [`resolve_ssh_program`].
-fn build_ssh_resolver(info: SshInfo) -> SharedSshResolver {
-    let program = resolve_ssh_program();
+fn build_ssh_resolver(cwd: &Path, info: SshInfo) -> SharedSshResolver {
+    let program = resolve_ssh_program(cwd);
     Arc::new(SshAuthAdapter {
         client: Arc::new(SshAuthClient::new(program)),
         ssh: info,
@@ -504,15 +504,15 @@ fn build_ssh_resolver(info: SshInfo) -> SharedSshResolver {
 /// The transfer queue and the lock client share them, so a push opens one
 /// SSH session for both, as upstream does.
 pub(crate) struct SshPools {
-    program: String,
+    program: SshProgram,
     metadata: PoolMetadata,
     pools: Mutex<HashMap<SshOperation, Arc<Pool>>>,
 }
 
 impl SshPools {
-    pub(crate) fn new(ssh: SshInfo) -> Self {
+    pub(crate) fn new(cwd: &Path, ssh: SshInfo) -> Self {
         Self {
-            program: resolve_ssh_program(),
+            program: resolve_ssh_program(cwd),
             metadata: PoolMetadata {
                 user_and_host: ssh.user_and_host,
                 port: ssh.port,
@@ -573,22 +573,24 @@ enum SshMode {
     Never,
 }
 
-/// Pick the SSH program: `GIT_SSH_COMMAND`, then `GIT_SSH`, then `ssh`.
+/// Pick the SSH program like upstream: `GIT_SSH_COMMAND`, then `GIT_SSH`,
+/// then `core.sshCommand`, then `ssh`.
 ///
-/// The result is a command line that callers split on whitespace.
-/// `core.sshCommand`, which upstream tries after `GIT_SSH`, isn't read.
-pub(crate) fn resolve_ssh_program() -> String {
-    if let Some(v) = std::env::var_os("GIT_SSH_COMMAND")
-        && !v.is_empty()
-    {
-        return v.to_string_lossy().into_owned();
+/// A command made only of whitespace counts as unset.
+fn resolve_ssh_program(cwd: &Path) -> SshProgram {
+    let env = |name: &str| std::env::var(name).ok();
+    if let Some(command) = env("GIT_SSH_COMMAND").filter(|c| !c.trim().is_empty()) {
+        return SshProgram::Shell(command);
     }
-    if let Some(v) = std::env::var_os("GIT_SSH")
-        && !v.is_empty()
-    {
-        return v.to_string_lossy().into_owned();
+    if let Some(program) = env("GIT_SSH").filter(|p| !p.is_empty()) {
+        return SshProgram::Exe(program);
     }
-    "ssh".to_owned()
+    if let Ok(Some(command)) = git_lfs_git::config::get_effective(cwd, "core.sshCommand")
+        && !command.trim().is_empty()
+    {
+        return SshProgram::Shell(command);
+    }
+    SshProgram::default()
 }
 
 /// Adapts [`SshAuthClient`] to the API client's [`SshResolver`] trait for

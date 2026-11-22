@@ -351,9 +351,10 @@ pub fn parse_ssh_url(rawurl: &str) -> Option<SshInfo> {
             Some((host, p)) => (host.to_owned(), Some(p.to_owned())),
             None => (authority.to_owned(), None),
         };
+        // As a URL, the path is percent-decoded, as in upstream.
         return Some(SshInfo {
             user_and_host,
-            path: format!("/{}", path.trim_start_matches('/')),
+            path: format!("/{}", percent_decode(path.trim_start_matches('/'))),
             port,
         });
     }
@@ -370,6 +371,30 @@ pub fn parse_ssh_url(rawurl: &str) -> Option<SshInfo> {
         path: path.trim_start_matches('/').to_owned(),
         port: None,
     })
+}
+
+/// Decode `%XX` escapes in `s`. Invalid escapes are kept as they are.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = bytes
+            .get(i + 1..i + 3)
+            .and_then(|h| std::str::from_utf8(h).ok())
+            .and_then(|h| u8::from_str_radix(h, 16).ok());
+        match (bytes[i], hex) {
+            (b'%', Some(byte)) => {
+                out.push(byte);
+                i += 3;
+            }
+            (b, _) => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Split a bare SSH URL `[user@]host:path` at the first colon.
@@ -428,6 +453,15 @@ fn append_lfs_path(url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ssh_url_path_is_percent_decoded() {
+        let info = parse_ssh_url("ssh://git@host/my%20repo%0a%3bx%zz").unwrap();
+        assert_eq!(info.path, "/my repo\n;x%zz");
+        // A bare URL isn't a URL, so its path is kept.
+        let info = parse_ssh_url("git@host:my%20repo").unwrap();
+        assert_eq!(info.path, "my%20repo");
+    }
 
     // ---- derive_lfs_url ---------------------------------------------------
 

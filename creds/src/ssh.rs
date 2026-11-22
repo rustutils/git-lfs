@@ -4,10 +4,8 @@
 //! <path> <operation>"` and parses the JSON it prints: an HTTPS endpoint and
 //! headers to send to it. The user's SSH key is the only credential needed.
 //!
-//! The caller picks the SSH program. The CLI uses `GIT_SSH_COMMAND`, then
-//! `GIT_SSH`, then `ssh`, and doesn't read `core.sshCommand`. The program
-//! string is split on whitespace and run without a shell. A host starting
-//! with `-` is preceded by `--`, so ssh doesn't read it as an option. This
+//! The caller picks the [`SshProgram`]. A host starting with `-` is
+//! preceded by `--`, so ssh doesn't read it as an option. This
 //! assumes OpenSSH: other SSH variants, such as PuTTY's, aren't detected.
 //! The remote command is quoted for the server's shell with [`shell_quote`].
 //!
@@ -100,13 +98,50 @@ pub enum SshAuthError {
     Json(String),
 }
 
+/// The SSH program to run, as chosen by Git's rules.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SshProgram {
+    /// A command line, from `GIT_SSH_COMMAND` or `core.sshCommand`.
+    ///
+    /// It runs with `sh -c`, so it can hold arguments and quotes.
+    Shell(String),
+    /// A program path, from `GIT_SSH`, run directly.
+    Exe(String),
+}
+
+impl Default for SshProgram {
+    fn default() -> Self {
+        Self::Exe("ssh".to_owned())
+    }
+}
+
+impl SshProgram {
+    /// The program to execute and its arguments, to run this with `args`.
+    ///
+    /// A [`Shell`](Self::Shell) command becomes `sh -c '<command> <args>'`,
+    /// with each argument quoted by [`shell_quote`], as in upstream.
+    pub fn command_line(&self, args: Vec<String>) -> (String, Vec<String>) {
+        match self {
+            Self::Exe(program) => (program.clone(), args),
+            Self::Shell(command) => {
+                let mut line = command.clone();
+                for arg in &args {
+                    line.push(' ');
+                    line.push_str(&shell_quote(arg));
+                }
+                ("sh".to_owned(), vec!["-c".to_owned(), line])
+            }
+        }
+    }
+}
+
 /// Runs `git-lfs-authenticate` over SSH and caches the responses.
 ///
 /// A cached response with less than 5 seconds left counts as expired, as in
 /// upstream, so it doesn't expire between the cache check and the request.
 #[derive(Debug)]
 pub struct SshAuthClient {
-    program: String,
+    program: SshProgram,
     cache: Mutex<HashMap<CacheKey, SshAuth>>,
 }
 
@@ -136,13 +171,9 @@ struct WireResponse {
 
 impl SshAuthClient {
     /// Build a client that runs `program`.
-    ///
-    /// `program` is split on whitespace, with no quoting. The first word is
-    /// the executable and the rest go before the `-p`, host and command
-    /// arguments.
-    pub fn new(program: impl Into<String>) -> Self {
+    pub fn new(program: SshProgram) -> Self {
         Self {
-            program: program.into(),
+            program,
             cache: Mutex::new(HashMap::new()),
         }
     }
@@ -194,12 +225,7 @@ impl SshAuthClient {
         path: &str,
         operation: SshOperation,
     ) -> Result<SshAuth, SshAuthError> {
-        // The remote command is one argument, for the remote shell.
-        let mut parts = self.program.split_whitespace();
-        let prog = parts
-            .next()
-            .ok_or_else(|| SshAuthError::Failed("ssh program is empty".into()))?;
-        let mut argv: Vec<String> = parts.map(str::to_owned).collect();
+        let mut argv: Vec<String> = Vec::new();
         if let Some(p) = port {
             argv.push("-p".to_owned());
             argv.push(p.to_owned());
@@ -210,14 +236,16 @@ impl SshAuthClient {
             argv.push("--".to_owned());
         }
         argv.push(user_and_host.to_owned());
+        // The remote command is one argument, for the remote shell.
         argv.push(remote_command(path, operation));
+        let (prog, argv) = self.program.command_line(argv);
 
         if trace_enabled() {
-            let _ = writeln!(std::io::stderr().lock(), "{}", exec_trace(prog, &argv));
+            let _ = writeln!(std::io::stderr().lock(), "{}", exec_trace(&prog, &argv));
         }
 
         let now = SystemTime::now();
-        let out = Command::new(prog)
+        let out = Command::new(&prog)
             .args(&argv)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -511,7 +539,7 @@ mod tests {
         )
         .unwrap();
 
-        let client = SshAuthClient::new(format!("sh {}", prog.display()));
+        let client = SshAuthClient::new(SshProgram::Shell(format!("sh {}", prog.display())));
         let auth = client
             .resolve("git@host", None, "/repo", SshOperation::Upload)
             .unwrap();
@@ -543,7 +571,7 @@ mod tests {
         )
         .unwrap();
 
-        let client = SshAuthClient::new(format!("sh {}", prog.display()));
+        let client = SshAuthClient::new(SshProgram::Shell(format!("sh {}", prog.display())));
         let _ = client
             .resolve("git@host", None, "/repo", SshOperation::Upload)
             .unwrap();
@@ -574,7 +602,7 @@ mod tests {
         )
         .unwrap();
 
-        let client = SshAuthClient::new(format!("sh {}", prog.display()));
+        let client = SshAuthClient::new(SshProgram::Shell(format!("sh {}", prog.display())));
         let _ = client
             .resolve("git@host", None, "/repo", SshOperation::Upload)
             .unwrap();
@@ -595,7 +623,7 @@ mod tests {
         let prog = tmp.path().join("fakessh");
         std::fs::write(&prog, "#!/bin/sh\necho 'permission denied' >&2\nexit 255\n").unwrap();
 
-        let client = SshAuthClient::new(format!("sh {}", prog.display()));
+        let client = SshAuthClient::new(SshProgram::Shell(format!("sh {}", prog.display())));
         let err = client
             .resolve("git@host", None, "/repo", SshOperation::Download)
             .unwrap_err();
@@ -693,7 +721,7 @@ mod tests {
         )
         .unwrap();
 
-        let client = SshAuthClient::new(format!("sh {}", prog.display()));
+        let client = SshAuthClient::new(SshProgram::Shell(format!("sh {}", prog.display())));
         client
             .resolve("-oProxyCommand=evil", None, "/repo", SshOperation::Upload)
             .unwrap();

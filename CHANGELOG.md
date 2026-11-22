@@ -31,11 +31,18 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 - The lock commands, and lock verification on push, use the push remote
   (`branch.<name>.pushRemote`, `remote.lfspushdefault`, or
   `remote.pushDefault`) and its push URL, like upstream.
+- `core.sshCommand` is read when neither `GIT_SSH_COMMAND` nor `GIT_SSH` is
+  set.
 
 ### Changed
 
 - `exec:` lines in `GIT_TRACE` output quote each argument, like upstream, so
   they show exactly what was run.
+- `GIT_SSH_COMMAND` and `core.sshCommand` run with `sh -c`, like Git and
+  upstream, so they can hold quoted arguments. `GIT_SSH` is run as one
+  path, so it can contain spaces. Both were split on whitespace before.
+- The path of an `ssh://` URL is percent-decoded, like upstream, so
+  `ssh://host/my%20repo` refers to `/my repo`.
 
 ### Fixed
 

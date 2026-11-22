@@ -17,6 +17,7 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+use git_lfs_creds::SshProgram;
 use tempfile::TempDir;
 
 use crate::sshtransfer::connection::{
@@ -30,7 +31,7 @@ use crate::sshtransfer::connection::{
 #[derive(Debug, Clone)]
 pub struct PoolConfig {
     /// SSH command, as in [`Config::program`].
-    pub program: String,
+    pub program: SshProgram,
     /// SSH client variant.
     pub variant: Variant,
     /// Where to connect.
@@ -276,7 +277,7 @@ mod tests {
     fn fake_pool_config() -> PoolConfig {
         // Tests that spawn replace `program` with a stub script.
         PoolConfig {
-            program: "true".to_owned(),
+            program: SshProgram::Exe("true".to_owned()),
             variant: Variant::Default,
             metadata: Metadata {
                 user_and_host: "git@host".to_owned(),
@@ -295,7 +296,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn working_stub_script(tmp: &TempDir, name: &str) -> String {
+    fn working_stub_script(tmp: &TempDir, name: &str) -> SshProgram {
         let script = tmp.path().join(name);
         // Handshake and quit, as in
         // `connection::tests::handshake_against_stub_server`.
@@ -308,7 +309,7 @@ mod tests {
              printf '000fstatus 200\\n0000'\n",
         )
         .unwrap();
-        format!("sh {}", script.to_string_lossy())
+        SshProgram::Shell(format!("sh {}", script.to_string_lossy()))
     }
 
     #[test]
