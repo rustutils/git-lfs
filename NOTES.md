@@ -66,8 +66,6 @@ Ordered by failing tests fixed per effort, from the triage after the
 v3.8.1 update. Small means under an hour or so, medium a few hours, large
 a feature.
 
-- **`lfs.remote.autodetect` and `lfs.remote.searchall`** (medium,
-  `t-multiple-remotes` 1 to 6).
 - **Compressed downloads** (medium, `t-batch-storage-encoding` 1 to 5).
   `Accept-Encoding: gzip` isn't sent by default, and
   `lfs.transfer.httpDownloadEncoding` (gzip, zstd) isn't implemented.

@@ -50,6 +50,18 @@ pub enum FilterProcessError {
 /// their paths are listed on stderr at the end of the session as files that
 /// should have been pointers. The protocol's `delay` capability isn't
 /// supported.
+/// What Git said about a smudge request, for the `fetch` callback of
+/// [`filter_process`].
+#[derive(Debug, Clone, Copy)]
+pub struct SmudgeRequest<'a> {
+    /// The file's path in the working tree.
+    pub pathname: &'a str,
+    /// The commit or tree being checked out, from Git's `treeish`
+    /// metadata. Git leaves it out in some cases, such as a sparse
+    /// checkout.
+    pub treeish: Option<&'a str>,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn filter_process<R, W, F>(
     store: &Store,
@@ -64,7 +76,7 @@ pub fn filter_process<R, W, F>(
 where
     R: Read,
     W: Write,
-    F: FnMut(&Pointer) -> Result<(), FetchError>,
+    F: FnMut(&Pointer, &SmudgeRequest) -> Result<(), FetchError>,
 {
     let mut reader = pktline::Reader::new(input);
     let mut writer = pktline::Writer::new(output);
@@ -90,6 +102,10 @@ where
             .ok_or(FilterProcessError::MissingHeader("command"))?
             .clone();
         let pathname = headers.get("pathname").map(String::as_str).unwrap_or("");
+        let request = SmudgeRequest {
+            pathname,
+            treeish: headers.get("treeish").map(String::as_str),
+        };
 
         match command.as_str() {
             "clean" => process_clean(store, &mut writer, &payload, pathname, clean_extensions)?,
@@ -102,7 +118,7 @@ where
                     store,
                     &mut writer,
                     &payload,
-                    pathname,
+                    &request,
                     smudge_extensions,
                     &mut fetch,
                 )?;
@@ -255,13 +271,13 @@ fn process_smudge<W, F>(
     store: &Store,
     writer: &mut pktline::Writer<W>,
     payload: &[u8],
-    pathname: &str,
+    request: &SmudgeRequest,
     smudge_extensions: &[SmudgeExtension],
     fetch: &mut F,
 ) -> Result<Option<SmudgeOutcome>, FilterProcessError>
 where
     W: Write,
-    F: FnMut(&Pointer) -> Result<(), FetchError>,
+    F: FnMut(&Pointer, &SmudgeRequest) -> Result<(), FetchError>,
 {
     write_initial_status(writer)?;
     let mut outcome: Option<SmudgeOutcome> = None;
@@ -271,9 +287,9 @@ where
             store,
             &mut { payload },
             sink,
-            pathname,
+            request.pathname,
             smudge_extensions,
-            |p| fetch(p),
+            |p| fetch(p, request),
         ) {
             Ok(o) => {
                 outcome = Some(o);
@@ -399,7 +415,7 @@ mod tests {
     }
 
     /// Fetcher that always errors, for tests that expect no miss.
-    fn no_fetch(_p: &Pointer) -> Result<(), FetchError> {
+    fn no_fetch(_p: &Pointer, _r: &SmudgeRequest) -> Result<(), FetchError> {
         Err("test: no fetcher configured".into())
     }
 
@@ -541,7 +557,7 @@ mod tests {
             &store,
             Cursor::new(input),
             &mut output,
-            |p: &Pointer| {
+            |p: &Pointer, _: &SmudgeRequest| {
                 // Stand in for a real download by re-inserting the bytes.
                 store_ref.insert(&mut { &content[..] }).unwrap();
                 assert_eq!(p.oid, parsed.oid);

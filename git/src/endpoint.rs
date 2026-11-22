@@ -240,7 +240,7 @@ fn read_fetch_head_url(cwd: &Path) -> Result<Option<String>, EndpointError> {
 }
 
 /// The configured remote names, or none if `git remote` fails.
-fn list_remotes(cwd: &Path) -> Result<Vec<String>, Error> {
+pub fn list_remotes(cwd: &Path) -> Result<Vec<String>, Error> {
     let out = std::process::Command::new("git")
         .arg("-C")
         .arg(cwd)

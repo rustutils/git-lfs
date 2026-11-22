@@ -33,6 +33,7 @@ mod pre_push;
 mod prune;
 mod pull;
 mod push;
+mod smudge_fetcher;
 mod standalone_file;
 mod status;
 mod track;
@@ -367,7 +368,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             if skip || skip_smudge_env() {
                 io::copy(&mut input, &mut output)?;
             } else {
-                let fetcher = LfsFetcher::from_repo(&cwd, &store)?;
+                let mut fetcher = smudge_fetcher::SmudgeFetcher::new(&cwd, &store);
                 let smudge_extensions = collect_smudge_extensions(&cwd);
                 let path_str = path
                     .as_deref()
@@ -394,7 +395,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                         &mut output,
                         &path_str,
                         &smudge_extensions,
-                        |p| fetcher.fetch(p),
+                        |p| fetcher.fetch_plain(p),
                     );
                     match result {
                         Ok(_) => {}
@@ -531,7 +532,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             if let Some(v) = shared_repo_config(&cwd) {
                 store = store.with_shared_repository(&v);
             }
-            let fetcher = LfsFetcher::from_repo(&cwd, &store)?;
+            let mut fetcher = smudge_fetcher::SmudgeFetcher::new(&cwd, &store);
             let stdin = io::stdin().lock();
             let stdout = io::stdout().lock();
             let clean_extensions = collect_clean_extensions(&cwd);
@@ -548,7 +549,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 &store,
                 stdin,
                 stdout,
-                |p| fetcher.fetch(p),
+                |p, request| fetcher.fetch(p, request.treeish),
                 skip || skip_smudge_env(),
                 &clean_extensions,
                 &smudge_extensions,

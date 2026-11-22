@@ -29,6 +29,10 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Added
 
+- `lfs.remote.autodetect` downloads objects for a checkout from the remote
+  whose branch contains the commit being checked out, and
+  `lfs.remote.searchall` tries every remote when a download fails. They
+  help when commits come from more than one remote, such as a fork.
 - Custom transfer adapters, set up with `lfs.customtransfer.<name>.path`,
   `args`, `concurrent`, and `direction`. They're offered to the server in
   each batch request, and used when the server picks one.
