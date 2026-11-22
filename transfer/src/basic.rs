@@ -522,7 +522,7 @@ fn detect_content_type_bytes(bytes: &[u8]) -> &'static str {
     OCTET_STREAM
 }
 
-async fn verify(
+pub(crate) async fn verify(
     http: &reqwest::Client,
     oid: &str,
     size: u64,

@@ -57,9 +57,8 @@ Local changes to the vendored tests, which an update must keep:
   version checks the wrong file. Not yet reported.
 - `tests/cmd/lfstest-getlimit.go`: defines two constants itself instead of
   importing upstream's internal packages.
-- `tests/cmd/`: `lfstest-customadapter` and
-  `lfstest-standalonecustomadapter` are left out, and `lfstest-testutils` is
-  ported to Rust.
+- `tests/cmd/`: `lfstest-customadapter` and `lfstest-testutils` are ported
+  to Rust, and `lfstest-standalonecustomadapter` is left out.
 
 ## Known gaps
 
@@ -67,16 +66,17 @@ Ordered by failing tests fixed per effort, from the triage after the
 v3.8.1 update. Small means under an hour or so, medium a few hours, large
 a feature.
 
-- **Custom transfer adapters and `file://` remotes** (large, about 16
-  tests). There's no custom adapter protocol (`docs/custom-transfers.md`),
-  no `lfs.standaloneTransferAgent`, and no built-in `lfs-standalone-file`
+- **Standalone transfers and `file://` remotes** (large, about 15 tests).
+  Custom adapters work when the server picks one, but there's no
+  `lfs.standaloneTransferAgent`, and no built-in `lfs-standalone-file`
   adapter or `git lfs standalone-file` command, so `file://` and
   local-path remotes fail. Only pushing to a local path works, through a
   shortcut in `cli/src/pre_push.rs`. Covers `t-standalone-file` 1 to 7,
-  `t-custom-transfers` 1 and 5 to 9, `t-custom-transfers-protect` 2 and 4,
-  and `t-submodule-lfsconfig` 3. The protect tests check that adapter
-  settings can't come from `.lfsconfig` or a submodule URL, so the
-  implementation must keep the safe-key filtering.
+  `t-custom-transfers` 3 to 9, `t-custom-transfers-protect` 2 and 4, and
+  `t-submodule-lfsconfig` 3. Tests 3 and 4 of `t-custom-transfers` also
+  need `lfstest-standalonecustomadapter` ported. The protect tests check
+  that adapter settings can't come from `.lfsconfig` or a submodule URL,
+  so the implementation must keep the safe-key filtering.
 - **`lfs.remote.autodetect` and `lfs.remote.searchall`** (medium, after the
   adapters). `t-multiple-remotes` 1 to 12 all push to a `file://` remote in
   setup, and 1 to 6 also need these settings.
@@ -109,10 +109,6 @@ a feature.
 
 Tests that won't pass:
 
-- `t-custom-transfers` 2 to 4 and `t-batch-storage-corrupt` 3 need
-  `lfstest-customadapter` and `lfstest-standalonecustomadapter`, which
-  import upstream's internal Go packages and aren't built here. They could
-  be ported to Rust once custom adapters exist.
 - `t-usage` expects upstream's usage line. Our help output comes from
   clap, so this test stays failing on purpose.
 

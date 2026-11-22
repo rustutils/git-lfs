@@ -287,33 +287,13 @@ fn bool_env(name: &str) -> bool {
     )
 }
 
-/// The names of the custom transfer adapters with a
-/// `lfs.customtransfer.<name>.path`, sorted.
+/// The names of the custom transfer adapters, sorted.
 fn custom_transfer_methods(cwd: &Path) -> Vec<String> {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(cwd)
-        .args([
-            "config",
-            "--name-only",
-            "--get-regexp",
-            r"^lfs\.customtransfer\..*\.path$",
-        ])
-        .output();
-    let Ok(out) = out else { return Vec::new() };
-    if !out.status.success() {
-        return Vec::new();
-    }
-    let mut names: Vec<String> = String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter_map(|line| {
-            line.strip_prefix("lfs.customtransfer.")
-                .and_then(|rest| rest.strip_suffix(".path"))
-                .map(str::to_owned)
-        })
+    let mut names: Vec<String> = crate::fetcher::custom_adapters(cwd)
+        .into_iter()
+        .map(|a| a.name)
         .collect();
     names.sort();
-    names.dedup();
     names
 }
 

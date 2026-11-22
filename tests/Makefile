@@ -17,10 +17,8 @@ X ?=
 endif
 
 # Helper binaries the upstream shell tests rely on, built from the Go
-# sources vendored in `cmd/`. Two upstream helpers depend on upstream's
-# internal Go packages and aren't built here: lfstest-customadapter and
-# lfstest-standalonecustomadapter (see NOTES.md). `lfstest-testutils` is
-# ported to Rust in `cmd/src/bin/`.
+# sources vendored in `cmd/`. The upstream helpers that depend on upstream's
+# internal Go packages are ported to Rust in `cmd/src/bin/` instead.
 TEST_CMDS =
 TEST_CMDS += ../bin/git-credential-lfsnoop$X
 TEST_CMDS += ../bin/git-credential-lfstest$X
@@ -39,13 +37,15 @@ TEST_CMDS += ../bin/lfstest-nanomtime$X
 TEST_CMDS += ../bin/lfstest-realpath$X
 
 GIT_LFS_BIN = ../bin/git-lfs$X
-LFSTEST_TESTUTILS_BIN = ../bin/lfstest-testutils$X
+RUST_TEST_CMDS =
+RUST_TEST_CMDS += ../bin/lfstest-customadapter$X
+RUST_TEST_CMDS += ../bin/lfstest-testutils$X
 
 TEST_SRCS = $(wildcard t-*.sh)
 
 all : $(DEFAULT_TEST_TARGET)
 
-test-commands : $(TEST_CMDS) $(GIT_LFS_BIN) $(LFSTEST_TESTUTILS_BIN)
+test-commands : $(TEST_CMDS) $(GIT_LFS_BIN) $(RUST_TEST_CMDS)
 
 test : test-commands
 	$(RM) -r remote test_count{,.lock}
@@ -54,14 +54,14 @@ test : test-commands
 		shutdown
 
 .PHONY : $(TEST_SRCS)
-$(TEST_SRCS) : $(TEST_CMDS) $(GIT_LFS_BIN) $(LFSTEST_TESTUTILS_BIN)
+$(TEST_SRCS) : $(TEST_CMDS) $(GIT_LFS_BIN) $(RUST_TEST_CMDS)
 	$(RM) -r remote test_count{,.lock}
 	$(PROVE) -v $(PROVE_EXTRA_ARGS) $@
 
 .PHONY : clean
 clean :
 	$(RM) -r remote
-	$(RM) $(TEST_CMDS) $(GIT_LFS_BIN) $(LFSTEST_TESTUTILS_BIN)
+	$(RM) $(TEST_CMDS) $(GIT_LFS_BIN) $(RUST_TEST_CMDS)
 
 # Build each Go helper individually. cd into cmd/ so its go.mod
 # takes effect (it's a self-contained module separate from the
@@ -77,13 +77,13 @@ clean :
 # SIGKILL the copy: a `cp` of an ad-hoc-signed Mach-O loses kernel-
 # level provenance metadata and the loader refuses to run it. A
 # symlink resolves to the original file, which the kernel trusts.
-.PHONY : $(GIT_LFS_BIN) $(LFSTEST_TESTUTILS_BIN)
+.PHONY : $(GIT_LFS_BIN) $(RUST_TEST_CMDS)
 $(GIT_LFS_BIN) :
 	cd .. && $(CARGO) build --release
 	@mkdir -p ../bin
 	ln -sf ../target/release/git-lfs$X $@
 
-$(LFSTEST_TESTUTILS_BIN) :
-	cd .. && $(CARGO) build --release --bin lfstest-testutils
+$(RUST_TEST_CMDS) : ../bin/%$X :
+	cd .. && $(CARGO) build --release --bin $*
 	@mkdir -p ../bin
-	ln -sf ../target/release/lfstest-testutils$X $@
+	ln -sf ../target/release/$*$X $@

@@ -34,7 +34,7 @@ use git_lfs_transfer::sshtransfer::connection::{
     ConnectionError, Metadata as PoolMetadata, Operation as SshOperation, Variant as PoolVariant,
 };
 use git_lfs_transfer::sshtransfer::pool::{Pool, PoolConfig};
-use git_lfs_transfer::{Report, Transfer, TransferConfig};
+use git_lfs_transfer::{CustomAdapter, Report, Transfer, TransferConfig};
 use tokio::runtime::Runtime;
 
 /// Owns the tokio runtime and the configured [`Transfer`].
@@ -93,7 +93,8 @@ impl LfsFetcher {
             .map(|u| crate::http_client::build(cwd, u))
             .unwrap_or_default();
         let api = build_api_client_with(cwd, remote, operation, http.clone());
-        let config = transfer_config_for(cwd, endpoint_url.as_deref());
+        let mut config = transfer_config_for(cwd, endpoint_url.as_deref());
+        config.remote = remote.unwrap_or("origin").to_owned();
 
         // SSH endpoints pick a backend from `lfs.<url>.sshtransfer`.
         // `always` uses only pure SSH, `never` uses only HTTP with
@@ -678,6 +679,79 @@ fn positive_setting(cwd: &Path, key: &str) -> Option<u32> {
     raw.trim().parse::<u32>().ok().filter(|n| *n > 0)
 }
 
+/// Whether the boolean setting `key` is true, or `default` if it's unset.
+fn config_true(cwd: &Path, key: &str, default: bool) -> bool {
+    match git_lfs_git::config::get_effective(cwd, key) {
+        Ok(Some(v)) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "false" | "0" | "no" | "off" | ""
+        ),
+        _ => default,
+    }
+}
+
+/// The custom transfer adapters with a `lfs.customtransfer.<name>.path`.
+///
+/// They come from Git's config only. `.lfsconfig` can't set them, since
+/// they run commands.
+pub(crate) fn custom_adapters(cwd: &Path) -> Vec<CustomAdapter> {
+    let Ok(out) = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args([
+            "config",
+            "--includes",
+            "--null",
+            "--get-regexp",
+            r"^lfs\.[cC][uU][sS][tT][oO][mM][tT][rR][aA][nN][sS][fF][eE][rR]\..*\.path$",
+        ])
+        .output()
+    else {
+        return Vec::new();
+    };
+    let listing = String::from_utf8_lossy(&out.stdout).into_owned();
+    let mut adapters: Vec<CustomAdapter> = Vec::new();
+    for entry in listing.split('\0') {
+        let Some((key, path)) = entry.split_once('\n') else {
+            continue;
+        };
+        // `customtransfer` is part of the subsection, so Git keeps its
+        // case, and any case matches, as in upstream. The name can't
+        // contain a dot.
+        let Some((section, name)) = key
+            .strip_prefix("lfs.")
+            .and_then(|k| k.strip_suffix(".path"))
+            .and_then(|k| k.split_once('.'))
+            .filter(|(s, n)| {
+                s.eq_ignore_ascii_case("customtransfer") && !n.is_empty() && !n.contains('.')
+            })
+        else {
+            continue;
+        };
+        let get = |prop: &str| {
+            git_lfs_git::config::get_effective(cwd, &format!("lfs.{section}.{name}.{prop}"))
+                .ok()
+                .flatten()
+        };
+        let direction = get("direction")
+            .map(|d| d.to_ascii_lowercase())
+            .filter(|d| !d.is_empty())
+            .unwrap_or_else(|| "both".to_owned());
+        let adapter = CustomAdapter {
+            name: name.to_owned(),
+            path: path.to_owned(),
+            args: get("args").unwrap_or_default(),
+            concurrent: config_true(cwd, &format!("lfs.{section}.{name}.concurrent"), true),
+            download: matches!(direction.as_str(), "download" | "both"),
+            upload: matches!(direction.as_str(), "upload" | "both"),
+        };
+        // A later setting for the same name wins.
+        adapters.retain(|a| a.name != adapter.name);
+        adapters.push(adapter);
+    }
+    adapters
+}
+
 /// The `http.extraHeader` settings, looked up for each request's URL.
 fn extra_header_source(cwd: &Path) -> git_lfs_api::HeaderSource {
     let headers = git_lfs_git::ExtraHeaders::load(cwd);
@@ -687,6 +761,8 @@ fn extra_header_source(cwd: &Path) -> git_lfs_api::HeaderSource {
 fn transfer_config_for(cwd: &Path, endpoint_url: Option<&str>) -> TransferConfig {
     let mut config = TransferConfig {
         extra_headers: Some(extra_header_source(cwd)),
+        custom_adapters: custom_adapters(cwd),
+        basic_transfers_only: config_true(cwd, "lfs.basictransfersonly", false),
         ..TransferConfig::default()
     };
     if href_rewrite_enabled(cwd) {

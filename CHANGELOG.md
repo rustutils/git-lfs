@@ -29,6 +29,10 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Added
 
+- Custom transfer adapters, set up with `lfs.customtransfer.<name>.path`,
+  `args`, `concurrent`, and `direction`. They're offered to the server in
+  each batch request, and used when the server picks one.
+  `lfs.basictransfersonly` offers only `basic`.
 - `git lfs ls-files` takes `--include` and `--exclude` patterns, and a
   second ref: `git lfs ls-files <a> <b>` lists the LFS files changed in the
   commits after `<a>` up to `<b>`. Its usage errors now go to standard

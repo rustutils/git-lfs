@@ -103,6 +103,12 @@ pub enum TransferError {
     /// [`TransferConfig::max_verifies`](crate::TransferConfig::max_verifies).
     #[error("{0}")]
     VerifyExhausted(Box<TransferError>),
+
+    /// A custom transfer adapter failed, or couldn't be talked to.
+    ///
+    /// Not retried, as in upstream.
+    #[error("{0}")]
+    Custom(String),
 }
 
 /// Format an action status error with upstream's `lfshttp.defaultError`
@@ -159,6 +165,7 @@ impl TransferError {
             | TransferError::InsecureRedirect
             | TransferError::Redirect(_)
             | TransferError::VerifyExhausted(_)
+            | TransferError::Custom(_)
             | TransferError::BatchRequest(_) => false,
             TransferError::BatchResponse(e) => e.is_retryable(),
         }

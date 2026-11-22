@@ -9,6 +9,8 @@ pub type UrlRewriter = Arc<dyn Fn(&str) -> String + Send + Sync>;
 
 pub use git_lfs_api::HeaderSource;
 
+use crate::custom::CustomAdapter;
+
 /// Settings for the transfer queue.
 #[derive(Clone)]
 pub struct TransferConfig {
@@ -66,6 +68,40 @@ pub struct TransferConfig {
     ///
     /// The CLI passes the `http.extraHeader` settings.
     pub extra_headers: Option<HeaderSource>,
+    /// Custom transfer adapters to offer the server, from
+    /// `lfs.customtransfer.<name>.*`.
+    pub custom_adapters: Vec<CustomAdapter>,
+    /// Offer the server only `basic`, from `lfs.basictransfersonly`.
+    pub basic_transfers_only: bool,
+    /// The remote, as a name or URL, for the custom adapters' `init`
+    /// message.
+    pub remote: String,
+}
+
+impl TransferConfig {
+    /// The custom adapter called `name` that handles the direction.
+    pub(crate) fn custom_adapter(&self, name: &str, upload: bool) -> Option<&CustomAdapter> {
+        if self.basic_transfers_only {
+            return None;
+        }
+        self.custom_adapters
+            .iter()
+            .find(|a| a.name == name && a.handles(upload))
+    }
+
+    /// The transfer adapters to offer in a batch request.
+    pub(crate) fn transfer_names(&self, upload: bool) -> Vec<String> {
+        let mut names = vec!["basic".to_owned()];
+        if !self.basic_transfers_only {
+            names.extend(
+                self.custom_adapters
+                    .iter()
+                    .filter(|a| a.handles(upload) && a.name != "basic")
+                    .map(|a| a.name.clone()),
+            );
+        }
+        names
+    }
 }
 
 impl Default for TransferConfig {
@@ -82,6 +118,9 @@ impl Default for TransferConfig {
             detect_content_type: true,
             max_verifies: 3,
             extra_headers: None,
+            custom_adapters: Vec::new(),
+            basic_transfers_only: false,
+            remote: "origin".to_owned(),
         }
     }
 }
@@ -106,6 +145,9 @@ impl std::fmt::Debug for TransferConfig {
                 "extra_headers",
                 &self.extra_headers.as_ref().map(|_| "<fn>"),
             )
+            .field("custom_adapters", &self.custom_adapters)
+            .field("basic_transfers_only", &self.basic_transfers_only)
+            .field("remote", &self.remote)
             .finish()
     }
 }

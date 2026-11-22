@@ -14,6 +14,7 @@ use tokio::task::JoinSet;
 use crate::backend::{Backend, HttpTransport, SshBackend, Transport};
 use crate::basic;
 use crate::config::TransferConfig;
+use crate::custom::Workers;
 use crate::error::{Report, TransferError};
 use crate::event::Event;
 use crate::sshtransfer::adapter as ssh;
@@ -23,6 +24,12 @@ use crate::sshtransfer::adapter as ssh;
 enum Dir {
     Download,
     Upload,
+}
+
+impl Dir {
+    fn is_upload(self) -> bool {
+        matches!(self, Dir::Upload)
+    }
 }
 
 impl From<Dir> for Operation {
@@ -167,7 +174,8 @@ impl Transfer {
         let mut objects = objects;
         objects.sort_by_key(|o| std::cmp::Reverse(o.size));
 
-        let mut req = BatchRequest::new(dir.into(), objects);
+        let mut req = BatchRequest::new(dir.into(), objects)
+            .with_transfers(self.config.transfer_names(dir.is_upload()));
         if let Some(r) = r#ref {
             req = req.with_ref(r);
         }
@@ -198,6 +206,20 @@ impl Transfer {
         {
             return Err(TransferError::UnsupportedHashAlgo(h.to_owned()));
         }
+
+        // The server picks a custom adapter by name. Any other choice,
+        // or none, means `basic`, as in upstream.
+        let custom = match adapter {
+            "basic" => resp
+                .transfer
+                .as_deref()
+                .and_then(|t| self.config.custom_adapter(t, dir.is_upload())),
+            _ => None,
+        };
+        if let Some(c) = custom {
+            adapter = &c.name;
+        }
+        let mut workers: Option<Arc<Workers>> = None;
 
         let limit = Arc::new(Semaphore::new(self.config.concurrency.max(1)));
         let mut join: JoinSet<(String, Result<(), TransferError>)> = JoinSet::new();
@@ -244,7 +266,16 @@ impl Transfer {
                 if trace_enabled() {
                     eprintln!("tq: starting transfer adapter {adapter:?}");
                 }
+                workers = custom.map(|c| {
+                    Arc::new(Workers::new(
+                        c.clone(),
+                        dir.is_upload(),
+                        self.config.remote.clone(),
+                        self.config.concurrency,
+                    ))
+                });
             }
+            let custom_workers = workers.clone();
             let permit_src = limit.clone();
             let backend = self.backend.clone();
             let store = self.store.clone();
@@ -253,8 +284,16 @@ impl Transfer {
             join.spawn(async move {
                 let _permit = permit_src.acquire_owned().await.expect("semaphore live");
                 let oid = obj.oid.clone();
-                let result =
-                    process_object(dir, &backend, store, &config, obj, events.as_ref()).await;
+                let result = process_object(
+                    dir,
+                    &backend,
+                    custom_workers.as_deref(),
+                    store,
+                    &config,
+                    obj,
+                    events.as_ref(),
+                )
+                .await;
                 (oid, result)
             });
         }
@@ -289,6 +328,9 @@ impl Transfer {
                     report.failed.push((oid, err));
                 }
             }
+        }
+        if let Some(workers) = workers {
+            workers.shutdown().await;
         }
         Ok(report)
     }
@@ -366,6 +408,7 @@ fn trace_enabled() -> bool {
 async fn process_object(
     dir: Dir,
     backend: &Backend,
+    custom: Option<&Workers>,
     store: Arc<Store>,
     config: &TransferConfig,
     obj: ObjectResult,
@@ -383,6 +426,10 @@ async fn process_object(
     }
 
     let transport = resolve_transport(backend, dir);
+
+    if let Some(workers) = custom {
+        return process_custom(dir, workers, &transport, store, config, &obj, events).await;
+    }
 
     match (dir, &obj.actions) {
         (Dir::Download, Some(actions)) => {
@@ -466,6 +513,62 @@ async fn process_object(
         }
         // No actions: the server already has the object.
         (Dir::Upload, None) => Ok(()),
+    }
+}
+
+/// Transfer one object through a custom adapter.
+///
+/// After an upload, the verify action is sent over HTTP, as in upstream.
+async fn process_custom(
+    dir: Dir,
+    workers: &Workers,
+    transport: &Transport,
+    store: Arc<Store>,
+    config: &TransferConfig,
+    obj: &ObjectResult,
+    events: Option<&UnboundedSender<Event>>,
+) -> Result<(), TransferError> {
+    let actions = obj.actions.as_ref();
+    match dir {
+        Dir::Download => {
+            let action = actions
+                .and_then(|a| a.download.as_ref())
+                .ok_or(TransferError::NoDownloadAction)?;
+            check_not_expired("download", action)?;
+            with_retry(config, &obj.oid, obj.size, || {
+                workers.download(store.clone(), &obj.oid, obj.size, Some(action), events)
+            })
+            .await
+        }
+        Dir::Upload => {
+            // No upload action: the server already has the object.
+            let Some(action) = actions.and_then(|a| a.upload.as_ref()) else {
+                return Ok(());
+            };
+            check_not_expired("upload", action)?;
+            let verify = actions.and_then(|a| a.verify.as_ref());
+            if let Some(v) = verify {
+                check_not_expired("verify", v)?;
+            }
+            with_retry(config, &obj.oid, obj.size, || {
+                workers.upload(&store, &obj.oid, obj.size, Some(action), events)
+            })
+            .await?;
+            match (verify, transport) {
+                (Some(v), Transport::Http(http)) => {
+                    basic::verify(
+                        &http.http,
+                        &obj.oid,
+                        obj.size,
+                        v,
+                        config.max_verifies,
+                        config.extra_headers.as_ref(),
+                    )
+                    .await
+                }
+                _ => Ok(()),
+            }
+        }
     }
 }
 

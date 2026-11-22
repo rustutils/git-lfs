@@ -23,23 +23,30 @@
 //! HTTPS fallback, used when the SSH connection can't be set up (for
 //! example when the server has no `git-lfs-transfer`).
 //!
+//! The server can pick a [`CustomAdapter`] from those in the config
+//! instead of `basic`. Its objects then go through an external process
+//! that speaks the [custom transfer protocol][custom-spec].
+//!
 //! Pass a channel to receive [`Event`]s as objects start, make progress,
 //! and finish. The returned [`Report`] lists every object as succeeded or
 //! failed with its [`TransferError`], so one bad object doesn't stop the
 //! rest. The call itself returns an error only when the batch as a whole
 //! fails, such as a failed batch request.
 //!
+//! [custom-spec]: https://gitlab.com/rustutils/git-lfs/-/blob/master/docs/custom-transfers.md
 //! [ssh-spec]: https://gitlab.com/rustutils/git-lfs/-/blob/master/docs/proposals/ssh_adapter.md
 
 pub mod backend;
 mod basic;
 mod config;
+mod custom;
 mod error;
 mod event;
 pub mod sshtransfer;
 mod transfer;
 
 pub use config::{HeaderSource, TransferConfig, UrlRewriter};
+pub use custom::CustomAdapter;
 pub use error::{Report, TransferError};
 pub use event::Event;
 pub use transfer::Transfer;
