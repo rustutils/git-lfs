@@ -57,8 +57,8 @@ Local changes to the vendored tests, which an update must keep:
   version checks the wrong file. Not yet reported.
 - `tests/cmd/lfstest-getlimit.go`: defines two constants itself instead of
   importing upstream's internal packages.
-- `tests/cmd/`: `lfstest-customadapter` and `lfstest-testutils` are ported
-  to Rust, and `lfstest-standalonecustomadapter` is left out.
+- `tests/cmd/`: `lfstest-customadapter`, `lfstest-standalonecustomadapter`,
+  and `lfstest-testutils` are ported to Rust.
 
 ## Known gaps
 
@@ -66,20 +66,8 @@ Ordered by failing tests fixed per effort, from the triage after the
 v3.8.1 update. Small means under an hour or so, medium a few hours, large
 a feature.
 
-- **Standalone transfers and `file://` remotes** (large, about 15 tests).
-  Custom adapters work when the server picks one, but there's no
-  `lfs.standaloneTransferAgent`, and no built-in `lfs-standalone-file`
-  adapter or `git lfs standalone-file` command, so `file://` and
-  local-path remotes fail. Only pushing to a local path works, through a
-  shortcut in `cli/src/pre_push.rs`. Covers `t-standalone-file` 1 to 7,
-  `t-custom-transfers` 3 to 9, `t-custom-transfers-protect` 2 and 4, and
-  `t-submodule-lfsconfig` 3. Tests 3 and 4 of `t-custom-transfers` also
-  need `lfstest-standalonecustomadapter` ported. The protect tests check
-  that adapter settings can't come from `.lfsconfig` or a submodule URL,
-  so the implementation must keep the safe-key filtering.
-- **`lfs.remote.autodetect` and `lfs.remote.searchall`** (medium, after the
-  adapters). `t-multiple-remotes` 1 to 12 all push to a `file://` remote in
-  setup, and 1 to 6 also need these settings.
+- **`lfs.remote.autodetect` and `lfs.remote.searchall`** (medium,
+  `t-multiple-remotes` 1 to 6).
 - **Compressed downloads** (medium, `t-batch-storage-encoding` 1 to 5).
   `Accept-Encoding: gzip` isn't sent by default, and
   `lfs.transfer.httpDownloadEncoding` (gzip, zstd) isn't implemented.
@@ -194,8 +182,6 @@ come from reading the code.
   hooks in place, exiting 0.
 - **`git lfs clone`:** a failed pull in a submodule exits 0, `-bmain` is
   read as `-n` and skips the pull, and `--bare` skips the fetch and hooks.
-- **Pre-push to a local path** ignores `--dry-run` and skips objects
-  missing locally instead of failing.
 - **`create_lock` drops `Retry-After`** on rate-limit and server errors.
 - **`http.sslCert` and `http.sslKey` only work with `http.sslCAInfo`.**
 

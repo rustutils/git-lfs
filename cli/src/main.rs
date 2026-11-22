@@ -33,6 +33,7 @@ mod pre_push;
 mod prune;
 mod pull;
 mod push;
+mod standalone_file;
 mod status;
 mod track;
 mod track_cmd;
@@ -45,8 +46,8 @@ use git_lfs::args::{
     ExtCmd, ExtListArgs, FetchArgs, FilterProcessArgs, FsckArgs, InstallArgs, LockArgs, LocksArgs,
     LogsArgs, LogsSub, LsFilesArgs, MergeDriverArgs, MigrateArgs, MigrateCmd, MigrateExportArgs,
     MigrateImportArgs, MigrateInfoArgs, PointerArgs, PostCheckoutArgs, PostCommitArgs,
-    PostMergeArgs, PrePushArgs, PruneArgs, PullArgs, PushArgs, SmudgeArgs, StatusArgs, TrackArgs,
-    UninstallArgs, UnlockArgs, UntrackArgs, UpdateArgs, VersionArgs,
+    PostMergeArgs, PrePushArgs, PruneArgs, PullArgs, PushArgs, SmudgeArgs, StandaloneFileArgs,
+    StatusArgs, TrackArgs, UninstallArgs, UnlockArgs, UntrackArgs, UpdateArgs, VersionArgs,
 };
 
 /// Strip the backticks from all help text in the clap command tree.
@@ -714,6 +715,12 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 filename,
                 no_modify_attrs,
             });
+        }
+        Command::StandaloneFile(StandaloneFileArgs) => {
+            if let Some(code) = bail_if_outside_repo(&cwd) {
+                return Ok(code);
+            }
+            standalone_file::run(&cwd)?;
         }
         Command::Dedup(DedupArgs { test }) => {
             if let Some(code) = bail_if_outside_repo(&cwd) {

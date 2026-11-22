@@ -8,6 +8,9 @@
 //! 3. `remote.<name>.lfsurl`.
 //! 4. `remote.<name>.url`, turned into an LFS URL by [`derive_lfs_url`].
 //!
+//! A local path in any of these, or as the remote, becomes a `file://` URL
+//! with [`local_path_url`].
+//!
 //! `lfs.url` and `remote.<name>.lfsurl` can also come from `.lfsconfig`, at
 //! the lowest priority. `url.<base>.insteadOf` aliases apply to every URL.
 //!
@@ -116,6 +119,12 @@ pub fn resolve_endpoint_for(
     };
     let direct = |url: &str| -> Result<EndpointInfo, EndpointError> {
         let rewritten = rewrite(url)?;
+        if let Some(file_url) = local_path_url(cwd, &rewritten) {
+            return Ok(EndpointInfo {
+                url: file_url,
+                ssh: None,
+            });
+        }
         let ssh = parse_ssh_url(&rewritten);
         Ok(EndpointInfo {
             url: rewritten,
@@ -126,6 +135,12 @@ pub fn resolve_endpoint_for(
         // Rewrite aliases first, so `derive_lfs_url` sees a real URL
         // instead of something like `gh:org/repo`.
         let rewritten = rewrite(url)?;
+        if let Some(file_url) = local_path_url(cwd, &rewritten) {
+            return Ok(EndpointInfo {
+                url: file_url,
+                ssh: None,
+            });
+        }
         Ok(EndpointInfo {
             url: derive_lfs_url(&rewritten)?,
             ssh: parse_ssh_url(&rewritten),
@@ -176,6 +191,13 @@ pub fn resolve_endpoint_for(
     // `git lfs push https://host/repo`.
     if looks_like_url(&remote) {
         return from_clone_url(&remote);
+    }
+    // Or a local path, as in `git push ../other`.
+    if let Some(file_url) = local_path_url(cwd, &remote) {
+        return Ok(EndpointInfo {
+            url: file_url,
+            ssh: None,
+        });
     }
 
     // Use the URL of the last `git fetch`. This lets the smudge filter
@@ -262,6 +284,57 @@ pub fn push_remote(cwd: &Path) -> Result<Option<String>, Error> {
     Ok(None)
 }
 
+/// The `file://` URL for `s` if it's a path to a local repository, like
+/// upstream's `RewriteLocalPathAsURL`.
+///
+/// An absolute path, or a relative one that exists from `cwd`, counts.
+/// The URL points at the `.git` directory when there is one, so a
+/// working tree and its `.git` give the same URL. A path that doesn't
+/// exist, or anything that could be a URL or `host:path`, gives `None`.
+pub fn local_path_url(cwd: &Path, s: &str) -> Option<String> {
+    if s.is_empty() || s.contains("://") {
+        return None;
+    }
+    let absolute = Path::new(s).is_absolute();
+    if !absolute && (bare_ssh_split(s).is_some() || !cwd.join(s).exists()) {
+        return None;
+    }
+    let mut path = clean_path(&cwd.join(s));
+    let git_path = if path.file_name().is_some_and(|n| n == ".git") {
+        let git_path = path.clone();
+        path.pop();
+        git_path
+    } else {
+        path.join(".git")
+    };
+    if git_path.exists() {
+        path = git_path;
+    } else if !path.exists() {
+        return None;
+    }
+    let slashed = path.to_string_lossy().replace('\\', "/");
+    // A Windows path like `C:/x` needs a slash before it.
+    let lead = if slashed.starts_with('/') { "" } else { "/" };
+    Some(format!("file://{lead}{slashed}"))
+}
+
+/// Resolve `.` and `..` in `path` without touching the file system, like
+/// Go's `filepath.Clean`.
+fn clean_path(path: &Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let mut out = std::path::PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 /// Read `remote.<name>.url` from git config.
 pub fn remote_url(cwd: &Path, remote: &str) -> Result<Option<String>, Error> {
     config::get_effective(cwd, &format!("remote.{remote}.url"))
@@ -278,9 +351,9 @@ pub fn remote_url(cwd: &Path, remote: &str) -> Result<Option<String>, Error> {
 ///   `git+ssh://` and `ssh+git://` schemes work the same way.
 /// - `[user@]host:path` becomes `https://host/path.git/info/lfs`.
 /// - `git://host/path` becomes `https://host/path.git/info/lfs`.
-/// - `file://` URLs are returned unchanged.
+/// - `file://` URLs are returned without a trailing slash.
 ///
-/// Anything else, including local paths, is an error.
+/// Anything else is an error. [`local_path_url`] handles local paths.
 pub fn derive_lfs_url(remote_url: &str) -> Result<String, EndpointError> {
     let trimmed = remote_url.trim();
     if trimmed.is_empty() {
@@ -291,9 +364,8 @@ pub fn derive_lfs_url(remote_url: &str) -> Result<String, EndpointError> {
     }
 
     if let Some(rest) = trimmed.strip_prefix("file://") {
-        // No transfer adapter handles `file://`, but passing it through
-        // fails visibly, which beats inventing an HTTPS URL.
-        return Ok(format!("file://{rest}"));
+        // Objects go through the `lfs-standalone-file` adapter.
+        return Ok(format!("file://{}", rest.strip_suffix('/').unwrap_or(rest)));
     }
 
     if let Some(rest) = trimmed.strip_prefix("https://") {
@@ -592,6 +664,40 @@ mod tests {
             derive_lfs_url("file:///srv/repos/foo.git").unwrap(),
             "file:///srv/repos/foo.git",
         );
+        assert_eq!(
+            derive_lfs_url("file:///srv/repos/foo.git/").unwrap(),
+            "file:///srv/repos/foo.git",
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_paths_become_file_urls() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let work = root.join("work");
+        std::fs::create_dir_all(work.join(".git")).unwrap();
+        let bare = root.join("bare.git");
+        std::fs::create_dir(&bare).unwrap();
+        let url = |p: &Path| format!("file://{}", p.display());
+
+        // A working tree, or its `.git`, gives the `.git` directory.
+        let expected = url(&work.join(".git"));
+        let work_str = work.to_str().unwrap();
+        assert_eq!(local_path_url(&root, work_str), Some(expected.clone()));
+        assert_eq!(
+            local_path_url(&root, &format!("{work_str}/.git")),
+            Some(expected.clone())
+        );
+        assert_eq!(local_path_url(&root, "work/"), Some(expected.clone()));
+        assert_eq!(local_path_url(&work, "../work"), Some(expected));
+        assert_eq!(local_path_url(&root, "bare.git"), Some(url(&bare)));
+
+        // Missing paths, URLs, and `host:path` aren't local paths.
+        assert_eq!(local_path_url(&root, "missing"), None);
+        assert_eq!(local_path_url(&root, "/no/such/path"), None);
+        assert_eq!(local_path_url(&root, "https://host/repo"), None);
+        assert_eq!(local_path_url(&root, "host:repo"), None);
     }
 
     #[test]

@@ -33,6 +33,12 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
   `args`, `concurrent`, and `direction`. They're offered to the server in
   each batch request, and used when the server picks one.
   `lfs.basictransfersonly` offers only `basic`.
+- Remotes with a `file://` URL or a local path work for fetching and
+  pushing LFS objects, through the built-in `lfs-standalone-file` adapter
+  and the new `git lfs standalone-file` command.
+- `lfs.standaloneTransferAgent` and `lfs.<url>.standaloneTransferAgent`
+  name a custom adapter that moves objects without an LFS server. No batch
+  request or lock check is sent.
 - `git lfs ls-files` takes `--include` and `--exclude` patterns, and a
   second ref: `git lfs ls-files <a> <b>` lists the LFS files changed in the
   commits after `<a>` up to `<b>`. Its usage errors now go to standard
@@ -96,6 +102,11 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- `git lfs fsck` checks the objects in the ref's tree, not in its whole
+  history, as in upstream. `git lfs fsck a..b` still checks the commits in
+  the range.
+- Pushing to a local path fails when an object is missing locally, and
+  respects `--dry-run`, as for other remotes.
 - `git lfs ls-files` no longer lists empty files, as in upstream.
 - `git lfs track` prints `Touching` lines only with `--verbose` or
   `--dry-run`, as upstream does.

@@ -182,7 +182,28 @@ impl Transfer {
         // The adapter name, for upstream's `tq: starting transfer adapter`
         // trace.
         let mut adapter = "basic";
+        let standalone = self
+            .config
+            .standalone
+            .as_ref()
+            .filter(|a| a.handles(dir.is_upload()));
         let resp: BatchResponse = match &self.backend {
+            // A standalone adapter needs nothing from the server.
+            _ if standalone.is_some() => BatchResponse {
+                transfer: None,
+                objects: req
+                    .objects
+                    .iter()
+                    .map(|o| ObjectResult {
+                        oid: o.oid.clone(),
+                        size: o.size,
+                        authenticated: None,
+                        actions: None,
+                        error: None,
+                    })
+                    .collect(),
+                hash_algo: None,
+            },
             Backend::Http { api, .. } => self.batch_with_retry(api, &req).await?,
             // SSH batch requests aren't retried: a failure there means
             // the SSH session itself is broken.
@@ -210,6 +231,7 @@ impl Transfer {
         // The server picks a custom adapter by name. Any other choice,
         // or none, means `basic`, as in upstream.
         let custom = match adapter {
+            _ if standalone.is_some() => standalone,
             "basic" => resp
                 .transfer
                 .as_deref()
@@ -261,7 +283,7 @@ impl Transfer {
             }
             // Like upstream, start the adapter only once an object needs
             // transferring.
-            if obj.actions.is_some() && !adapter_started {
+            if (obj.actions.is_some() || standalone.is_some()) && !adapter_started {
                 adapter_started = true;
                 if trace_enabled() {
                     eprintln!("tq: starting transfer adapter {adapter:?}");
@@ -428,7 +450,14 @@ async fn process_object(
     let transport = resolve_transport(backend, dir);
 
     if let Some(workers) = custom {
-        return process_custom(dir, workers, &transport, store, config, &obj, events).await;
+        let standalone = config
+            .standalone
+            .as_ref()
+            .is_some_and(|a| a.handles(dir.is_upload()));
+        return process_custom(
+            dir, workers, standalone, &transport, store, config, &obj, events,
+        )
+        .await;
     }
 
     match (dir, &obj.actions) {
@@ -519,9 +548,12 @@ async fn process_object(
 /// Transfer one object through a custom adapter.
 ///
 /// After an upload, the verify action is sent over HTTP, as in upstream.
+/// A `standalone` adapter gets no actions, and uploads every object.
+#[allow(clippy::too_many_arguments)]
 async fn process_custom(
     dir: Dir,
     workers: &Workers,
+    standalone: bool,
     transport: &Transport,
     store: Arc<Store>,
     config: &TransferConfig,
@@ -531,27 +563,31 @@ async fn process_custom(
     let actions = obj.actions.as_ref();
     match dir {
         Dir::Download => {
-            let action = actions
-                .and_then(|a| a.download.as_ref())
-                .ok_or(TransferError::NoDownloadAction)?;
-            check_not_expired("download", action)?;
+            let action = actions.and_then(|a| a.download.as_ref());
+            if !standalone {
+                let action = action.ok_or(TransferError::NoDownloadAction)?;
+                check_not_expired("download", action)?;
+            }
             with_retry(config, &obj.oid, obj.size, || {
-                workers.download(store.clone(), &obj.oid, obj.size, Some(action), events)
+                workers.download(store.clone(), &obj.oid, obj.size, action, events)
             })
             .await
         }
         Dir::Upload => {
-            // No upload action: the server already has the object.
-            let Some(action) = actions.and_then(|a| a.upload.as_ref()) else {
-                return Ok(());
-            };
-            check_not_expired("upload", action)?;
+            let action = actions.and_then(|a| a.upload.as_ref());
+            if !standalone {
+                // No upload action: the server already has the object.
+                let Some(action) = action else {
+                    return Ok(());
+                };
+                check_not_expired("upload", action)?;
+            }
             let verify = actions.and_then(|a| a.verify.as_ref());
             if let Some(v) = verify {
                 check_not_expired("verify", v)?;
             }
             with_retry(config, &obj.oid, obj.size, || {
-                workers.upload(&store, &obj.oid, obj.size, Some(action), events)
+                workers.upload(&store, &obj.oid, obj.size, action, events)
             })
             .await?;
             match (verify, transport) {

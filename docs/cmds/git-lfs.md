@@ -45,6 +45,7 @@ Git LFS works by using a "smudge" filter to look up the large file contents base
 - `version` — Print the git-lfs version banner and exit
 - `completion` — Print a shell completion script
 - `dedup` — Deduplicate LFS files in the working tree
+- `standalone-file` — Standalone transfer adapter for file URLs
 - `pointer` — Build, compare, and check pointers
 - `env` — Display the Git LFS environment
 - `ext` — List the configured LFS pointer extensions

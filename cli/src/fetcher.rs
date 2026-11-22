@@ -58,6 +58,9 @@ pub struct LfsFetcher {
     /// The pure-SSH pools, shared with the lock check. `None` for an HTTP
     /// endpoint.
     ssh_pools: Option<Arc<SshPools>>,
+    /// Whether a standalone transfer agent moves the objects, so there's
+    /// no LFS server to check locks with.
+    standalone: bool,
 }
 
 impl LfsFetcher {
@@ -95,6 +98,13 @@ impl LfsFetcher {
         let api = build_api_client_with(cwd, remote, operation, http.clone());
         let mut config = transfer_config_for(cwd, endpoint_url.as_deref());
         config.remote = remote.unwrap_or("origin").to_owned();
+        config.standalone = standalone_agent(
+            cwd,
+            endpoint_url.as_deref(),
+            operation,
+            &config.custom_adapters,
+        );
+        let standalone = config.standalone.is_some();
 
         // SSH endpoints pick a backend from `lfs.<url>.sshtransfer`.
         // `always` uses only pure SSH, `never` uses only HTTP with
@@ -163,6 +173,7 @@ impl LfsFetcher {
             refspec,
             cwd: cwd.to_path_buf(),
             ssh_pools,
+            standalone,
         })
     }
 
@@ -266,6 +277,9 @@ impl LfsFetcher {
         remote_label: &str,
         endpoint: &str,
     ) -> Result<crate::locks_verify::Outcome, crate::push::PushCommandError> {
+        if self.standalone {
+            return Ok(crate::locks_verify::Outcome::Skipped);
+        }
         let rt = Arc::new(
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -299,7 +313,8 @@ impl LfsFetcher {
     /// actions nor an error. push uses this to tell objects missing only
     /// locally from objects missing on both sides.
     pub fn check_server_has(&self, specs: Vec<ObjectSpec>) -> Result<HashSet<String>, FetchError> {
-        if specs.is_empty() {
+        // A standalone agent has no server to ask, so nothing counts.
+        if specs.is_empty() || self.standalone {
             return Ok(HashSet::new());
         }
         let transfer = self.transfer()?;
@@ -324,7 +339,8 @@ impl LfsFetcher {
         &self,
         specs: Vec<ObjectSpec>,
     ) -> Result<HashSet<String>, FetchError> {
-        if specs.is_empty() {
+        // A standalone agent has no server to ask, so nothing counts.
+        if specs.is_empty() || self.standalone {
             return Ok(HashSet::new());
         }
         let transfer = self.transfer()?;
@@ -690,11 +706,99 @@ fn config_true(cwd: &Path, key: &str, default: bool) -> bool {
     }
 }
 
+/// The name of the built-in standalone adapter for `file://` URLs.
+const STANDALONE_FILE: &str = "lfs-standalone-file";
+
+/// The standalone transfer agent for `endpoint_url`, if any.
+///
+/// It's `lfs.<url>.standaloneTransferAgent`, or `lfs-standalone-file` for
+/// a `file://` URL. As in upstream, an agent that isn't a custom adapter
+/// for `operation` is ignored, with a trace line.
+fn standalone_agent(
+    cwd: &Path,
+    endpoint_url: Option<&str>,
+    operation: EndpointOperation,
+    customs: &[CustomAdapter],
+) -> Option<CustomAdapter> {
+    let name = match endpoint_url {
+        Some(url) => {
+            git_lfs_git::lfs_url_value(cwd, url, "standalonetransferagent").or_else(|| {
+                url.starts_with("file://")
+                    .then(|| STANDALONE_FILE.to_owned())
+            })
+        }
+        None => git_lfs_git::config::get_effective(cwd, "lfs.standalonetransferagent")
+            .ok()
+            .flatten(),
+    }
+    .filter(|n| !n.is_empty())?;
+    let upload = operation == EndpointOperation::Upload;
+    let builtin = (name == STANDALONE_FILE).then(standalone_file_adapter);
+    let agent = customs
+        .iter()
+        .find(|a| a.name == name)
+        .cloned()
+        .or(builtin)
+        .filter(|a| a.handles(upload));
+    if agent.is_none() && trace_enabled() {
+        eprintln!(
+            "standalone agent {name:?} is not a registered custom transfer adapter; ignoring"
+        );
+    }
+    agent
+}
+
+/// The built-in `lfs-standalone-file` adapter, which runs
+/// `git lfs standalone-file` to copy objects to and from a local
+/// repository.
+fn standalone_file_adapter() -> CustomAdapter {
+    // This binary, so the adapter matches the running version. Upstream
+    // runs `git-lfs` from `PATH`.
+    let path = std::env::current_exe()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| "git-lfs".to_owned());
+    CustomAdapter {
+        name: STANDALONE_FILE.to_owned(),
+        path,
+        args: "standalone-file".to_owned(),
+        concurrent: false,
+        download: true,
+        upload: true,
+    }
+}
+
+fn trace_enabled() -> bool {
+    std::env::var_os("GIT_TRACE").is_some_and(|v| !v.is_empty() && v != "0")
+}
+
+/// Names of the built-in adapters, which a custom adapter can't replace.
+const STANDARD_ADAPTERS: &[&str] = &["basic", "ssh"];
+
 /// The custom transfer adapters with a `lfs.customtransfer.<name>.path`.
 ///
 /// They come from Git's config only. `.lfsconfig` can't set them, since
-/// they run commands.
-pub(crate) fn custom_adapters(cwd: &Path) -> Vec<CustomAdapter> {
+/// they run commands. One named like a built-in adapter is dropped with
+/// upstream's warning, once for each direction it handles.
+fn custom_adapters(cwd: &Path) -> Vec<CustomAdapter> {
+    let (adapters, conflicts): (Vec<_>, Vec<_>) = configured_adapters(cwd)
+        .into_iter()
+        .partition(|a| !STANDARD_ADAPTERS.contains(&a.name.as_str()));
+    for a in conflicts {
+        for (dir, handled) in [("download", a.download), ("upload", a.upload)] {
+            if handled {
+                eprintln!(
+                    "warning: custom {dir} transfer adapter {:?} ignored due to conflict with standard adapter",
+                    a.name
+                );
+            }
+        }
+    }
+    adapters
+}
+
+/// Every adapter in `lfs.customtransfer.<name>.*`, including ones named
+/// like a built-in adapter.
+pub(crate) fn configured_adapters(cwd: &Path) -> Vec<CustomAdapter> {
     let Ok(out) = std::process::Command::new("git")
         .arg("-C")
         .arg(cwd)

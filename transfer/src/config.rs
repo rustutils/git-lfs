@@ -76,6 +76,12 @@ pub struct TransferConfig {
     /// The remote, as a name or URL, for the custom adapters' `init`
     /// message.
     pub remote: String,
+    /// A custom adapter that moves every object by itself, from
+    /// `lfs.standalonetransferagent`.
+    ///
+    /// No batch request is sent, and the adapter gets `null` actions, in
+    /// the directions it handles.
+    pub standalone: Option<CustomAdapter>,
 }
 
 impl TransferConfig {
@@ -121,6 +127,7 @@ impl Default for TransferConfig {
             custom_adapters: Vec::new(),
             basic_transfers_only: false,
             remote: "origin".to_owned(),
+            standalone: None,
         }
     }
 }
@@ -148,6 +155,7 @@ impl std::fmt::Debug for TransferConfig {
             .field("custom_adapters", &self.custom_adapters)
             .field("basic_transfers_only", &self.basic_transfers_only)
             .field("remote", &self.remote)
+            .field("standalone", &self.standalone)
             .finish()
     }
 }

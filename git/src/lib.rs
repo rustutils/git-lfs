@@ -34,7 +34,7 @@ pub mod scanner;
 
 pub use attr::AttrSet;
 pub use config::ConfigScope;
-pub use http_options::{ExtraHeaders, HttpOptions, lfs_url_bool};
+pub use http_options::{ExtraHeaders, HttpOptions, lfs_url_bool, lfs_url_value};
 pub use path::{git_common_dir, git_dir, lfs_alternate_dirs, lfs_dir, work_tree_root};
 
 /// An error from running `git`.

@@ -254,6 +254,17 @@ pub fn lfs_url_bool(cwd: &Path, url: &str, subkey: &str, default: bool) -> bool 
     }
 }
 
+/// Read the string `lfs.<url>.<subkey>` that best matches `url`.
+///
+/// Falls back to `lfs.<subkey>`. URLs match as in [`HttpOptions::for_url`].
+pub fn lfs_url_value(cwd: &Path, url: &str, subkey: &str) -> Option<String> {
+    let scoped = lfs_scoped_keys(cwd, url).unwrap_or(Scoped(Vec::new()));
+    if let Some(v) = scoped.lookup(subkey) {
+        return Some(v);
+    }
+    get_global(cwd, &format!("lfs.{subkey}")).ok().flatten()
+}
+
 /// Read the `lfs.<url>.<key>` entries that match `url`, like
 /// [`scoped_keys`] does for `http.*`.
 fn lfs_scoped_keys(cwd: &Path, url: &str) -> Result<Scoped, Error> {

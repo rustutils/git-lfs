@@ -289,7 +289,7 @@ fn bool_env(name: &str) -> bool {
 
 /// The names of the custom transfer adapters, sorted.
 fn custom_transfer_methods(cwd: &Path) -> Vec<String> {
-    let mut names: Vec<String> = crate::fetcher::custom_adapters(cwd)
+    let mut names: Vec<String> = crate::fetcher::configured_adapters(cwd)
         .into_iter()
         .map(|a| a.name)
         .collect();

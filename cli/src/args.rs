@@ -74,6 +74,7 @@ pub enum Command {
     Version(VersionArgs),
     Completion(CompletionArgs),
     Dedup(DedupArgs),
+    StandaloneFile(StandaloneFileArgs),
     Pointer(PointerArgs),
     Env(EnvArgs),
     Ext(ExtArgs),
@@ -639,6 +640,18 @@ pub struct PrePushArgs {
 /// Print the git-lfs version banner and exit
 #[derive(Args)]
 pub struct VersionArgs;
+
+/// Standalone transfer adapter for file URLs
+///
+/// Copy LFS objects to and from another repository on this machine, for a
+/// remote with a `file://` URL or a local path. Git LFS runs this itself,
+/// as the `lfs-standalone-file` transfer adapter, so no configuration is
+/// needed.
+///
+/// It speaks the custom transfer protocol as JSON on standard input and
+/// output, and isn't meant to be run by hand.
+#[derive(Args)]
+pub struct StandaloneFileArgs;
 
 /// Deduplicate LFS files in the working tree
 ///

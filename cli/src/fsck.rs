@@ -17,7 +17,7 @@ use std::path::Path;
 
 use git_lfs_git::AttrSet;
 use git_lfs_git::cat_file::CatFileBatch;
-use git_lfs_git::scanner::{scan_pointers, scan_tree_blobs};
+use git_lfs_git::scanner::{scan_pointers_with_args, scan_tree_blobs};
 use git_lfs_pointer::{MAX_POINTER_SIZE, Oid, Pointer};
 use git_lfs_store::Store;
 use sha2::{Digest, Sha256};
@@ -89,7 +89,14 @@ pub fn run(cwd: &Path, refspec: Option<&str>, opts: &Options) -> Result<i32, Fsc
         // Upstream only applies `lfs.fetchexclude` here.
         let include_set = fetch_filter_set(cwd, "lfs.fetchinclude")?;
         let exclude_set = fetch_filter_set(cwd, "lfs.fetchexclude")?;
-        let pointers = scan_pointers(cwd, &[r], &[])?;
+        // Like upstream's `ScanRef`, a single ref is checked without its
+        // history. Only a range walks the commits in it.
+        let walk: &[&str] = if r.contains("..") {
+            &[]
+        } else {
+            &["--no-walk"]
+        };
+        let pointers = scan_pointers_with_args(cwd, &[r], &[], walk)?;
         for entry in &pointers {
             if !crate::fetch::path_passes_filter(entry.path.as_deref(), &include_set, &exclude_set)
             {

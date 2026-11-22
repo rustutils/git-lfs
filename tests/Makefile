@@ -39,6 +39,7 @@ TEST_CMDS += ../bin/lfstest-realpath$X
 GIT_LFS_BIN = ../bin/git-lfs$X
 RUST_TEST_CMDS =
 RUST_TEST_CMDS += ../bin/lfstest-customadapter$X
+RUST_TEST_CMDS += ../bin/lfstest-standalonecustomadapter$X
 RUST_TEST_CMDS += ../bin/lfstest-testutils$X
 
 TEST_SRCS = $(wildcard t-*.sh)
