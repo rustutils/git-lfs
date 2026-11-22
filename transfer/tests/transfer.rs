@@ -360,6 +360,67 @@ async fn upload_happy_path_streams_object_bytes() {
     assert!(report.is_complete_success(), "{:?}", report.failed);
 }
 
+#[tokio::test]
+async fn tus_upload_resumes_from_the_server_offset() {
+    let server = MockServer::start().await;
+    let upload_url = format!("{}/storage/{ABC_OID}", server.uri());
+
+    Mock::given(method("POST"))
+        .and(path("/objects/batch"))
+        .and(body_json(json!({
+            "operation": "upload",
+            "objects": [{ "oid": ABC_OID, "size": 3 }],
+            "transfers": ["basic", "tus"],
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "transfer": "tus",
+            "objects": [{
+                "oid": ABC_OID, "size": 3,
+                "actions": { "upload": { "href": upload_url } }
+            }]
+        })))
+        .mount(&server)
+        .await;
+    // The server already has the first byte.
+    Mock::given(method("HEAD"))
+        .and(path(format!("/storage/{ABC_OID}")))
+        .and(wiremock::matchers::header("Tus-Resumable", "1.0.0"))
+        .respond_with(ResponseTemplate::new(200).insert_header("Upload-Offset", "1"))
+        .mount(&server)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path(format!("/storage/{ABC_OID}")))
+        .and(wiremock::matchers::header("Upload-Offset", "1"))
+        .and(body_bytes(&ABC_BYTES[1..]))
+        .respond_with(ResponseTemplate::new(204).insert_header("Upload-Offset", "3"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let tmp = TempDir::new().unwrap();
+    let store = Store::new(tmp.path().join("lfs"));
+    store.insert(&mut ABC_BYTES.to_vec().as_slice()).unwrap();
+    let api = ApiClient::new(Url::parse(&server.uri()).unwrap(), Auth::None);
+    let config = TransferConfig {
+        tus: true,
+        ..fast_config()
+    };
+    let transfer = Transfer::new(api, store, config);
+
+    let report = transfer
+        .upload(
+            vec![ObjectSpec {
+                oid: ABC_OID.into(),
+                size: 3,
+            }],
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(report.is_complete_success(), "{:?}", report.failed);
+}
+
 /// Accept one HTTP request on a raw socket, answer 200, and return the
 /// request head as sent, before any HTTP parsing.
 async fn capture_request_head(listener: tokio::net::TcpListener) -> String {

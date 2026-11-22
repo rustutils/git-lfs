@@ -66,8 +66,6 @@ Ordered by failing tests fixed per effort, from the triage after the
 v3.8.1 update. Small means under an hour or so, medium a few hours, large
 a feature.
 
-- **tus uploads** (medium, `t-batch-storage-upload-tus` 1 and 2), with
-  `lfs.tusTransfers`. Built into upstream, so no test helper is needed.
 - **Encrypted client certificate keys** (medium, `t-clone` 3 and 4).
   Test 4 also needs `~` expanded in `http.sslCert` and `http.sslKey`.
 - **Retries reuse the batch response** (medium, `t-push` 18 and

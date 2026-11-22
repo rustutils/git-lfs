@@ -18,6 +18,7 @@ use crate::custom::Workers;
 use crate::error::{Report, TransferError};
 use crate::event::Event;
 use crate::sshtransfer::adapter as ssh;
+use crate::tus;
 
 /// Direction of a transfer batch.
 #[derive(Debug, Clone, Copy)]
@@ -241,6 +242,16 @@ impl Transfer {
         if let Some(c) = custom {
             adapter = &c.name;
         }
+        // The server may pick tus for uploads, when it's enabled.
+        let tus = adapter == "basic"
+            && custom.is_none()
+            && dir.is_upload()
+            && self.config.tus
+            && !self.config.basic_transfers_only
+            && resp.transfer.as_deref() == Some("tus");
+        if tus {
+            adapter = "tus";
+        }
         let mut workers: Option<Arc<Workers>> = None;
 
         let limit = Arc::new(Semaphore::new(self.config.concurrency.max(1)));
@@ -324,6 +335,7 @@ impl Transfer {
                     dir,
                     &backend,
                     custom_workers.as_deref(),
+                    tus,
                     slot.as_ref(),
                     store,
                     &config,
@@ -451,6 +463,7 @@ async fn process_object(
     dir: Dir,
     backend: &Backend,
     custom: Option<&Workers>,
+    tus: bool,
     zstd_slot: Option<&basic::ZstdSlot>,
     store: Arc<Store>,
     config: &TransferConfig,
@@ -533,6 +546,20 @@ async fn process_object(
             }
             with_retry(config, &obj.oid, obj.size, || async {
                 match &transport {
+                    Transport::Http(http) if tus => {
+                        tus::upload(
+                            &http.http,
+                            store.clone(),
+                            &obj.oid,
+                            obj.size,
+                            actions,
+                            config.max_verifies,
+                            config.extra_headers.as_ref(),
+                            action_auth,
+                            events,
+                        )
+                        .await
+                    }
                     Transport::Http(http) => {
                         basic::upload(
                             &http.http,

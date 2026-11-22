@@ -29,6 +29,8 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Added
 
+- `lfs.tusTransfers` offers the server resumable uploads with the tus.io
+  protocol. An interrupted upload resumes where the server stopped.
 - `GIT_LFS_PROGRESS` names a file that uploads, downloads, checkouts, and
   the clean and smudge filters append progress lines to, in upstream's
   format.

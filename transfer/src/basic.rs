@@ -325,12 +325,12 @@ fn zstd_error(e: impl std::fmt::Display) -> std::io::Error {
 }
 
 /// Whether `GIT_TRACE` is set to something other than empty or `0`.
-fn trace_enabled() -> bool {
+pub(crate) fn trace_enabled() -> bool {
     std::env::var_os("GIT_TRACE").is_some_and(|v| !v.is_empty() && v != "0")
 }
 
 /// Whether `GIT_CURL_VERBOSE` is set to something other than empty or `0`.
-fn verbose_enabled() -> bool {
+pub(crate) fn verbose_enabled() -> bool {
     std::env::var_os("GIT_CURL_VERBOSE").is_some_and(|v| !v.is_empty() && v != "0")
 }
 
@@ -367,7 +367,7 @@ fn dump_verbose_request(
 /// curl's output. For a `gzipped` response, `Content-Encoding` and
 /// `Content-Length` are left out, as Go's client drops them when it
 /// decompresses.
-fn dump_verbose_response(resp: &Response, gzipped: bool) {
+pub(crate) fn dump_verbose_response(resp: &Response, gzipped: bool) {
     if !verbose_enabled() {
         return;
     }
@@ -666,7 +666,7 @@ fn redirect_keeps_credentials(from: &str, to: &str) -> Result<bool, TransferErro
 }
 
 /// Convert an error from [`send_with_redirects`].
-fn from_api(err: ApiError) -> TransferError {
+pub(crate) fn from_api(err: ApiError) -> TransferError {
     match err {
         ApiError::Transport(e) => TransferError::Http(e),
         ApiError::Redirect(message) => TransferError::Redirect(message),
@@ -675,7 +675,7 @@ fn from_api(err: ApiError) -> TransferError {
 }
 
 /// The extra headers for a request to `url`.
-fn extra_for(source: Option<&HeaderSource>, url: &str) -> Vec<(String, String)> {
+pub(crate) fn extra_for(source: Option<&HeaderSource>, url: &str) -> Vec<(String, String)> {
     source.map(|source| source(url)).unwrap_or_default()
 }
 
@@ -789,7 +789,7 @@ async fn send_verify(
 
 /// `auth`, unless the action or `http.extraHeader` already sets an
 /// `Authorization` header, as upstream's `requestHasAuth` checks.
-fn auth_for<'a>(
+pub(crate) fn auth_for<'a>(
     auth: Option<&'a Arc<dyn ActionAuth>>,
     action_headers: &std::collections::HashMap<String, String>,
     extra: &[(String, String)],
@@ -801,7 +801,7 @@ fn auth_for<'a>(
     if has_own { None } else { auth }
 }
 
-fn check_status(resp: &Response, url: &str) -> Result<(), TransferError> {
+pub(crate) fn check_status(resp: &Response, url: &str) -> Result<(), TransferError> {
     if resp.status().is_success() {
         Ok(())
     } else {

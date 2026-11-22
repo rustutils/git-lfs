@@ -23,7 +23,8 @@
 //! HTTPS fallback, used when the SSH connection can't be set up (for
 //! example when the server has no `git-lfs-transfer`).
 //!
-//! The server can pick a [`CustomAdapter`] from those in the config
+//! With [`TransferConfig::tus`], the server can pick resumable tus.io
+//! uploads. It can also pick a [`CustomAdapter`] from those in the config
 //! instead of `basic`. Its objects then go through an external process
 //! that speaks the [custom transfer protocol][custom-spec].
 //!
@@ -45,6 +46,7 @@ mod error;
 mod event;
 pub mod sshtransfer;
 mod transfer;
+mod tus;
 
 pub use action_auth::ActionAuth;
 pub use config::{HeaderSource, TransferConfig, UrlRewriter, UrlSetting};

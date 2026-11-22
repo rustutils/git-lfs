@@ -86,6 +86,8 @@ pub struct TransferConfig {
     pub custom_adapters: Vec<CustomAdapter>,
     /// Offer the server only `basic`, from `lfs.basictransfersonly`.
     pub basic_transfers_only: bool,
+    /// Offer the server `tus` resumable uploads, from `lfs.tustransfers`.
+    pub tus: bool,
     /// The remote, as a name or URL, for the custom adapters' `init`
     /// message.
     pub remote: String,
@@ -112,12 +114,16 @@ impl TransferConfig {
     pub(crate) fn transfer_names(&self, upload: bool) -> Vec<String> {
         let mut names = vec!["basic".to_owned()];
         if !self.basic_transfers_only {
-            names.extend(
-                self.custom_adapters
-                    .iter()
-                    .filter(|a| a.handles(upload) && a.name != "basic")
-                    .map(|a| a.name.clone()),
-            );
+            if upload && self.tus {
+                names.push("tus".to_owned());
+            }
+            let customs: Vec<String> = self
+                .custom_adapters
+                .iter()
+                .filter(|a| a.handles(upload) && !names.contains(&a.name))
+                .map(|a| a.name.clone())
+                .collect();
+            names.extend(customs);
         }
         names
     }
@@ -141,6 +147,7 @@ impl Default for TransferConfig {
             action_auth: None,
             custom_adapters: Vec::new(),
             basic_transfers_only: false,
+            tus: false,
             remote: "origin".to_owned(),
             standalone: None,
         }
@@ -174,6 +181,7 @@ impl std::fmt::Debug for TransferConfig {
             .field("action_auth", &self.action_auth.as_ref().map(|_| "<auth>"))
             .field("custom_adapters", &self.custom_adapters)
             .field("basic_transfers_only", &self.basic_transfers_only)
+            .field("tus", &self.tus)
             .field("remote", &self.remote)
             .field("standalone", &self.standalone)
             .finish()

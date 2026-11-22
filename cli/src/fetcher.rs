@@ -910,9 +910,11 @@ const STANDARD_ADAPTERS: &[&str] = &["basic", "ssh"];
 /// they run commands. One named like a built-in adapter is dropped with
 /// upstream's warning, once for each direction it handles.
 fn custom_adapters(cwd: &Path) -> Vec<CustomAdapter> {
+    // `tus` is built in only when it's enabled, as in upstream.
+    let tus = config_true(cwd, "lfs.tustransfers", false);
     let (adapters, conflicts): (Vec<_>, Vec<_>) = configured_adapters(cwd)
         .into_iter()
-        .partition(|a| !STANDARD_ADAPTERS.contains(&a.name.as_str()));
+        .partition(|a| !STANDARD_ADAPTERS.contains(&a.name.as_str()) && !(tus && a.name == "tus"));
     for a in conflicts {
         for (dir, handled) in [("download", a.download), ("upload", a.upload)] {
             if handled {
@@ -998,6 +1000,7 @@ fn transfer_config_for(cwd: &Path, endpoint_url: Option<&str>) -> TransferConfig
         download_encoding: download_encoding_source(cwd),
         custom_adapters: custom_adapters(cwd),
         basic_transfers_only: config_true(cwd, "lfs.basictransfersonly", false),
+        tus: config_true(cwd, "lfs.tustransfers", false),
         ..TransferConfig::default()
     };
     if href_rewrite_enabled(cwd) {
