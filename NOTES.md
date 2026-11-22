@@ -75,11 +75,6 @@ Grouped by area, with the failing tests each one would fix.
   connection reuse with `lfs.ssh.automultiplex`, or `lfs.defaulttokenttl`,
   and don't fall back to the guessed HTTPS endpoint when the command is
   missing (`t-ssh` tests 3 to 5).
-- **`lfs.pushurl`** isn't read, so pushes go to the fetch endpoint
-  (`t-ssh` tests 9, 10, 13, 14). Neither are `remote.<name>.pushurl` and
-  `remote.<name>.lfspushurl`.
-- **`remote.pushDefault` and `branch.<name>.pushRemote`** aren't read by
-  the lock commands (`t-lock` 3, `t-locks` 3, `t-unlock` 6 and 7).
 - **`lfs.transfer.maxRetryTime`** isn't implemented, so a long
   `Retry-After` is waited out instead of failing
   (`t-batch-retries-ratelimit` 6, `t-batch-storage-retries-ratelimit` 6
@@ -141,7 +136,7 @@ come from reading the code.
 ### Wrong results or failures
 
 - **SSH URLs with escapes or newlines.** The path of an `ssh://` URL isn't
-  percent-decoded (`t-ssh` 8 and 12), and an `href` from
+  percent-decoded (`t-ssh` 10, 12, and 14), and an `href` from
   `git-lfs-authenticate` containing a newline is accepted, because the `url`
   crate strips it (`t-ssh` 6). Upstream rejects it.
 - **Corrupt downloads** report `expected OID X, got Y` instead of
@@ -188,7 +183,8 @@ come from reading the code.
   `git-lfs-authenticate`. Confirmed.
 - **Programs are split on whitespace.** `GIT_SSH=/opt/my tools/ssh` runs
   `/opt/my`, and quoted `GIT_SSH_COMMAND` arguments break. Same for the
-  askpass program.
+  askpass program. Upstream runs `GIT_SSH_COMMAND` with `sh -c`, which
+  `t-ssh` 8, 9, 12, and 13 look for in the trace.
 - **`expires_in: 0` from `git-lfs-authenticate` means expired at once**,
   so ssh runs before every request. Confirmed. Upstream treats 0 as no
   expiry.

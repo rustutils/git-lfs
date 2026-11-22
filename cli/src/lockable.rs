@@ -39,7 +39,8 @@ impl HeldLocks {
     /// `next_cursor` is sent back as the cursor rather than ending the
     /// loop.
     pub fn from_server(cwd: &Path) -> Self {
-        let Ok(api) = crate::fetcher::build_api_client(cwd, None) else {
+        let remote = crate::lock_client::lock_remote(cwd, None);
+        let Ok(api) = crate::fetcher::build_api_client(cwd, remote.as_deref()) else {
             return Self::Empty;
         };
         let Ok(runtime) = tokio::runtime::Builder::new_current_thread()

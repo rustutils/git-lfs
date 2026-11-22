@@ -161,7 +161,12 @@ fn push_by_oid(
         return Ok(PushOutcome::default());
     }
 
-    let fetcher = LfsFetcher::from_repo_with_remote(cwd, &store, Some(remote))?;
+    let fetcher = LfsFetcher::from_repo_with_remote(
+        cwd,
+        &store,
+        Some(remote),
+        git_lfs_git::endpoint::Operation::Upload,
+    )?;
 
     let total = to_upload.len();
     let total_bytes: u64 = to_upload.iter().map(|s| s.size).sum();
@@ -385,7 +390,12 @@ pub(crate) fn upload_in_range_with_args(
         return Ok(PushOutcome::default());
     }
 
-    let mut fetcher = LfsFetcher::from_repo_with_remote(cwd, &store, Some(remote))?;
+    let mut fetcher = LfsFetcher::from_repo_with_remote(
+        cwd,
+        &store,
+        Some(remote),
+        git_lfs_git::endpoint::Operation::Upload,
+    )?;
     if refspec.is_some() {
         fetcher = fetcher.with_refspec(refspec);
     }
@@ -393,8 +403,13 @@ pub(crate) fn upload_in_range_with_args(
     // Verify locks before any batch request. Their locks block the push
     // for every path changed in the range, not only LFS files, since a
     // file can be lockable without being in LFS.
-    let endpoint = git_lfs_git::endpoint::endpoint_for_remote(cwd, Some(remote))
-        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    let endpoint = git_lfs_git::endpoint::resolve_endpoint_for(
+        cwd,
+        Some(remote),
+        git_lfs_git::endpoint::Operation::Upload,
+    )
+    .map_err(|e| std::io::Error::other(e.to_string()))?
+    .url;
     let changed_paths = changed_paths_in_range(cwd, includes, excludes, extra_rev_list_args)?;
     let theirs_blockers: Vec<git_lfs_api::Lock> =
         match fetcher.preflight_verify_locks(cwd, Some(remote), remote, &endpoint)? {

@@ -16,8 +16,9 @@
 //! a URL is used as the remote URL. Without a remote name, the URL of the
 //! last `git fetch` in `FETCH_HEAD` is the last resort.
 //!
-//! Pushes use the same endpoint as fetches. Neither `remote.<name>.pushurl`
-//! nor `lfs.pushurl` is read.
+//! Uploads first check `lfs.pushurl`, `remote.<name>.lfspushurl`, and
+//! `remote.<name>.pushurl`, each ahead of its fetch counterpart, and rewrite
+//! URLs with `url.<base>.pushInsteadOf` before `insteadOf`.
 //!
 //! An SSH remote such as `git@github.com:foo/bar.git` gets the HTTPS
 //! endpoint `https://github.com/foo/bar.git/info/lfs`. [`parse_ssh_url`]
@@ -77,6 +78,15 @@ pub struct EndpointInfo {
     pub ssh: Option<SshInfo>,
 }
 
+/// Whether an endpoint is for downloading or uploading.
+///
+/// Uploads can have their own URLs, such as `lfs.pushurl`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Operation {
+    Download,
+    Upload,
+}
+
 /// Resolve the LFS endpoint URL for `remote` in the repository at `cwd`.
 ///
 /// Pass `None` for the default remote. The [module docs](crate::endpoint)
@@ -87,18 +97,56 @@ pub fn endpoint_for_remote(cwd: &Path, remote: Option<&str>) -> Result<String, E
 
 /// Like [`endpoint_for_remote`], but also returns the SSH details.
 pub fn resolve_endpoint(cwd: &Path, remote: Option<&str>) -> Result<EndpointInfo, EndpointError> {
+    resolve_endpoint_for(cwd, remote, Operation::Download)
+}
+
+/// Like [`resolve_endpoint`], for `operation`.
+pub fn resolve_endpoint_for(
+    cwd: &Path,
+    remote: Option<&str>,
+    operation: Operation,
+) -> Result<EndpointInfo, EndpointError> {
+    let upload = operation == Operation::Upload;
+    let rewrite = |url: &str| -> Result<String, Error> {
+        if upload {
+            aliases::rewrite_for_push(cwd, url)
+        } else {
+            aliases::rewrite(cwd, url)
+        }
+    };
+    let direct = |url: &str| -> Result<EndpointInfo, EndpointError> {
+        let rewritten = rewrite(url)?;
+        let ssh = parse_ssh_url(&rewritten);
+        Ok(EndpointInfo {
+            url: rewritten,
+            ssh,
+        })
+    };
+    let from_clone_url = |url: &str| -> Result<EndpointInfo, EndpointError> {
+        // Rewrite aliases first, so `derive_lfs_url` sees a real URL
+        // instead of something like `gh:org/repo`.
+        let rewritten = rewrite(url)?;
+        Ok(EndpointInfo {
+            url: derive_lfs_url(&rewritten)?,
+            ssh: parse_ssh_url(&rewritten),
+        })
+    };
+
     let caller_specified_remote = remote.is_some();
     let mut remote = remote.unwrap_or(DEFAULT_REMOTE).to_owned();
 
     if let Some(v) = std::env::var_os("GIT_LFS_URL") {
         let s = v.to_string_lossy().into_owned();
         if !s.is_empty() {
-            return direct_endpoint(cwd, &s);
+            return direct(&s);
         }
     }
 
+    if upload && let Some(v) = config::get_effective(cwd, "lfs.pushurl")? {
+        return direct(&v);
+    }
     if let Some(v) = config::get_effective(cwd, "lfs.url")? {
-        return direct_endpoint(cwd, &v);
+        return direct(&v);
     }
 
     // Without a remote name and without `origin`, use the only remote,
@@ -110,29 +158,24 @@ pub fn resolve_endpoint(cwd: &Path, remote: Option<&str>) -> Result<EndpointInfo
         }
     }
 
-    let remote_lfsurl_key = format!("remote.{remote}.lfsurl");
-    if let Some(v) = config::get_effective(cwd, &remote_lfsurl_key)? {
-        return direct_endpoint(cwd, &v);
+    if upload && let Some(v) = config::get_effective(cwd, &format!("remote.{remote}.lfspushurl"))? {
+        return direct(&v);
+    }
+    if let Some(v) = config::get_effective(cwd, &format!("remote.{remote}.lfsurl"))? {
+        return direct(&v);
     }
 
-    if let Some(remote_url) = remote_url(cwd, &remote)? {
-        // Rewrite aliases first, so `derive_lfs_url` sees a real URL
-        // instead of something like `gh:org/repo`.
-        let rewritten = aliases::rewrite(cwd, &remote_url)?;
-        return Ok(EndpointInfo {
-            url: derive_lfs_url(&rewritten)?,
-            ssh: parse_ssh_url(&rewritten),
-        });
+    if upload && let Some(url) = config::get_effective(cwd, &format!("remote.{remote}.pushurl"))? {
+        return from_clone_url(&url);
+    }
+    if let Some(url) = remote_url(cwd, &remote)? {
+        return from_clone_url(&url);
     }
 
     // The caller may have passed a URL in place of a remote name, as in
     // `git lfs push https://host/repo`.
     if looks_like_url(&remote) {
-        let rewritten = aliases::rewrite(cwd, &remote)?;
-        return Ok(EndpointInfo {
-            url: derive_lfs_url(&rewritten)?,
-            ssh: parse_ssh_url(&rewritten),
-        });
+        return from_clone_url(&remote);
     }
 
     // Use the URL of the last `git fetch`. This lets the smudge filter
@@ -140,11 +183,7 @@ pub fn resolve_endpoint(cwd: &Path, remote: Option<&str>) -> Result<EndpointInfo
     // without a remote (`t-no-remote.sh`). A named remote means the
     // caller wants that remote, so this doesn't apply.
     if !caller_specified_remote && let Some(url) = read_fetch_head_url(cwd)? {
-        let rewritten = aliases::rewrite(cwd, &url)?;
-        return Ok(EndpointInfo {
-            url: derive_lfs_url(&rewritten)?,
-            ssh: parse_ssh_url(&rewritten),
-        });
+        return from_clone_url(&url);
     }
 
     Err(EndpointError::Unresolved(remote))
@@ -178,19 +217,6 @@ fn read_fetch_head_url(cwd: &Path) -> Result<Option<String>, EndpointError> {
     Ok(None)
 }
 
-/// Build an endpoint from a configured LFS URL.
-///
-/// The value is used as is, after alias rewriting, without appending
-/// `info/lfs`.
-fn direct_endpoint(cwd: &Path, value: &str) -> Result<EndpointInfo, EndpointError> {
-    let rewritten = aliases::rewrite(cwd, value)?;
-    let ssh = parse_ssh_url(&rewritten);
-    Ok(EndpointInfo {
-        url: rewritten,
-        ssh,
-    })
-}
-
 /// The configured remote names, or none if `git remote` fails.
 fn list_remotes(cwd: &Path) -> Result<Vec<String>, Error> {
     let out = std::process::Command::new("git")
@@ -217,10 +243,26 @@ pub fn looks_like_url(s: &str) -> bool {
     s.contains("://") || s.contains('@')
 }
 
-/// Read `remote.<name>.url` from git config.
+/// The remote that pushes go to, if one is configured.
 ///
-/// This is also the URL used for pushes, since `remote.<name>.pushurl` is
-/// not read.
+/// Like upstream's `PushRemote`, this is the first of
+/// `branch.<current>.pushRemote`, `remote.lfspushdefault`, and
+/// `remote.pushDefault` that is set. `None` means the default remote.
+pub fn push_remote(cwd: &Path) -> Result<Option<String>, Error> {
+    if let Some(branch) = crate::refs::current_branch(cwd)
+        && let Some(remote) = config::get_effective(cwd, &format!("branch.{branch}.pushRemote"))?
+    {
+        return Ok(Some(remote));
+    }
+    for key in ["remote.lfspushdefault", "remote.pushDefault"] {
+        if let Some(remote) = config::get_effective(cwd, key)? {
+            return Ok(Some(remote));
+        }
+    }
+    Ok(None)
+}
+
+/// Read `remote.<name>.url` from git config.
 pub fn remote_url(cwd: &Path, remote: &str) -> Result<Option<String>, Error> {
     config::get_effective(cwd, &format!("remote.{remote}.url"))
 }
@@ -623,6 +665,83 @@ mod tests {
         );
         let url = endpoint_for_remote(repo.path(), None).unwrap();
         assert_eq!(url, "https://example.com/lfs");
+    }
+
+    /// The download and upload endpoints of the default remote.
+    fn both_endpoints(repo: &Path) -> (String, String) {
+        let download = resolve_endpoint_for(repo, None, Operation::Download).unwrap();
+        let upload = resolve_endpoint_for(repo, None, Operation::Upload).unwrap();
+        (download.url, upload.url)
+    }
+
+    #[test]
+    fn uploads_prefer_push_urls() {
+        let _g = lock_env();
+        unsafe { std::env::remove_var("GIT_LFS_URL") };
+        let repo = fresh_repo();
+        let set = |k: &str, v: &str| git_in(repo.path(), &["config", "--local", k, v]);
+        set("remote.origin.url", "https://fetch.test/r.git");
+        set("remote.origin.pushurl", "https://push.test/r.git");
+        assert_eq!(
+            both_endpoints(repo.path()),
+            (
+                "https://fetch.test/r.git/info/lfs".into(),
+                "https://push.test/r.git/info/lfs".into()
+            )
+        );
+
+        set("remote.origin.lfsurl", "https://fetch.test/lfs");
+        set("remote.origin.lfspushurl", "https://push.test/lfs");
+        assert_eq!(
+            both_endpoints(repo.path()),
+            (
+                "https://fetch.test/lfs".into(),
+                "https://push.test/lfs".into()
+            )
+        );
+
+        set("lfs.url", "https://lfs.test/fetch");
+        set("lfs.pushurl", "https://lfs.test/push");
+        assert_eq!(
+            both_endpoints(repo.path()),
+            (
+                "https://lfs.test/fetch".into(),
+                "https://lfs.test/push".into()
+            )
+        );
+    }
+
+    #[test]
+    fn uploads_apply_push_insteadof_first() {
+        let _g = lock_env();
+        unsafe { std::env::remove_var("GIT_LFS_URL") };
+        let repo = fresh_repo();
+        let set = |k: &str, v: &str| git_in(repo.path(), &["config", "--local", k, v]);
+        set("remote.origin.url", "gh:r");
+        set("url.https://fetch.test/.insteadOf", "gh:");
+        set("url.https://push.test/.pushInsteadOf", "gh:");
+        assert_eq!(
+            both_endpoints(repo.path()),
+            (
+                "https://fetch.test/r.git/info/lfs".into(),
+                "https://push.test/r.git/info/lfs".into()
+            )
+        );
+    }
+
+    #[test]
+    fn push_remote_follows_upstream_order() {
+        let _g = lock_env();
+        let repo = fresh_repo();
+        let set = |k: &str, v: &str| git_in(repo.path(), &["config", "--local", k, v]);
+        assert_eq!(push_remote(repo.path()).unwrap(), None);
+        set("remote.pushDefault", "a");
+        assert_eq!(push_remote(repo.path()).unwrap().as_deref(), Some("a"));
+        set("remote.lfspushdefault", "b");
+        assert_eq!(push_remote(repo.path()).unwrap().as_deref(), Some("b"));
+        let branch = crate::refs::current_branch(repo.path()).unwrap();
+        set(&format!("branch.{branch}.pushRemote"), "c");
+        assert_eq!(push_remote(repo.path()).unwrap().as_deref(), Some("c"));
     }
 
     #[test]

@@ -224,7 +224,12 @@ fn verify_prunable(
     use git_lfs_api::ObjectSpec;
 
     let store = Store::new(git_lfs_git::lfs_dir(cwd)?);
-    let fetcher = LfsFetcher::from_repo_with_remote(cwd, &store, Some(remote))?;
+    let fetcher = LfsFetcher::from_repo_with_remote(
+        cwd,
+        &store,
+        Some(remote),
+        git_lfs_git::endpoint::Operation::Download,
+    )?;
     let specs: Vec<ObjectSpec> = prunable
         .iter()
         .map(|(oid, size)| ObjectSpec {

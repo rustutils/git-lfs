@@ -24,6 +24,14 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
   `lfs.<url>.access`, as in upstream. Other keys ending in `.access` are
   ignored with a warning.
 
+### Added
+
+- Pushes use `lfs.pushurl`, `remote.<name>.lfspushurl`, and
+  `remote.<name>.pushurl` when set, and `url.<base>.pushInsteadOf` aliases.
+- The lock commands, and lock verification on push, use the push remote
+  (`branch.<name>.pushRemote`, `remote.lfspushdefault`, or
+  `remote.pushDefault`) and its push URL, like upstream.
+
 ### Changed
 
 - `exec:` lines in `GIT_TRACE` output quote each argument, like upstream, so

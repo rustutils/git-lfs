@@ -290,7 +290,12 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
         }
     }
 
-    let fetcher = LfsFetcher::from_repo_with_remote(cwd, &store, remote.as_deref())?;
+    let fetcher = LfsFetcher::from_repo_with_remote(
+        cwd,
+        &store,
+        remote.as_deref(),
+        git_lfs_git::endpoint::Operation::Download,
+    )?;
     let total = to_fetch.len();
     let total_bytes: u64 = to_fetch.iter().map(|s| s.size).sum();
 
@@ -375,7 +380,12 @@ fn run_dry_run_with_json(
     if let Some(r) = git_lfs_git::refs::current_refspec(cwd).map(git_lfs_api::Ref::new) {
         req = req.with_ref(r);
     }
-    let fetcher = LfsFetcher::from_repo_with_remote(cwd, store, remote)?;
+    let fetcher = LfsFetcher::from_repo_with_remote(
+        cwd,
+        store,
+        remote,
+        git_lfs_git::endpoint::Operation::Download,
+    )?;
     let api = fetcher.api_client().map_err(FetchCommandError::Fetch)?;
     let resp = fetcher
         .runtime_block_on(api.batch(&req))

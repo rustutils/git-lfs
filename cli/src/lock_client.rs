@@ -479,8 +479,17 @@ pub(crate) fn build_lock_client(
     remote: Option<&str>,
     runtime: Arc<Runtime>,
 ) -> Result<LockClient, String> {
-    let api = crate::fetcher::build_api_client(cwd, remote)?;
-    build_lock_client_with_api(cwd, remote, runtime, api, None)
+    let remote = lock_remote(cwd, remote);
+    let api = crate::fetcher::build_api_client(cwd, remote.as_deref())?;
+    build_lock_client_with_api(cwd, remote.as_deref(), runtime, api, None)
+}
+
+/// The remote whose lock API to use: `remote` if given, else the push
+/// remote, else `None` for the default remote.
+pub(crate) fn lock_remote(cwd: &Path, remote: Option<&str>) -> Option<String> {
+    remote
+        .map(str::to_owned)
+        .or_else(|| git_lfs_git::endpoint::push_remote(cwd).ok().flatten())
 }
 
 /// Build a [`LockClient`] that uses `api` for HTTP.
@@ -502,8 +511,12 @@ pub(crate) fn build_lock_client_with_api(
     api: ApiClient,
     ssh_pools: Option<Arc<SshPools>>,
 ) -> Result<LockClient, String> {
-    let info = git_lfs_git::endpoint::resolve_endpoint(cwd, remote)
-        .map_err(|e| format!("resolving LFS endpoint: {e}"))?;
+    let info = git_lfs_git::endpoint::resolve_endpoint_for(
+        cwd,
+        remote,
+        git_lfs_git::endpoint::Operation::Upload,
+    )
+    .map_err(|e| format!("resolving LFS endpoint: {e}"))?;
     let Some(ssh) = info.ssh else {
         return Ok(LockClient::http(api, runtime));
     };

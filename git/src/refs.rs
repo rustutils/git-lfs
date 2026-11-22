@@ -19,7 +19,7 @@ pub fn current_refspec(cwd: &Path) -> Option<String> {
 }
 
 /// Short name of the current branch, or `None` on a detached HEAD.
-fn current_branch(cwd: &Path) -> Option<String> {
+pub(crate) fn current_branch(cwd: &Path) -> Option<String> {
     let out = Command::new("git")
         .arg("-C")
         .arg(cwd)

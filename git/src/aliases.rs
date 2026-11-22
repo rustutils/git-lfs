@@ -65,11 +65,27 @@ pub fn rewrite(cwd: &Path, url: &str) -> Result<String, Error> {
     Ok(apply(&aliases, url))
 }
 
+/// Rewrite a push `url` for `cwd`, as git does.
+///
+/// The `pushInsteadOf` aliases are tried first. If none matches, the
+/// `insteadOf` aliases are used.
+pub fn rewrite_for_push(cwd: &Path, url: &str) -> Result<String, Error> {
+    match try_apply(&load_push_aliases(cwd)?, url) {
+        Some(rewritten) => Ok(rewritten),
+        None => rewrite(cwd, url),
+    }
+}
+
 /// Rewrite `url` with an alias map you already hold.
 ///
 /// The longest alias that prefixes `url` is replaced with its base. With
 /// no match, `url` is returned unchanged.
 pub fn apply(aliases: &Aliases, url: &str) -> String {
+    try_apply(aliases, url).unwrap_or_else(|| url.to_owned())
+}
+
+/// Like [`apply`], but `None` when no alias matches.
+fn try_apply(aliases: &Aliases, url: &str) -> Option<String> {
     let mut best: Option<&str> = None;
     for alias in aliases.keys() {
         if !url.starts_with(alias.as_str()) {
@@ -79,10 +95,7 @@ pub fn apply(aliases: &Aliases, url: &str) -> String {
             best = Some(alias);
         }
     }
-    match best {
-        Some(alias) => format!("{}{}", aliases[alias], &url[alias.len()..]),
-        None => url.to_owned(),
-    }
+    best.map(|alias| format!("{}{}", aliases[alias], &url[alias.len()..]))
 }
 
 /// One `url.<base>.insteadOf <alias>` or `pushInsteadOf` entry.

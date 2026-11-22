@@ -25,7 +25,7 @@ use git_lfs_creds::{
 };
 use git_lfs_filter::FetchError;
 use git_lfs_git::ConfigScope;
-use git_lfs_git::endpoint::SshInfo;
+use git_lfs_git::endpoint::{Operation as EndpointOperation, SshInfo};
 use git_lfs_pointer::Pointer;
 use git_lfs_store::Store;
 use git_lfs_transfer::backend::{HttpTransport, SshBackend};
@@ -65,22 +65,23 @@ impl LfsFetcher {
     /// Only fails if the runtime can't be built. An endpoint error is
     /// returned later, by the first method that needs the endpoint.
     pub fn from_repo(cwd: &Path, store: &Store) -> std::io::Result<Self> {
-        Self::from_repo_with_remote(cwd, store, None)
+        Self::from_repo_with_remote(cwd, store, None, EndpointOperation::Download)
     }
 
-    /// Build a fetcher for the endpoint of `remote`.
+    /// Build a fetcher for the `operation` endpoint of `remote`.
     ///
-    /// push and pre-push pass the remote being pushed to, so its LFS
-    /// endpoint is used instead of the default remote's.
+    /// push and pre-push pass the remote being pushed to and
+    /// [`Upload`](EndpointOperation::Upload), so its push endpoint is used.
     pub fn from_repo_with_remote(
         cwd: &Path,
         store: &Store,
         remote: Option<&str>,
+        operation: EndpointOperation,
     ) -> std::io::Result<Self> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        let endpoint_info = git_lfs_git::endpoint::resolve_endpoint(cwd, remote);
+        let endpoint_info = git_lfs_git::endpoint::resolve_endpoint_for(cwd, remote, operation);
         let endpoint_url = endpoint_info.as_ref().ok().map(|i| i.url.clone());
         // The HTTP client takes its `http.*` settings from the endpoint URL
         // and uses them for every request, including action URLs on other
@@ -90,7 +91,7 @@ impl LfsFetcher {
             .as_deref()
             .map(|u| crate::http_client::build(cwd, u))
             .unwrap_or_default();
-        let api = build_api_client_with(cwd, remote, http.clone());
+        let api = build_api_client_with(cwd, remote, operation, http.clone());
         let config = transfer_config_for(cwd, endpoint_url.as_deref());
 
         // SSH endpoints pick a backend from `lfs.<url>.sshtransfer`.
@@ -344,24 +345,27 @@ impl LfsFetcher {
     }
 }
 
-/// Build an [`ApiClient`] for the endpoint of `remote`, with credential
+/// Build an [`ApiClient`] for the lock API of `remote`, with credential
 /// helpers and, for SSH endpoints, git-lfs-authenticate.
 ///
-/// The locking commands and the lockable hooks use this. [`LfsFetcher`]
-/// builds the same client.
+/// The lock API uses the upload endpoint, as in upstream. The locking
+/// commands and the lockable hooks use this. [`LfsFetcher`] builds the same
+/// client.
 pub fn build_api_client(cwd: &Path, remote: Option<&str>) -> Result<ApiClient, String> {
-    let endpoint = git_lfs_git::endpoint::endpoint_for_remote(cwd, remote)
-        .map_err(|e| format!("resolving LFS endpoint: {e}"))?;
-    let http = crate::http_client::build(cwd, &endpoint);
-    build_api_client_with(cwd, remote, http)
+    let endpoint =
+        git_lfs_git::endpoint::resolve_endpoint_for(cwd, remote, EndpointOperation::Upload)
+            .map_err(|e| format!("resolving LFS endpoint: {e}"))?;
+    let http = crate::http_client::build(cwd, &endpoint.url);
+    build_api_client_with(cwd, remote, EndpointOperation::Upload, http)
 }
 
 fn build_api_client_with(
     cwd: &Path,
     remote: Option<&str>,
+    operation: EndpointOperation,
     http: reqwest::Client,
 ) -> Result<ApiClient, String> {
-    let info = git_lfs_git::endpoint::resolve_endpoint(cwd, remote)
+    let info = git_lfs_git::endpoint::resolve_endpoint_for(cwd, remote, operation)
         .map_err(|e| format!("resolving LFS endpoint: {e}"))?;
     // An SSH endpoint gets its HTTPS form as the base URL. The href from
     // git-lfs-authenticate replaces it on each request.
