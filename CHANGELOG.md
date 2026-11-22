@@ -29,6 +29,10 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Added
 
+- `git lfs ls-files` takes `--include` and `--exclude` patterns, and a
+  second ref: `git lfs ls-files <a> <b>` lists the LFS files changed in the
+  commits after `<a>` up to `<b>`. Its usage errors now go to standard
+  error and exit 2, as in upstream.
 - `git lfs dedup` replaces LFS files in the working tree with
   copy-on-write clones of their stored objects, on file systems that
   support it, such as Btrfs, XFS, APFS, and ReFS. `--test` only checks for

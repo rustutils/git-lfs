@@ -1532,19 +1532,18 @@ pub struct UnlockArgs {
 ///
 /// Display paths of Git LFS files that are found in the tree at the
 /// given reference. If no reference is given, scan the currently
-/// checked-out branch.
+/// checked-out branch. If two references are given, list the LFS files
+/// added or changed in the commits after the first reference, up to and
+/// including the second.
 ///
 /// An asterisk (`*`) after the OID indicates a full object, a minus
 /// (`-`) indicates an LFS pointer.
-///
-/// Note: upstream's `--include` / `--exclude` path filters aren't
-/// yet supported. The two-references form (`git lfs ls-files <a> <b>`,
-/// to show files modified between two refs) is also not yet
-/// supported.
 #[derive(Args)]
 pub struct LsFilesArgs {
-    /// Ref to list. Defaults to HEAD.
-    pub refspec: Option<String>,
+    /// Ref to list, and optionally a second ref to list the changes up
+    /// to. Defaults to HEAD.
+    #[arg(num_args = 0..=2, value_name = "REF")]
+    pub refs: Vec<String>,
 
     /// Show the entire 64-character OID, instead of just the first
     /// 10.
@@ -1579,6 +1578,18 @@ pub struct LsFilesArgs {
     /// present in the current tree.
     #[arg(long)]
     pub deleted: bool,
+
+    /// Only list paths matching these patterns (comma-delimited).
+    ///
+    /// `lfs.fetchinclude` isn't used.
+    #[arg(short = 'I', long)]
+    pub include: Vec<String>,
+
+    /// Leave out paths matching these patterns (comma-delimited).
+    ///
+    /// `lfs.fetchexclude` isn't used.
+    #[arg(short = 'X', long)]
+    pub exclude: Vec<String>,
 
     /// Write Git LFS file information as JSON to standard output if
     /// the command exits successfully.

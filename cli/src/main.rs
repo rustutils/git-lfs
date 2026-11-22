@@ -1048,29 +1048,35 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             }
         }
         Command::LsFiles(LsFilesArgs {
-            refspec,
+            refs,
             long,
             size,
             name_only,
             all,
             debug,
             deleted,
+            include,
+            exclude,
             json,
         }) => {
             if let Some(code) = bail_if_outside_repo(&cwd) {
                 return Ok(code);
             }
-            // `git lfs ls-files -- --all` would otherwise treat `--all`
-            // as a ref.
-            if refspec.as_deref() == Some("--all") {
-                eprintln!("Did you mean `git lfs ls-files --all --` ?");
-                return Ok(1);
-            }
-            // t-ls-files.sh checks this message. Upstream prints both
-            // of these to stderr and exits 2.
-            if all && refspec.is_some() {
-                println!("Cannot use --all with explicit reference");
-                return Ok(1);
+            // Upstream's checks and messages, in its order.
+            let usage_error = if all && !refs.is_empty() {
+                Some("Cannot use --all with explicit reference")
+            } else if refs.first().is_some_and(|r| r == "--all") {
+                // `git lfs ls-files -- --all` would otherwise treat
+                // `--all` as a ref.
+                Some("Did you mean `git lfs ls-files --all --` ?")
+            } else if deleted && refs.len() > 1 {
+                Some("Cannot use --deleted with reference range")
+            } else {
+                None
+            };
+            if let Some(message) = usage_error {
+                eprintln!("{message}");
+                return Ok(2);
             }
             let format = if json {
                 ls_files::Format::Json
@@ -1085,9 +1091,11 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 name_only,
                 all,
                 deleted,
+                include: fetch::pattern_set(&include)?,
+                exclude: fetch::pattern_set(&exclude)?,
                 format,
             };
-            ls_files::run(&cwd, refspec.as_deref(), &opts)?;
+            ls_files::run(&cwd, &refs, &opts)?;
         }
         Command::MergeDriver(MergeDriverArgs {
             ancestor,

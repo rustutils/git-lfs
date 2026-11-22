@@ -489,25 +489,32 @@ pub(crate) fn build_pattern_set(
     cli: &[String],
     config_key: &str,
 ) -> Result<Option<GlobSet>, FetchCommandError> {
-    let raw: Vec<String> = if !cli.is_empty() {
-        cli.iter()
-            .flat_map(|s| s.split(',').map(str::trim).map(String::from))
-            .filter(|s| !s.is_empty())
-            .collect()
-    } else if let Some(cfg) = git_lfs_git::config::get_effective(cwd, config_key)? {
-        cfg.split(',')
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(String::from)
-            .collect()
-    } else {
-        Vec::new()
-    };
+    if !cli.is_empty() {
+        return pattern_set(cli);
+    }
+    match git_lfs_git::config::get_effective(cwd, config_key)? {
+        Some(value) => pattern_set(&[value]),
+        None => Ok(None),
+    }
+}
+
+/// Build a pattern set from command-line values, without a config
+/// fallback.
+///
+/// Each value is a comma-separated list. Returns `None` if they hold no
+/// patterns.
+pub(crate) fn pattern_set(values: &[String]) -> Result<Option<GlobSet>, FetchCommandError> {
+    let raw: Vec<&str> = values
+        .iter()
+        .flat_map(|s| s.split(','))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
     if raw.is_empty() {
         return Ok(None);
     }
     let mut builder = GlobSetBuilder::new();
-    for pat in &raw {
+    for &pat in &raw {
         // A trailing slash means the directory's contents. Drop it so the
         // ancestor check in `matches_with_prefix` matches. Keep a lone
         // slash.

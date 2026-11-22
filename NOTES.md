@@ -67,8 +67,6 @@ Ordered by failing tests fixed per effort, from the triage after the
 v3.8.1 update. Small means under an hour or so, medium a few hours, large
 a feature.
 
-- **`git lfs ls-files`**: `--include` and `--exclude`, and the form that
-  takes two refs (small to medium, `t-ls-files` 13 to 15 and 25).
 - **Custom transfer adapters and `file://` remotes** (large, about 16
   tests). There's no custom adapter protocol (`docs/custom-transfers.md`),
   no `lfs.standaloneTransferAgent`, and no built-in `lfs-standalone-file`
@@ -210,10 +208,9 @@ come from reading the code.
 
 ### Minor differences from upstream
 
-- Exit codes: `fetch` with failed objects, `logs show` for a missing log,
-  and the `ls-files` argument errors exit 1 where upstream exits 2. `status`
-  in a bare repository exits 1, not 128. `update --force --manual` isn't
-  rejected.
+- Exit codes: `fetch` with failed objects and `logs show` for a missing log
+  exit 1 where upstream exits 2. `status` in a bare repository exits 1, not
+  128. `update --force --manual` isn't rejected.
 - Sizes: `ls-files --size` uses powers of 1024 with two decimals, and
   `migrate --above` reads `k`, `m`, and `g` as powers of 1024. Upstream
   uses powers of 1000.

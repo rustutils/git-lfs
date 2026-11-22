@@ -7,25 +7,23 @@
 ## Synopsis
 
 ```
-git-lfs-ls-files [OPTIONS] [REFSPEC]
+git-lfs-ls-files [OPTIONS] [REF]...
 ```
 
 ## Description
 
 Show information about Git LFS files in the index and working tree
 
-Display paths of Git LFS files that are found in the tree at the given reference. If no reference is given, scan the currently checked-out branch.
+Display paths of Git LFS files that are found in the tree at the given reference. If no reference is given, scan the currently checked-out branch. If two references are given, list the LFS files added or changed in the commits after the first reference, up to and including the second.
 
 An asterisk (`*`) after the OID indicates a full object, a minus (`-`) indicates an LFS pointer.
-
-Note: upstream's `--include` / `--exclude` path filters aren't yet supported. The two-references form (`git lfs ls-files <a> <b>`, to show files modified between two refs) is also not yet supported.
 
 ## Options
 
 ### Arguments
 
-- `<REFSPEC>`
-    Ref to list. Defaults to HEAD
+- `<REFS>`
+    Ref to list, and optionally a second ref to list the changes up to. Defaults to HEAD
 
 ### Flags
 
@@ -50,6 +48,16 @@ Note: upstream's `--include` / `--exclude` path filters aren't yet supported. Th
 
 - `--deleted`
     Include LFS pointers reachable from history but no longer present in the current tree
+
+- `-I`, `--include` `<INCLUDE>`
+    Only list paths matching these patterns (comma-delimited).
+
+    `lfs.fetchinclude` isn't used.
+
+- `-X`, `--exclude` `<EXCLUDE>`
+    Leave out paths matching these patterns (comma-delimited).
+
+    `lfs.fetchexclude` isn't used.
 
 - `-j`, `--json`
     Write Git LFS file information as JSON to standard output if the command exits successfully.

@@ -2,8 +2,8 @@
 //!
 //! Without a ref, lists the index and HEAD together. With a ref, lists its
 //! tree, with `--deleted` its whole history, and with `--all` the history
-//! of every ref. `--include`, `--exclude`, and the form that takes two refs
-//! aren't supported.
+//! of every ref. With two refs, lists the pointers added in the commits
+//! reachable from the second but not the first.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use git_lfs_git::scanner::{PointerEntry, scan_index_pointers, scan_pointers, scan_tree};
 use git_lfs_pointer::VERSION_LATEST;
 use git_lfs_store::Store;
+use globset::GlobSet;
 use serde::Serialize;
 
 /// Git's empty tree, which stands in for HEAD before the first commit.
@@ -51,6 +52,10 @@ pub struct Options {
     /// `--deleted`: the whole history of the ref, so files that were
     /// deleted are listed too.
     pub deleted: bool,
+    /// `--include`.
+    pub include: Option<GlobSet>,
+    /// `--exclude`.
+    pub exclude: Option<GlobSet>,
     pub format: Format,
 }
 
@@ -70,7 +75,9 @@ struct JsonFile {
     version: &'static str,
 }
 
-pub fn run(cwd: &Path, refspec: Option<&str>, opts: &Options) -> Result<(), LsFilesError> {
+/// List the pointers for `refs`, which has at most two refs.
+pub fn run(cwd: &Path, refs: &[String], opts: &Options) -> Result<(), LsFilesError> {
+    let refspec = refs.first().map(String::as_str);
     let store = Store::new(git_lfs_git::lfs_dir(cwd)?)
         .with_references(git_lfs_git::lfs_alternate_dirs(cwd).unwrap_or_default());
 
@@ -84,6 +91,8 @@ pub fn run(cwd: &Path, refspec: Option<&str>, opts: &Options) -> Result<(), LsFi
             let r: Vec<&str> = refs.iter().map(String::as_str).collect();
             scan_pointers(cwd, &r, &[])?
         }
+    } else if let [from, to] = refs {
+        scan_pointers(cwd, &[to], &[from])?
     } else if opts.deleted {
         let r = refspec.unwrap_or("HEAD");
         scan_pointers(cwd, &[r], &[])?
@@ -120,6 +129,13 @@ pub fn run(cwd: &Path, refspec: Option<&str>, opts: &Options) -> Result<(), LsFi
         }
         merge_by_path(index, tree)
     };
+
+    let pointers: Vec<PointerEntry> = pointers
+        .into_iter()
+        .filter(|p| {
+            crate::fetch::path_passes_filter(p.path.as_deref(), &opts.include, &opts.exclude)
+        })
+        .collect();
 
     // Paths are repo-relative, so check for the files from the root.
     let working_dir = repo_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
