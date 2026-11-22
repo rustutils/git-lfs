@@ -282,7 +282,7 @@ impl Client {
                     .body(body_bytes.clone())
             })
             .await?;
-        let env: LockEnvelope = decode(resp).await?;
+        let env: LockEnvelope = decode(&reqwest::Method::POST, resp).await?;
         Ok(env.lock)
     }
 }

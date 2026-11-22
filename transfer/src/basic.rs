@@ -159,12 +159,14 @@ pub(crate) async fn download(
         store_for_blocking.prepare_incomplete_dir()?;
         write_partial(&partial_path_owned, server_resumed, &mut bridge)?;
         let actual = hash_file(&partial_path_owned)?;
-        if actual != expected {
-            return Err(TransferError::Store(
-                git_lfs_store::StoreError::HashMismatch { expected, actual },
-            ));
-        }
         let total = std::fs::metadata(&partial_path_owned)?.len();
+        if actual != expected {
+            return Err(TransferError::Corrupt {
+                expected,
+                actual,
+                written: total,
+            });
+        }
         store_for_blocking.commit_partial(expected, &partial_path_owned)?;
         Ok(total)
     })

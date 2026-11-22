@@ -139,7 +139,9 @@ fn resolve_input(
     );
     match res {
         Ok(_) => {}
-        Err(SmudgeError::FetchFailed(e)) => return Err(MergeDriverError::Fetch(e)),
+        Err(SmudgeError::FetchFailed { source, .. }) => {
+            return Err(MergeDriverError::Fetch(source));
+        }
         Err(e) => return Err(e.into()),
     }
     use std::io::Write;

@@ -54,8 +54,16 @@ pub enum SmudgeError {
     #[error("object {} (size {}) is not present in the local store", .0.oid, .0.size)]
     ObjectMissing(Pointer),
     /// The fetch closure passed to [`smudge_with_fetch`] failed.
-    #[error("fetch failed: {0}")]
-    FetchFailed(FetchError),
+    ///
+    /// Displays with upstream's wording, which the shell tests match.
+    #[error("Error downloading {path} ({oid}): {source}")]
+    FetchFailed {
+        /// The path being smudged.
+        path: String,
+        oid: Oid,
+        #[source]
+        source: FetchError,
+    },
     /// The pointer names an extension that isn't in the configured list.
     #[error("extension {name:?} is not configured")]
     ExtensionNotConfigured { name: String },
@@ -84,6 +92,21 @@ pub enum SmudgeError {
         expected: Oid,
         actual: Oid,
     },
+}
+
+impl SmudgeError {
+    /// The line upstream prints when a smudge download fails.
+    ///
+    /// `None` for errors other than [`FetchFailed`](Self::FetchFailed).
+    pub fn download_error_line(&self) -> Option<String> {
+        let SmudgeError::FetchFailed { path, oid, .. } = self else {
+            return None;
+        };
+        let short = &oid.to_string()[..7];
+        Some(format!(
+            "Error downloading object: {path} ({short}): Smudge error: {self}"
+        ))
+    }
 }
 
 /// Run the smudge filter on `input` and write the content to `output`.
@@ -146,7 +169,11 @@ where
 {
     match smudge(store, input, output, path, extensions) {
         Err(SmudgeError::ObjectMissing(pointer)) => {
-            fetch(&pointer).map_err(SmudgeError::FetchFailed)?;
+            fetch(&pointer).map_err(|source| SmudgeError::FetchFailed {
+                path: path.to_owned(),
+                oid: pointer.oid,
+                source,
+            })?;
             if !store.contains_with_size(pointer.oid, pointer.size) {
                 return Err(SmudgeError::ObjectMissing(pointer));
             }
@@ -497,8 +524,8 @@ mod tests {
             |_p: &Pointer| Err("server is on fire".into()),
         );
         match outcome.unwrap_err() {
-            SmudgeError::FetchFailed(e) => {
-                assert!(e.to_string().contains("server is on fire"));
+            e @ SmudgeError::FetchFailed { .. } => {
+                assert!(e.to_string().ends_with("): server is on fire"), "{e}");
             }
             other => panic!("expected FetchFailed, got {other:?}"),
         }

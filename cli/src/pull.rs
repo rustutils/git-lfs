@@ -29,8 +29,9 @@ pub enum PullCommandError {
     Io(#[from] std::io::Error),
     #[error("git ls-files failed: {0}")]
     LsFiles(String),
-    #[error("partial pull: {0} object(s) failed to fetch — working tree not updated")]
-    FetchFailures(usize),
+    /// Some objects failed to download. Holds the endpoint URL.
+    #[error("Failed to fetch some objects from '{0}'")]
+    FetchFailures(String),
     #[error("smudge: {0}")]
     Smudge(#[from] SmudgeError),
 }
@@ -58,7 +59,7 @@ pub fn pull_with_filter(
     };
     let outcome = fetch::fetch(cwd, &opts)?;
     if !outcome.report.failed.is_empty() {
-        return Err(PullCommandError::FetchFailures(outcome.report.failed.len()));
+        return Err(PullCommandError::FetchFailures(outcome.endpoint));
     }
 
     // Like upstream's `newSingleCheckout`, which checks

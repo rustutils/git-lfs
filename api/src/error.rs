@@ -54,6 +54,19 @@ pub enum ApiError {
     #[error("malformed response body: {0}")]
     Decode(String),
 
+    /// A successful response's body wasn't the expected JSON.
+    ///
+    /// Displays with upstream's wording, which the shell tests match.
+    #[error("Unable to parse HTTP response for {method} {url}: {message}")]
+    ResponseParse {
+        /// Request method, such as `POST`.
+        method: String,
+        /// URL the response came from, after redirects.
+        url: String,
+        /// The JSON parser's error.
+        message: String,
+    },
+
     /// The request URL couldn't be built from the endpoint.
     #[error("url error: {0}")]
     Url(#[from] url::ParseError),

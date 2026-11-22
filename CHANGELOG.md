@@ -60,6 +60,17 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
   path, so it can contain spaces. Both were split on whitespace before.
 - The path of an `ssh://` URL is percent-decoded, like upstream, so
   `ssh://host/my%20repo` refers to `/my repo`.
+- Error messages match upstream's wording: a corrupt download says how
+  many bytes were written, a batch response that isn't valid JSON says
+  "Unable to parse HTTP response for POST <url>", and failed `fetch` and
+  `pull` runs name the endpoint, as in "Failed to fetch some objects from
+  '<url>'".
+- A failed smudge download prints upstream's "Error downloading object"
+  line with the cause. The `smudge` command then writes the pointer and
+  exits 2, like upstream, and with `lfs.skipDownloadErrors` it exits 0.
+  Under `git checkout` and `git pull`, Git only reported "smudge filter lfs
+  failed" before.
+- `GIT_TRACE` output has upstream's `tq: starting transfer adapter` line.
 - A batch request that fails to connect is sent again at once, up to
   `lfs.transfer.maxRetries` times, like upstream, instead of being retried
   with backoff. Over SSH this no longer runs `git-lfs-authenticate` again

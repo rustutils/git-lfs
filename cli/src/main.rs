@@ -382,8 +382,16 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                     );
                     match result {
                         Ok(_) => {}
-                        Err(SmudgeError::FetchFailed(_)) if env::skip_download_errors(&cwd) => {
+                        Err(e @ SmudgeError::FetchFailed { .. }) => {
+                            // Like upstream, write the pointer instead.
                             output.write_all(&buf)?;
+                            output.flush()?;
+                            if let Some(line) = e.download_error_line() {
+                                eprintln!("{line}");
+                            }
+                            if !env::skip_download_errors(&cwd) {
+                                return Ok(2);
+                            }
                         }
                         Err(e) => return Err(Box::new(e)),
                     }
@@ -571,9 +579,12 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             match fetch::fetch(&cwd, &opts) {
                 Ok(outcome) => {
                     if !outcome.report.failed.is_empty() {
-                        // Tests grep for this prefix of upstream's
-                        // message. Upstream exits 2 here, not 1.
-                        return Err("error: failed to fetch some objects".into());
+                        // Upstream exits 2 here, not 1.
+                        return Err(format!(
+                            "error: failed to fetch some objects from '{}'",
+                            outcome.endpoint
+                        )
+                        .into());
                     }
                 }
                 Err(fetch::FetchCommandError::Usage(msg)) if msg == "Not in a Git repository." => {
@@ -601,7 +612,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 Err(e @ pull::PullCommandError::FetchFailures(_)) => {
                     // Upstream exits 2 when objects fail to download,
                     // and t-pull.sh checks for that.
-                    eprintln!("git-lfs: {e}");
+                    eprintln!("{e}");
                     return Ok(2);
                 }
                 Err(e) => return Err(e.into()),

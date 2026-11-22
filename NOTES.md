@@ -67,12 +67,6 @@ Ordered by failing tests fixed per effort, from the triage after the
 v3.8.1 update. Small means under an hour or so, medium a few hours, large
 a feature.
 
-- **Messages and traces** (small):
-  - `t-batch-error-handling` 1 wants `Unable to parse HTTP response for
-    POST <url>: ...` where we print `malformed response body: ...`.
-  - `t-custom-transfers-protect` 1 and 3 only need the trace line
-    `tq: starting transfer adapter "basic"`.
-  - Corrupt downloads, under Known bugs.
 - **`git lfs completion`** (small, `t-completion`). Tests 1 to 3 compare
   against the scripts in `tests/fixtures/completions/`, and 4 and 5 check
   argument errors. The scripts call `git lfs __completeNoDesc`, so working
@@ -148,6 +142,8 @@ Tests that won't pass:
 Gaps no test covers:
 
 - `git lfs install --manual` (`git lfs update --manual` works).
+- `git lfs pull` checks out nothing when some objects fail to download.
+  Upstream checks out the ones that did, then fails.
 - `GIT_SSL_NO_VERIFY` isn't read, so it can't turn off certificate
   verification.
 - `git lfs locks --cached`.
@@ -172,9 +168,6 @@ come from reading the code.
 
 ### Wrong results or failures
 
-- **Corrupt downloads** report `expected OID X, got Y` instead of
-  upstream's `expected OID X, got Y after N bytes written`
-  (`t-batch-storage-corrupt` 1 and 2).
 - **An invalid `.gitattributes` pattern is ignored** instead of reported
   (`t-post-checkout` 3).
 - **Flaky tests**: `t-migrate-export` test 2 or 15 sometimes fails with

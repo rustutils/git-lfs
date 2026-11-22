@@ -171,12 +171,18 @@ impl Transfer {
         if let Some(r) = r#ref {
             req = req.with_ref(r);
         }
+        // The adapter name, for upstream's `tq: starting transfer adapter`
+        // trace.
+        let mut adapter = "basic";
         let resp: BatchResponse = match &self.backend {
             Backend::Http { api, .. } => self.batch_with_retry(api, &req).await?,
             // SSH batch requests aren't retried: a failure there means
             // the SSH session itself is broken.
             Backend::Ssh(ssh_backend) => match ssh_backend.dispatch(dir.into()) {
-                Transport::Pool(pool) => ssh::batch(pool, &req).await?,
+                Transport::Pool(pool) => {
+                    adapter = "ssh";
+                    ssh::batch(pool, &req).await?
+                }
                 Transport::Http(http) => self.batch_with_retry(&http.api, &req).await?,
                 Transport::NoFallback(e) => {
                     return Err(TransferError::Io(std::io::Error::other(e.to_string())));
@@ -197,6 +203,7 @@ impl Transfer {
         let mut join: JoinSet<(String, Result<(), TransferError>)> = JoinSet::new();
 
         let mut unknown = Vec::new();
+        let mut adapter_started = false;
         for mut obj in resp.objects {
             // Only act on objects this batch asked for, as upstream does.
             // An upload of any other OID would send whatever the store has
@@ -228,6 +235,14 @@ impl Transfer {
                     if let Some(v) = actions.verify.as_mut() {
                         v.href = rewriter(&v.href);
                     }
+                }
+            }
+            // Like upstream, start the adapter only once an object needs
+            // transferring.
+            if obj.actions.is_some() && !adapter_started {
+                adapter_started = true;
+                if trace_enabled() {
+                    eprintln!("tq: starting transfer adapter {adapter:?}");
                 }
             }
             let permit_src = limit.clone();

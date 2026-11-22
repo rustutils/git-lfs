@@ -189,6 +189,27 @@ async fn batch_404_without_body_is_still_typed() {
     assert!(err.is_not_found());
 }
 
+#[tokio::test]
+async fn batch_with_an_unparsable_body_names_the_request() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/objects/batch"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("{"))
+        .mount(&server)
+        .await;
+
+    let err = client(&server, Auth::None)
+        .batch(&BatchRequest::new(Operation::Download, vec![]))
+        .await
+        .unwrap_err();
+    let prefix = format!(
+        "Unable to parse HTTP response for POST {}/objects/batch: ",
+        server.uri()
+    );
+    assert!(err.to_string().starts_with(&prefix), "{err}");
+    assert!(!err.is_retryable());
+}
+
 /// The status of a failed batch request answered with `status`.
 async fn batch_error(status: u16) -> ApiError {
     let server = MockServer::start().await;

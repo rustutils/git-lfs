@@ -69,6 +69,8 @@ pub struct FetchOptions<'a> {
 #[derive(Debug, Default)]
 pub struct FetchOutcome {
     pub report: Report,
+    /// The download endpoint's URL, for upstream's failure message.
+    pub endpoint: String,
 }
 
 /// Run `git lfs fetch`.
@@ -363,7 +365,14 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
         let _ = crate::prune::run(cwd, &prune_opts);
     }
 
-    Ok(FetchOutcome { report })
+    let endpoint = git_lfs_git::endpoint::resolve_endpoint_for(
+        cwd,
+        remote.as_deref(),
+        git_lfs_git::endpoint::Operation::Download,
+    )
+    .map(|info| info.url)
+    .unwrap_or_default();
+    Ok(FetchOutcome { report, endpoint })
 }
 
 /// Print the `--dry-run --json` output, which needs a batch request for

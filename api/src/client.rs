@@ -349,6 +349,7 @@ impl Client {
             let _ = writeln!(err);
         }
         self.send_with_auth_retry(
+            Method::POST,
             || {
                 self.request_with_headers(Method::POST, url.clone(), &ssh)
                     .header(CONTENT_TYPE, LFS_MEDIA_TYPE)
@@ -379,6 +380,7 @@ impl Client {
         let qs = serde_urlencoded::to_string(query)
             .map_err(|e| ApiError::Decode(format!("serializing query: {e}")))?;
         self.send_with_auth_retry(
+            Method::GET,
             || {
                 let mut u = url.clone();
                 if !qs.is_empty() {
@@ -567,13 +569,18 @@ impl Client {
     /// Like [`send_with_auth_retry_response`], but decodes the JSON body.
     ///
     /// [`send_with_auth_retry_response`]: Self::send_with_auth_retry_response
-    async fn send_with_auth_retry<F, R>(&self, build: F, retries: u32) -> Result<R, ApiError>
+    async fn send_with_auth_retry<F, R>(
+        &self,
+        method: Method,
+        build: F,
+        retries: u32,
+    ) -> Result<R, ApiError>
     where
         F: Fn() -> RequestBuilder,
         R: DeserializeOwned,
     {
         let resp = self.send_with_retries(build, retries).await?;
-        decode::<R>(resp).await
+        decode::<R>(&method, resp).await
     }
 
     /// Approve the filled credentials, if any.
@@ -614,11 +621,21 @@ fn collapse_slashes(path: &str) -> String {
 }
 
 /// Convert an HTTP response into either a typed body or an [`ApiError`].
-pub(crate) async fn decode<R: DeserializeOwned>(resp: Response) -> Result<R, ApiError> {
+///
+/// `method` is the request's method, for the parse error message.
+pub(crate) async fn decode<R: DeserializeOwned>(
+    method: &Method,
+    resp: Response,
+) -> Result<R, ApiError> {
     let status = resp.status();
     if status.is_success() {
+        let url = resp.url().to_string();
         let bytes = resp.bytes().await?;
-        return serde_json::from_slice(&bytes).map_err(|e| ApiError::Decode(e.to_string()));
+        return serde_json::from_slice(&bytes).map_err(|e| ApiError::ResponseParse {
+            method: method.to_string(),
+            url,
+            message: e.to_string(),
+        });
     }
 
     let lfs_authenticate = resp

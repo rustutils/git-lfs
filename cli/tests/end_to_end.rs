@@ -141,18 +141,16 @@ fn smudge_passes_through_non_pointer() {
 
 #[test]
 fn smudge_missing_object_without_lfs_url_errors() {
-    // No `lfs.url` and no `remote.origin.url` configured + missing object →
-    // smudge attempts to fetch, can't resolve an LFS endpoint, and fails
-    // with a clear error. Previously (before transfer wiring) this
-    // surfaced as ObjectMissing; now it surfaces as a fetch failure that
-    // names the unresolved endpoint.
+    // With no endpoint and a missing object, smudge fails with an error
+    // that names the unresolved endpoint, and writes the pointer like
+    // upstream.
     let repo = fresh_repo();
     let pointer = b"version https://git-lfs.github.com/spec/v1\n\
                     oid sha256:0000000000000000000000000000000000000000000000000000000000000001\n\
                     size 5\n";
     let out = run_in(repo.path(), &["smudge"], pointer);
-    assert!(!out.status.success());
-    assert!(out.stdout.is_empty(), "no partial output on miss");
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(out.stdout, pointer);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("LFS endpoint") || stderr.contains("origin"),

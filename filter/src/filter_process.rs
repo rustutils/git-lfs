@@ -266,7 +266,7 @@ where
     write_initial_status(writer)?;
     let mut outcome: Option<SmudgeOutcome> = None;
     let result = run_through_sink(writer, |sink| {
-        // Git only learns success or error. The specific error is dropped.
+        // Git only learns success or error, so say why on stderr.
         match smudge_with_fetch(
             store,
             &mut { payload },
@@ -279,7 +279,12 @@ where
                 outcome = Some(o);
                 Ok(())
             }
-            Err(e) => Err(io::Error::other(e.to_string())),
+            Err(e) => {
+                if let Some(line) = e.download_error_line() {
+                    eprintln!("{line}");
+                }
+                Err(io::Error::other(e.to_string()))
+            }
         }
     });
     write_final_status(writer, result.is_ok())?;

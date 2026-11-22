@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use git_lfs_api::{ApiError, ObjectError};
-use git_lfs_pointer::OidParseError;
+use git_lfs_pointer::{Oid, OidParseError};
 use git_lfs_store::StoreError;
 
 /// Why a per-object transfer failed.
@@ -40,10 +40,20 @@ pub enum TransferError {
     #[error("local io error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// The store rejected the bytes, most often because a download didn't
-    /// hash to its OID.
+    /// The local store failed.
     #[error("store error: {0}")]
     Store(#[from] StoreError),
+
+    /// A download didn't hash to its OID. Nothing is stored.
+    ///
+    /// Displays with upstream's wording, which the shell tests match.
+    #[error("expected OID {expected}, got {actual} after {written} bytes written")]
+    Corrupt {
+        expected: Oid,
+        actual: Oid,
+        /// Size of the downloaded content.
+        written: u64,
+    },
 
     /// An OID is not valid hex.
     #[error("invalid oid from server: {0}")]
@@ -141,6 +151,7 @@ impl TransferError {
             TransferError::ServerObject(_)
             | TransferError::NoDownloadAction
             | TransferError::Store(_)
+            | TransferError::Corrupt { .. }
             | TransferError::InvalidOid(_)
             | TransferError::UnknownOid
             | TransferError::UnsupportedHashAlgo(_)

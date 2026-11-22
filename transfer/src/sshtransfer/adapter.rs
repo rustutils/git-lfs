@@ -267,8 +267,17 @@ fn receive_object<R: Read, W: Write>(
         ))));
     }
     file.as_file_mut().seek(SeekFrom::Start(0))?;
-    store.insert_verified(expected_oid, file.as_file_mut())?;
-    Ok(())
+    match store.insert_verified(expected_oid, file.as_file_mut()) {
+        Ok(_) => Ok(()),
+        Err(git_lfs_store::StoreError::HashMismatch { expected, actual }) => {
+            Err(TransferError::Corrupt {
+                expected,
+                actual,
+                written,
+            })
+        }
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// Upload one object from the store with `put-object`, then confirm it
@@ -416,7 +425,10 @@ mod tests {
     fn receive_object_rejects_data_with_the_wrong_hash() {
         let (_tmp, store) = store();
         let err = receive_object(&mut reply(b"abd"), &store, ABC_OID, 3);
-        assert!(matches!(err, Err(TransferError::Store(_))), "{err:?}");
+        assert!(
+            matches!(err, Err(TransferError::Corrupt { written: 3, .. })),
+            "{err:?}"
+        );
         assert!(!store.contains(ABC_OID.parse().unwrap()));
     }
 

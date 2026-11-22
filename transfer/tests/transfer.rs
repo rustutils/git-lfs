@@ -145,6 +145,8 @@ async fn download_hash_mismatch_is_failed_and_not_retried() {
         .unwrap();
 
     assert_eq!(report.failed.len(), 1);
+    let msg = report.failed[0].1.to_string();
+    assert!(msg.ends_with("after 3 bytes written"), "{msg}");
     let oid = Oid::from_hex(ABC_OID).unwrap();
     assert!(!store.contains(oid));
 }
