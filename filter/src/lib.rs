@@ -38,6 +38,7 @@ use git_lfs_pointer::{MAX_POINTER_SIZE, Pointer};
 
 mod clean;
 mod filter_process;
+pub mod progress;
 mod smudge;
 
 pub use clean::{CleanError, CleanExtension, CleanOutcome, build_pointer_with_extensions, clean};

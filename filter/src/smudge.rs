@@ -160,6 +160,30 @@ pub fn smudge_with_fetch<R, W, F>(
     output: &mut W,
     path: &str,
     extensions: &[SmudgeExtension],
+    fetch: F,
+) -> Result<SmudgeOutcome, SmudgeError>
+where
+    R: Read,
+    W: Write,
+    F: FnMut(&Pointer) -> Result<(), FetchError>,
+{
+    let outcome = smudge_or_fetch(store, input, output, path, extensions, fetch)?;
+    // Upstream logs each smudged file as a `download`, whether or not it
+    // needed downloading.
+    if let SmudgeOutcome::Resolved(pointer) = &outcome
+        && pointer.size > 0
+    {
+        crate::progress::log_file("download", path, pointer.size);
+    }
+    Ok(outcome)
+}
+
+fn smudge_or_fetch<R, W, F>(
+    store: &Store,
+    input: &mut R,
+    output: &mut W,
+    path: &str,
+    extensions: &[SmudgeExtension],
     mut fetch: F,
 ) -> Result<SmudgeOutcome, SmudgeError>
 where

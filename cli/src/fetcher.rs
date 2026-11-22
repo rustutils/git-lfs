@@ -61,6 +61,8 @@ pub struct LfsFetcher {
     /// Whether a standalone transfer agent moves the objects, so there's
     /// no LFS server to check locks with.
     standalone: bool,
+    /// File names for objects, by OID, for the `GIT_LFS_PROGRESS` log.
+    progress_names: Mutex<HashMap<String, String>>,
 }
 
 impl LfsFetcher {
@@ -174,7 +176,66 @@ impl LfsFetcher {
             cwd: cwd.to_path_buf(),
             ssh_pools,
             standalone,
+            progress_names: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Name the objects in the `GIT_LFS_PROGRESS` log by these paths,
+    /// keyed by OID. Objects without one are named by their OID.
+    pub fn set_progress_names<P: AsRef<Path>>(&self, names: &HashMap<String, P>) {
+        let mut map = self.progress_names.lock().unwrap();
+        for (oid, path) in names {
+            map.insert(oid.clone(), path.as_ref().to_string_lossy().into_owned());
+        }
+    }
+
+    /// Run a transfer, writing its progress to the `GIT_LFS_PROGRESS` log
+    /// as `event` lines, like upstream's meter.
+    fn run_logged<F, Fut>(&self, event: &str, count: usize, run: F) -> Result<Report, FetchError>
+    where
+        F: FnOnce(Option<tokio::sync::mpsc::UnboundedSender<git_lfs_transfer::Event>>) -> Fut,
+        Fut: std::future::Future<Output = Result<Report, git_lfs_transfer::TransferError>>,
+    {
+        let Some(log) = git_lfs_filter::progress::ProgressLog::from_env() else {
+            return Ok(self.runtime.block_on(run(None))?);
+        };
+        let names = self.progress_names.lock().unwrap().clone();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let consume = async move {
+            use git_lfs_transfer::Event;
+            // Each object's number, size, and the bytes last logged.
+            let mut started: HashMap<String, (usize, u64, u64)> = HashMap::new();
+            while let Some(e) = rx.recv().await {
+                let name = |oid: &str| names.get(oid).cloned().unwrap_or_else(|| oid.to_owned());
+                match e {
+                    Event::Started { oid, size } => {
+                        let n = started.len() + 1;
+                        started.insert(oid, (n, size, 0));
+                    }
+                    Event::Progress { oid, bytes_done } => {
+                        if let Some((n, size, logged)) = started.get_mut(&oid) {
+                            // A compressed body counts its compressed
+                            // bytes, which can pass the size.
+                            let done = bytes_done.min(*size);
+                            log.line(event, *n, count, done, Some(*size), &name(&oid));
+                            *logged = done;
+                        }
+                    }
+                    Event::Completed { oid } => {
+                        if let Some((n, size, logged)) = started.get(&oid)
+                            && logged != size
+                        {
+                            log.line(event, *n, count, *size, Some(*size), &name(&oid));
+                        }
+                    }
+                    Event::Failed { .. } => {}
+                }
+            }
+        };
+        let (report, ()) = self
+            .runtime
+            .block_on(async { tokio::join!(run(Some(tx)), consume) });
+        Ok(report?)
     }
 
     /// Set `lfs.<url>.access = basic` in the local config if the API client
@@ -229,10 +290,10 @@ impl LfsFetcher {
     /// Per-object failures are in the returned [`Report`].
     pub fn download_many(&self, specs: Vec<ObjectSpec>) -> Result<Report, FetchError> {
         let transfer = self.transfer()?;
-        let report = self
-            .runtime
-            .block_on(transfer.download(specs, self.refspec.clone(), None))?;
-        Ok(report)
+        let count = specs.len();
+        self.run_logged("download", count, |events| {
+            transfer.download(specs, self.refspec.clone(), events)
+        })
     }
 
     /// Upload objects to the endpoint.
@@ -242,10 +303,10 @@ impl LfsFetcher {
     /// returned [`Report`].
     pub fn upload_many(&self, specs: Vec<ObjectSpec>) -> Result<Report, FetchError> {
         let transfer = self.transfer()?;
-        let report = self
-            .runtime
-            .block_on(transfer.upload(specs, self.refspec.clone(), None))?;
-        Ok(report)
+        let count = specs.len();
+        self.run_logged("upload", count, |events| {
+            transfer.upload(specs, self.refspec.clone(), events)
+        })
     }
 
     /// The API client, or the error from resolving the endpoint.

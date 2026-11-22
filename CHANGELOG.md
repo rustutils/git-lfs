@@ -29,6 +29,9 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Added
 
+- `GIT_LFS_PROGRESS` names a file that uploads, downloads, checkouts, and
+  the clean and smudge filters append progress lines to, in upstream's
+  format.
 - Downloads ask for gzip-compressed responses, as upstream does. Set
   `lfs.transfer.httpDownloadEncoding`, or
   `lfs.transfer.<url>.httpDownloadEncoding`, to `zstd` to ask for zstd

@@ -144,6 +144,10 @@ pub fn run(cwd: &Path, opts: &Options) -> Result<(), CheckoutError> {
     }
 
     let total = work.len();
+    // Upstream's meter logs each file's size against the total of all of
+    // them.
+    let progress = git_lfs_filter::progress::ProgressLog::from_env();
+    let total_size: u64 = work.iter().map(|(p, _)| p.size).sum();
     let mut materialized = 0usize;
     let mut materialized_bytes: u64 = 0;
     let mut refreshed_paths: Vec<String> = Vec::new();
@@ -240,6 +244,16 @@ pub fn run(cwd: &Path, opts: &Options) -> Result<(), CheckoutError> {
         }
         materialized += 1;
         materialized_bytes += p.size;
+        if let Some(log) = &progress {
+            log.line(
+                "checkout",
+                materialized,
+                total,
+                p.size,
+                Some(total_size),
+                &rel_str,
+            );
+        }
         refreshed_paths.push(rel.to_string_lossy().into_owned());
     }
 

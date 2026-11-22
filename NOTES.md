@@ -66,8 +66,6 @@ Ordered by failing tests fixed per effort, from the triage after the
 v3.8.1 update. Small means under an hour or so, medium a few hours, large
 a feature.
 
-- **`GIT_LFS_PROGRESS`** (medium, `t-progress` 1 to 4). The progress log
-  isn't written.
 - **Storage requests don't authenticate** (medium, `t-credentials` 19 and
   20). A 401 from an upload, download, or verify URL fails the object.
   Upstream sends these through `DoWithAuth`: it fills credentials for the

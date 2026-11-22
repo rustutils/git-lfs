@@ -318,6 +318,7 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
             None
         };
 
+    fetcher.set_progress_names(&paths);
     let report = fetcher
         .download_many(to_fetch.clone())
         .map_err(FetchCommandError::Fetch)?;

@@ -100,6 +100,20 @@ pub fn clean<R: Read, W: Write>(
     path: &str,
     extensions: &[CleanExtension],
 ) -> Result<CleanOutcome, CleanError> {
+    let outcome = clean_content(store, input, output, path, extensions)?;
+    if let CleanOutcome::Stored(pointer) = &outcome {
+        crate::progress::log_file("clean", path, pointer.size);
+    }
+    Ok(outcome)
+}
+
+fn clean_content<R: Read, W: Write>(
+    store: &Store,
+    input: &mut R,
+    output: &mut W,
+    path: &str,
+    extensions: &[CleanExtension],
+) -> Result<CleanOutcome, CleanError> {
     let (head, maybe_pointer) = detect_pointer(input)?;
 
     if let Some(pointer) = maybe_pointer {
