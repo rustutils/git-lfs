@@ -244,6 +244,17 @@ impl Transfer {
         let mut workers: Option<Arc<Workers>> = None;
 
         let limit = Arc::new(Semaphore::new(self.config.concurrency.max(1)));
+        // One zstd decoder slot per concurrent download, handed out in
+        // turn, so concurrent downloads get different slots.
+        let zstd_slots: Vec<basic::ZstdSlot> = (0..self.config.concurrency.max(1))
+            .map(|_| basic::ZstdSlot::default())
+            .collect();
+        let free_slots = Arc::new(std::sync::Mutex::new(
+            zstd_slots
+                .iter()
+                .cloned()
+                .collect::<std::collections::VecDeque<_>>(),
+        ));
         let mut join: JoinSet<(String, Result<(), TransferError>)> = JoinSet::new();
 
         let mut unknown = Vec::new();
@@ -299,23 +310,30 @@ impl Transfer {
             }
             let custom_workers = workers.clone();
             let permit_src = limit.clone();
+            let free_slots = free_slots.clone();
             let backend = self.backend.clone();
             let store = self.store.clone();
             let config = self.config.clone();
             let events = events.clone();
             join.spawn(async move {
                 let _permit = permit_src.acquire_owned().await.expect("semaphore live");
+                // There's a slot for each permit.
+                let slot = free_slots.lock().unwrap().pop_front();
                 let oid = obj.oid.clone();
                 let result = process_object(
                     dir,
                     &backend,
                     custom_workers.as_deref(),
+                    slot.as_ref(),
                     store,
                     &config,
                     obj,
                     events.as_ref(),
                 )
                 .await;
+                if let Some(slot) = slot {
+                    free_slots.lock().unwrap().push_back(slot);
+                }
                 (oid, result)
             });
         }
@@ -354,6 +372,7 @@ impl Transfer {
         if let Some(workers) = workers {
             workers.shutdown().await;
         }
+        basic::close_zstd_slots(&zstd_slots);
         Ok(report)
     }
 
@@ -427,10 +446,12 @@ fn trace_enabled() -> bool {
 /// Transfer one object from the batch response, with retries.
 ///
 /// Emits `Started`. The caller emits `Completed` or `Failed`.
+#[allow(clippy::too_many_arguments)]
 async fn process_object(
     dir: Dir,
     backend: &Backend,
     custom: Option<&Workers>,
+    zstd_slot: Option<&basic::ZstdSlot>,
     store: Arc<Store>,
     config: &TransferConfig,
     obj: ObjectResult,
@@ -476,6 +497,8 @@ async fn process_object(
                         obj.size,
                         action,
                         config.extra_headers.as_ref(),
+                        config.download_encoding.as_ref(),
+                        zstd_slot,
                         events,
                     )
                     .await

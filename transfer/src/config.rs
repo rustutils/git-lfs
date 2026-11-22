@@ -9,6 +9,10 @@ pub type UrlRewriter = Arc<dyn Fn(&str) -> String + Send + Sync>;
 
 pub use git_lfs_api::HeaderSource;
 
+/// Looks up a setting for a URL, such as
+/// `lfs.transfer.<url>.httpDownloadEncoding`.
+pub type UrlSetting = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
 use crate::custom::CustomAdapter;
 
 /// Settings for the transfer queue.
@@ -68,6 +72,12 @@ pub struct TransferConfig {
     ///
     /// The CLI passes the `http.extraHeader` settings.
     pub extra_headers: Option<HeaderSource>,
+    /// The `Accept-Encoding` to ask for on each download URL, from
+    /// `lfs.transfer.<url>.httpDownloadEncoding`: `gzip` or `zstd`.
+    ///
+    /// Unset means `gzip`. Any other value fails the download, as in
+    /// upstream. A resumed download asks for no encoding.
+    pub download_encoding: Option<UrlSetting>,
     /// Custom transfer adapters to offer the server, from
     /// `lfs.customtransfer.<name>.*`.
     pub custom_adapters: Vec<CustomAdapter>,
@@ -124,6 +134,7 @@ impl Default for TransferConfig {
             detect_content_type: true,
             max_verifies: 3,
             extra_headers: None,
+            download_encoding: None,
             custom_adapters: Vec::new(),
             basic_transfers_only: false,
             remote: "origin".to_owned(),
@@ -151,6 +162,10 @@ impl std::fmt::Debug for TransferConfig {
             .field(
                 "extra_headers",
                 &self.extra_headers.as_ref().map(|_| "<fn>"),
+            )
+            .field(
+                "download_encoding",
+                &self.download_encoding.as_ref().map(|_| "<fn>"),
             )
             .field("custom_adapters", &self.custom_adapters)
             .field("basic_transfers_only", &self.basic_transfers_only)

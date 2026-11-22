@@ -66,12 +66,8 @@ Ordered by failing tests fixed per effort, from the triage after the
 v3.8.1 update. Small means under an hour or so, medium a few hours, large
 a feature.
 
-- **Compressed downloads** (medium, `t-batch-storage-encoding` 1 to 5).
-  `Accept-Encoding: gzip` isn't sent by default, and
-  `lfs.transfer.httpDownloadEncoding` (gzip, zstd) isn't implemented.
-  reqwest's `gzip` and `zstd` features are off.
 - **`GIT_LFS_PROGRESS`** (medium, `t-progress` 1 to 4). The progress log
-  isn't written. Tests 3 and 4 also need compressed downloads.
+  isn't written.
 - **Storage requests don't authenticate** (medium, `t-credentials` 19 and
   20). A 401 from an upload, download, or verify URL fails the object.
   Upstream sends these through `DoWithAuth`: it fills credentials for the
@@ -81,8 +77,11 @@ a feature.
   `lfs.tusTransfers`. Built into upstream, so no test helper is needed.
 - **Encrypted client certificate keys** (medium, `t-clone` 3 and 4).
   Test 4 also needs `~` expanded in `http.sslCert` and `http.sslKey`.
-- **Expired actions on push** (medium, `t-push` 18). We retry with the
-  same URL instead of sending a new batch request.
+- **Retries reuse the batch response** (medium, `t-push` 18 and
+  `t-batch-storage-encoding` 4). A failed object is retried with the same
+  action, where upstream sends a new batch request first. So an expired
+  action fails instead of being renewed, and the tests that count batch
+  requests see one fewer.
 - **`git lfs migrate import` with a tag of a tag** (medium,
   `t-migrate-import` 35). `git fast-export` refuses it, so the migrate
   fails before rewriting anything.

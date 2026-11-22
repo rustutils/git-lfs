@@ -29,6 +29,10 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Added
 
+- Downloads ask for gzip-compressed responses, as upstream does. Set
+  `lfs.transfer.httpDownloadEncoding`, or
+  `lfs.transfer.<url>.httpDownloadEncoding`, to `zstd` to ask for zstd
+  instead. Batch API requests also accept gzip.
 - `lfs.remote.autodetect` downloads objects for a checkout from the remote
   whose branch contains the commit being checked out, and
   `lfs.remote.searchall` tries every remote when a download fails. They

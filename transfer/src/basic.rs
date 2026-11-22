@@ -14,14 +14,14 @@ use git_lfs_api::{
 };
 use git_lfs_pointer::Oid;
 use git_lfs_store::Store;
-use reqwest::header::{CONTENT_LENGTH, RANGE};
+use reqwest::header::{ACCEPT_ENCODING, CONTENT_ENCODING, CONTENT_LENGTH, RANGE};
 use reqwest::{Body, Method, Response};
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::io::{ReaderStream, StreamReader, SyncIoBridge};
 
-use crate::config::HeaderSource;
+use crate::config::{HeaderSource, UrlSetting};
 use crate::error::TransferError;
 use crate::event::Event;
 
@@ -44,6 +44,12 @@ struct VerifyBody<'a> {
 /// - 206 appends to the partial file.
 /// - 200 means the server ignored the range, so the file is rewritten.
 /// - 416 deletes the partial file and downloads again from the start.
+///
+/// A download from the start asks for `encoding`'s choice of gzip or zstd,
+/// and the body is decompressed as it's written. A resumed one asks for
+/// no encoding, since its range is of the decompressed object. A zstd body
+/// reuses the decoder in `zstd_slot`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn download(
     http: &reqwest::Client,
     store: Arc<Store>,
@@ -51,6 +57,8 @@ pub(crate) async fn download(
     size: u64,
     action: &Action,
     extra_headers: Option<&HeaderSource>,
+    encoding: Option<&UrlSetting>,
+    zstd_slot: Option<&ZstdSlot>,
     events: Option<&UnboundedSender<Event>>,
 ) -> Result<u64, TransferError> {
     let expected = Oid::from_hex(oid)?;
@@ -81,6 +89,20 @@ pub(crate) async fn download(
         // The end byte is inclusive.
         format!("bytes={offset}-{}", size.saturating_sub(1))
     });
+    // Go's client asks for gzip unless there's a range, and upstream asks
+    // for zstd instead when configured.
+    let accept_encoding = match (&range_header, encoding.and_then(|e| e(&action.href))) {
+        (Some(_), _) => None,
+        (None, None) => Some("gzip"),
+        (None, Some(v)) => match v.as_str() {
+            "gzip" => Some("gzip"),
+            "zstd" => Some("zstd"),
+            _ => return Err(TransferError::UnsupportedEncoding(v)),
+        },
+    };
+    if let Some(e) = accept_encoding {
+        req = req.header(ACCEPT_ENCODING, e);
+    }
     if let Some(range) = &range_header {
         req = req.header(RANGE, range);
         if trace_enabled() {
@@ -90,12 +112,27 @@ pub(crate) async fn download(
             );
         }
     }
-    dump_verbose_request(&action.href, range_header.as_deref(), &action.header);
+    dump_verbose_request(
+        &action.href,
+        range_header.as_deref(),
+        accept_encoding,
+        &action.header,
+    );
 
     let resp = send_with_redirects(http, req.build()?, 0)
         .await
         .map_err(from_api)?;
-    dump_verbose_response(&resp);
+    let content_encoding = resp
+        .headers()
+        .get(CONTENT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.trim().to_ascii_lowercase());
+    let gzipped = content_encoding.as_deref() == Some("gzip");
+    let zstd = content_encoding.as_deref() == Some("zstd");
+    if gzipped && trace_enabled() {
+        eprintln!("http: decompressed gzipped response");
+    }
+    dump_verbose_response(&resp, gzipped);
 
     // The server rejected the range. Without the partial file, the
     // second call sends no range, so this recurses at most once.
@@ -115,6 +152,8 @@ pub(crate) async fn download(
             size,
             action,
             extra_headers,
+            encoding,
+            zstd_slot,
             events,
         ))
         .await;
@@ -151,13 +190,37 @@ pub(crate) async fn download(
     });
 
     let async_reader = StreamReader::new(body_stream);
-    let mut bridge = SyncIoBridge::new(async_reader);
+    let bridge = SyncIoBridge::new(async_reader);
+    if zstd && trace_enabled() {
+        eprintln!("http: decompressing zstd-encoded response");
+    }
 
     let partial_path_owned = partial_path.clone();
     let store_for_blocking = store.clone();
+    let zstd_slot = zstd_slot.cloned();
     let total = tokio::task::spawn_blocking(move || -> Result<u64, TransferError> {
         store_for_blocking.prepare_incomplete_dir()?;
-        write_partial(&partial_path_owned, server_resumed, &mut bridge)?;
+        if gzipped {
+            let mut body = flate2::read::GzDecoder::new(bridge);
+            write_partial(&partial_path_owned, server_resumed, &mut body)?;
+        } else if zstd {
+            let reused = zstd_slot.as_ref().and_then(|s| s.lock().unwrap().take());
+            let frame = reused.unwrap_or_else(|| {
+                if trace_enabled() {
+                    eprintln!("http: initialized zstd decoder");
+                }
+                FrameDecoder::new()
+            });
+            let mut body = ZstdFrames::new(bridge, frame)?;
+            let written = write_partial(&partial_path_owned, server_resumed, &mut body);
+            if let (Some(slot), Some(frame)) = (&zstd_slot, body.into_decoder()) {
+                *slot.lock().unwrap() = Some(frame);
+            }
+            written?;
+        } else {
+            let mut body = bridge;
+            write_partial(&partial_path_owned, server_resumed, &mut body)?;
+        }
         let actual = hash_file(&partial_path_owned)?;
         let total = std::fs::metadata(&partial_path_owned)?.len();
         if actual != expected {
@@ -176,6 +239,76 @@ pub(crate) async fn download(
     Ok(total)
 }
 
+type FrameDecoder = ruzstd::decoding::FrameDecoder;
+type Streaming<R> = ruzstd::decoding::StreamingDecoder<std::io::BufReader<R>, FrameDecoder>;
+
+/// A zstd decoder kept for reuse by one concurrent download slot, like
+/// the one each of upstream's transfer workers keeps.
+///
+/// The first zstd download in a slot traces `http: initialized zstd
+/// decoder`, and [`close_zstd_slots`] traces `http: closed zstd decoder`
+/// for each slot that made one.
+pub(crate) type ZstdSlot = Arc<std::sync::Mutex<Option<FrameDecoder>>>;
+
+/// Trace the closing of each slot's decoder, at the end of a batch.
+pub(crate) fn close_zstd_slots(slots: &[ZstdSlot]) {
+    for slot in slots {
+        if slot.lock().unwrap().take().is_some() && trace_enabled() {
+            eprintln!("http: closed zstd decoder");
+        }
+    }
+}
+
+/// Decodes a zstd stream of one or more frames, as a server may send.
+///
+/// `StreamingDecoder` stops at the end of a frame, so the next frame is
+/// started on the same input, with the same decoder, whenever input
+/// remains.
+struct ZstdFrames<R: std::io::Read> {
+    /// `None` after a failure.
+    decoder: Option<Streaming<R>>,
+}
+
+impl<R: std::io::Read> ZstdFrames<R> {
+    fn new(inner: R, decoder: FrameDecoder) -> std::io::Result<Self> {
+        let decoder = Streaming::new_with_decoder(std::io::BufReader::new(inner), decoder)
+            .map_err(zstd_error)?;
+        Ok(Self {
+            decoder: Some(decoder),
+        })
+    }
+
+    /// The decoder, for reuse, if decoding didn't fail.
+    fn into_decoder(self) -> Option<FrameDecoder> {
+        self.decoder.map(|d| d.into_frame_decoder())
+    }
+}
+
+impl<R: std::io::Read> std::io::Read for ZstdFrames<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        loop {
+            let decoder = self
+                .decoder
+                .as_mut()
+                .ok_or_else(|| zstd_error("decoder failed earlier"))?;
+            let n = decoder.read(buf)?;
+            if n > 0 || buf.is_empty() {
+                return Ok(n);
+            }
+            // The frame is done. Start the next, if there is one.
+            if std::io::BufRead::fill_buf(decoder.get_mut())?.is_empty() {
+                return Ok(0);
+            }
+            let (source, frame) = self.decoder.take().expect("checked above").into_parts();
+            self.decoder = Some(Streaming::new_with_decoder(source, frame).map_err(zstd_error)?);
+        }
+    }
+}
+
+fn zstd_error(e: impl std::fmt::Display) -> std::io::Error {
+    std::io::Error::other(format!("zstd: {e}"))
+}
+
 /// Whether `GIT_TRACE` is set to something other than empty or `0`.
 fn trace_enabled() -> bool {
     std::env::var_os("GIT_TRACE").is_some_and(|v| !v.is_empty() && v != "0")
@@ -192,6 +325,7 @@ fn verbose_enabled() -> bool {
 fn dump_verbose_request(
     url: &str,
     range: Option<&str>,
+    accept_encoding: Option<&str>,
     extra_headers: &std::collections::HashMap<String, String>,
 ) {
     if !verbose_enabled() {
@@ -199,6 +333,9 @@ fn dump_verbose_request(
     }
     let mut err = std::io::stderr().lock();
     let _ = writeln!(err, "> GET {url}");
+    if let Some(e) = accept_encoding {
+        let _ = writeln!(err, "> Accept-Encoding: {e}");
+    }
     if let Some(r) = range {
         let _ = writeln!(err, "> Range: {r}");
     }
@@ -212,8 +349,10 @@ fn dump_verbose_request(
 ///
 /// Header names are title-cased and 416 uses its older reason phrase,
 /// `Requested Range Not Satisfiable`, because the upstream tests match
-/// curl's output.
-fn dump_verbose_response(resp: &Response) {
+/// curl's output. For a `gzipped` response, `Content-Encoding` and
+/// `Content-Length` are left out, as Go's client drops them when it
+/// decompresses.
+fn dump_verbose_response(resp: &Response, gzipped: bool) {
     if !verbose_enabled() {
         return;
     }
@@ -225,6 +364,9 @@ fn dump_verbose_response(resp: &Response) {
     };
     let _ = writeln!(err, "< HTTP/1.1 {code} {reason}");
     for (k, v) in resp.headers() {
+        if gzipped && (k == CONTENT_ENCODING || k == CONTENT_LENGTH) {
+            continue;
+        }
         if let Ok(value) = v.to_str() {
             let _ = writeln!(err, "< {}: {value}", title_case_header(k.as_str()));
         }

@@ -258,16 +258,33 @@ pub fn lfs_url_bool(cwd: &Path, url: &str, subkey: &str, default: bool) -> bool 
 ///
 /// Falls back to `lfs.<subkey>`. URLs match as in [`HttpOptions::for_url`].
 pub fn lfs_url_value(cwd: &Path, url: &str, subkey: &str) -> Option<String> {
-    let scoped = lfs_scoped_keys(cwd, url).unwrap_or(Scoped(Vec::new()));
+    url_value(cwd, "lfs", url, subkey)
+}
+
+/// Read the string `<section>.<url>.<subkey>` that best matches `url`,
+/// such as `lfs.transfer.<url>.httpDownloadEncoding`.
+///
+/// Falls back to `<section>.<subkey>`. URLs match as in
+/// [`HttpOptions::for_url`].
+pub fn url_value(cwd: &Path, section: &str, url: &str, subkey: &str) -> Option<String> {
+    let scoped = scoped_keys_in(cwd, section, url).unwrap_or(Scoped(Vec::new()));
     if let Some(v) = scoped.lookup(subkey) {
         return Some(v);
     }
-    get_global(cwd, &format!("lfs.{subkey}")).ok().flatten()
+    get_global(cwd, &format!("{section}.{subkey}"))
+        .ok()
+        .flatten()
 }
 
 /// Read the `lfs.<url>.<key>` entries that match `url`, like
 /// [`scoped_keys`] does for `http.*`.
 fn lfs_scoped_keys(cwd: &Path, url: &str) -> Result<Scoped, Error> {
+    scoped_keys_in(cwd, "lfs", url)
+}
+
+/// Read the `<section>.<url>.<key>` entries that match `url`. `section`
+/// may itself have a dot, as `lfs.transfer` does.
+fn scoped_keys_in(cwd: &Path, section: &str, url: &str) -> Result<Scoped, Error> {
     let out = Command::new("git")
         .arg("-C")
         .arg(cwd)
@@ -276,7 +293,7 @@ fn lfs_scoped_keys(cwd: &Path, url: &str) -> Result<Scoped, Error> {
             "--includes",
             "--null",
             "--get-regexp",
-            r"^lfs\..+\..+$",
+            &format!(r"^{}\..+\..+$", section.replace('.', r"\.")),
         ])
         .output()?;
     if !out.status.success() {
@@ -289,11 +306,12 @@ fn lfs_scoped_keys(cwd: &Path, url: &str) -> Result<Scoped, Error> {
             Some((k, v)) => (k, v),
             None => (record, ""),
         };
-        let parts: Vec<&str> = key_full.splitn(2, '.').collect();
-        if parts.len() != 2 || parts[0] != "lfs" {
+        let Some(rest) = key_full
+            .strip_prefix(section)
+            .and_then(|r| r.strip_prefix('.'))
+        else {
             continue;
-        }
-        let rest = parts[1];
+        };
         let Some(last_dot) = rest.rfind('.') else {
             continue;
         };

@@ -45,7 +45,7 @@ mod event;
 pub mod sshtransfer;
 mod transfer;
 
-pub use config::{HeaderSource, TransferConfig, UrlRewriter};
+pub use config::{HeaderSource, TransferConfig, UrlRewriter, UrlSetting};
 pub use custom::CustomAdapter;
 pub use error::{Report, TransferError};
 pub use event::Event;

@@ -2,7 +2,9 @@ use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 use git_lfs_creds::{Credentials, FillContext, Helper, Query};
-use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
+use reqwest::header::{
+    ACCEPT, ACCEPT_ENCODING, CONTENT_ENCODING, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue,
+};
 use reqwest::{Method, RequestBuilder, Response};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -268,6 +270,9 @@ impl Client {
         let auth = self.auth.lock().unwrap().clone();
         let mut headers = HeaderMap::new();
         headers.insert(ACCEPT, HeaderValue::from_static(LFS_MEDIA_TYPE));
+        // Like Go's HTTP client, which upstream uses. A gzipped response
+        // is decompressed in `body_bytes`.
+        headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("gzip"));
         for (k, v) in self.extra_headers_for(url.as_str()) {
             if let (Ok(name), Ok(value)) = (
                 HeaderName::try_from(k.as_str()),
@@ -338,6 +343,7 @@ impl Client {
             let mut err = std::io::stderr().lock();
             let _ = writeln!(err, "> POST {url}");
             let _ = writeln!(err, "> Content-Type: {LFS_MEDIA_TYPE}");
+            let _ = writeln!(err, "> Accept-Encoding: gzip");
             // `t-extra-header.sh` greps for lines like `> X-Foo: bar`.
             for (name, value) in self.extra_headers_for(url.as_str()) {
                 let _ = writeln!(err, "> {}", verbose_header_line(&name, &value));
@@ -630,7 +636,13 @@ pub(crate) async fn decode<R: DeserializeOwned>(
     let status = resp.status();
     if status.is_success() {
         let url = resp.url().to_string();
-        let bytes = resp.bytes().await?;
+        let bytes = body_bytes(resp)
+            .await
+            .map_err(|e| ApiError::ResponseParse {
+                method: method.to_string(),
+                url: url.clone(),
+                message: e.to_string(),
+            })?;
         return serde_json::from_slice(&bytes).map_err(|e| ApiError::ResponseParse {
             method: method.to_string(),
             url,
@@ -649,7 +661,7 @@ pub(crate) async fn decode<R: DeserializeOwned>(
         .and_then(|v| v.to_str().ok())
         .and_then(crate::error::parse_retry_after);
     let request_url = resp.url().to_string();
-    let bytes = resp.bytes().await.unwrap_or_default();
+    let bytes = body_bytes(resp).await.unwrap_or_default();
 
     Err(ApiError::Status {
         status: status.as_u16(),
@@ -658,6 +670,27 @@ pub(crate) async fn decode<R: DeserializeOwned>(
         body: serde_json::from_slice(&bytes).ok(),
         retry_after,
     })
+}
+
+/// Read the body of `resp`, decompressing it if it's gzipped.
+///
+/// Under `GIT_TRACE`, a decompressed body is traced as upstream does.
+pub(crate) async fn body_bytes(resp: Response) -> std::io::Result<Vec<u8>> {
+    let gzipped = resp
+        .headers()
+        .get(CONTENT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.trim().eq_ignore_ascii_case("gzip"));
+    let bytes = resp.bytes().await.map_err(std::io::Error::other)?;
+    if !gzipped {
+        return Ok(bytes.to_vec());
+    }
+    let mut out = Vec::new();
+    std::io::Read::read_to_end(&mut flate2::read::GzDecoder::new(&bytes[..]), &mut out)?;
+    if std::env::var_os("GIT_TRACE").is_some_and(|v| !v.is_empty() && v != "0") {
+        eprintln!("http: decompressed gzipped response");
+    }
+    Ok(out)
 }
 
 /// Fill credentials on a blocking thread, since a helper may run

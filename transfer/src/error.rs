@@ -109,6 +109,13 @@ pub enum TransferError {
     /// Not retried, as in upstream.
     #[error("{0}")]
     Custom(String),
+
+    /// `lfs.transfer.httpDownloadEncoding` has a value other than `gzip`
+    /// or `zstd`. Displays with upstream's wording.
+    #[error(
+        "unsupported lfs.transfer.httpDownloadEncoding value {0:?}: must be \"gzip\" or \"zstd\""
+    )]
+    UnsupportedEncoding(String),
 }
 
 /// Format an action status error with upstream's `lfshttp.defaultError`
@@ -166,6 +173,7 @@ impl TransferError {
             | TransferError::Redirect(_)
             | TransferError::VerifyExhausted(_)
             | TransferError::Custom(_)
+            | TransferError::UnsupportedEncoding(_)
             | TransferError::BatchRequest(_) => false,
             TransferError::BatchResponse(e) => e.is_retryable(),
         }

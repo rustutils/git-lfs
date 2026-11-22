@@ -695,6 +695,33 @@ fn positive_setting(cwd: &Path, key: &str) -> Option<u32> {
     raw.trim().parse::<u32>().ok().filter(|n| *n > 0)
 }
 
+/// `lfs.transfer.<url>.httpDownloadEncoding`, looked up for each download
+/// URL.
+///
+/// `None` when no such setting exists, so downloads don't each run
+/// `git config` just to find nothing.
+fn download_encoding_source(cwd: &Path) -> Option<git_lfs_transfer::UrlSetting> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args([
+            "config",
+            "--includes",
+            "--name-only",
+            "--get-regexp",
+            r"^lfs\.transfer\.(.*\.)?httpdownloadencoding$",
+        ])
+        .output()
+        .ok()?;
+    if out.stdout.is_empty() {
+        return None;
+    }
+    let cwd = cwd.to_path_buf();
+    Some(Arc::new(move |url: &str| {
+        git_lfs_git::url_value(&cwd, "lfs.transfer", url, "httpdownloadencoding")
+    }))
+}
+
 /// Whether the boolean setting `key` is true, or `default` if it's unset.
 fn config_true(cwd: &Path, key: &str, default: bool) -> bool {
     match git_lfs_git::config::get_effective(cwd, key) {
@@ -865,6 +892,7 @@ fn extra_header_source(cwd: &Path) -> git_lfs_api::HeaderSource {
 fn transfer_config_for(cwd: &Path, endpoint_url: Option<&str>) -> TransferConfig {
     let mut config = TransferConfig {
         extra_headers: Some(extra_header_source(cwd)),
+        download_encoding: download_encoding_source(cwd),
         custom_adapters: custom_adapters(cwd),
         basic_transfers_only: config_true(cwd, "lfs.basictransfersonly", false),
         ..TransferConfig::default()
