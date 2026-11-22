@@ -19,14 +19,17 @@ pub struct TransferConfig {
     /// Total attempts per object and per HTTP batch request, including
     /// the first.
     ///
-    /// Default 9, which is upstream's 8 retries plus the first attempt.
+    /// Default 9: the first attempt and 8 retries, as for upstream's
+    /// `lfs.transfer.maxRetries`.
     pub max_attempts: u32,
     /// Delay before the first retry.
     ///
     /// Doubled after each retry that wasn't given a `Retry-After` delay,
-    /// up to [`backoff_max`](Self::backoff_max). Default 100 ms.
+    /// up to [`backoff_max`](Self::backoff_max). Default 250 ms, as in
+    /// upstream.
     pub initial_backoff: Duration,
-    /// Upper bound for the backoff delay. Default 30 s.
+    /// Upper bound for the backoff delay. Default 10 s, as for upstream's
+    /// `lfs.transfer.maxRetryDelay`.
     pub backoff_max: Duration,
     /// The longest `Retry-After` delay to wait for.
     ///
@@ -70,8 +73,8 @@ impl Default for TransferConfig {
         Self {
             concurrency: 8,
             max_attempts: 9,
-            initial_backoff: Duration::from_millis(100),
-            backoff_max: Duration::from_secs(30),
+            initial_backoff: Duration::from_millis(250),
+            backoff_max: Duration::from_secs(10),
             max_retry_time: Duration::from_secs(300),
             url_rewriter: None,
             upload_url_rewriter: None,

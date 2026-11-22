@@ -36,6 +36,11 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 - `lfs.transfer.maxRetryTime` limits how long a `Retry-After` delay is
   waited for, 300 seconds by default. A server asking for longer fails the
   transfer instead.
+- `lfs.transfer.maxRetries` and `lfs.transfer.maxRetryDelay` set the number
+  of retries and the longest delay between them. The defaults are
+  upstream's: 8 retries, with a delay starting at 250 milliseconds and
+  doubling up to 10 seconds. It used to start at 100 milliseconds and go up
+  to 30 seconds.
 
 ### Changed
 

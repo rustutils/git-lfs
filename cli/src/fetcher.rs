@@ -706,11 +706,18 @@ fn transfer_config_for(cwd: &Path, endpoint_url: Option<&str>) -> TransferConfig
         config.max_verifies = n;
     }
     // As in upstream, a value below 1 keeps the default.
-    if let Ok(Some(raw)) = git_lfs_git::config::get_effective(cwd, "lfs.transfer.maxretrytime")
-        && let Ok(n) = raw.trim().parse::<u64>()
-        && n > 0
-    {
-        config.max_retry_time = Duration::from_secs(n);
+    let positive = |key: &str| -> Option<u32> {
+        let raw = git_lfs_git::config::get_effective(cwd, key).ok()??;
+        raw.trim().parse::<u32>().ok().filter(|n| *n > 0)
+    };
+    if let Some(n) = positive("lfs.transfer.maxretries") {
+        config.max_attempts = n.saturating_add(1);
+    }
+    if let Some(n) = positive("lfs.transfer.maxretrydelay") {
+        config.backoff_max = Duration::from_secs(n.into());
+    }
+    if let Some(n) = positive("lfs.transfer.maxretrytime") {
+        config.max_retry_time = Duration::from_secs(n.into());
     }
     // Defaults to true. Without an endpoint only `lfs.contenttype` is read.
     config.detect_content_type = match endpoint_url {
@@ -871,5 +878,57 @@ fn read_bool_default(cwd: &Path, key: &str, default: bool) -> bool {
         "true" | "1" | "yes" | "on" => true,
         "false" | "0" | "no" | "off" => false,
         _ => default,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn repo_with(settings: &[(&str, &str)]) -> tempfile::TempDir {
+        let dir = tempfile::TempDir::new().unwrap();
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir.path())
+                .args(args)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+        };
+        git(&["init", "-q"]);
+        for (key, value) in settings {
+            git(&["config", key, value]);
+        }
+        dir
+    }
+
+    #[test]
+    fn retry_settings_are_read() {
+        let repo = repo_with(&[
+            ("lfs.transfer.maxRetries", "3"),
+            ("lfs.transfer.maxRetryDelay", "2"),
+            ("lfs.transfer.maxRetryTime", "5"),
+        ]);
+        let config = transfer_config_for(repo.path(), None);
+        assert_eq!(config.max_attempts, 4);
+        assert_eq!(config.backoff_max, Duration::from_secs(2));
+        assert_eq!(config.max_retry_time, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn retry_settings_below_one_keep_the_defaults() {
+        let repo = repo_with(&[
+            ("lfs.transfer.maxRetries", "0"),
+            ("lfs.transfer.maxRetryDelay", "-1"),
+            ("lfs.transfer.maxRetryTime", "0"),
+        ]);
+        let config = transfer_config_for(repo.path(), None);
+        let default = TransferConfig::default();
+        assert_eq!(config.max_attempts, default.max_attempts);
+        assert_eq!(config.backoff_max, default.backoff_max);
+        assert_eq!(config.max_retry_time, default.max_retry_time);
     }
 }
