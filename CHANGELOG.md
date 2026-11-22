@@ -88,6 +88,8 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- `git lfs env` warns when an `lfs.*` setting is set more than once with
+  different values, as upstream does.
 - With `http.cookieFile` set to an empty file, cookies that the server sets
   are kept and sent back, as upstream does. Before, they were dropped.
 - An `href` from `git-lfs-authenticate` containing a control character,

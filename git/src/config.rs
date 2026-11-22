@@ -225,6 +225,9 @@ fn fold_key(key: &str) -> String {
 
 type LfsConfigEntries = HashMap<String, Vec<String>>;
 
+/// Config entries as `(key, value)`, in the order git lists them.
+type ConfigList = Vec<(String, String)>;
+
 /// Filtered `.lfsconfig` entries, keyed by the canonicalized work tree
 /// root.
 ///
@@ -245,23 +248,7 @@ fn load_lfsconfig(cwd: &Path) -> Result<LfsConfigEntries, Error> {
         return Ok(cached.clone());
     }
 
-    // Same order as upstream's `git/config.go::Sources`: working tree,
-    // index, then `HEAD`, or only `HEAD` in a bare repository. The first
-    // one found wins. t-config 2 covers the index case, staging the file
-    // with `git read-tree` without writing it to the working tree.
-    let bare = is_bare(cwd);
-    let mut entries = None;
-    if !bare && root.join(".lfsconfig").is_file() {
-        entries = Some(read_lfsconfig_file(&root)?);
-    }
-    if entries.is_none() && !bare {
-        entries = read_lfsconfig_blob(cwd, ":.lfsconfig")?;
-    }
-    if entries.is_none() {
-        entries = read_lfsconfig_blob(cwd, "HEAD:.lfsconfig")?;
-    }
-    let entries = entries.unwrap_or_default();
-
+    let entries = group(read_lfsconfig(cwd, &root)?.unwrap_or_default());
     let (safe, ignored) = filter_safe(entries);
 
     if !ignored.is_empty() {
@@ -280,8 +267,84 @@ fn load_lfsconfig(cwd: &Path) -> Result<LfsConfigEntries, Error> {
     Ok(safe)
 }
 
+/// An `lfs.*` key set more than once in one config source, with a value
+/// that differs from the one before it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Clash {
+    pub key: String,
+    /// The values read for `key` before this one, from `.lfsconfig` and
+    /// then git's config.
+    pub earlier: Vec<String>,
+    pub value: String,
+}
+
+/// Find the `lfs.*` values that clash, as upstream's `git lfs env` warns.
+///
+/// `.lfsconfig` and git's merged config are read in that order. Within
+/// each, a repeated key clashes when its value differs from the last value
+/// read for it. Unsafe `.lfsconfig` keys are skipped.
+pub fn clashes(cwd: &Path) -> Result<Vec<Clash>, Error> {
+    let root = repo_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
+    let lfsconfig = read_lfsconfig(cwd, &root)?
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(k, _)| is_safe_key(k))
+        .collect();
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["config", "--includes", "--list", "--null"])
+        .output()?;
+    let gitconfig = if out.status.success() {
+        parse_list_entries(&out.stdout)
+    } else {
+        ConfigList::new()
+    };
+    Ok(find_clashes([lfsconfig, gitconfig]))
+}
+
+fn find_clashes(sources: impl IntoIterator<Item = ConfigList>) -> Vec<Clash> {
+    let mut values = LfsConfigEntries::new();
+    let mut clashes = Vec::new();
+    for source in sources {
+        let mut seen = std::collections::HashSet::new();
+        for (key, value) in source {
+            let earlier = values.entry(key.clone()).or_default();
+            if !seen.insert(key.clone())
+                && key.starts_with("lfs.")
+                && earlier.last().is_some_and(|last| *last != value)
+            {
+                clashes.push(Clash {
+                    key: key.clone(),
+                    earlier: earlier.clone(),
+                    value: value.clone(),
+                });
+            }
+            earlier.push(value);
+        }
+    }
+    clashes
+}
+
+/// Read every entry of `.lfsconfig`, in order, with unsafe keys included.
+///
+/// Same order as upstream's `git/config.go::Sources`: working tree,
+/// index, then `HEAD`, or only `HEAD` in a bare repository. The first one
+/// found wins. t-config 2 covers the index case, staging the file with
+/// `git read-tree` without writing it to the working tree.
+fn read_lfsconfig(cwd: &Path, root: &Path) -> Result<Option<ConfigList>, Error> {
+    let bare = is_bare(cwd);
+    if !bare && root.join(".lfsconfig").is_file() {
+        return read_lfsconfig_file(root).map(Some);
+    }
+    if !bare && let Some(entries) = read_lfsconfig_blob(cwd, ":.lfsconfig")? {
+        return Ok(Some(entries));
+    }
+    read_lfsconfig_blob(cwd, "HEAD:.lfsconfig")
+}
+
 /// Read `.lfsconfig` from the working tree at `root`.
-fn read_lfsconfig_file(root: &Path) -> Result<LfsConfigEntries, Error> {
+fn read_lfsconfig_file(root: &Path) -> Result<ConfigList, Error> {
     let out = Command::new("git")
         .arg("-C")
         .arg(root)
@@ -299,7 +362,7 @@ fn read_lfsconfig_file(root: &Path) -> Result<LfsConfigEntries, Error> {
             String::from_utf8_lossy(&out.stderr).trim()
         )));
     }
-    Ok(parse_list_output(&out.stdout))
+    Ok(parse_list_entries(&out.stdout))
 }
 
 /// Read `.lfsconfig` from a blob, such as `:.lfsconfig` for the index or
@@ -307,7 +370,7 @@ fn read_lfsconfig_file(root: &Path) -> Result<LfsConfigEntries, Error> {
 ///
 /// Returns `None` whenever `git config` fails, which includes a missing
 /// blob or ref.
-fn read_lfsconfig_blob(cwd: &Path, revision: &str) -> Result<Option<LfsConfigEntries>, Error> {
+fn read_lfsconfig_blob(cwd: &Path, revision: &str) -> Result<Option<ConfigList>, Error> {
     let blob_arg = format!("--blob={revision}");
     let out = Command::new("git")
         .arg("-C")
@@ -315,7 +378,7 @@ fn read_lfsconfig_blob(cwd: &Path, revision: &str) -> Result<Option<LfsConfigEnt
         .args(["config", "--includes", &blob_arg, "--list", "--null"])
         .output()?;
     match out.status.code() {
-        Some(0) => Ok(Some(parse_list_output(&out.stdout))),
+        Some(0) => Ok(Some(parse_list_entries(&out.stdout))),
         _ => Ok(None),
     }
 }
@@ -355,22 +418,28 @@ fn repo_root(cwd: &Path) -> Option<PathBuf> {
     Some(PathBuf::from(s))
 }
 
-/// Parse the output of `git config --list --null`.
+/// Parse the output of `git config --list --null` into its entries, in
+/// order.
 ///
 /// Each entry ends with a NUL, and its key and value are separated by the
 /// first newline, so a value containing a newline can't start another
 /// entry, as in upstream's `ParseConfigEntries`. A key without a value is
-/// skipped. Git already prints keys in canonical case. Repeated keys keep
-/// every value, in order.
-fn parse_list_output(bytes: &[u8]) -> LfsConfigEntries {
-    let s = String::from_utf8_lossy(bytes);
-    let mut entries: LfsConfigEntries = HashMap::new();
-    for entry in s.split('\0') {
-        if let Some((k, v)) = entry.split_once('\n') {
-            entries.entry(k.to_owned()).or_default().push(v.to_owned());
-        }
+/// skipped. Git already prints keys in canonical case.
+fn parse_list_entries(bytes: &[u8]) -> ConfigList {
+    String::from_utf8_lossy(bytes)
+        .split('\0')
+        .filter_map(|entry| entry.split_once('\n'))
+        .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        .collect()
+}
+
+/// Group entries by key. Repeated keys keep every value, in order.
+fn group(entries: ConfigList) -> LfsConfigEntries {
+    let mut grouped = LfsConfigEntries::new();
+    for (k, v) in entries {
+        grouped.entry(k).or_default().push(v);
     }
-    entries
+    grouped
 }
 
 /// Split `.lfsconfig` entries into the safe entries and the sorted names
@@ -492,7 +561,7 @@ mod tests {
     #[test]
     fn parse_list_handles_values_with_equals() {
         let raw = b"lfs.url\nhttp://example.com/path?x=1\0remote.origin.lfsurl\nhttp://a\0";
-        let parsed = parse_list_output(raw);
+        let parsed = group(parse_list_entries(raw));
         assert_eq!(
             parsed["lfs.url"],
             vec!["http://example.com/path?x=1".to_owned()]
@@ -501,9 +570,36 @@ mod tests {
     }
 
     #[test]
+    fn clashes_are_repeated_lfs_keys_with_new_values() {
+        let list = |entries: &[(&str, &str)]| -> ConfigList {
+            entries
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                .collect()
+        };
+        let lfsconfig = list(&[("lfs.url", "a")]);
+        let gitconfig = list(&[
+            // The first value in a source never clashes.
+            ("lfs.url", "b"),
+            ("lfs.url", "b"),
+            ("lfs.url", "c"),
+            ("remote.origin.url", "x"),
+            ("remote.origin.url", "y"),
+        ]);
+        assert_eq!(
+            find_clashes([lfsconfig, gitconfig]),
+            vec![Clash {
+                key: "lfs.url".into(),
+                earlier: vec!["a".into(), "b".into(), "b".into()],
+                value: "c".into(),
+            }]
+        );
+    }
+
+    #[test]
     fn parse_list_collects_repeated_keys_in_order() {
         let raw = b"lfs.fetchinclude\na\0lfs.fetchinclude\nb\0";
-        let parsed = parse_list_output(raw);
+        let parsed = group(parse_list_entries(raw));
         assert_eq!(
             parsed["lfs.fetchinclude"],
             vec!["a".to_owned(), "b".to_owned()]
@@ -549,8 +645,8 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(
-            entries.get("lfs.url").and_then(|v| v.last().cloned()),
-            Some("http://from-head/".to_owned())
+            entries,
+            vec![("lfs.url".to_owned(), "http://from-head/".to_owned())]
         );
     }
 

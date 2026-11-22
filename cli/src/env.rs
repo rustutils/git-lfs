@@ -7,8 +7,10 @@
 //! `FetchInclude`, `FetchExclude`, and `Extension[N]` lines upstream adds
 //! when those are set are never printed.
 //!
-//! Endpoint URLs are printed as resolved, so a password in a remote URL
-//! appears in the output, as it does upstream.
+//! Endpoint URLs are printed as resolved, but without any password.
+//!
+//! Like upstream, it warns about `lfs.*` keys set more than once with
+//! different values.
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -33,6 +35,7 @@ pub enum EnvError {
 }
 
 pub fn run(cwd: &Path) -> Result<(), EnvError> {
+    warn_clashes(cwd);
     println!("git-lfs/{} (rust)", env!("CARGO_PKG_VERSION"));
     println!("{}", git_version());
     println!();
@@ -92,6 +95,57 @@ pub fn run(cwd: &Path) -> Result<(), EnvError> {
     }
 
     Ok(())
+}
+
+/// Warn about `lfs.*` keys set more than once with different values, in
+/// upstream's format, which t-config 13 matches.
+fn warn_clashes(cwd: &Path) {
+    let Ok(clashes) = git_lfs_git::config::clashes(cwd) else {
+        return;
+    };
+    for clash in clashes {
+        let earlier: Vec<String> = clash.earlier.iter().map(|v| go_quote(v)).collect();
+        eprintln!("warning: These `git config` values clash:");
+        eprintln!(
+            "  git config {} = [{}]",
+            go_quote(&clash.key),
+            earlier.join(" ")
+        );
+        eprintln!(
+            "  git config {} = {}",
+            go_quote(&clash.key),
+            go_quote(&clash.value)
+        );
+    }
+}
+
+/// Quote `s` like Go's `%q`, which upstream prints config values with.
+fn go_quote(s: &str) -> String {
+    let mut out = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{7}' => out.push_str("\\a"),
+            '\u{8}' => out.push_str("\\b"),
+            '\u{b}' => out.push_str("\\v"),
+            '\u{c}' => out.push_str("\\f"),
+            c if c.is_control() => {
+                let n = u32::from(c);
+                if n < 0x80 {
+                    out.push_str(&format!("\\x{n:02x}"));
+                } else {
+                    out.push_str(&format!("\\u{n:04x}"));
+                }
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// `url` with any password removed, for display.
@@ -363,5 +417,11 @@ mod tests {
         // Without a password, the URL is printed as it was.
         assert_eq!(without_password("http://foo/bar"), "http://foo/bar");
         assert_eq!(without_password("git@host:repo.git"), "git@host:repo.git");
+    }
+
+    #[test]
+    fn go_quote_escapes_like_go() {
+        assert_eq!(go_quote("http://a"), r#""http://a""#);
+        assert_eq!(go_quote("a\"b\\c\nd\u{7}\u{1}é"), r#""a\"b\\c\nd\a\x01é""#);
     }
 }

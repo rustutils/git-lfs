@@ -67,8 +67,6 @@ Ordered by failing tests fixed per effort, from the triage after the
 v3.8.1 update. Small means under an hour or so, medium a few hours, large
 a feature.
 
-- **`git lfs env`** doesn't warn about clashing `git config` values
-  (small, `t-config` 13).
 - **`git lfs migrate import`, the same blob at two paths.**
   `cli/src/migrate/transform.rs` converts each blob once. With `--above`,
   the second path gets no `.gitattributes` line (small, `t-migrate-import`
