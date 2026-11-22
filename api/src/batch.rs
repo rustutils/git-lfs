@@ -298,7 +298,8 @@ impl Client {
             Operation::Upload => crate::ssh::SshOperation::Upload,
             Operation::Download => crate::ssh::SshOperation::Download,
         };
-        self.post_json("objects/batch", req, op).await
+        self.post_json("objects/batch", req, op, self.batch_retries)
+            .await
     }
 }
 

@@ -68,6 +68,8 @@ pub struct Client {
     /// Whether to leave authenticate headers out of credential fills
     /// (`credential.<url>.skipwwwauth`).
     pub(crate) skip_wwwauth: bool,
+    /// How many times a batch request that fails to connect is sent again.
+    pub(crate) batch_retries: u32,
 }
 
 impl std::fmt::Debug for Client {
@@ -108,6 +110,7 @@ impl Client {
             ssh_resolver: None,
             extra_headers: None,
             skip_wwwauth: false,
+            batch_retries: 8,
         }
     }
 
@@ -180,6 +183,16 @@ impl Client {
     #[must_use]
     pub fn with_skip_wwwauth(mut self, on: bool) -> Self {
         self.skip_wwwauth = on;
+        self
+    }
+
+    /// Set how many times a batch request that fails to connect is sent
+    /// again, as for upstream's `lfs.transfer.maxRetries`. Default 8.
+    ///
+    /// Other requests aren't sent again, also as in upstream.
+    #[must_use]
+    pub fn with_batch_retries(mut self, retries: u32) -> Self {
+        self.batch_retries = retries;
         self
     }
 
@@ -297,12 +310,14 @@ impl Client {
     /// POST a JSON body and decode the JSON response, with the auth retry
     /// loop.
     ///
-    /// `op` is the `git-lfs-authenticate` operation for SSH remotes.
+    /// `op` is the `git-lfs-authenticate` operation for SSH remotes. A
+    /// request that fails to connect is sent again, up to `retries` times.
     pub(crate) async fn post_json<B, R>(
         &self,
         path: &str,
         body: &B,
         op: SshOperation,
+        retries: u32,
     ) -> Result<R, ApiError>
     where
         B: Serialize + ?Sized,
@@ -330,11 +345,14 @@ impl Client {
             let _ = err.write_all(&body_bytes);
             let _ = writeln!(err);
         }
-        self.send_with_auth_retry(|| {
-            self.request_with_headers(Method::POST, url.clone(), &ssh)
-                .header(CONTENT_TYPE, LFS_MEDIA_TYPE)
-                .body(body_bytes.clone())
-        })
+        self.send_with_auth_retry(
+            || {
+                self.request_with_headers(Method::POST, url.clone(), &ssh)
+                    .header(CONTENT_TYPE, LFS_MEDIA_TYPE)
+                    .body(body_bytes.clone())
+            },
+            retries,
+        )
         .await
     }
 
@@ -357,13 +375,16 @@ impl Client {
         // Serialize once, so retries don't run the serializer again.
         let qs = serde_urlencoded::to_string(query)
             .map_err(|e| ApiError::Decode(format!("serializing query: {e}")))?;
-        self.send_with_auth_retry(|| {
-            let mut u = url.clone();
-            if !qs.is_empty() {
-                u.set_query(Some(&qs));
-            }
-            self.request_with_headers(Method::GET, u, &ssh)
-        })
+        self.send_with_auth_retry(
+            || {
+                let mut u = url.clone();
+                if !qs.is_empty() {
+                    u.set_query(Some(&qs));
+                }
+                self.request_with_headers(Method::GET, u, &ssh)
+            },
+            0,
+        )
         .await
     }
 
@@ -381,6 +402,16 @@ impl Client {
         &self,
         build: F,
     ) -> Result<Response, ApiError>
+    where
+        F: Fn() -> RequestBuilder,
+    {
+        self.send_with_retries(build, 0).await
+    }
+
+    /// Like [`send_with_auth_retry_response`](Self::send_with_auth_retry_response),
+    /// but a request that fails to connect is sent again, up to `retries`
+    /// times.
+    async fn send_with_retries<F>(&self, build: F, retries: u32) -> Result<Response, ApiError>
     where
         F: Fn() -> RequestBuilder,
     {
@@ -425,7 +456,7 @@ impl Client {
                 let mut err = std::io::stderr().lock();
                 let _ = writeln!(err, "> {masked}");
             }
-            let resp = send_with_redirects(&self.http, build().build()?).await?;
+            let resp = send_with_redirects(&self.http, build().build()?, retries).await?;
             let status = resp.status();
 
             if status.is_success() {
@@ -533,12 +564,12 @@ impl Client {
     /// Like [`send_with_auth_retry_response`], but decodes the JSON body.
     ///
     /// [`send_with_auth_retry_response`]: Self::send_with_auth_retry_response
-    async fn send_with_auth_retry<F, R>(&self, build: F) -> Result<R, ApiError>
+    async fn send_with_auth_retry<F, R>(&self, build: F, retries: u32) -> Result<R, ApiError>
     where
         F: Fn() -> RequestBuilder,
         R: DeserializeOwned,
     {
-        let resp = self.send_with_auth_retry_response(build).await?;
+        let resp = self.send_with_retries(build, retries).await?;
         decode::<R>(resp).await
     }
 

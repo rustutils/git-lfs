@@ -47,6 +47,8 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Changed
 
+- `GIT_TRACE` output has upstream's `HTTP: <method> <url>` line for each
+  request and `HTTP: <status>` line for each response.
 - `exec:` lines in `GIT_TRACE` output quote each argument, like upstream, so
   they show exactly what was run.
 - `GIT_SSH_COMMAND` and `core.sshCommand` run with `sh -c`, like Git and
@@ -54,6 +56,10 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
   path, so it can contain spaces. Both were split on whitespace before.
 - The path of an `ssh://` URL is percent-decoded, like upstream, so
   `ssh://host/my%20repo` refers to `/my repo`.
+- A batch request that fails to connect is sent again at once, up to
+  `lfs.transfer.maxRetries` times, like upstream, instead of being retried
+  with backoff. Over SSH this no longer runs `git-lfs-authenticate` again
+  for each attempt.
 
 ### Fixed
 

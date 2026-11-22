@@ -260,7 +260,7 @@ impl Client {
         req: &VerifyLocksRequest,
     ) -> Result<VerifyLocksResponse, ApiError> {
         // Over SSH, POST requests use upload-scoped auth, as upstream does.
-        self.post_json("locks/verify", req, crate::ssh::SshOperation::Upload)
+        self.post_json("locks/verify", req, crate::ssh::SshOperation::Upload, 0)
             .await
     }
 

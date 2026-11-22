@@ -399,6 +399,7 @@ fn build_api_client_with(
         .with_credential_helper(default_helper_chain(cwd, &cred_url_for_helper))
         .with_use_http_path(use_http_path)
         .with_skip_wwwauth(skip_wwwauth)
+        .with_batch_retries(positive_setting(cwd, "lfs.transfer.maxretries").unwrap_or(8))
         .with_extra_headers(extra_header_source(cwd));
     if let Some(git_url) = resolved_cred_url {
         client = client.with_cred_url(git_url);
@@ -670,6 +671,13 @@ fn take_url_basic_auth(url: &mut url::Url) -> Auth {
 /// are loaded once here, not per URL. Also reads `lfs.transfer.batchSize`,
 /// `lfs.concurrenttransfers`, `lfs.transfer.maxverifies`, and
 /// `lfs.<endpoint_url>.contenttype`.
+/// A setting that must be a positive number. As in upstream, any other
+/// value counts as unset, so the default applies.
+fn positive_setting(cwd: &Path, key: &str) -> Option<u32> {
+    let raw = git_lfs_git::config::get_effective(cwd, key).ok()??;
+    raw.trim().parse::<u32>().ok().filter(|n| *n > 0)
+}
+
 /// The `http.extraHeader` settings, looked up for each request's URL.
 fn extra_header_source(cwd: &Path) -> git_lfs_api::HeaderSource {
     let headers = git_lfs_git::ExtraHeaders::load(cwd);
@@ -727,18 +735,13 @@ fn transfer_config_for(cwd: &Path, endpoint_url: Option<&str>) -> TransferConfig
     {
         config.max_verifies = n;
     }
-    // As in upstream, a value below 1 keeps the default.
-    let positive = |key: &str| -> Option<u32> {
-        let raw = git_lfs_git::config::get_effective(cwd, key).ok()??;
-        raw.trim().parse::<u32>().ok().filter(|n| *n > 0)
-    };
-    if let Some(n) = positive("lfs.transfer.maxretries") {
+    if let Some(n) = positive_setting(cwd, "lfs.transfer.maxretries") {
         config.max_attempts = n.saturating_add(1);
     }
-    if let Some(n) = positive("lfs.transfer.maxretrydelay") {
+    if let Some(n) = positive_setting(cwd, "lfs.transfer.maxretrydelay") {
         config.backoff_max = Duration::from_secs(n.into());
     }
-    if let Some(n) = positive("lfs.transfer.maxretrytime") {
+    if let Some(n) = positive_setting(cwd, "lfs.transfer.maxretrytime") {
         config.max_retry_time = Duration::from_secs(n.into());
     }
     // Defaults to true. Without an endpoint only `lfs.contenttype` is read.

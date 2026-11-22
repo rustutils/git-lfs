@@ -73,12 +73,6 @@ Grouped by area, with the failing tests each one would fix.
   that use them can't pass yet.
 - **`git-lfs-authenticate` options.** We don't support `lfs.ssh.retries`,
   connection reuse with `lfs.ssh.automultiplex`, or `lfs.defaulttokenttl`.
-- **Batch requests retry like object transfers.** Upstream retries a
-  failed connection inside the HTTP client without tracing again, and only
-  retries a batch request at the queue level for a 429. We retry connection
-  errors, 408, and 5xx with backoff, rerunning `git-lfs-authenticate` each
-  time. We also don't print upstream's `HTTP: <method> <url>` trace line.
-  `t-ssh` 3 to 5 count both.
 - **Compressed downloads**: `lfs.transfer.httpDownloadEncoding` (gzip,
   zstd) isn't implemented (`t-batch-storage-encoding` 1 to 5, and part of
   `t-progress`).
@@ -250,6 +244,13 @@ come from reading the code.
 - With no remote named, credential queries use the LFS endpoint URL
   rather than origin's, and a URL with only a username sends Basic
   credentials with an empty password.
+
+## Deliberate differences from upstream
+
+- **Batch requests answered with 408 or 5xx are retried** with backoff,
+  like object transfers. Upstream only retries a 429 and fails at once on a
+  5xx from the batch API, although it retries a 5xx from storage. A 502 or
+  503 from a proxy is often gone in seconds.
 
 ## Deferred improvements
 

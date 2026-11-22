@@ -189,21 +189,54 @@ async fn batch_404_without_body_is_still_typed() {
     assert!(err.is_not_found());
 }
 
-#[tokio::test]
-async fn batch_5xx_is_retryable() {
+/// The status of a failed batch request answered with `status`.
+async fn batch_error(status: u16) -> ApiError {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/objects/batch"))
-        .respond_with(ResponseTemplate::new(503))
+        .respond_with(ResponseTemplate::new(status))
         .mount(&server)
         .await;
+    client(&server, Auth::None)
+        .batch(&BatchRequest::new(Operation::Download, vec![]))
+        .await
+        .unwrap_err()
+}
 
-    let client = client(&server, Auth::None);
-    let err = client
+#[tokio::test]
+async fn busy_and_server_errors_are_retryable() {
+    for status in [408, 429, 500, 503] {
+        assert!(batch_error(status).await.is_retryable(), "{status}");
+    }
+    for status in [400, 404, 422] {
+        assert!(!batch_error(status).await.is_retryable(), "{status}");
+    }
+}
+
+#[tokio::test]
+async fn batch_that_fails_to_connect_is_sent_again() {
+    // Accept and drop connections, counting them.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+    let accepted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = accepted.clone();
+    tokio::spawn(async move {
+        loop {
+            let (sock, _) = listener.accept().await.unwrap();
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            drop(sock);
+        }
+    });
+
+    let err = Client::new(endpoint, Auth::None)
+        .with_batch_retries(2)
         .batch(&BatchRequest::new(Operation::Download, vec![]))
         .await
         .unwrap_err();
-    assert!(err.is_retryable());
+    assert!(matches!(err, ApiError::Transport(_)), "{err}");
+    // Retried by the client, so not again by the caller.
+    assert!(!err.is_retryable());
+    assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 3);
 }
 
 #[tokio::test]

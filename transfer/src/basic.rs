@@ -9,7 +9,8 @@ use std::sync::Arc;
 
 use futures::StreamExt;
 use git_lfs_api::{
-    Action, Actions, ApiError, is_credential_header, send_with_redirects, verbose_header_line,
+    Action, Actions, ApiError, is_credential_header, send_with_redirects, trace_request,
+    trace_response, verbose_header_line,
 };
 use git_lfs_pointer::Oid;
 use git_lfs_store::Store;
@@ -91,7 +92,7 @@ pub(crate) async fn download(
     }
     dump_verbose_request(&action.href, range_header.as_deref(), &action.header);
 
-    let resp = send_with_redirects(http, req.build()?)
+    let resp = send_with_redirects(http, req.build()?, 0)
         .await
         .map_err(from_api)?;
     dump_verbose_response(&resp);
@@ -407,7 +408,10 @@ pub(crate) async fn upload(
             verbose_logged = true;
         }
 
-        let resp = req.body(body).send().await?;
+        let request = req.body(body).build()?;
+        trace_request(&request);
+        let resp = http.execute(request).await?;
+        trace_response(&resp);
         if redirects < 10
             && let Some(new_href) = follow_redirect(&resp, &href)
         {
@@ -546,7 +550,9 @@ async fn verify(
             req = req.header(k, v);
         }
         let sent = match req.json(&VerifyBody { oid, size }).build() {
-            Ok(request) => send_with_redirects(http, request).await.map_err(from_api),
+            Ok(request) => send_with_redirects(http, request, 0)
+                .await
+                .map_err(from_api),
             Err(e) => Err(TransferError::from(e)),
         };
         match sent {

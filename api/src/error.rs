@@ -115,17 +115,18 @@ impl ApiError {
         matches!(self, ApiError::Status { status: 404, .. })
     }
 
-    /// `true` for errors worth retrying.
+    /// `true` for errors worth retrying with backoff.
     ///
-    /// These are transport failures and 408, 429, and 5xx responses.
+    /// These are 408, 429, and 5xx responses. Upstream only retries a 429,
+    /// but a 5xx from a proxy is often gone in seconds. A request that
+    /// failed to connect isn't included: the client already sent it again.
     pub fn is_retryable(&self) -> bool {
         matches!(
             self,
-            ApiError::Transport(_)
-                | ApiError::Status {
-                    status: 408 | 429 | 500..=599,
-                    ..
-                }
+            ApiError::Status {
+                status: 408 | 429 | 500..=599,
+                ..
+            }
         )
     }
 

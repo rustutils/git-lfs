@@ -84,5 +84,6 @@ pub use locks::{
 pub use models::{Lock, Owner, Ref};
 pub use redirect::{
     http_client, is_credential_header, redirect_keeps_credentials, send_with_redirects,
+    trace_request, trace_response,
 };
 pub use ssh::{SharedSshResolver, SshAuth, SshOperation, SshResolver};

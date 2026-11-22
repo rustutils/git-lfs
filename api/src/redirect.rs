@@ -29,13 +29,24 @@ pub fn http_client() -> Client {
 /// redirect from HTTPS to HTTP is refused. A request whose body can't be
 /// copied, such as a stream, isn't redirected: the redirect response is
 /// returned.
-pub async fn send_with_redirects(client: &Client, request: Request) -> Result<Response, ApiError> {
+///
+/// A request that fails to connect is sent again, up to `retries` times, as
+/// in upstream's `DoWithRedirect`. Under `GIT_TRACE`, each request prints
+/// `HTTP: <method> <url>` and each response `HTTP: <status>`, like
+/// upstream.
+pub async fn send_with_redirects(
+    client: &Client,
+    request: Request,
+    retries: u32,
+) -> Result<Response, ApiError> {
     let mut request = request;
     let mut send_credentials = true;
     let mut redirects = 0;
     loop {
         let next = request.try_clone();
-        let response = client.execute(request).await?;
+        trace_request(&request);
+        let response = execute_with_retries(client, request, retries).await?;
+        trace_response(&response);
         let Some(mut next) = next else {
             return Ok(response);
         };
@@ -55,6 +66,47 @@ pub async fn send_with_redirects(client: &Client, request: Request) -> Result<Re
         *next.url_mut() = location;
         request = next;
         redirects += 1;
+    }
+}
+
+/// Send `request`, sending it again up to `retries` times if it fails to
+/// connect. A request whose body can't be copied is sent once.
+async fn execute_with_retries(
+    client: &Client,
+    request: Request,
+    retries: u32,
+) -> Result<Response, reqwest::Error> {
+    let mut request = request;
+    let mut left = retries;
+    loop {
+        let again = if left > 0 { request.try_clone() } else { None };
+        match (client.execute(request).await, again) {
+            (Err(_), Some(again)) => {
+                request = again;
+                left -= 1;
+            }
+            (result, _) => return result,
+        }
+    }
+}
+
+/// Under `GIT_TRACE`, print `HTTP: <method> <url>` without the query, as
+/// upstream's `traceReq` does.
+pub fn trace_request(request: &Request) {
+    let url = request.url().as_str();
+    let url = url.split_once('?').map_or(url, |(base, _)| base);
+    trace(format_args!("HTTP: {} {url}", request.method()));
+}
+
+/// Under `GIT_TRACE`, print `HTTP: <status>`, as upstream does.
+pub fn trace_response(response: &Response) {
+    trace(format_args!("HTTP: {}", response.status().as_u16()));
+}
+
+fn trace(args: std::fmt::Arguments) {
+    let on = std::env::var_os("GIT_TRACE").is_some_and(|v| !v.is_empty() && v != "0");
+    if on {
+        eprintln!("{args}");
     }
 }
 
