@@ -342,7 +342,7 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
         );
     }
     for (oid, err) in &report.failed {
-        eprintln!("  {oid}: {err}");
+        eprintln!("[{oid}] {err}");
     }
 
     if opts.prune {

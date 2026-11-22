@@ -195,7 +195,7 @@ fn push_by_oid(
     );
     let report = uploaded.map_err(PushCommandError::Fetch)?;
     for (oid, err) in &report.failed {
-        eprintln!("  {oid}: {err}");
+        eprintln!("[{oid}] {err}");
     }
     Ok(PushOutcome {
         report,
@@ -569,7 +569,7 @@ pub(crate) fn upload_in_range_with_args(
     let report = uploaded.map_err(PushCommandError::Fetch)?;
 
     for (oid, err) in &report.failed {
-        eprintln!("  {oid}: {err}");
+        eprintln!("[{oid}] {err}");
     }
 
     // Corrupt objects fail the push even with `lfs.allowincompletepush`.

@@ -873,3 +873,47 @@ async fn retry_after_beyond_max_retry_time_fails_at_once() {
     );
     assert_eq!(server.received_requests().await.unwrap().len(), 1);
 }
+
+// ---------- unknown OIDs ---------------------------------------------------
+
+#[tokio::test]
+async fn object_the_batch_didnt_ask_for_is_not_uploaded() {
+    let server = MockServer::start().await;
+    let (_tmp, store, transfer) = make_transfer(&server);
+    store.insert(&mut ABC_BYTES.to_vec().as_slice()).unwrap();
+    // A second object in the store that the server shouldn't get.
+    let (other, _) = store.insert(&mut b"secret".as_slice()).unwrap();
+    let other_oid = other.to_string();
+    Mock::given(method("POST"))
+        .and(path("/objects/batch"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "transfer": "basic",
+            "objects": [{
+                "oid": other_oid, "size": 6,
+                "actions": { "upload": { "href": format!("{}/storage/x", server.uri()) } }
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    let spec = ObjectSpec {
+        oid: ABC_OID.into(),
+        size: 3,
+    };
+    let report = transfer.upload(vec![spec], None, None).await.unwrap();
+
+    assert_eq!(report.failed.len(), 1);
+    assert_eq!(report.failed[0].0, other_oid);
+    assert_eq!(
+        report.failed[0].1.to_string(),
+        "The server returned an unknown OID."
+    );
+    let puts = server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.method.as_str() == "PUT")
+        .count();
+    assert_eq!(puts, 0, "uploaded an object that wasn't requested");
+}

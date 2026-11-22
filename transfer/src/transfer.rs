@@ -196,7 +196,15 @@ impl Transfer {
         let limit = Arc::new(Semaphore::new(self.config.concurrency.max(1)));
         let mut join: JoinSet<(String, Result<(), TransferError>)> = JoinSet::new();
 
+        let mut unknown = Vec::new();
         for mut obj in resp.objects {
+            // Only act on objects this batch asked for, as upstream does.
+            // An upload of any other OID would send whatever the store has
+            // under it.
+            if !req_sizes.contains_key(&obj.oid) {
+                unknown.push(obj.oid);
+                continue;
+            }
             if obj.size == 0
                 && let Some(s) = req_sizes.get(&obj.oid)
             {
@@ -237,6 +245,15 @@ impl Transfer {
         }
 
         let mut report = Report::default();
+        for oid in unknown {
+            if let Some(s) = &events {
+                let _ = s.send(Event::Failed {
+                    oid: oid.clone(),
+                    error: TransferError::UnknownOid.to_string(),
+                });
+            }
+            report.failed.push((oid, TransferError::UnknownOid));
+        }
         while let Some(joined) = join.join_next().await {
             let (oid, result) =
                 joined.map_err(|e| TransferError::Io(std::io::Error::other(e.to_string())))?;

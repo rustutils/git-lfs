@@ -49,6 +49,13 @@ pub enum TransferError {
     #[error("invalid oid from server: {0}")]
     InvalidOid(#[from] OidParseError),
 
+    /// The batch response has an object that wasn't requested.
+    ///
+    /// It's skipped, so a server can't make us upload an object from the
+    /// store that it didn't ask for in this batch.
+    #[error("The server returned an unknown OID.")]
+    UnknownOid,
+
     /// The batch response named a hash algorithm other than `sha256`.
     #[error("unsupported hash algorithm: {0}")]
     UnsupportedHashAlgo(String),
@@ -135,6 +142,7 @@ impl TransferError {
             | TransferError::NoDownloadAction
             | TransferError::Store(_)
             | TransferError::InvalidOid(_)
+            | TransferError::UnknownOid
             | TransferError::UnsupportedHashAlgo(_)
             | TransferError::ActionExpired { .. }
             | TransferError::InsecureRedirect

@@ -23,6 +23,9 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 - `.lfsconfig` can only set `access` keys under `lfs.`, such as
   `lfs.<url>.access`, as in upstream. Other keys ending in `.access` are
   ignored with a warning.
+- Objects in a batch response that weren't requested are skipped with
+  "The server returned an unknown OID.", like upstream. A server could
+  otherwise get any local object whose OID it knew uploaded to it.
 
 ### Added
 
@@ -47,6 +50,7 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Changed
 
+- A failed object is reported as `[<oid>] <error>`, like upstream.
 - `GIT_TRACE` output has upstream's `HTTP: <method> <url>` line for each
   request and `HTTP: <status>` line for each response.
 - `exec:` lines in `GIT_TRACE` output quote each argument, like upstream, so
