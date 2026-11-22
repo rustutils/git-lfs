@@ -11,9 +11,9 @@
 //! first method that needs it, so smudging an object that's already in the
 //! store works without an endpoint.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use git_lfs_api::{
     Auth, Client as ApiClient, ObjectSpec, Operation, Ref, SharedSshResolver,
@@ -29,7 +29,9 @@ use git_lfs_git::endpoint::SshInfo;
 use git_lfs_pointer::Pointer;
 use git_lfs_store::Store;
 use git_lfs_transfer::backend::{HttpTransport, SshBackend};
-use git_lfs_transfer::sshtransfer::connection::{Metadata as PoolMetadata, Variant as PoolVariant};
+use git_lfs_transfer::sshtransfer::connection::{
+    ConnectionError, Metadata as PoolMetadata, Operation as SshOperation, Variant as PoolVariant,
+};
 use git_lfs_transfer::sshtransfer::pool::{Pool, PoolConfig};
 use git_lfs_transfer::{Report, Transfer, TransferConfig};
 use tokio::runtime::Runtime;
@@ -52,6 +54,9 @@ pub struct LfsFetcher {
     refspec: Option<Ref>,
     /// Where to write `lfs.<url>.access`.
     cwd: PathBuf,
+    /// The pure-SSH pools, shared with the lock check. `None` for an HTTP
+    /// endpoint.
+    ssh_pools: Option<Arc<SshPools>>,
 }
 
 impl LfsFetcher {
@@ -106,17 +111,22 @@ impl LfsFetcher {
                 };
                 (ssh, mode)
             });
+        let ssh_pools = ssh_mode
+            .as_ref()
+            .map(|(ssh, _)| Arc::new(SshPools::new(ssh.clone())));
         let transfer = match ssh_mode {
-            Some((ssh, SshMode::Always)) => {
-                let spawner = ssh_pool_spawner(ssh, config.concurrency.max(1));
+            Some((_, SshMode::Always)) => {
+                let pools = ssh_pools.clone().expect("SSH endpoint has pools");
+                let spawner = ssh_pool_spawner(pools, config.concurrency.max(1));
                 Ok(Transfer::new_ssh(
                     SshBackend::new(spawner, None),
                     store.clone(),
                     config,
                 ))
             }
-            Some((ssh, SshMode::Negotiate)) => {
-                let spawner = ssh_pool_spawner(ssh, config.concurrency.max(1));
+            Some((_, SshMode::Negotiate)) => {
+                let pools = ssh_pools.clone().expect("SSH endpoint has pools");
+                let spawner = ssh_pool_spawner(pools, config.concurrency.max(1));
                 match api.clone() {
                     Ok(api_client) => {
                         let fallback = HttpTransport {
@@ -149,6 +159,7 @@ impl LfsFetcher {
             api,
             refspec,
             cwd: cwd.to_path_buf(),
+            ssh_pools,
         })
     }
 
@@ -268,8 +279,14 @@ impl LfsFetcher {
             .map_err(|m| -> FetchError { m.clone().into() })
             .map_err(crate::push::PushCommandError::Fetch)?
             .clone();
-        let client = crate::lock_client::build_lock_client_with_api(cwd, remote, rt, api)
-            .map_err(|e| crate::push::PushCommandError::Fetch(e.into()))?;
+        let client = crate::lock_client::build_lock_client_with_api(
+            cwd,
+            remote,
+            rt,
+            api,
+            self.ssh_pools.clone(),
+        )
+        .map_err(|e| crate::push::PushCommandError::Fetch(e.into()))?;
         crate::locks_verify::run(&client, cwd, remote_label, endpoint, self.refspec.as_ref())
     }
 
@@ -478,31 +495,68 @@ fn build_ssh_resolver(info: SshInfo) -> SharedSshResolver {
     })
 }
 
-/// Build the closure that starts a pure-SSH connection pool.
+/// The pure-SSH connection pools for one endpoint, one per operation.
 ///
-/// [`SshBackend`] calls it at most once per direction, on first use.
-fn ssh_pool_spawner(ssh: SshInfo, pool_size: usize) -> git_lfs_transfer::backend::PoolSpawner {
-    let program = resolve_ssh_program();
-    let multiplex_enabled = !cfg!(target_os = "windows");
-    let metadata = PoolMetadata {
-        user_and_host: ssh.user_and_host,
-        port: ssh.port,
-        path: ssh.path,
-    };
-    Arc::new(move |operation| {
-        let pool_config = PoolConfig {
-            program: program.clone(),
+/// The transfer queue and the lock client share them, so a push opens one
+/// SSH session for both, as upstream does.
+pub(crate) struct SshPools {
+    program: String,
+    metadata: PoolMetadata,
+    pools: Mutex<HashMap<SshOperation, Arc<Pool>>>,
+}
+
+impl SshPools {
+    pub(crate) fn new(ssh: SshInfo) -> Self {
+        Self {
+            program: resolve_ssh_program(),
+            metadata: PoolMetadata {
+                user_and_host: ssh.user_and_host,
+                port: ssh.port,
+                path: ssh.path,
+            },
+            pools: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// The pool for `operation`, with at least `size` slots.
+    ///
+    /// Starts the pool on first use, spawning its first connection. Later
+    /// calls grow it if they need more slots.
+    pub(crate) fn get(
+        &self,
+        operation: SshOperation,
+        size: usize,
+    ) -> Result<Arc<Pool>, ConnectionError> {
+        let mut pools = self.pools.lock().unwrap();
+        if let Some(pool) = pools.get(&operation) {
+            pool.reserve(size);
+            return Ok(pool.clone());
+        }
+        let config = PoolConfig {
+            program: self.program.clone(),
             // Always OpenSSH: `GIT_SSH_VARIANT` and `ssh.variant` aren't
             // read, and the variant isn't guessed from the program name.
             variant: PoolVariant::Default,
-            metadata: metadata.clone(),
-            operation: operation.into(),
+            metadata: self.metadata.clone(),
+            operation,
             // `lfs.ssh.automultiplex` isn't read. This is its default, on
             // everywhere but Windows.
-            multiplex_enabled,
+            multiplex_enabled: !cfg!(target_os = "windows"),
         };
-        Pool::new(pool_config, pool_size).map(Arc::new)
-    })
+        let pool = Arc::new(Pool::new(config, size)?);
+        pools.insert(operation, pool.clone());
+        Ok(pool)
+    }
+}
+
+/// Build the closure that starts a transfer's pure-SSH pool.
+///
+/// [`SshBackend`] calls it at most once per direction, on first use.
+fn ssh_pool_spawner(
+    pools: Arc<SshPools>,
+    pool_size: usize,
+) -> git_lfs_transfer::backend::PoolSpawner {
+    Arc::new(move |operation| pools.get(operation.into(), pool_size))
 }
 
 /// How an SSH endpoint transfers, from `lfs.<url>.sshtransfer`.

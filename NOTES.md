@@ -71,10 +71,6 @@ Grouped by area, with the failing tests each one would fix.
   (`lfstest-customadapter` and `lfstest-standalonecustomadapter`) import
   upstream's internal Go packages, so they aren't built here and the tests
   that use them can't pass yet.
-- **One SSH session for locks and objects.** `t-batch-transfer` tests 6 to
-  9. A push opens two pure-SSH sessions, one for lock verification
-  (`cli/src/lock_client.rs` builds its own pool) and one for transfers.
-  Upstream shares one.
 - **`git-lfs-authenticate` options.** We don't support `lfs.ssh.retries`,
   connection reuse with `lfs.ssh.automultiplex`, or `lfs.defaulttokenttl`,
   and don't fall back to the guessed HTTPS endpoint when the command is

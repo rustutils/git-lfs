@@ -61,7 +61,7 @@ pub struct Pool {
     _control_dir: Option<TempDir>,
     /// Control socket path. `None` when not multiplexing.
     control_path: Option<PathBuf>,
-    /// One entry per slot. The length never changes.
+    /// One entry per slot. It only grows, with [`reserve`](Pool::reserve).
     slots: Mutex<Vec<SlotState>>,
 }
 
@@ -101,6 +101,17 @@ impl Pool {
             control_path,
             slots: Mutex::new(slots),
         })
+    }
+
+    /// Grow the pool to at least `max_size` slots.
+    ///
+    /// The new slots are vacant, so connections are spawned only when
+    /// needed. A pool is never shrunk.
+    pub fn reserve(&self, max_size: usize) {
+        let mut slots = self.slots.lock().unwrap();
+        while slots.len() < max_size {
+            slots.push(SlotState::Vacant);
+        }
     }
 
     /// Number of connection slots this pool manages.
@@ -321,6 +332,29 @@ mod tests {
         assert_eq!(guard2.slot, 0);
         drop(guard2);
 
+        pool.shutdown().expect("shutdown");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn reserve_adds_slots_for_more_connections() {
+        let tmp = TempDir::new().unwrap();
+        let mut config = fake_pool_config();
+        config.program = working_stub_script(&tmp, "stub.sh");
+
+        let pool = Pool::new(config, 1).expect("pool spawn");
+        let master = pool.acquire().expect("first acquire");
+        assert!(pool.acquire().is_err(), "a one-slot pool has no room");
+
+        pool.reserve(2);
+        assert_eq!(pool.capacity(), 2);
+        let second = pool.acquire().expect("acquire after reserve");
+        assert_eq!(second.slot, 1);
+
+        // Reserving fewer slots doesn't shrink the pool.
+        pool.reserve(1);
+        assert_eq!(pool.capacity(), 2);
+        drop((master, second));
         pool.shutdown().expect("shutdown");
     }
 

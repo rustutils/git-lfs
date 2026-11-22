@@ -18,13 +18,12 @@ use git_lfs_api::{
     ApiError, Client as ApiClient, CreateLockError, CreateLockRequest, DeleteLockRequest,
     ListLocksFilter, Lock, LockList, Owner, Ref, VerifyLocksRequest, VerifyLocksResponse,
 };
-use git_lfs_git::endpoint::SshInfo;
-use git_lfs_transfer::sshtransfer::connection::{
-    ConnectionError, Metadata as PoolMetadata, Operation as SshOperation, Variant as PoolVariant,
-};
+use git_lfs_transfer::sshtransfer::connection::{ConnectionError, Operation as SshOperation};
 use git_lfs_transfer::sshtransfer::lock as ssh_lock;
-use git_lfs_transfer::sshtransfer::pool::{Pool, PoolConfig};
+use git_lfs_transfer::sshtransfer::pool::Pool;
 use tokio::runtime::Runtime;
+
+use crate::fetcher::SshPools;
 
 /// Closure that starts the SSH lock pool for an operation.
 ///
@@ -481,7 +480,7 @@ pub(crate) fn build_lock_client(
     runtime: Arc<Runtime>,
 ) -> Result<LockClient, String> {
     let api = crate::fetcher::build_api_client(cwd, remote)?;
-    build_lock_client_with_api(cwd, remote, runtime, api)
+    build_lock_client_with_api(cwd, remote, runtime, api, None)
 }
 
 /// Build a [`LockClient`] that uses `api` for HTTP.
@@ -501,45 +500,19 @@ pub(crate) fn build_lock_client_with_api(
     remote: Option<&str>,
     runtime: Arc<Runtime>,
     api: ApiClient,
+    ssh_pools: Option<Arc<SshPools>>,
 ) -> Result<LockClient, String> {
     let info = git_lfs_git::endpoint::resolve_endpoint(cwd, remote)
         .map_err(|e| format!("resolving LFS endpoint: {e}"))?;
     let Some(ssh) = info.ssh else {
         return Ok(LockClient::http(api, runtime));
     };
+    let pools = ssh_pools.unwrap_or_else(|| Arc::new(SshPools::new(ssh)));
+    // Lock requests are sent one at a time, so one connection is enough.
+    let spawner: SshLockPoolSpawner = Arc::new(move |operation| pools.get(operation, 1));
     match crate::fetcher::read_sshtransfer_for(cwd, &info.url).as_deref() {
         Some("never") => Ok(LockClient::http(api, runtime)),
-        Some("always") => {
-            let spawner = ssh_lock_pool_spawner(ssh);
-            Ok(LockClient::ssh(spawner))
-        }
-        _ => {
-            let spawner = ssh_lock_pool_spawner(ssh);
-            Ok(LockClient::negotiate(spawner, api, runtime))
-        }
+        Some("always") => Ok(LockClient::ssh(spawner)),
+        _ => Ok(LockClient::negotiate(spawner, api, runtime)),
     }
-}
-
-/// Build the spawner for a one-connection SSH lock pool.
-///
-/// Lock requests are sent one at a time, so more connections wouldn't help.
-/// Like transfers, it always uses the OpenSSH variant.
-fn ssh_lock_pool_spawner(ssh: SshInfo) -> SshLockPoolSpawner {
-    let program = crate::fetcher::resolve_ssh_program();
-    let multiplex_enabled = !cfg!(target_os = "windows");
-    let metadata = PoolMetadata {
-        user_and_host: ssh.user_and_host,
-        port: ssh.port,
-        path: ssh.path,
-    };
-    Arc::new(move |operation: SshOperation| {
-        let pool_config = PoolConfig {
-            program: program.clone(),
-            variant: PoolVariant::Default,
-            metadata: metadata.clone(),
-            operation,
-            multiplex_enabled,
-        };
-        Pool::new(pool_config, 1).map(Arc::new)
-    })
 }

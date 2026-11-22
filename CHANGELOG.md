@@ -33,6 +33,8 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 - `GIT_CURL_VERBOSE` output no longer shows a `Content-Length` for uploads
   the server asked to be chunked. None was sent.
+- A push over pure SSH uses one SSH session for lock verification and
+  uploads, like upstream, instead of opening a second one.
 
 ## [0.8.0] - 2026-11-21
 
