@@ -18,8 +18,8 @@ use std::path::{Path, PathBuf};
 use git_lfs_store::Store;
 
 use super::pipeline::{
-    print_pre_migrate_refs, refresh_working_tree, run_pipeline_with_export_marks,
-    working_tree_dirty,
+    ensure_working_copy_clean, print_pre_migrate_refs, refresh_working_tree,
+    run_pipeline_with_export_marks,
 };
 use super::transform::{Mode, Stats};
 use super::{MigrateError, RefSelection, build_globset, resolve_refs};
@@ -38,6 +38,8 @@ pub struct ExportOptions {
     pub object_map: Option<PathBuf>,
     pub verbose: bool,
     pub remote: Option<String>,
+    /// Rewrite a dirty working tree without asking.
+    pub yes: bool,
 }
 
 pub fn export(cwd: &Path, opts: &ExportOptions) -> Result<Stats, MigrateError> {
@@ -64,11 +66,7 @@ pub fn export(cwd: &Path, opts: &ExportOptions) -> Result<Stats, MigrateError> {
         ));
     }
 
-    if working_tree_dirty(cwd)? {
-        return Err(MigrateError::Other(
-            "working tree has uncommitted changes; commit or stash first".into(),
-        ));
-    }
+    ensure_working_copy_clean(cwd, opts.yes)?;
 
     let sel = RefSelection {
         branches: opts.branches.clone(),

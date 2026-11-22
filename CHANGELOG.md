@@ -53,6 +53,9 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Changed
 
+- `git lfs migrate import` and `export` ask before overwriting
+  uncommitted changes, like upstream, instead of refusing. `--yes` (now
+  also `-y`) skips the question, and `export` now honors it too.
 - A failed object is reported as `[<oid>] <error>`, like upstream.
 - `GIT_TRACE` output has upstream's `HTTP: <method> <url>` line for each
   request and `HTTP: <status>` line for each response.

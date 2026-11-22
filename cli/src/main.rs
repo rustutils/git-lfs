@@ -771,7 +771,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 object_map,
                 verbose,
                 remote,
-                yes: _,
+                yes,
             }) => {
                 let opts = migrate::ExportOptions {
                     branches,
@@ -784,6 +784,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                     object_map,
                     verbose,
                     remote,
+                    yes,
                 };
                 if let Err(e) = migrate::export(&cwd, &opts) {
                     return Ok(handle_migrate_error(e));

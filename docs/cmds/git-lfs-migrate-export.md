@@ -58,10 +58,10 @@ At least one `--include` pattern is required. Objects not present in the local L
 - `--skip-fetch`
     Don't refresh the known set of remote references before the rewrite
 
-- `--yes`
+- `-y`, `--yes`
     Assume a yes answer to any prompts, permitting noninteractive use.
 
-    Currently we don't prompt for any reason, so this is accepted as a no-op for upstream parity.
+    Without it, a working tree with uncommitted changes asks before they're overwritten.
 
 ## Examples
 

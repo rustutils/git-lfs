@@ -202,6 +202,53 @@ pub fn refresh_working_tree(cwd: &Path) -> Result<(), MigrateError> {
     Ok(())
 }
 
+/// Ask before rewriting history over a dirty working tree.
+///
+/// Rewriting ends with `git checkout -f`, which discards uncommitted
+/// changes. Like upstream, this asks on stderr and reads the answer from
+/// stdin, and anything but yes refuses. `yes` (`--yes`) skips the
+/// question.
+pub fn ensure_working_copy_clean(cwd: &Path, yes: bool) -> Result<(), MigrateError> {
+    if !working_tree_dirty(cwd)? {
+        return Ok(());
+    }
+    let proceed = yes || confirm_override(std::io::stdin().lock(), &mut std::io::stderr())?;
+    if !proceed {
+        return Err(MigrateError::Usage("working copy must not be dirty".into()));
+    }
+    eprintln!("changes in your working copy will be overridden ...");
+    Ok(())
+}
+
+/// Ask until the answer is yes or no, and return whether it was yes.
+///
+/// An empty answer, or the end of input, is no. Other answers ask again.
+fn confirm_override(
+    mut input: impl std::io::BufRead,
+    out: &mut impl std::io::Write,
+) -> Result<bool, MigrateError> {
+    loop {
+        write!(
+            out,
+            "override changes in your working copy?  \
+             All uncommitted changes will be lost! [y/N] "
+        )?;
+        out.flush()?;
+        let mut line = String::new();
+        if input.read_line(&mut line)? == 0 {
+            return Ok(false);
+        }
+        match line.trim() {
+            "n" | "N" | "" => return Ok(false),
+            "y" | "Y" => return Ok(true),
+            _ => {}
+        }
+        if !line.ends_with('\n') {
+            writeln!(out)?;
+        }
+    }
+}
+
 /// Whether tracked files have uncommitted changes.
 ///
 /// Always false in a bare repository.
@@ -295,5 +342,38 @@ fn expand_tilde(s: &str) -> Option<PathBuf> {
         Some(PathBuf::from(home).join(rest))
     } else {
         Some(PathBuf::from(s))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The answer `confirm_override` gives for `input`, and how many times
+    /// it asked.
+    fn ask(input: &str) -> (bool, usize) {
+        let mut out = Vec::new();
+        let yes = confirm_override(input.as_bytes(), &mut out).unwrap();
+        let out = String::from_utf8(out).unwrap();
+        (yes, out.matches("override changes").count())
+    }
+
+    #[test]
+    fn yes_proceeds() {
+        assert_eq!(ask("y\n"), (true, 1));
+        assert_eq!(ask("Y\n"), (true, 1));
+    }
+
+    #[test]
+    fn no_empty_and_end_of_input_refuse() {
+        assert_eq!(ask("n\n"), (false, 1));
+        assert_eq!(ask("\n"), (false, 1));
+        assert_eq!(ask(""), (false, 1));
+    }
+
+    #[test]
+    fn another_answer_asks_again() {
+        assert_eq!(ask("x\ny\n"), (true, 2));
+        assert_eq!(ask("x\n"), (false, 2));
     }
 }

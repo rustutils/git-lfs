@@ -80,10 +80,10 @@ With `--no-rewrite`, migrate objects to pointers in a single new commit on top o
 
     Has no effect when combined with `--include-ref` or `--exclude-ref`.
 
-- `--yes`
+- `-y`, `--yes`
     Assume a yes answer to any prompts, permitting noninteractive use.
 
-    Currently we don't prompt for any reason, so this is accepted as a no-op for upstream parity.
+    Without it, a working tree with uncommitted changes asks before they're overwritten.
 
 ## Examples
 

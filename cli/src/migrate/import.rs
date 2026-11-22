@@ -20,7 +20,7 @@ use git_lfs_pointer::{Oid, Pointer};
 use git_lfs_store::Store;
 use sha2::{Digest, Sha256};
 
-use super::pipeline::{print_pre_migrate_refs, refresh_working_tree, working_tree_dirty};
+use super::pipeline::{ensure_working_copy_clean, print_pre_migrate_refs, refresh_working_tree};
 use super::transform::{Mode, Stats};
 use super::{MigrateError, RefSelection, build_globset, head_exists, resolve_refs};
 
@@ -72,14 +72,8 @@ pub fn import(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateError> {
         ));
     }
 
-    // Every mode checks first, as upstream's `ensureWorkingCopyClean` does.
-    // Rewriting history ends with `git checkout -f`, which would discard
-    // uncommitted changes.
-    if !opts.yes && working_tree_dirty(cwd)? {
-        return Err(MigrateError::Other(
-            "working tree has uncommitted changes; commit or stash first".into(),
-        ));
-    }
+    // Every mode checks first, as upstream does.
+    ensure_working_copy_clean(cwd, opts.yes)?;
 
     if opts.no_rewrite {
         return import_no_rewrite(cwd, opts);

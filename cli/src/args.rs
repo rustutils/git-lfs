@@ -958,9 +958,9 @@ pub struct MigrateImportArgs {
     /// Assume a yes answer to any prompts, permitting noninteractive
     /// use.
     ///
-    /// Currently we don't prompt for any reason, so this is accepted
-    /// as a no-op for upstream parity.
-    #[arg(long)]
+    /// Without it, a working tree with uncommitted changes asks before
+    /// they're overwritten.
+    #[arg(short, long)]
     pub yes: bool,
 }
 
@@ -1043,9 +1043,9 @@ pub struct MigrateExportArgs {
     /// Assume a yes answer to any prompts, permitting noninteractive
     /// use.
     ///
-    /// Currently we don't prompt for any reason, so this is accepted
-    /// as a no-op for upstream parity.
-    #[arg(long)]
+    /// Without it, a working tree with uncommitted changes asks before
+    /// they're overwritten.
+    #[arg(short, long)]
     pub yes: bool,
 }
 
