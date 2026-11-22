@@ -337,7 +337,7 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
         print_json_transfers(&store, &to_fetch, &paths, batch_resp.as_ref())?;
     } else {
         eprintln!(
-            "Downloading LFS objects: {percent}% ({succeeded}/{total}), {}",
+            "Downloading LFS objects: {percent:>3}% ({succeeded}/{total}), {}",
             human_bytes(succeeded_bytes),
         );
     }

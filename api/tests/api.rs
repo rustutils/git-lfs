@@ -826,3 +826,31 @@ async fn second_request_reuses_filled_credentials_no_extra_fill() {
     assert_eq!(helper.approve_count(), 2);
     assert_eq!(helper.reject_count(), 0);
 }
+
+/// Answers every `git-lfs-authenticate` request with a fixed href.
+struct FixedHref(String);
+
+impl git_lfs_api::SshResolver for FixedHref {
+    fn resolve(&self, _op: git_lfs_api::SshOperation) -> Result<git_lfs_api::SshAuth, ApiError> {
+        Ok(git_lfs_api::SshAuth {
+            href: self.0.clone(),
+            headers: Default::default(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn href_with_control_character_is_rejected() {
+    let server = MockServer::start().await;
+    let href = format!("{}/repo\n-newline", server.uri());
+    let err = Client::new(Url::parse(&server.uri()).unwrap(), Auth::None)
+        .with_ssh_resolver(std::sync::Arc::new(FixedHref(href)))
+        .batch(&BatchRequest::new(Operation::Upload, vec![]))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ApiError::ControlCharacterInHref { .. }),
+        "{err}"
+    );
+    assert!(server.received_requests().await.unwrap().is_empty());
+}

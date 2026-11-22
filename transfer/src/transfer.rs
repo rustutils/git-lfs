@@ -282,6 +282,9 @@ impl Transfer {
                 Ok(resp) => return Ok(resp),
                 Err(e) => {
                     let retry = e.is_retryable() && attempt + 1 < self.config.max_attempts;
+                    if matches!(e, git_lfs_api::ApiError::ControlCharacterInHref { .. }) {
+                        return Err(TransferError::BatchRequest(Box::new(e)));
+                    }
                     if !retry {
                         return Err(TransferError::BatchResponse(Box::new(e)));
                     }

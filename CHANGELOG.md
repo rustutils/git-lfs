@@ -63,6 +63,12 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- An `href` from `git-lfs-authenticate` containing a control character,
+  such as a newline, is rejected like upstream. It used to be silently
+  stripped.
+- `push` prints its progress line even when the whole upload fails, and the
+  percentage in progress lines is padded to three characters, like
+  upstream.
 - `GIT_CURL_VERBOSE` output no longer shows a `Content-Length` for uploads
   the server asked to be chunked. None was sent.
 - A push over pure SSH uses one SSH session for lock verification and

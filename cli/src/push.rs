@@ -173,14 +173,14 @@ fn push_by_oid(
     let succeeded_bytes_lookup: HashMap<String, u64> =
         to_upload.iter().map(|s| (s.oid.clone(), s.size)).collect();
 
-    let report = fetcher
-        .upload_many(to_upload)
-        .map_err(PushCommandError::Fetch)?;
+    // When the whole upload fails, as when the batch request does, the
+    // progress line is still printed, like upstream's meter.
+    let uploaded = fetcher.upload_many(to_upload);
     fetcher.persist_access_mode();
+    let done = uploaded.as_ref().map_or(&[][..], |r| &r.succeeded[..]);
 
-    let succeeded = report.succeeded.len();
-    let succeeded_bytes: u64 = report
-        .succeeded
+    let succeeded = done.len();
+    let succeeded_bytes: u64 = done
         .iter()
         .filter_map(|oid| succeeded_bytes_lookup.get(oid).copied())
         .sum();
@@ -190,9 +190,10 @@ fn push_by_oid(
         ((succeeded_bytes as u128 * 100) / total_bytes as u128) as u32
     };
     println!(
-        "Uploading LFS objects: {percent}% ({succeeded}/{total}), {}",
+        "Uploading LFS objects: {percent:>3}% ({succeeded}/{total}), {}",
         human_bytes(succeeded_bytes),
     );
+    let report = uploaded.map_err(PushCommandError::Fetch)?;
     for (oid, err) in &report.failed {
         eprintln!("  {oid}: {err}");
     }
@@ -539,19 +540,19 @@ pub(crate) fn upload_in_range_with_args(
     let succeeded_bytes_lookup: HashMap<String, u64> =
         to_upload.iter().map(|s| (s.oid.clone(), s.size)).collect();
 
-    let report = if to_upload.is_empty() {
-        Report::default()
+    // When the whole upload fails, as when the batch request does, the
+    // progress line is still printed, like upstream's meter.
+    let uploaded = if to_upload.is_empty() {
+        Ok(Report::default())
     } else {
-        let report = fetcher
-            .upload_many(to_upload)
-            .map_err(PushCommandError::Fetch)?;
+        let uploaded = fetcher.upload_many(to_upload);
         fetcher.persist_access_mode();
-        report
+        uploaded
     };
+    let done = uploaded.as_ref().map_or(&[][..], |r| &r.succeeded[..]);
 
-    let succeeded = report.succeeded.len() + already_on_server.len();
-    let succeeded_bytes: u64 = report
-        .succeeded
+    let succeeded = done.len() + already_on_server.len();
+    let succeeded_bytes: u64 = done
         .iter()
         .filter_map(|oid| succeeded_bytes_lookup.get(oid).copied())
         .sum::<u64>()
@@ -562,9 +563,10 @@ pub(crate) fn upload_in_range_with_args(
         ((succeeded_bytes as u128 * 100) / total_bytes as u128) as u32
     };
     println!(
-        "Uploading LFS objects: {percent}% ({succeeded}/{total}), {}",
+        "Uploading LFS objects: {percent:>3}% ({succeeded}/{total}), {}",
         human_bytes(succeeded_bytes),
     );
+    let report = uploaded.map_err(PushCommandError::Fetch)?;
 
     for (oid, err) in &report.failed {
         eprintln!("  {oid}: {err}");

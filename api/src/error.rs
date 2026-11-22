@@ -73,6 +73,13 @@ pub enum ApiError {
     /// The server kept answering 401 after every allowed auth attempt.
     #[error("too many authentication attempts")]
     AuthAttemptsExceeded,
+    /// The `href` from `git-lfs-authenticate` contains a control character,
+    /// such as a newline.
+    ///
+    /// The `url` crate would strip it, so it's rejected first, with
+    /// upstream's message.
+    #[error("parse {href:?}: net/url: invalid control character in URL")]
+    ControlCharacterInHref { href: String },
     /// A redirect wasn't followed: from HTTPS to HTTP, or one too many.
     #[error("{0}")]
     Redirect(String),

@@ -232,6 +232,9 @@ impl Client {
         let base = if auth.href.is_empty() {
             self.endpoint.clone()
         } else {
+            if auth.href.bytes().any(|b| b < 0x20 || b == 0x7f) {
+                return Err(ApiError::ControlCharacterInHref { href: auth.href });
+            }
             let mut u = Url::parse(&auth.href)
                 .map_err(|e| ApiError::Decode(format!("ssh href {:?}: {e}", auth.href)))?;
             // Collapse repeated slashes in the path. The `lfs-ssh-echo`

@@ -251,7 +251,7 @@ pub fn run(cwd: &Path, opts: &Options) -> Result<(), CheckoutError> {
     // The final line of upstream's progress meter.
     let percent = (materialized * 100).checked_div(total).unwrap_or(100);
     eprintln!(
-        "Checking out LFS objects: {percent}% ({materialized}/{total}), {}",
+        "Checking out LFS objects: {percent:>3}% ({materialized}/{total}), {}",
         crate::push::human_bytes(materialized_bytes)
     );
     Ok(())

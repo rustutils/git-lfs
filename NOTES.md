@@ -73,6 +73,11 @@ Grouped by area, with the failing tests each one would fix.
   that use them can't pass yet.
 - **`git-lfs-authenticate` options.** We don't support `lfs.ssh.retries`,
   connection reuse with `lfs.ssh.automultiplex`, or `lfs.defaulttokenttl`.
+- **Storage requests don't authenticate.** A 401 from an upload, download,
+  or verify URL fails the object. Upstream sends these through
+  `DoWithAuth`: it fills credentials for the action URL, retries, and saves
+  `lfs.<url>.access` for that URL so later runs send them up front
+  (`t-credentials` 19 and 20).
 - **Compressed downloads**: `lfs.transfer.httpDownloadEncoding` (gzip,
   zstd) isn't implemented (`t-batch-storage-encoding` 1 to 5, and part of
   `t-progress`).
@@ -127,9 +132,6 @@ come from reading the code.
 
 ### Wrong results or failures
 
-- **An `href` with a newline is accepted.** One from `git-lfs-authenticate`
-  passes because the `url` crate strips the newline (`t-ssh` 6). Upstream
-  rejects it.
 - **Corrupt downloads** report `expected OID X, got Y` instead of
   upstream's `expected OID X, got Y after N bytes written`
   (`t-batch-storage-corrupt` 1 and 2).

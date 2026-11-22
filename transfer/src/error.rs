@@ -59,6 +59,11 @@ pub enum TransferError {
     #[error("batch response: {0}")]
     BatchResponse(Box<ApiError>),
 
+    /// The batch request couldn't be built, such as for an invalid `href`
+    /// from `git-lfs-authenticate`.
+    #[error("batch request: {0}")]
+    BatchRequest(Box<ApiError>),
+
     /// An action expires within 5 seconds, so it wasn't used.
     ///
     /// Upstream requests a fresh batch and retries. This crate fails the
@@ -134,7 +139,8 @@ impl TransferError {
             | TransferError::ActionExpired { .. }
             | TransferError::InsecureRedirect
             | TransferError::Redirect(_)
-            | TransferError::VerifyExhausted(_) => false,
+            | TransferError::VerifyExhausted(_)
+            | TransferError::BatchRequest(_) => false,
             TransferError::BatchResponse(e) => e.is_retryable(),
         }
     }
