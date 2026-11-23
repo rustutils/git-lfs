@@ -74,8 +74,14 @@ test:
   extends: .rust
   stage: test
   script:
-    - cargo test --workspace
-    - sccache --show-stats || true
+    # Some tests check what happens when a file can't be written, which
+    # root always can. The toolchain and caches are in the project
+    # directory, so a plain user can run everything from there.
+    - apk add --no-cache su-exec
+    - adduser -D tester
+    - chown -R tester "$CI_PROJECT_DIR"
+    - su-exec tester env HOME=/home/tester cargo test --workspace
+    - su-exec tester sccache --show-stats || true
 
 # Builds with the rust-version declared in Cargo.toml, so it stays accurate.
 msrv:
