@@ -17,11 +17,31 @@ pub struct ServerError {
     pub documentation_url: Option<String>,
 }
 
+/// `error`'s message followed by those of its sources, joined by `: `.
+///
+/// reqwest's own message is only the outermost one, such as "error sending
+/// request for url (...)", without the cause, such as an untrusted
+/// certificate. A source whose message is already in the text so far is
+/// skipped.
+pub fn with_causes(error: &dyn std::error::Error) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        let message = cause.to_string();
+        if !message.is_empty() && !text.contains(&message) {
+            text.push_str(": ");
+            text.push_str(&message);
+        }
+        source = cause.source();
+    }
+    text
+}
+
 /// Errors returned by the API client.
 #[derive(Debug, thiserror::Error)]
 pub enum ApiError {
     /// Network, TLS, or connection failure.
-    #[error("transport error: {0}")]
+    #[error("transport error: {}", with_causes(.0))]
     Transport(#[from] reqwest::Error),
 
     /// The server returned a non-success HTTP status.
@@ -169,4 +189,43 @@ impl ApiError {
 pub fn parse_retry_after(value: &str) -> Option<Duration> {
     let trimmed = value.trim();
     trimmed.parse::<u64>().ok().map(Duration::from_secs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An error with a message and an optional source.
+    #[derive(Debug)]
+    struct Chain(&'static str, Option<Box<Chain>>);
+
+    impl std::fmt::Display for Chain {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.0)
+        }
+    }
+
+    impl std::error::Error for Chain {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            self.1.as_deref().map(|e| e as _)
+        }
+    }
+
+    #[test]
+    fn causes_are_appended_once() {
+        let error = Chain(
+            "error sending request",
+            Some(Box::new(Chain(
+                "client error (Connect)",
+                Some(Box::new(Chain(
+                    "client error (Connect)",
+                    Some(Box::new(Chain("invalid peer certificate", None))),
+                ))),
+            ))),
+        );
+        assert_eq!(
+            with_causes(&error),
+            "error sending request: client error (Connect): invalid peer certificate"
+        );
+    }
 }

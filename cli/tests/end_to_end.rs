@@ -4375,6 +4375,9 @@ fn ssl_verify_for_the_endpoint_does_not_cover_storage_hosts() {
         "smudge verified the storage host with the endpoint's settings"
     );
     assert_ne!(out.stdout, CONTENT);
+    // The error says why.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("certificate"), "{stderr}");
 }
 
 /// `http.sslCert` and `http.sslKey` send a client certificate without

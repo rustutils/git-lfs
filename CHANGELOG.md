@@ -34,6 +34,9 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- Network errors say what went wrong, such as an untrusted certificate or
+  a refused connection. Before, they only said "error sending request for
+  url (...)".
 - Boolean environment variables and settings are read like upstream:
   `true`, `1`, `on`, `yes`, and `t` are true, `false`, `0`, `off`, `no`,
   and `f` are false, and empty means the default. Before,

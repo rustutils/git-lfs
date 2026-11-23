@@ -32,7 +32,7 @@ pub enum TransferError {
     },
 
     /// HTTP transport failure, such as a reset connection or a TLS error.
-    #[error("http error: {0}")]
+    #[error("http error: {}", git_lfs_api::with_causes(.0))]
     Http(#[from] reqwest::Error),
 
     /// Local I/O failure, or another failure carried as a message, such as
