@@ -134,9 +134,6 @@ come from reading the code.
   pool mid-message, so the next command on it fails. ssh's stderr is never
   read, so errors are lost and a chatty ssh could block. Ending the pool
   may kill the master before its clients.
-- **SSH remotes can send two `Authorization` headers** after a 401, because
-  reqwest appends the helper's credentials to the header from
-  `git-lfs-authenticate`. Confirmed.
 - **The askpass program is split on whitespace**, so a path with a space
   or a quoted argument breaks.
 - **`expires_in: 0` from `git-lfs-authenticate` means expired at once**,

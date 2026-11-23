@@ -191,7 +191,7 @@ impl Client {
         let body_bytes = serde_json::to_vec(req)
             .map_err(|e| CreateLockError::Api(ApiError::Decode(e.to_string())))?;
         let resp = self
-            .send_with_auth_retry_response(|| {
+            .send_with_auth_retry_response(ssh.has_authorization(), || {
                 self.request_with_headers(reqwest::Method::POST, url.clone(), &ssh)
                     .header(reqwest::header::CONTENT_TYPE, crate::client::LFS_MEDIA_TYPE)
                     .body(body_bytes.clone())
@@ -276,7 +276,7 @@ impl Client {
         let url = Client::join(&base, &path)?;
         let body_bytes = serde_json::to_vec(req).map_err(|e| ApiError::Decode(e.to_string()))?;
         let resp = self
-            .send_with_auth_retry_response(|| {
+            .send_with_auth_retry_response(ssh.has_authorization(), || {
                 self.request_with_headers(reqwest::Method::POST, url.clone(), &ssh)
                     .header(reqwest::header::CONTENT_TYPE, crate::client::LFS_MEDIA_TYPE)
                     .body(body_bytes.clone())

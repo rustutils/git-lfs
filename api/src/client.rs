@@ -258,9 +258,8 @@ impl Client {
     /// Build a request with the `Accept` header and the current auth, then
     /// add `ssh.headers`.
     ///
-    /// The SSH headers are appended, so an SSH `Authorization` header goes
-    /// out next to the one from the current auth. Pass `&SshAuth::default()`
-    /// for non-SSH calls.
+    /// An SSH `Authorization` header replaces the current auth, as in
+    /// upstream. Pass `&SshAuth::default()` for non-SSH calls.
     pub(crate) fn request_with_headers(
         &self,
         method: Method,
@@ -281,8 +280,10 @@ impl Client {
                 headers.append(name, value);
             }
         }
-        let req = self.http.request(method, url).headers(headers);
-        let mut req = auth.apply(req);
+        let mut req = self.http.request(method, url).headers(headers);
+        if !ssh.has_authorization() {
+            req = auth.apply(req);
+        }
         for (k, v) in &ssh.headers {
             if let (Ok(name), Ok(value)) = (
                 HeaderName::try_from(k.as_str()),
@@ -356,6 +357,7 @@ impl Client {
         }
         self.send_with_auth_retry(
             Method::POST,
+            ssh.has_authorization(),
             || {
                 self.request_with_headers(Method::POST, url.clone(), &ssh)
                     .header(CONTENT_TYPE, LFS_MEDIA_TYPE)
@@ -387,6 +389,7 @@ impl Client {
             .map_err(|e| ApiError::Decode(format!("serializing query: {e}")))?;
         self.send_with_auth_retry(
             Method::GET,
+            ssh.has_authorization(),
             || {
                 let mut u = url.clone();
                 if !qs.is_empty() {
@@ -409,23 +412,36 @@ impl Client {
     /// on a 401 when no helper is attached. Matches upstream's `DoWithAuth`
     /// in `lfsapi/auth.go`, including the
     /// `api: too many authentication attempts` trace under `GIT_TRACE`.
+    ///
+    /// With `own_auth`, the request has an `Authorization` header from
+    /// `git-lfs-authenticate`. The helpers aren't asked, and a 401 is
+    /// returned as is.
     pub(crate) async fn send_with_auth_retry_response<F>(
         &self,
+        own_auth: bool,
         build: F,
     ) -> Result<Response, ApiError>
     where
         F: Fn() -> RequestBuilder,
     {
-        self.send_with_retries(build, 0).await
+        self.send_with_retries(own_auth, build, 0).await
     }
 
     /// Like [`send_with_auth_retry_response`](Self::send_with_auth_retry_response),
     /// but a request that fails to connect is sent again, up to `retries`
     /// times.
-    async fn send_with_retries<F>(&self, build: F, retries: u32) -> Result<Response, ApiError>
+    async fn send_with_retries<F>(
+        &self,
+        own_auth: bool,
+        build: F,
+        retries: u32,
+    ) -> Result<Response, ApiError>
     where
         F: Fn() -> RequestBuilder,
     {
+        if own_auth {
+            return send_with_redirects(&self.http, build().build()?, retries).await;
+        }
         // After a successful fill, ask the helpers again before each
         // request, as upstream's `setRequestAuth` does for an endpoint with
         // basic access. The caching helper answers without running
@@ -579,6 +595,7 @@ impl Client {
     async fn send_with_auth_retry<F, R>(
         &self,
         method: Method,
+        own_auth: bool,
         build: F,
         retries: u32,
     ) -> Result<R, ApiError>
@@ -586,7 +603,7 @@ impl Client {
         F: Fn() -> RequestBuilder,
         R: DeserializeOwned,
     {
-        let resp = self.send_with_retries(build, retries).await?;
+        let resp = self.send_with_retries(own_auth, build, retries).await?;
         decode::<R>(&method, resp).await
     }
 

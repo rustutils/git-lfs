@@ -50,6 +50,18 @@ pub struct SshAuth {
     pub headers: HashMap<String, String>,
 }
 
+impl SshAuth {
+    /// Whether the headers include `Authorization`.
+    ///
+    /// Such a request carries its own credentials, so the credential
+    /// helpers aren't asked for it, as in upstream.
+    pub fn has_authorization(&self) -> bool {
+        self.headers
+            .keys()
+            .any(|k| k.eq_ignore_ascii_case("authorization"))
+    }
+}
+
 /// Supplies SSH auth for each API call.
 ///
 /// Implementations usually cache responses, so the SSH command doesn't run

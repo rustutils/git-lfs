@@ -875,3 +875,54 @@ async fn href_with_control_character_is_rejected() {
     );
     assert!(server.received_requests().await.unwrap().is_empty());
 }
+
+/// Answers every `git-lfs-authenticate` request with an `Authorization`
+/// header.
+struct SshToken(String);
+
+impl git_lfs_api::SshResolver for SshToken {
+    fn resolve(&self, _op: git_lfs_api::SshOperation) -> Result<git_lfs_api::SshAuth, ApiError> {
+        Ok(git_lfs_api::SshAuth {
+            href: self.0.clone(),
+            headers: [("Authorization".to_owned(), "Bearer ssh-token".to_owned())].into(),
+        })
+    }
+}
+
+/// An `Authorization` header from `git-lfs-authenticate` is the request's
+/// only credential, as in upstream: other auth isn't added, and a 401
+/// isn't retried with the helpers' credentials.
+#[tokio::test]
+async fn ssh_authorization_is_the_only_credential_sent() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/objects/batch"))
+        .respond_with(ResponseTemplate::new(401).insert_header("LFS-Authenticate", "Basic"))
+        .mount(&server)
+        .await;
+
+    let helper = StubHelper::with(Credentials::new("alice", "hunter2"));
+    let endpoint = Url::parse(&server.uri()).unwrap();
+    let initial = Auth::Basic {
+        username: "url-user".into(),
+        password: "url-pass".into(),
+    };
+    let err = Client::new(endpoint, initial)
+        .with_credential_helper(helper.clone())
+        .with_ssh_resolver(Arc::new(SshToken(server.uri())))
+        .batch(&BatchRequest::new(Operation::Upload, vec![]))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ApiError::Status { status: 401, .. }), "{err}");
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1, "the 401 was retried");
+    let values: Vec<_> = requests[0]
+        .headers
+        .get_all("Authorization")
+        .iter()
+        .map(|v| v.to_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(values, ["Bearer ssh-token"]);
+    assert_eq!(helper.approve_count() + helper.reject_count(), 0);
+}

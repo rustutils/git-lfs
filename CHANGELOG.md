@@ -34,6 +34,10 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- An `Authorization` header from `git-lfs-authenticate` is the only
+  credential sent with a request, as in upstream. Before, a 401 made the
+  credential helpers fill in credentials too, and both headers were sent,
+  until the attempts ran out.
 - With `lfs.locksverify=true`, any failed lock check stops the push, as in
   upstream, including a connection error, an SSH error, or an unexpected
   status. Before, only a 5xx, 401, or 403 did. A 404, like a 501, means
