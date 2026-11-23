@@ -8,6 +8,13 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- `git lfs checkout` no longer stops when a file's object isn't local and
+  its directory doesn't exist. It writes the pointer, says "Skipped
+  checkout for ..., content not local. Use fetch to download." like
+  upstream, and checks out the other files.
+
 ## [0.10.0] - 2026-11-23
 
 ### Security

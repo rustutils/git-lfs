@@ -193,18 +193,22 @@ pub fn run(cwd: &Path, opts: &Options) -> Result<(), CheckoutError> {
             Err(e) => return Err(e.into()),
         }
 
-        if !store.contains_with_size(p.oid, p.size) {
-            // Like upstream, write the pointer text instead.
-            let pointer = Pointer::new(p.oid, p.size).encode();
-            std::fs::write(&dst, pointer)?;
-            eprintln!("git-lfs: {} (content not local)", rel.display());
-            continue;
-        }
-
+        // Created before either branch below: a missing object still gets
+        // its pointer written.
         if let Some(parent) = dst.parent()
             && let Err(_e) = std::fs::create_dir_all(parent)
         {
             println!("{rel_str:?}: not a directory");
+            continue;
+        }
+
+        if !store.contains_with_size(p.oid, p.size) {
+            // Like upstream, write the pointer text instead.
+            let pointer = Pointer::new(p.oid, p.size).encode();
+            std::fs::write(&dst, pointer)?;
+            eprintln!(
+                "Skipped checkout for {rel_str:?}, content not local. Use fetch to download."
+            );
             continue;
         }
         // Removing first lets us replace a read-only file.

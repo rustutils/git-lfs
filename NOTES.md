@@ -118,9 +118,6 @@ come from reading the code.
   that adds `.gitattributes`, and fails on any commit with a symlink.**
   Confirmed. `--above` fails when the root `.gitattributes` is empty and
   nothing is converted.
-- **`git lfs checkout` aborts when an object is missing and the file's
-  directory doesn't exist.** Confirmed. It writes the pointer before
-  creating the directory.
 - **`git lfs filter-process` ignores `lfs.skipdownloaderrors`** and
   `GIT_LFS_SKIP_DOWNLOAD_ERRORS`, so a clone with them fails.
 - **Extensions:** `%f` paths with spaces become several arguments

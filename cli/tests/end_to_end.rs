@@ -4590,3 +4590,37 @@ fn locks_verify_rejects_local_and_filters() {
         assert!(stderr.contains(message), "{args:?}: {stderr}");
     }
 }
+
+/// A missing object whose directory is gone gets its pointer written, and
+/// checkout goes on with the other files, as in upstream.
+#[test]
+fn checkout_writes_pointer_for_missing_object_in_new_directory() {
+    let repo = fresh_repo_with_identity();
+    install_lfs(repo.path());
+    commit_gitattributes(repo.path(), "*.bin filter=lfs diff=lfs merge=lfs -text\n");
+    let present = put_object_in_store(repo.path(), b"hello world\n");
+    commit_pointer_at(repo.path(), "a.bin", &pointer_text(&present, 12));
+    // Not in the store.
+    let missing = "4d4c7eee2e28d03cb2dbf3df639c3290ade66e18755e83caade2d8f37bd8c044";
+    std::fs::create_dir(repo.path().join("dir")).unwrap();
+    commit_pointer_at(repo.path(), "dir/z.bin", &pointer_text(missing, 7));
+
+    std::fs::remove_file(repo.path().join("a.bin")).unwrap();
+    std::fs::remove_dir_all(repo.path().join("dir")).unwrap();
+
+    let out = run_in(repo.path(), &["checkout"], b"");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "stderr: {stderr}");
+    assert!(
+        stderr.contains("Skipped checkout for \"dir/z.bin\", content not local."),
+        "{stderr}"
+    );
+    assert_eq!(
+        std::fs::read(repo.path().join("dir/z.bin")).unwrap(),
+        pointer_text(missing, 7)
+    );
+    assert_eq!(
+        std::fs::read(repo.path().join("a.bin")).unwrap(),
+        b"hello world\n"
+    );
+}
