@@ -326,6 +326,33 @@ fn install_skip_repo_writes_no_hooks() {
 
 // ---------- uninstall ----------
 
+/// A setting that can't be unset is a warning, and the hooks are still
+/// removed, as in upstream.
+#[cfg(unix)]
+#[test]
+fn uninstall_removes_hooks_when_the_config_cannot_change() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let repo = fresh_repo();
+    run_in(repo.path(), &["install", "--local"], b"");
+    // Git can't create `.git/config.lock`, but `.git/hooks` is writable.
+    let git_dir = repo.path().join(".git");
+    std::fs::set_permissions(&git_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let out = run_in(repo.path(), &["uninstall", "--local"], b"");
+    std::fs::set_permissions(&git_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{stdout}");
+    assert!(stdout.starts_with("warning: "), "{stdout}");
+    assert!(
+        stdout.contains("Hooks for this repository have been removed."),
+        "{stdout}"
+    );
+    for hook in ["pre-push", "post-checkout", "post-commit", "post-merge"] {
+        assert!(!git_dir.join("hooks").join(hook).exists(), "{hook} is left");
+    }
+}
+
 #[test]
 fn uninstall_local_clears_config_and_removes_hooks() {
     let repo = fresh_repo();
@@ -336,9 +363,10 @@ fn uninstall_local_clears_config_and_removes_hooks() {
         "uninstall failed: {}",
         String::from_utf8_lossy(&out.stderr),
     );
-    assert!(
-        String::from_utf8_lossy(&out.stdout)
-            .contains("Local Git LFS configuration has been removed"),
+    // Upstream says nothing about the local configuration.
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "Hooks for this repository have been removed.\n"
     );
 
     for key in [

@@ -8,8 +8,19 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- `git lfs uninstall` prints upstream's messages: "Hooks for this
+  repository have been removed." when it removes the hooks, and nothing
+  about the configuration with `--local` or `--worktree`. It used to say
+  "Local Git LFS configuration has been removed.", and said "Global" for
+  `--system` where upstream says "System".
+
 ### Fixed
 
+- `git lfs uninstall` removes the hooks even when a filter setting can't
+  be unset, and prints that as a warning, as in upstream. Before, it
+  stopped at the first setting and left the hooks in place.
 - `git lfs fetch --prune` prunes even when there's nothing to download,
   does a dry run of the prune with `--dry-run`, and fails when the prune
   fails, as in upstream. Before, it skipped the prune in the first two

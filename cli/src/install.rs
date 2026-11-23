@@ -38,13 +38,16 @@ impl InstallScope {
         matches!(self, Self::Local | Self::Worktree)
     }
 
-    /// Whether uninstall says "Global" rather than "Local" configuration
-    /// was removed.
+    /// What uninstall says it removed, as upstream does.
     ///
     /// Upstream says "Global" for `--file` too, which t-uninstall.sh
-    /// checks, but "System" for `--system`.
-    pub fn announces_global(&self) -> bool {
-        matches!(self, Self::Global | Self::System | Self::File(_))
+    /// checks, and nothing for a repository scope.
+    pub fn removed_message(&self) -> Option<&'static str> {
+        match self {
+            Self::System => Some("System Git LFS configuration has been removed."),
+            Self::Global | Self::File(_) => Some("Global Git LFS configuration has been removed."),
+            Self::Local | Self::Worktree => None,
+        }
     }
 }
 
@@ -526,10 +529,17 @@ pub struct UninstallOptions {
 /// current template are removed. Upstream also removes older templates
 /// and blank hooks.
 ///
-/// If unsetting a setting fails, this returns before touching the hooks.
-pub fn uninstall(cwd: &Path, opts: &UninstallOptions) -> Result<(), InstallError> {
+/// A setting that can't be unset prints a warning, and the hooks are
+/// still removed, as in upstream. Returns whether the hooks were removed.
+pub fn uninstall(cwd: &Path, opts: &UninstallOptions) -> Result<bool, InstallError> {
+    // A config that can't be changed is a warning, and the hooks are
+    // still removed, as in upstream.
     if !opts.hooks_only {
-        unset_filter_config(cwd, opts)?;
+        match unset_filter_config(cwd, opts) {
+            Ok(()) => {}
+            Err(e @ InstallError::ConfigCommandFailed { .. }) => println!("warning: {e}"),
+            Err(e) => return Err(e),
+        }
     }
 
     let in_repo = git_dir(cwd).is_ok();
@@ -538,14 +548,19 @@ pub fn uninstall(cwd: &Path, opts: &UninstallOptions) -> Result<(), InstallError
     if touch_hooks {
         uninstall_all_hooks(cwd)?;
     }
-    Ok(())
+    Ok(touch_hooks)
 }
 
+/// Unset each filter key, going on past a failure, and return the first
+/// error.
 fn unset_filter_config(cwd: &Path, opts: &UninstallOptions) -> Result<(), InstallError> {
+    let mut first_error = None;
     for (key, _) in FILTER_KEYS {
-        scoped_unset(cwd, &opts.scope, key)?;
+        if let Err(e) = scoped_unset(cwd, &opts.scope, key) {
+            first_error.get_or_insert(e);
+        }
     }
-    Ok(())
+    first_error.map_or(Ok(()), Err)
 }
 
 fn uninstall_all_hooks(cwd: &Path) -> Result<(), InstallError> {

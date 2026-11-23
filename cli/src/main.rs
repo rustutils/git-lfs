@@ -496,22 +496,11 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 skip_repo,
                 hooks_only,
             };
-            if let Err(e) = install::uninstall(&cwd, &opts) {
-                if matches!(e, install::InstallError::ConfigCommandFailed { .. }) {
-                    // Exit 0, as t-uninstall-worktree.sh expects. The
-                    // hooks aren't removed. Upstream prints a warning and
-                    // goes on to remove them.
-                    println!("{e}");
-                    return Ok(0);
-                }
-                return Err(Box::new(e));
+            if install::uninstall(&cwd, &opts)? {
+                println!("Hooks for this repository have been removed.");
             }
-            if hooks_only {
-                // The config wasn't touched.
-            } else if scope.announces_global() {
-                println!("Global Git LFS configuration has been removed.");
-            } else {
-                println!("Local Git LFS configuration has been removed.");
+            if !hooks_only && let Some(message) = scope.removed_message() {
+                println!("{message}");
             }
         }
         Command::Clone(CloneArgs { args }) => {
