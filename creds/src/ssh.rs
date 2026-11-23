@@ -33,7 +33,8 @@
 //! All fields are optional, and `header` may be `null`. `expires_in` is in
 //! seconds and may be negative. When both expiry fields are set, the
 //! earlier time wins. Upstream uses `expires_in` whenever it isn't 0, and
-//! `expires_at` otherwise. Here, an `expires_in` of 0 means expired at once.
+//! `expires_at` otherwise. As there, an `expires_in` of 0 counts as unset,
+//! so with no `expires_at` the response never expires.
 //! An `expires_at` that isn't RFC 3339 or is before 1970 counts as unset.
 
 use std::borrow::Cow;
@@ -416,7 +417,7 @@ impl SshAuthClient {
 
 /// Combine `expires_at` and `expires_in` into one expiry time.
 ///
-/// When both are set, the earlier wins.
+/// When both are set, the earlier wins. An `expires_in` of 0 is unset.
 fn compute_expires_at(
     now: SystemTime,
     expires_at: Option<&str>,
@@ -429,8 +430,8 @@ fn compute_expires_at(
     {
         earliest = Some(t);
     }
-    if let Some(secs) = expires_in {
-        let t = if secs >= 0 {
+    if let Some(secs) = expires_in.filter(|&s| s != 0) {
+        let t = if secs > 0 {
             now.checked_add(Duration::from_secs(secs as u64))
         } else {
             now.checked_sub(Duration::from_secs(secs.unsigned_abs()))
@@ -637,6 +638,15 @@ mod tests {
     }
 
     #[test]
+    fn expires_in_zero_is_unset() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        assert!(compute_expires_at(now, None, Some(0)).is_none());
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_030);
+        let at_str = format_unix_for_test(at);
+        assert_eq!(compute_expires_at(now, Some(&at_str), Some(0)), Some(at));
+    }
+
+    #[test]
     fn compute_expires_at_returns_none_when_unset() {
         let now = SystemTime::UNIX_EPOCH;
         assert!(compute_expires_at(now, None, None).is_none());
@@ -721,6 +731,35 @@ mod tests {
         let _ = client
             .resolve("git@host", None, "/repo", SshOperation::Upload)
             .unwrap();
+        let lines = std::fs::read_to_string(&counter).unwrap();
+        assert_eq!(lines.lines().count(), 1, "expected exactly one ssh spawn");
+    }
+
+    #[test]
+    fn expires_in_zero_is_cached() {
+        // Upstream reads `expires_in: 0` as no expiry, so ssh runs once.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let counter = tmp.path().join("count");
+        let prog = tmp.path().join("fakessh");
+        std::fs::write(
+            &prog,
+            format!(
+                "#!/bin/sh\n\
+                 echo invoked >> {counter}\n\
+                 cat <<'EOF'\n\
+                 {{\"href\":\"https://lfs.example/repo.git/info/lfs\",\"expires_in\":0}}\n\
+                 EOF\n",
+                counter = counter.display(),
+            ),
+        )
+        .unwrap();
+
+        let client = SshAuthClient::new(SshProgram::Shell(format!("sh {}", prog.display())));
+        for _ in 0..2 {
+            client
+                .resolve("git@host", None, "/repo", SshOperation::Upload)
+                .unwrap();
+        }
         let lines = std::fs::read_to_string(&counter).unwrap();
         assert_eq!(lines.lines().count(), 1, "expected exactly one ssh spawn");
     }

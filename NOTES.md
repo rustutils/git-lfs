@@ -136,9 +136,6 @@ come from reading the code.
   may kill the master before its clients.
 - **The askpass program is split on whitespace**, so a path with a space
   or a quoted argument breaks.
-- **`expires_in: 0` from `git-lfs-authenticate` means expired at once**,
-  so ssh runs before every request. Confirmed. Upstream treats 0 as no
-  expiry.
 - **`git lfs uninstall` stops at the first config error** and leaves the
   hooks in place, exiting 0.
 - **`git lfs clone`:** a failed pull in a submodule exits 0, `-bmain` is

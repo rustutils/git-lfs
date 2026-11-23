@@ -34,6 +34,9 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- An `expires_in` of 0 from `git-lfs-authenticate` means no expiry, as in
+  upstream, so the response is reused. Before, it counted as already
+  expired, and ssh ran before every request.
 - An `Authorization` header from `git-lfs-authenticate` is the only
   credential sent with a request, as in upstream. Before, a 401 made the
   credential helpers fill in credentials too, and both headers were sent,
