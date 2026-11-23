@@ -4896,3 +4896,42 @@ fn clone_fails_when_a_submodule_pull_fails() {
         "{stderr}"
     );
 }
+
+// ---------- extensions ------------------------------------------------------
+
+/// `%f` in an extension command is one argument, even for a path with
+/// spaces, as in upstream.
+#[test]
+fn extension_gets_a_path_with_spaces_as_one_argument() {
+    let repo = fresh_repo();
+    let script = repo.path().join("one-arg.sh");
+    std::fs::write(&script, "[ \"$#\" = 1 ] || exit 9\ncat\n").unwrap();
+    git_in(
+        repo.path(),
+        &[
+            "config",
+            "lfs.extension.check.clean",
+            &format!("sh {} %f", script.display()),
+        ],
+    );
+    git_in(
+        repo.path(),
+        &[
+            "config",
+            "lfs.extension.check.smudge",
+            &format!("sh {} %f", script.display()),
+        ],
+    );
+    git_in(
+        repo.path(),
+        &["config", "lfs.extension.check.priority", "0"],
+    );
+
+    let out = run_in(repo.path(), &["clean", "--", "a b.dat"], b"hello\n");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("ext-0-check"));
+}

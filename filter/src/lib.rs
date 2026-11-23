@@ -36,6 +36,18 @@ use std::io::{self, Read};
 
 use git_lfs_pointer::{MAX_POINTER_SIZE, Pointer};
 
+/// Split an extension's command into the program and its arguments,
+/// with `%f` in each argument replaced by `path`, as upstream does.
+///
+/// Splitting comes first, so a path with spaces stays one argument.
+/// `None` if the command is empty.
+pub(crate) fn extension_command(command: &str, path: &str) -> Option<(String, Vec<String>)> {
+    let mut pieces = command.split_whitespace();
+    let prog = pieces.next()?.to_owned();
+    let args = pieces.map(|a| a.replace("%f", path)).collect();
+    Some((prog, args))
+}
+
 mod clean;
 mod filter_process;
 pub mod progress;
@@ -77,4 +89,17 @@ fn detect_pointer<R: Read>(input: &mut R) -> io::Result<(Vec<u8>, Option<Pointer
         None
     };
     Ok((head, pointer))
+}
+
+#[cfg(test)]
+mod extension_tests {
+    use super::extension_command;
+
+    #[test]
+    fn a_path_with_spaces_stays_one_argument() {
+        let (prog, args) = extension_command("foo --file %f --flag", "my file.dat").unwrap();
+        assert_eq!(prog, "foo");
+        assert_eq!(args, ["--file", "my file.dat", "--flag"]);
+        assert!(extension_command("  ", "x").is_none());
+    }
 }

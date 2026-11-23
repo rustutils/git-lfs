@@ -137,77 +137,19 @@ fn clean_content<R: Read, W: Write>(
         }
     }
 
-    let tmp_dir = store.tmp_dir();
-    std::fs::create_dir_all(&tmp_dir)?;
-
-    // Buffer each stage's input to a temporary file while hashing it.
     let mut combined = head.as_slice().chain(input);
-    let mut current_tmp = NamedTempFile::new_in(&tmp_dir)?;
-    let orig_oid = hash_and_write(&mut combined, current_tmp.as_file_mut())?;
-    let mut input_oids: Vec<Oid> = Vec::with_capacity(extensions.len());
-    input_oids.push(orig_oid);
-
-    // The last extension's output goes straight into the store.
-    for (i, ext) in extensions.iter().enumerate() {
-        let cmd_str = ext.command.replace("%f", path);
-        let mut parts = cmd_str.split_whitespace();
-        let prog = parts
-            .next()
-            .ok_or_else(|| CleanError::ExtensionMissingCommand {
-                name: ext.name.clone(),
-            })?;
-        let args: Vec<&str> = parts.collect();
-
-        let stdin_file = std::fs::File::open(current_tmp.path())?;
-        let mut child = Command::new(prog)
-            .args(&args)
-            .stdin(stdin_file)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .map_err(|e| CleanError::ExtensionSpawnFailed {
-                name: ext.name.clone(),
-                source: e,
-            })?;
-        let mut stdout = child.stdout.take().expect("piped stdout");
-
-        let is_last = i + 1 == extensions.len();
-        if is_last {
-            let (oid, size) = store.insert(&mut stdout)?;
-            let status = child.wait()?;
-            if !status.success() {
-                return Err(CleanError::ExtensionFailed {
-                    name: ext.name.clone(),
-                    status: status.code(),
-                });
-            }
-
-            let pointer_extensions = build_pointer_extensions(extensions, &input_oids);
-            let pointer = Pointer {
-                oid,
-                size,
-                extensions: pointer_extensions,
-                canonical: true,
-            };
-            output.write_all(pointer.encode().as_bytes())?;
-            return Ok(CleanOutcome::Stored(pointer));
-        }
-
-        let mut next_tmp = NamedTempFile::new_in(&tmp_dir)?;
-        let next_oid = hash_and_write(&mut stdout, next_tmp.as_file_mut())?;
-        let status = child.wait()?;
-        if !status.success() {
-            return Err(CleanError::ExtensionFailed {
-                name: ext.name.clone(),
-                status: status.code(),
-            });
-        }
-
-        current_tmp = next_tmp;
-        input_oids.push(next_oid);
-    }
-
-    unreachable!("clean loop exited without storing")
+    let chain = run_chain(&mut combined, path, extensions, &store.tmp_dir())?;
+    // Stored only once every extension has succeeded.
+    let mut last = std::fs::File::open(chain.output.path())?;
+    let (oid, size) = store.insert(&mut last)?;
+    let pointer = Pointer {
+        oid,
+        size,
+        extensions: build_pointer_extensions(extensions, &chain.input_oids),
+        canonical: true,
+    };
+    output.write_all(pointer.encode().as_bytes())?;
+    Ok(CleanOutcome::Stored(pointer))
 }
 
 /// Compute the pointer [`clean`] would produce for `input`, without storing
@@ -247,27 +189,50 @@ pub fn build_pointer_with_extensions<R: Read>(
         }
     }
 
+    let chain = run_chain(input, path, extensions, tmp_dir)?;
+    Ok(Pointer {
+        oid: chain.oid,
+        size: chain.size,
+        extensions: build_pointer_extensions(extensions, &chain.input_oids),
+        canonical: true,
+    })
+}
+
+/// The result of running the clean extensions.
+struct Chain {
+    /// The last extension's output.
+    output: NamedTempFile,
+    oid: Oid,
+    size: u64,
+    /// The OID of each extension's input, in order.
+    input_oids: Vec<Oid>,
+}
+
+/// Run `extensions` in order over `input`, each on the one before's
+/// output, through temporary files in `tmp_dir`.
+///
+/// An extension that exits with an error fails the whole chain.
+fn run_chain<R: Read>(
+    input: &mut R,
+    path: &str,
+    extensions: &[CleanExtension],
+    tmp_dir: &Path,
+) -> Result<Chain, CleanError> {
     std::fs::create_dir_all(tmp_dir)?;
-
-    let mut current_tmp = NamedTempFile::new_in(tmp_dir)?;
-    let orig_oid = hash_and_write(input, current_tmp.as_file_mut())?;
+    let mut current = NamedTempFile::new_in(tmp_dir)?;
+    let mut oid = hash_and_write(input, current.as_file_mut())?;
     let mut input_oids: Vec<Oid> = Vec::with_capacity(extensions.len());
-    input_oids.push(orig_oid);
 
-    for (i, ext) in extensions.iter().enumerate() {
-        let cmd_str = ext.command.replace("%f", path);
-        let mut parts = cmd_str.split_whitespace();
-        let prog = parts
-            .next()
-            .ok_or_else(|| CleanError::ExtensionMissingCommand {
+    for ext in extensions {
+        input_oids.push(oid);
+        let (prog, args) = crate::extension_command(&ext.command, path).ok_or_else(|| {
+            CleanError::ExtensionMissingCommand {
                 name: ext.name.clone(),
-            })?;
-        let args: Vec<&str> = parts.collect();
-
-        let stdin_file = std::fs::File::open(current_tmp.path())?;
+            }
+        })?;
         let mut child = Command::new(prog)
             .args(&args)
-            .stdin(stdin_file)
+            .stdin(std::fs::File::open(current.path())?)
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()
@@ -276,38 +241,8 @@ pub fn build_pointer_with_extensions<R: Read>(
                 source: e,
             })?;
         let mut stdout = child.stdout.take().expect("piped stdout");
-
-        let is_last = i + 1 == extensions.len();
-        if is_last {
-            let mut hasher = Sha256::new();
-            let mut buf = vec![0u8; COPY_BUFFER];
-            let mut size: u64 = 0;
-            loop {
-                let n = stdout.read(&mut buf)?;
-                if n == 0 {
-                    break;
-                }
-                hasher.update(&buf[..n]);
-                size += n as u64;
-            }
-            let status = child.wait()?;
-            if !status.success() {
-                return Err(CleanError::ExtensionFailed {
-                    name: ext.name.clone(),
-                    status: status.code(),
-                });
-            }
-            let bytes: [u8; 32] = hasher.finalize().into();
-            return Ok(Pointer {
-                oid: Oid::from_bytes(bytes),
-                size,
-                extensions: build_pointer_extensions(extensions, &input_oids),
-                canonical: true,
-            });
-        }
-
-        let mut next_tmp = NamedTempFile::new_in(tmp_dir)?;
-        let next_oid = hash_and_write(&mut stdout, next_tmp.as_file_mut())?;
+        let mut next = NamedTempFile::new_in(tmp_dir)?;
+        oid = hash_and_write(&mut stdout, next.as_file_mut())?;
         let status = child.wait()?;
         if !status.success() {
             return Err(CleanError::ExtensionFailed {
@@ -315,11 +250,16 @@ pub fn build_pointer_with_extensions<R: Read>(
                 status: status.code(),
             });
         }
-        current_tmp = next_tmp;
-        input_oids.push(next_oid);
+        current = next;
     }
 
-    unreachable!("extension chain exited without producing a pointer")
+    let size = current.as_file().metadata()?.len();
+    Ok(Chain {
+        output: current,
+        oid,
+        size,
+        input_oids,
+    })
 }
 
 fn build_pointer_extensions(extensions: &[CleanExtension], input_oids: &[Oid]) -> Vec<Extension> {
@@ -555,6 +495,27 @@ mod tests {
         let outcome = clean(&store, &mut pointer_text.as_bytes(), &mut out, "x", &exts).unwrap();
         assert!(matches!(outcome, CleanOutcome::Passthrough(_)));
         assert_eq!(out, pointer_text.as_bytes());
+    }
+
+    #[test]
+    fn a_failed_extension_stores_nothing() {
+        let (tmp, store) = fixture();
+        // Prints its input, then fails.
+        let script = tmp.path().join("ext.sh");
+        std::fs::write(&script, "cat\nexit 3\n").unwrap();
+        let exts = vec![CleanExtension {
+            name: "fail".into(),
+            priority: 0,
+            command: format!("sh {}", script.display()),
+        }];
+        let mut out = Vec::new();
+        let err = clean(&store, &mut &b"hello"[..], &mut out, "x", &exts).unwrap_err();
+        assert!(matches!(err, CleanError::ExtensionFailed { .. }), "{err:?}");
+        // The output was the input, so its OID is the input's.
+        let mut hasher = Sha256::new();
+        hasher.update(b"hello");
+        let oid = Oid::from_bytes(hasher.finalize().into());
+        assert!(!store.contains(oid), "the failed output was stored");
     }
 
     #[test]

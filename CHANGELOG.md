@@ -18,6 +18,14 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- `%f` in an extension command is one argument, so a path with spaces
+  reaches the extension whole, as in upstream.
+- Smudging through extensions writes nothing unless every extension's
+  output matches the pointer. Before, the last extension's output was
+  written before it was checked.
+- Cleaning through extensions stores nothing when an extension fails.
+  Before, the last extension's output was stored before its exit status
+  was checked.
 - `.git/info/attributes` wins over every `.gitattributes`, as in Git, for
   deciding which files are lockable, tracked, or locked. Before, it lost
   to them. In a linked worktree, the main repository's

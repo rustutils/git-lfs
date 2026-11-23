@@ -275,21 +275,16 @@ fn apply_smudge_chain<W: Write>(
         });
     }
 
-    for (i, (ext, expected_out_oid)) in chain.iter().enumerate() {
-        let cmd_str = ext.command.replace("%f", path);
-        let mut parts = cmd_str.split_whitespace();
-        let prog = parts
-            .next()
-            .ok_or_else(|| SmudgeError::ExtensionMissingCommand {
+    for (ext, expected_out_oid) in &chain {
+        let (prog, args) = crate::extension_command(&ext.command, path).ok_or_else(|| {
+            SmudgeError::ExtensionMissingCommand {
                 name: ext.name.clone(),
-            })?;
-        let args: Vec<&str> = parts.collect();
-
-        let stdin_file = std::fs::File::open(current_tmp.path())?;
+            }
+        })?;
         let mut command = Command::new(prog);
         command
             .args(&args)
-            .stdin(stdin_file)
+            .stdin(std::fs::File::open(current_tmp.path())?)
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
         if let Some(dir) = spawn_cwd {
@@ -302,26 +297,6 @@ fn apply_smudge_chain<W: Write>(
                 source: e,
             })?;
         let mut stdout = child.stdout.take().expect("piped stdout");
-
-        let is_last = i + 1 == chain.len();
-        if is_last {
-            let actual_oid = hash_and_copy(&mut stdout, output)?;
-            let status = child.wait()?;
-            if !status.success() {
-                return Err(SmudgeError::ExtensionFailed {
-                    name: ext.name.clone(),
-                    status: status.code(),
-                });
-            }
-            if actual_oid != *expected_out_oid {
-                return Err(SmudgeError::OidMismatch {
-                    stage: format!("smudge output of extension {:?}", ext.name),
-                    expected: *expected_out_oid,
-                    actual: actual_oid,
-                });
-            }
-            return Ok(());
-        }
 
         let mut next_tmp = NamedTempFile::new_in(&tmp_dir)?;
         let actual_oid = hash_and_write(&mut stdout, next_tmp.as_file_mut())?;
@@ -341,7 +316,10 @@ fn apply_smudge_chain<W: Write>(
         }
         current_tmp = next_tmp;
     }
-    unreachable!("smudge chain exited without writing output")
+
+    // Written only once every extension's output has checked out.
+    io::copy(&mut std::fs::File::open(current_tmp.path())?, output)?;
+    Ok(())
 }
 
 fn hash_and_write<R: Read>(src: &mut R, dst: &mut std::fs::File) -> io::Result<Oid> {
@@ -356,21 +334,6 @@ fn hash_and_write<R: Read>(src: &mut R, dst: &mut std::fs::File) -> io::Result<O
         dst.write_all(&buf[..n])?;
     }
     dst.flush()?;
-    let bytes: [u8; 32] = hasher.finalize().into();
-    Ok(Oid::from_bytes(bytes))
-}
-
-fn hash_and_copy<R: Read, W: Write>(src: &mut R, dst: &mut W) -> io::Result<Oid> {
-    let mut hasher = Sha256::new();
-    let mut buf = vec![0u8; COPY_BUFFER];
-    loop {
-        let n = src.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-        dst.write_all(&buf[..n])?;
-    }
     let bytes: [u8; 32] = hasher.finalize().into();
     Ok(Oid::from_bytes(bytes))
 }
@@ -644,6 +607,29 @@ mod tests {
         .unwrap();
         assert!(matches!(outcome, SmudgeOutcome::Resolved(_)));
         assert_eq!(out, b"abc");
+    }
+
+    #[test]
+    fn extension_output_is_checked_before_it_is_written() {
+        let (_t, store) = fixture();
+        let clean_exts = vec![crate::CleanExtension {
+            name: "upper".into(),
+            priority: 0,
+            command: "tr a-z A-Z".into(),
+        }];
+        let mut pointer_buf = Vec::new();
+        crate::clean(&store, &mut &b"abc"[..], &mut pointer_buf, "x", &clean_exts).unwrap();
+
+        // Doesn't undo the clean extension, so its output won't match.
+        let wrong = vec![SmudgeExtension {
+            name: "upper".into(),
+            priority: 0,
+            command: "tr A-Z b-z".into(),
+        }];
+        let mut out = Vec::new();
+        let err = smudge(&store, &mut pointer_buf.as_slice(), &mut out, "x", &wrong).unwrap_err();
+        assert!(matches!(err, SmudgeError::OidMismatch { .. }), "{err:?}");
+        assert!(out.is_empty(), "wrote {out:?}");
     }
 
     #[test]
