@@ -382,6 +382,33 @@ async fn create_lock_conflict_returns_existing_lock() {
     }
 }
 
+/// A rate-limited or failed lock creation keeps the server's `Retry-After`
+/// and error message, like every other API call.
+#[tokio::test]
+async fn create_lock_error_keeps_retry_after() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/locks"))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .insert_header("Retry-After", "7")
+                .set_body_json(json!({ "message": "slow down" })),
+        )
+        .mount(&server)
+        .await;
+
+    let client = client(&server, Auth::None);
+    let err = client
+        .create_lock(&CreateLockRequest::new("foo/bar.zip"))
+        .await
+        .unwrap_err();
+    let CreateLockError::Api(err) = err else {
+        panic!("expected an API error, got {err:?}");
+    };
+    assert_eq!(err.retry_after(), Some(std::time::Duration::from_secs(7)));
+    assert!(err.to_string().contains("slow down"), "{err}");
+}
+
 #[tokio::test]
 async fn create_lock_403_falls_through_to_apierror() {
     let server = MockServer::start().await;

@@ -119,7 +119,6 @@ come from reading the code.
   pool mid-message, so the next command on it fails. ssh's stderr is never
   read, so errors are lost and a chatty ssh could block. Ending the pool
   may kill the master before its clients.
-- **`create_lock` drops `Retry-After`** on rate-limit and server errors.
 
 ### Minor differences from upstream
 
@@ -150,8 +149,8 @@ come from reading the code.
   looks at every remote.
 - `git lfs push --object-id` doesn't find objects that exist only in an
   alternate store.
-- `git lfs uninstall` prints different messages, and only removes hooks
-  that exactly match the current template.
+- `git lfs uninstall` only removes hooks that exactly match the current
+  template.
 - `git lfs migrate --everything` doesn't rewrite remote-tracking branches,
   which upstream does. Rewriting them would leave them out of step with the
   server until the next fetch, so this may be worth keeping.

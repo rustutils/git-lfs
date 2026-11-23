@@ -668,6 +668,13 @@ pub(crate) async fn decode<R: DeserializeOwned>(
         });
     }
 
+    Err(status_error(resp).await)
+}
+
+/// The [`ApiError::Status`] for a response that isn't a success, with the
+/// server's error body, `LFS-Authenticate`, and `Retry-After`.
+pub(crate) async fn status_error(resp: Response) -> ApiError {
+    let status = resp.status();
     let lfs_authenticate = resp
         .headers()
         .get("LFS-Authenticate")
@@ -681,13 +688,13 @@ pub(crate) async fn decode<R: DeserializeOwned>(
     let request_url = resp.url().to_string();
     let bytes = body_bytes(resp).await.unwrap_or_default();
 
-    Err(ApiError::Status {
+    ApiError::Status {
         status: status.as_u16(),
         url: Some(request_url),
         lfs_authenticate,
         body: serde_json::from_slice(&bytes).ok(),
         retry_after,
-    })
+    }
 }
 
 /// Read the body of `resp`, decompressing it if it's gzipped.

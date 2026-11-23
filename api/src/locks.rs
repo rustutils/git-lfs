@@ -200,7 +200,11 @@ impl Client {
             .map_err(CreateLockError::Api)?;
 
         let status = resp.status();
-        let request_url = resp.url().to_string();
+        if !status.is_success() && status.as_u16() != 409 {
+            return Err(CreateLockError::Api(
+                crate::client::status_error(resp).await,
+            ));
+        }
         let bytes = resp
             .bytes()
             .await
@@ -214,17 +218,6 @@ impl Client {
                 existing: parsed.lock,
                 message: parsed.message.unwrap_or_else(|| "lock conflict".into()),
             });
-        }
-
-        if !status.is_success() {
-            let body: Option<crate::error::ServerError> = serde_json::from_slice(&bytes).ok();
-            return Err(CreateLockError::Api(ApiError::Status {
-                status: status.as_u16(),
-                url: Some(request_url),
-                lfs_authenticate: None,
-                body,
-                retry_after: None,
-            }));
         }
 
         // A 2xx carries either the new lock or an in-band conflict message.
