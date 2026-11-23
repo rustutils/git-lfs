@@ -76,6 +76,7 @@ pub async fn batch(pool: Arc<Pool>, req: &BatchRequest) -> Result<BatchResponse,
         }
 
         let objects = parse_oid_lines(operation, oid_lines)?;
+        guard.release();
         Ok(BatchResponse {
             transfer: Some("ssh".to_owned()),
             objects,
@@ -226,7 +227,11 @@ pub async fn download(
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(size);
 
-        receive_object(conn.stream(), &store, &oid_owned, advertised_size)
+        let received = receive_object(conn.stream(), &store, &oid_owned, advertised_size);
+        if received.is_ok() {
+            guard.release();
+        }
+        received
     })
     .await
     .map_err(|e| TransferError::Io(std::io::Error::other(e.to_string())))?;
@@ -353,6 +358,7 @@ pub async fn upload(
                 "verify-object {oid_owned} returned status {vstatus}: {detail}"
             ))));
         }
+        guard.release();
         Ok(())
     })
     .await

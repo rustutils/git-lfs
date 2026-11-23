@@ -289,6 +289,8 @@ impl SshLockClient {
         };
         let mut guard = pool.acquire().map_err(LockClientError::from)?;
         let resp = ssh_lock::lock(guard.connection(), path, &opts)?;
+        // A whole response was read, whatever its status.
+        guard.release();
         translate_lock_response(resp)
     }
 
@@ -306,6 +308,8 @@ impl SshLockClient {
         };
         let mut guard = pool.acquire().map_err(LockClientError::from)?;
         let resp = ssh_lock::unlock(guard.connection(), id, &opts)?;
+        // A whole response was read, whatever its status.
+        guard.release();
         translate_lock_response(resp)
     }
 
@@ -320,6 +324,8 @@ impl SshLockClient {
         };
         let mut guard = pool.acquire().map_err(LockClientError::from)?;
         let resp = ssh_lock::list(guard.connection(), &f)?;
+        // A whole response was read, whatever its status.
+        guard.release();
         translate_list_response(resp, filter.path.is_some())
     }
 
@@ -336,6 +342,8 @@ impl SshLockClient {
         };
         let mut guard = pool.acquire().map_err(LockClientError::from)?;
         let resp = ssh_lock::list(guard.connection(), &f)?;
+        // A whole response was read, whatever its status.
+        guard.release();
         if !(200..300).contains(&resp.status) {
             return Err(LockClientError::SshStatus {
                 status: resp.status,

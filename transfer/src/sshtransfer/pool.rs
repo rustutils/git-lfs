@@ -170,6 +170,7 @@ impl Pool {
             pool: self,
             slot: slot_idx,
             connection: Some(connection),
+            released: false,
         })
     }
 
@@ -234,11 +235,17 @@ fn spawn(
     Connection::spawn(&conn_config)
 }
 
-/// A connection checked out of a [`Pool`], put back when dropped.
+/// A connection checked out of a [`Pool`].
+///
+/// Call [`release`](Self::release) once an exchange has finished cleanly
+/// to put the connection back. Dropping the guard without it, as an early
+/// return on an error does, ends the connection instead, since it may be
+/// partway through a message. The slot is spawned again on next use.
 pub struct PoolGuard<'a> {
     pool: &'a Pool,
     slot: usize,
     connection: Option<Connection>,
+    released: bool,
 }
 
 impl PoolGuard<'_> {
@@ -249,23 +256,23 @@ impl PoolGuard<'_> {
             .expect("connection accessed after discard")
     }
 
-    /// Drop the connection instead of putting it back, for example
-    /// because its protocol state is unknown.
-    ///
-    /// The subprocess is killed, and the slot is spawned again on next
-    /// use.
-    pub fn discard(mut self) {
-        // With the connection gone, `Drop` marks the slot vacant.
-        let _ = self.connection.take();
+    /// Put the connection back for reuse.
+    pub fn release(mut self) {
+        self.released = true;
     }
+
+    /// End the connection instead of putting it back, which is what
+    /// dropping the guard does too.
+    pub fn discard(self) {}
 }
 
 impl Drop for PoolGuard<'_> {
     fn drop(&mut self) {
         let mut slots = self.pool.slots.lock().unwrap();
         match self.connection.take() {
-            Some(conn) => slots[self.slot] = SlotState::Available(conn),
-            None => slots[self.slot] = SlotState::Vacant,
+            Some(conn) if self.released => slots[self.slot] = SlotState::Available(conn),
+            // Dropping the connection kills its subprocess.
+            _ => slots[self.slot] = SlotState::Vacant,
         }
     }
 }
@@ -325,7 +332,11 @@ mod tests {
         // First acquire grabs slot 0 (the master).
         let guard1 = pool.acquire().expect("first acquire");
         assert_eq!(guard1.slot, 0);
-        drop(guard1);
+        guard1.release();
+        assert!(matches!(
+            pool.slots.lock().unwrap()[0],
+            SlotState::Available(_)
+        ));
 
         // Second acquire after release should grab slot 0 again
         // (Available preferred over Vacant).
@@ -397,6 +408,22 @@ mod tests {
             Err(other) => panic!("expected Protocol error, got {other:?}"),
             Ok(_) => panic!("expected acquire to fail"),
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn dropped_guard_ends_its_connection() {
+        // An error return drops the guard mid-exchange, so its connection
+        // isn't reused.
+        let tmp = TempDir::new().unwrap();
+        let mut config = fake_pool_config();
+        config.program = working_stub_script(&tmp, "stub.sh");
+
+        let pool = Pool::new(config, 1).expect("pool spawn");
+        let guard = pool.acquire().expect("first acquire");
+        drop(guard);
+        assert!(matches!(pool.slots.lock().unwrap()[0], SlotState::Vacant));
+        let _guard = pool.acquire().expect("re-acquire spawns again");
     }
 
     #[test]

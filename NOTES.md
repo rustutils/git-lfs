@@ -115,10 +115,9 @@ come from reading the code.
   over HTTP, so with `sshtransfer=always` every lockable file becomes
   read-only. An empty `next_cursor` makes them loop. Unlock by path sends
   `unlock` on a download connection.
-- **Pure SSH connections:** a read error returns the connection to the
-  pool mid-message, so the next command on it fails. ssh's stderr is never
-  read, so errors are lost and a chatty ssh could block. Ending the pool
-  may kill the master before its clients.
+- **Pure SSH connections:** ssh's stderr is never read, so errors are lost
+  and a chatty ssh could block. Ending the pool may kill the master before
+  its clients.
 
 ### Minor differences from upstream
 

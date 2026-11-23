@@ -18,6 +18,9 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- With pure SSH transfers, a connection that failed partway through a
+  transfer or lock command is closed instead of reused, so it no longer
+  breaks the next command.
 - `GIT_ASKPASS`, `core.askPass`, and `SSH_ASKPASS` are run as one program
   path, as by Git and upstream, so a path with spaces works. Before, the
   value was split on whitespace.
