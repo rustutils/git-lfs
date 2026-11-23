@@ -21,6 +21,10 @@ use crate::lockable;
 
 #[derive(Debug, thiserror::Error)]
 pub enum LockCommandError {
+    /// Options that can't be used together. Printed as is, with exit
+    /// code 2, like upstream's `Exit`.
+    #[error("{0}")]
+    Usage(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error("{0}")]
@@ -51,8 +55,7 @@ pub struct LocksOptions {
     pub json: bool,
     /// List from the [`lock_cache`] without contacting the server.
     ///
-    /// `--path`, `--id`, and `--limit` filter the cache. `--verify` is
-    /// ignored.
+    /// `--path`, `--id`, and `--limit` filter the cache.
     pub local: bool,
 }
 
@@ -137,8 +140,21 @@ struct VerifyJsonOutput<'a> {
 pub fn locks(cwd: &Path, opts: &LocksOptions) -> Result<(), LockCommandError> {
     let root = repo_root(cwd).map_err(LockCommandError::Build)?;
 
+    if opts.verify {
+        if opts.path.is_some() || opts.id.is_some() {
+            return Err(LockCommandError::Usage(
+                "--verify option can't be combined with filters".into(),
+            ));
+        }
+        if opts.local {
+            return Err(LockCommandError::Usage(
+                "--verify option can't be combined with --local".into(),
+            ));
+        }
+    }
+
     // This must not touch the remote: `t-locks.sh` removes `origin` to
-    // check. `--verify` is ignored here, where upstream rejects it.
+    // check.
     if opts.local {
         let path_filter = match opts.path.as_deref() {
             Some(raw) => Some(resolve_lock_path(cwd, &root, raw).map_err(LockCommandError::Build)?),

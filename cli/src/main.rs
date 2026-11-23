@@ -1025,7 +1025,14 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 local,
                 json,
             };
-            lock::locks(&cwd, &opts)?;
+            match lock::locks(&cwd, &opts) {
+                Ok(()) => {}
+                Err(lock::LockCommandError::Usage(msg)) => {
+                    eprintln!("{msg}");
+                    return Ok(2);
+                }
+                Err(e) => return Err(e.into()),
+            }
         }
         Command::Unlock(UnlockArgs {
             paths,

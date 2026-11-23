@@ -34,6 +34,14 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- With `lfs.locksverify=true`, any failed lock check stops the push, as in
+  upstream, including a connection error, an SSH error, or an unexpected
+  status. Before, only a 5xx, 401, or 403 did. A 404, like a 501, means
+  the server has no locking API, so it sets `lfs.<url>.locksverify` to
+  false and the push goes ahead. Without the setting, a failed check says
+  how to turn it off.
+- `git lfs locks --verify` can't be combined with `--local`, `--path`, or
+  `--id`, as in upstream.
 - Network errors say what went wrong, such as an untrusted certificate or
   a refused connection. Before, they only said "error sending request for
   url (...)".

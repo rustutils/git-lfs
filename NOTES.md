@@ -126,9 +126,6 @@ come from reading the code.
 - **Extensions:** `%f` paths with spaces become several arguments
   (confirmed), smudge writes the last extension's output before checking
   its OID, and clean stores it before checking the exit status.
-- **Lock verification doesn't stop the push** with `locksverify=true` on a
-  404, a connection error, or any SSH error. Upstream aborts.
-  `git lfs locks --local --verify` isn't rejected.
 - **Lockable files with pure SSH.** The read-only hooks always query locks
   over HTTP, so with `sshtransfer=always` every lockable file becomes
   read-only. An empty `next_cursor` makes them loop. Unlock by path sends

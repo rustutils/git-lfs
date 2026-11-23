@@ -4474,3 +4474,119 @@ fn skip_push_reads_false_values() {
         );
     }
 }
+
+// ---------- lock verification on push --------------------------------------
+
+/// A repository with one committed LFS file, pushed to `server`, whose
+/// batch API says it already has the object. Returns the repository and
+/// the `git lfs push` output.
+async fn push_with_lock_verify_status(status: u16, locksverify: Option<&str>) -> (TempDir, Output) {
+    use serde_json::json;
+    use wiremock::matchers::{method as m_method, path as m_path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    let repo = fresh_repo_with_identity();
+    git_in(
+        repo.path(),
+        &["config", "--local", "lfs.url", &server.uri()],
+    );
+    if let Some(value) = locksverify {
+        git_in(
+            repo.path(),
+            &["config", "--local", "lfs.locksverify", value],
+        );
+    }
+    let cleaned = run_in(repo.path(), &["clean"], b"payload\n");
+    assert!(cleaned.status.success());
+    commit_pointer_at(repo.path(), "a.bin", &cleaned.stdout);
+    let oid = oid_from_pointer(&cleaned.stdout);
+
+    Mock::given(m_method("POST"))
+        .and(m_path("/locks/verify"))
+        .respond_with(ResponseTemplate::new(status))
+        .mount(&server)
+        .await;
+    // No actions: the server already has the object.
+    Mock::given(m_method("POST"))
+        .and(m_path("/objects/batch"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "transfer": "basic",
+            "objects": [{ "oid": oid, "size": 8 }]
+        })))
+        .mount(&server)
+        .await;
+
+    let path = repo.path().to_owned();
+    let out = tokio::task::spawn_blocking(move || run_in(&path, &["push", "origin", "HEAD"], b""))
+        .await
+        .unwrap();
+    (repo, out)
+}
+
+/// With `lfs.locksverify=true`, a failed lock check stops the push, as in
+/// upstream. Only a server without a locking API is let through.
+#[tokio::test]
+async fn failed_lock_verification_stops_the_push() {
+    let (_repo, out) = push_with_lock_verify_status(400, Some("true")).await;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "push went ahead: {stderr}");
+    assert!(
+        stderr.contains("does not support the Git LFS locking API"),
+        "{stderr}"
+    );
+
+    // Unset, the same failure only warns.
+    let (_repo, out) = push_with_lock_verify_status(400, None).await;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "push failed: {stderr}");
+    assert!(
+        stderr.contains("does not support the Git LFS locking API"),
+        "{stderr}"
+    );
+}
+
+/// A 404 from the lock check means there's no locking API, so the check is
+/// turned off for the endpoint and the push goes ahead, as in upstream.
+#[tokio::test]
+async fn lock_verification_404_turns_the_check_off() {
+    let (repo, out) = push_with_lock_verify_status(404, Some("true")).await;
+    assert!(
+        out.status.success(),
+        "push failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let config = Command::new("git")
+        .arg("-C")
+        .arg(repo.path())
+        .args(["config", "--get-regexp", r"^lfs\..+\.locksverify$"])
+        .output()
+        .unwrap();
+    let config = String::from_utf8_lossy(&config.stdout);
+    assert!(config.trim_end().ends_with(" false"), "{config:?}");
+}
+
+/// `git lfs locks --verify` can't be combined with `--local` or filters.
+#[test]
+fn locks_verify_rejects_local_and_filters() {
+    let repo = fresh_repo();
+    for (args, message) in [
+        (
+            &["locks", "--verify", "--local"][..],
+            "--verify option can't be combined with --local",
+        ),
+        (
+            &["locks", "--verify", "--id", "1"][..],
+            "--verify option can't be combined with filters",
+        ),
+        (
+            &["locks", "--verify", "--path", "a.bin"][..],
+            "--verify option can't be combined with filters",
+        ),
+    ] {
+        let out = run_in(repo.path(), args, b"");
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains(message), "{args:?}: {stderr}");
+    }
+}

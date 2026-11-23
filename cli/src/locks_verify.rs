@@ -8,13 +8,15 @@
 //! what happens:
 //!
 //! - false: the check is skipped.
-//! - true: a 5xx other than 501, a 401, or a 403 aborts the push.
-//! - unset: those errors print a message and the push goes ahead. A
-//!   successful check suggests turning the setting on.
+//! - true: any failure aborts the push, except that the server has no
+//!   locking API.
+//! - unset: failures print a message and the push goes ahead. A successful
+//!   check suggests turning the setting on.
 //!
-//! Either way, a 501 sets `lfs.<endpoint>.locksverify` to false, and any
-//! other error, including a 404 or an SSH failure, lets the push go ahead
-//! without lock data. `t-pre-push.sh` checks each status with each setting.
+//! Either way, a 404 or 501 means there's no locking API, which sets
+//! `lfs.<endpoint>.locksverify` to false. This follows upstream's
+//! `lockVerifier.Verify`. `t-pre-push.sh` checks each status with each
+//! setting.
 
 use std::path::Path;
 
@@ -27,11 +29,11 @@ use crate::push::PushCommandError;
 /// The effective `locksverify` setting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Setting {
-    /// True, 1, yes, or on.
+    /// Set to a true value.
     Enabled,
-    /// False, 0, no, off, or empty.
+    /// Set to anything else.
     Disabled,
-    /// Not set, or set to anything else.
+    /// Not set.
     Unset,
 }
 
@@ -69,19 +71,7 @@ pub fn run(
 
     let resp = match client.verify_locks(&req) {
         Ok(resp) => resp,
-        Err(LockClientError::Api(boxed)) => {
-            return Ok(handle_api_error(
-                *boxed,
-                setting,
-                cwd,
-                remote_label,
-                endpoint,
-            ));
-        }
-        Err(e) => {
-            eprintln!("warning: lock verify failed: {e}");
-            return Ok(Outcome::Skipped);
-        }
+        Err(e) => return Ok(handle_error(&e, setting, cwd, remote_label, endpoint)),
     };
     if matches!(setting, Setting::Unset) {
         eprintln!(
@@ -96,59 +86,76 @@ pub fn run(
     })
 }
 
-/// Turn an HTTP error from the check into an [`Outcome`].
+/// How a failed check failed.
+enum Failure {
+    /// A 404 or 501: the server has no locking API.
+    NotImplemented,
+    /// A 401 or 403.
+    Auth,
+    /// Anything else, including a 5xx, a connection error, or an SSH
+    /// error.
+    Other,
+}
+
+impl Failure {
+    fn of(e: &LockClientError) -> Self {
+        let status = match e {
+            LockClientError::Api(api) => match api.as_ref() {
+                ApiError::Status { status, .. } => Some(*status),
+                _ => None,
+            },
+            LockClientError::SshStatus { status, .. } => Some(*status),
+            _ => None,
+        };
+        match status {
+            Some(404 | 501) => Self::NotImplemented,
+            Some(401 | 403) => Self::Auth,
+            _ => Self::Other,
+        }
+    }
+}
+
+/// Turn a failed check into an [`Outcome`], as upstream's
+/// `lockVerifier.Verify` does.
 ///
-/// - 501: set `lfs.<endpoint>.locksverify` to false and skip.
-/// - Other 5xx: say the server has no locking API, and abort if the
-///   setting is on.
-/// - 401 or 403: an authentication error, which aborts if the setting is
-///   on.
-/// - 404: skip without a message.
-/// - Anything else: warn and skip.
-///
-/// Upstream's `lockVerifier.Verify` aborts on every error except a 501
-/// when the setting is on.
-fn handle_api_error(
-    e: ApiError,
+/// - No locking API (404 or 501): set `lfs.<endpoint>.locksverify` to
+///   false and skip.
+/// - An authentication error: abort if the setting is on, else warn.
+/// - Anything else: suggest turning the setting off, and abort if it's on.
+fn handle_error(
+    e: &LockClientError,
     setting: Setting,
     cwd: &Path,
     remote_label: &str,
     endpoint: &str,
 ) -> Outcome {
-    match &e {
-        ApiError::Status { status: 501, .. } => {
+    let enabled = matches!(setting, Setting::Enabled);
+    match Failure::of(e) {
+        Failure::NotImplemented => {
             let key = format!("lfs.{endpoint}.locksverify");
             let _ = git_lfs_git::config::set(cwd, ConfigScope::Local, &key, "false");
             Outcome::Skipped
         }
-        ApiError::Status { status, .. } if (500..600).contains(status) => {
-            if matches!(setting, Setting::Enabled) {
-                eprintln!(
-                    "\"{remote_label}\" does not support the Git LFS locking API. \
-                     Consider disabling it with:"
-                );
-                eprintln!("  $ git config lfs.{endpoint}.locksverify false");
-                Outcome::Aborted
-            } else {
-                eprintln!("\"{remote_label}\" does not support the Git LFS locking API.");
-                Outcome::Skipped
-            }
+        Failure::Auth if enabled => {
+            eprintln!("error: Authentication error: {e}");
+            Outcome::Aborted
         }
-        ApiError::Status {
-            status: 401 | 403, ..
-        } => {
-            if matches!(setting, Setting::Enabled) {
-                eprintln!("error: Authentication error: {e}");
-                Outcome::Aborted
-            } else {
-                eprintln!("warning: Authentication error: {e}");
-                Outcome::Skipped
-            }
-        }
-        ApiError::Status { status: 404, .. } => Outcome::Skipped,
-        _ => {
-            eprintln!("warning: lock verify failed: {e}");
+        Failure::Auth => {
+            eprintln!("warning: Authentication error: {e}");
             Outcome::Skipped
+        }
+        Failure::Other => {
+            eprintln!(
+                "\"{remote_label}\" does not support the Git LFS locking API. \
+                 Consider disabling it with:"
+            );
+            eprintln!("  $ git config lfs.{endpoint}.locksverify false");
+            if enabled {
+                eprintln!("error: {e}");
+                Outcome::Aborted
+            } else {
+                Outcome::Skipped
+            }
         }
     }
 }
