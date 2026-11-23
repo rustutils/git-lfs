@@ -17,11 +17,11 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use git_lfs_creds::SshProgram;
+use git_lfs_creds::{SshProgram, SshVariant};
 use tempfile::TempDir;
 
 use crate::sshtransfer::connection::{
-    Config, Connection, ConnectionError, Metadata, Multiplex, Operation, Variant,
+    Config, Connection, ConnectionError, Metadata, Multiplex, Operation,
 };
 
 /// How to spawn the connections of a [`Pool`].
@@ -33,14 +33,14 @@ pub struct PoolConfig {
     /// SSH command, as in [`Config::program`].
     pub program: SshProgram,
     /// SSH client variant.
-    pub variant: Variant,
+    pub variant: SshVariant,
     /// Where to connect.
     pub metadata: Metadata,
     /// Operation for every connection in the pool.
     pub operation: Operation,
     /// Whether to share one SSH connection through a control socket.
     ///
-    /// Only has an effect with [`Variant::Default`].
+    /// Only has an effect with [`SshVariant::Ssh`].
     pub multiplex_enabled: bool,
 }
 
@@ -76,7 +76,7 @@ impl Pool {
         assert!(max_size >= 1, "pool max_size must be at least 1");
 
         let (control_dir, control_path) =
-            if config.multiplex_enabled && matches!(config.variant, Variant::Default) {
+            if config.multiplex_enabled && config.variant.supports_multiplex() {
                 let dir = TempDir::new()?;
                 let path = dir.path().join("lfs.sock");
                 (Some(dir), Some(path))
@@ -278,7 +278,7 @@ mod tests {
         // Tests that spawn replace `program` with a stub script.
         PoolConfig {
             program: SshProgram::Exe("true".to_owned()),
-            variant: Variant::Default,
+            variant: SshVariant::Ssh,
             metadata: Metadata {
                 user_and_host: "git@host".to_owned(),
                 port: None,

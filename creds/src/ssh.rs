@@ -4,15 +4,14 @@
 //! <path> <operation>"` and parses the JSON it prints: an HTTPS endpoint and
 //! headers to send to it. The user's SSH key is the only credential needed.
 //!
-//! The caller picks the [`SshProgram`]. A host starting with `-` is
-//! preceded by `--`, so ssh doesn't read it as an option. This
-//! assumes OpenSSH: other SSH variants, such as PuTTY's, aren't detected.
+//! The caller picks the [`SshProgram`], and the [`SshVariant`] if it's
+//! configured. Otherwise the variant is guessed from the program's name.
 //! The remote command is quoted for the server's shell with [`shell_quote`].
 //!
 //! Responses are cached per user and host, port, path, and operation.
-//! Unlike upstream, the client doesn't read `lfs.ssh.retries`,
-//! `lfs.ssh.automultiplex` or `lfs.defaulttokenttl`, and a failed command is
-//! an error, with no fallback to HTTP Basic auth.
+//! Unlike upstream, the client doesn't read `lfs.ssh.retries` or
+//! `lfs.defaulttokenttl`, and a failed command is an error, with no
+//! fallback to HTTP Basic auth.
 //!
 //! The `exec: …`, `ssh cache: …` and `ssh cache expired: …` trace lines use
 //! upstream's wording, which `t-batch-transfer.sh`, `t-expired.sh` and
@@ -160,6 +159,118 @@ impl SshProgram {
     }
 }
 
+impl SshProgram {
+    /// The SSH variant to assume when none is configured, from the
+    /// program's name, as upstream guesses it.
+    ///
+    /// `plink` is PuTTY and `tortoiseplink` is TortoisePlink, ignoring case
+    /// and any extension. Anything else is OpenSSH.
+    pub fn detect_variant(&self) -> SshVariant {
+        let program = match self {
+            Self::Exe(path) => path.as_str(),
+            Self::Shell(command) => first_word(command),
+        };
+        let base = program.rsplit(['/', '\\']).next().unwrap_or(program);
+        let stem = match base.rsplit_once('.') {
+            Some((stem, _)) if !stem.is_empty() => stem,
+            _ => base,
+        };
+        if stem.eq_ignore_ascii_case("plink") {
+            SshVariant::Putty
+        } else if stem.eq_ignore_ascii_case("tortoiseplink") {
+            SshVariant::Tortoise
+        } else {
+            SshVariant::Ssh
+        }
+    }
+}
+
+/// The first word of a shell command, without the quotes around it.
+fn first_word(command: &str) -> &str {
+    let command = command.trim_start();
+    for quote in ['\'', '"'] {
+        if let Some(rest) = command.strip_prefix(quote) {
+            return rest.split(quote).next().unwrap_or(rest);
+        }
+    }
+    command.split_whitespace().next().unwrap_or("")
+}
+
+/// The kind of SSH client, which decides how its arguments are built.
+///
+/// Set by `GIT_SSH_VARIANT` or `ssh.variant`, or guessed from the program
+/// name with [`SshProgram::detect_variant`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SshVariant {
+    /// OpenSSH `ssh`, the default. The only variant that multiplexes
+    /// connections and takes `--` before the host.
+    #[default]
+    Ssh,
+    /// A client that takes no options but `-p`.
+    Simple,
+    /// PuTTY `plink`, which takes `-P` for the port.
+    Putty,
+    /// TortoisePlink: like PuTTY, plus `-batch`.
+    Tortoise,
+}
+
+impl SshVariant {
+    /// Read a `GIT_SSH_VARIANT` or `ssh.variant` value.
+    ///
+    /// `auto` gives `None`, to detect the variant from the program. An
+    /// unknown value means OpenSSH, as in upstream.
+    pub fn from_config(value: &str) -> Option<Self> {
+        Some(match value {
+            "auto" => return None,
+            "simple" => Self::Simple,
+            "putty" | "plink" => Self::Putty,
+            "tortoiseplink" => Self::Tortoise,
+            _ => Self::Ssh,
+        })
+    }
+
+    /// Whether this client can share connections through a control
+    /// socket.
+    pub fn supports_multiplex(self) -> bool {
+        self == Self::Ssh
+    }
+
+    /// Arguments that go before any others, such as TortoisePlink's
+    /// `-batch`.
+    pub fn leading_args(self) -> &'static [&'static str] {
+        match self {
+            Self::Tortoise => &["-batch"],
+            _ => &[],
+        }
+    }
+
+    /// The port option, if any, then the host, as upstream builds them.
+    ///
+    /// A host starting with `-`, such as `-oProxyCommand=...` from an
+    /// `ssh://` URL, would be read as an option. OpenSSH gets `--` before
+    /// it, and the other variants get it with the dashes stripped.
+    pub fn host_args(self, port: Option<&str>, user_and_host: &str) -> Vec<String> {
+        let mut args = Vec::new();
+        if let Some(port) = port {
+            let flag = match self {
+                Self::Putty | Self::Tortoise => "-P",
+                Self::Ssh | Self::Simple => "-p",
+            };
+            args.push(flag.to_owned());
+            args.push(port.to_owned());
+        }
+        match user_and_host.strip_prefix('-') {
+            Some(_) if self == Self::Ssh => {
+                args.push("--".to_owned());
+                args.push(user_and_host.to_owned());
+            }
+            Some(_) => args.push(user_and_host.trim_start_matches('-').to_owned()),
+            None => args.push(user_and_host.to_owned()),
+        }
+        args
+    }
+}
+
 /// Runs `git-lfs-authenticate` over SSH and caches the responses.
 ///
 /// A cached response with less than 5 seconds left counts as expired, as in
@@ -167,6 +278,7 @@ impl SshProgram {
 #[derive(Debug)]
 pub struct SshAuthClient {
     program: SshProgram,
+    variant: SshVariant,
     cache: Mutex<HashMap<CacheKey, SshAuth>>,
 }
 
@@ -198,9 +310,16 @@ impl SshAuthClient {
     /// Build a client that runs `program`.
     pub fn new(program: SshProgram) -> Self {
         Self {
+            variant: program.detect_variant(),
             program,
             cache: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Use `variant` instead of the one detected from the program.
+    pub fn with_variant(mut self, variant: SshVariant) -> Self {
+        self.variant = variant;
+        self
     }
 
     /// Get the auth response for an SSH remote and operation.
@@ -250,17 +369,13 @@ impl SshAuthClient {
         path: &str,
         operation: SshOperation,
     ) -> Result<SshAuth, SshAuthError> {
-        let mut argv: Vec<String> = Vec::new();
-        if let Some(p) = port {
-            argv.push("-p".to_owned());
-            argv.push(p.to_owned());
-        }
-        // A host such as `-oProxyCommand=...` from an `ssh://` URL would be
-        // read as an option. OpenSSH takes `--` to end the options.
-        if user_and_host.starts_with('-') {
-            argv.push("--".to_owned());
-        }
-        argv.push(user_and_host.to_owned());
+        let mut argv: Vec<String> = self
+            .variant
+            .leading_args()
+            .iter()
+            .map(|a| (*a).to_owned())
+            .collect();
+        argv.extend(self.variant.host_args(port, user_and_host));
         // The remote command is one argument, for the remote shell.
         argv.push(remote_command(path, operation));
         let (prog, argv) = self.program.command_line(argv);
@@ -786,5 +901,50 @@ mod tests {
                 "{script}: {err}"
             );
         }
+    }
+
+    #[test]
+    fn variant_is_detected_from_the_program_name() {
+        let cases = [
+            (SshProgram::Exe("/usr/bin/ssh".into()), SshVariant::Ssh),
+            (
+                SshProgram::Exe("C:\\PuTTY\\PLINK.EXE".into()),
+                SshVariant::Putty,
+            ),
+            (
+                SshProgram::Shell("'/opt/my tools/TortoisePlink.exe' -v".into()),
+                SshVariant::Tortoise,
+            ),
+            (SshProgram::Shell("plink -batch".into()), SshVariant::Putty),
+            (SshProgram::Shell("simple-ssh".into()), SshVariant::Ssh),
+        ];
+        for (program, want) in cases {
+            assert_eq!(program.detect_variant(), want, "{program:?}");
+        }
+    }
+
+    #[test]
+    fn configured_variants() {
+        assert_eq!(SshVariant::from_config("auto"), None);
+        assert_eq!(SshVariant::from_config("plink"), Some(SshVariant::Putty));
+        assert_eq!(SshVariant::from_config("simple"), Some(SshVariant::Simple));
+        assert_eq!(SshVariant::from_config("bogus"), Some(SshVariant::Ssh));
+    }
+
+    #[test]
+    fn host_args_per_variant() {
+        let host = "-oProxyCommand=x";
+        assert_eq!(
+            SshVariant::Ssh.host_args(Some("22"), host),
+            ["-p", "22", "--", "-oProxyCommand=x"]
+        );
+        assert_eq!(
+            SshVariant::Simple.host_args(None, host),
+            ["oProxyCommand=x"]
+        );
+        assert_eq!(
+            SshVariant::Putty.host_args(Some("22"), "git@h"),
+            ["-P", "22", "git@h"]
+        );
     }
 }

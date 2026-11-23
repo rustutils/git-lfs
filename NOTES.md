@@ -74,10 +74,8 @@ a feature.
 - **`git lfs migrate import` with a tag of a tag** (medium,
   `t-migrate-import` 35). `git fast-export` refuses it, so the migrate
   fails before rewriting anything.
-- **SSH variants** (small to medium, `t-ssh` 2). `GIT_SSH_VARIANT` and
-  `ssh.variant` aren't read, and see Minor differences.
-- **`git-lfs-authenticate` options.** We don't support `lfs.ssh.retries`,
-  connection reuse with `lfs.ssh.automultiplex`, or `lfs.defaulttokenttl`.
+- **`git-lfs-authenticate` options.** We don't support `lfs.ssh.retries`
+  or `lfs.defaulttokenttl`.
 - **NTLM and Negotiate authentication**, and acting on `LFS-Authenticate`
   access modes. Wait for someone who needs it.
 
@@ -184,10 +182,6 @@ come from reading the code.
 - Askpass: the trace line prints without `GIT_TRACE`, and empty usernames
   and passwords are rejected. A failed `git credential approve` isn't
   rolled back from the cache.
-- `lfs.ssh.automultiplex` and the SSH variant settings aren't read, so the
-  PuTTY, TortoisePlink, and simple code paths in `build_argv` are unused,
-  and `git-lfs-authenticate` always guards a host starting with `-` with
-  OpenSSH's `--` (`t-ssh` 2 expects the simple variant's stripping).
 - IPv6: SSH URLs split at the wrong colon, `ssh://host:/path` gives an
   empty port, and netrc keeps the brackets.
 - `read_fetch_head_url` reads the first line containing " of ", not just

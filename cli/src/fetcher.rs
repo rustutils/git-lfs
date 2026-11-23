@@ -22,7 +22,7 @@ use git_lfs_api::{
 };
 use git_lfs_creds::{
     AskpassHelper, CachingHelper, GitCredentialHelper, Helper, HelperChain, NetrcCredentialHelper,
-    SshAuthClient, SshAuthError, SshOperation as CredsSshOperation, SshProgram,
+    SshAuthClient, SshAuthError, SshOperation as CredsSshOperation, SshProgram, SshVariant,
 };
 use git_lfs_filter::FetchError;
 use git_lfs_git::ConfigScope;
@@ -31,7 +31,7 @@ use git_lfs_pointer::Pointer;
 use git_lfs_store::Store;
 use git_lfs_transfer::backend::{HttpTransport, SshBackend};
 use git_lfs_transfer::sshtransfer::connection::{
-    ConnectionError, Metadata as PoolMetadata, Operation as SshOperation, Variant as PoolVariant,
+    ConnectionError, Metadata as PoolMetadata, Operation as SshOperation,
 };
 use git_lfs_transfer::sshtransfer::pool::{Pool, PoolConfig};
 use git_lfs_transfer::{CustomAdapter, Report, Transfer, TransferConfig};
@@ -621,8 +621,9 @@ fn http_compatible_endpoint(url_str: &str) -> Result<String, git_lfs_git::endpoi
 /// endpoint, with the program from [`resolve_ssh_program`].
 fn build_ssh_resolver(cwd: &Path, info: SshInfo) -> SharedSshResolver {
     let program = resolve_ssh_program(cwd);
+    let variant = resolve_ssh_variant(cwd, &program);
     Arc::new(SshAuthAdapter {
-        client: Arc::new(SshAuthClient::new(program)),
+        client: Arc::new(SshAuthClient::new(program).with_variant(variant)),
         ssh: info,
     })
 }
@@ -633,14 +634,24 @@ fn build_ssh_resolver(cwd: &Path, info: SshInfo) -> SharedSshResolver {
 /// SSH session for both, as upstream does.
 pub(crate) struct SshPools {
     program: SshProgram,
+    variant: SshVariant,
+    multiplex_enabled: bool,
     metadata: PoolMetadata,
     pools: Mutex<HashMap<SshOperation, Arc<Pool>>>,
 }
 
 impl SshPools {
     pub(crate) fn new(cwd: &Path, ssh: SshInfo) -> Self {
+        let program = resolve_ssh_program(cwd);
         Self {
-            program: resolve_ssh_program(cwd),
+            variant: resolve_ssh_variant(cwd, &program),
+            // On by default everywhere but Windows, as in upstream.
+            multiplex_enabled: read_bool_default(
+                cwd,
+                "lfs.ssh.automultiplex",
+                !cfg!(target_os = "windows"),
+            ),
+            program,
             metadata: PoolMetadata {
                 user_and_host: ssh.user_and_host,
                 port: ssh.port,
@@ -666,14 +677,10 @@ impl SshPools {
         }
         let config = PoolConfig {
             program: self.program.clone(),
-            // Always OpenSSH: `GIT_SSH_VARIANT` and `ssh.variant` aren't
-            // read, and the variant isn't guessed from the program name.
-            variant: PoolVariant::Default,
+            variant: self.variant,
             metadata: self.metadata.clone(),
             operation,
-            // `lfs.ssh.automultiplex` isn't read. This is its default, on
-            // everywhere but Windows.
-            multiplex_enabled: !cfg!(target_os = "windows"),
+            multiplex_enabled: self.multiplex_enabled,
         };
         let pool = Arc::new(Pool::new(config, size)?);
         pools.insert(operation, pool.clone());
@@ -719,6 +726,22 @@ fn resolve_ssh_program(cwd: &Path) -> SshProgram {
         return SshProgram::Shell(command);
     }
     SshProgram::default()
+}
+
+/// Pick the SSH variant like upstream: `GIT_SSH_VARIANT`, then
+/// `ssh.variant`, then a guess from the program's name.
+///
+/// `auto` also means to guess.
+fn resolve_ssh_variant(cwd: &Path, program: &SshProgram) -> SshVariant {
+    let configured = std::env::var("GIT_SSH_VARIANT").ok().or_else(|| {
+        git_lfs_git::config::get_effective(cwd, "ssh.variant")
+            .ok()
+            .flatten()
+    });
+    configured
+        .as_deref()
+        .and_then(SshVariant::from_config)
+        .unwrap_or_else(|| program.detect_variant())
 }
 
 /// Adapts [`SshAuthClient`] to the API client's [`SshResolver`] trait for

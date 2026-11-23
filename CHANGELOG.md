@@ -14,6 +14,15 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
   legacy PEM format with `Proc-Type: 4,ENCRYPTED`. The passphrase comes
   from the credential helpers, which are asked with `protocol=cert` and the
   path in `http.sslKey`, like upstream.
+- SSH clients other than OpenSSH work, as in upstream. The variant comes
+  from `GIT_SSH_VARIANT` or `ssh.variant` (`ssh`, `simple`, `plink`,
+  `putty`, `tortoiseplink`, or `auto`), or is guessed from the program
+  name, so `plink` and `TortoisePlink` are detected. PuTTY gets `-P` for
+  the port, TortoisePlink also gets `-batch`, and only OpenSSH shares
+  connections or gets `--` before a host starting with `-`. Other variants
+  get that host with the dashes stripped.
+- `lfs.ssh.automultiplex` turns off sharing one SSH connection between
+  pure SSH transfers.
 
 ### Fixed
 

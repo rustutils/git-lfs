@@ -36,5 +36,6 @@ pub use memory::CachingHelper;
 pub use netrc::NetrcCredentialHelper;
 pub use query::Query;
 pub use ssh::{
-    SshAuth, SshAuthClient, SshAuthError, SshOperation, SshProgram, exec_trace, shell_quote,
+    SshAuth, SshAuthClient, SshAuthError, SshOperation, SshProgram, SshVariant, exec_trace,
+    shell_quote,
 };

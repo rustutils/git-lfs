@@ -23,7 +23,7 @@ use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
-use git_lfs_creds::{SshProgram, exec_trace, shell_quote};
+use git_lfs_creds::{SshProgram, SshVariant, exec_trace, shell_quote};
 
 use crate::sshtransfer::pktline::{self, Packet, Reader, TextPacket, Writer};
 
@@ -55,48 +55,12 @@ impl From<git_lfs_api::Operation> for Operation {
     }
 }
 
-/// SSH client variant, which decides how the command line is built.
-///
-/// Only [`Variant::Default`] supports multiplexing and the `--`
-/// separator. The others ignore [`Multiplex`] and strip leading dashes
-/// from the host instead.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Variant {
-    /// OpenSSH `ssh`.
-    #[default]
-    Default,
-    /// Git's `simple` SSH variant, for clients that take no options
-    /// beyond `-p`.
-    Simple,
-    /// PuTTY `plink`, which takes `-P` for the port.
-    Putty,
-    /// TortoisePlink. Like PuTTY, plus `-batch`.
-    Tortoise,
-}
-
-impl Variant {
-    fn port_flag(self) -> &'static str {
-        match self {
-            Self::Putty | Self::Tortoise => "-P",
-            _ => "-p",
-        }
-    }
-
-    fn supports_multiplex(self) -> bool {
-        matches!(self, Self::Default)
-    }
-
-    fn supports_dash_separator(self) -> bool {
-        matches!(self, Self::Default)
-    }
-}
-
 /// Endpoint addressing for the SSH command.
 #[derive(Debug, Clone)]
 pub struct Metadata {
     /// `user@host`, or just `host`.
     pub user_and_host: String,
-    /// Port, passed as `-p` (or `-P` for PuTTY and TortoisePlink).
+    /// Port, passed as `-p`, or `-P` for PuTTY and TortoisePlink.
     pub port: Option<String>,
     /// Repository path on the server.
     pub path: String,
@@ -126,7 +90,7 @@ pub struct Config {
     /// The SSH program.
     pub program: SshProgram,
     /// SSH client variant.
-    pub variant: Variant,
+    pub variant: SshVariant,
     /// Where to connect.
     pub metadata: Metadata,
     /// Operation passed to the remote command.
@@ -155,7 +119,7 @@ impl Config {
         Self {
             id,
             program,
-            variant: Variant::default(),
+            variant: SshVariant::default(),
             metadata,
             operation,
             multiplex: Multiplex::Disabled,
@@ -553,9 +517,13 @@ fn parse_status(line: &str) -> Result<u16, ConnectionError> {
 fn build_argv(config: &Config) -> Vec<String> {
     let mut argv = Vec::new();
 
-    if config.variant == Variant::Tortoise {
-        argv.push("-batch".to_owned());
-    }
+    argv.extend(
+        config
+            .variant
+            .leading_args()
+            .iter()
+            .map(|a| (*a).to_owned()),
+    );
 
     if config.variant.supports_multiplex() {
         match &config.multiplex {
@@ -571,26 +539,10 @@ fn build_argv(config: &Config) -> Vec<String> {
         }
     }
 
-    if let Some(port) = &config.metadata.port {
-        argv.push(config.variant.port_flag().to_owned());
-        argv.push(port.clone());
-    }
-
-    // A host like `-oProxyCommand=...` from an `ssh://` URL would be
-    // read as an option. OpenSSH takes `--` to end the options. The
-    // other variants don't, so the leading dashes are stripped, as
-    // upstream does.
-    let user_and_host = config.metadata.user_and_host.as_str();
-    if user_and_host.starts_with('-') {
-        if config.variant.supports_dash_separator() {
-            argv.push("--".to_owned());
-            argv.push(user_and_host.to_owned());
-        } else {
-            argv.push(user_and_host.trim_start_matches('-').to_owned());
-        }
-    } else {
-        argv.push(user_and_host.to_owned());
-    }
+    argv.extend(config.variant.host_args(
+        config.metadata.port.as_deref(),
+        &config.metadata.user_and_host,
+    ));
 
     // ssh hands this to the server's shell, so quote each word.
     argv.push(format!(
@@ -685,7 +637,7 @@ mod tests {
         let mut m = meta("git@host");
         m.port = Some("2222".to_owned());
         let mut c = Config::new(0, exe("plink"), m, Operation::Download);
-        c.variant = Variant::Putty;
+        c.variant = SshVariant::Putty;
         let argv = build_argv(&c);
         assert!(argv.contains(&"-P".to_owned()));
         assert!(!argv.contains(&"-p".to_owned()));
@@ -694,7 +646,7 @@ mod tests {
     #[test]
     fn argv_tortoise_prepends_batch() {
         let mut c = Config::new(0, exe("tortoiseplink"), meta("git@host"), Operation::Upload);
-        c.variant = Variant::Tortoise;
+        c.variant = SshVariant::Tortoise;
         let argv = build_argv(&c);
         assert_eq!(argv[0], "-batch");
     }
@@ -726,7 +678,7 @@ mod tests {
         // PuTTY and TortoisePlink don't speak OpenSSH multiplexing, so the
         // -oControl* options would error out. Builder drops them.
         let mut c = Config::new(0, exe("plink"), meta("git@host"), Operation::Upload);
-        c.variant = Variant::Putty;
+        c.variant = SshVariant::Putty;
         c.multiplex = Multiplex::Master {
             path: PathBuf::from("/tmp/sock"),
         };
@@ -759,7 +711,7 @@ mod tests {
             meta("-oProxyCommand=evil"),
             Operation::Upload,
         );
-        c.variant = Variant::Simple;
+        c.variant = SshVariant::Simple;
         let argv = build_argv(&c);
         // Dashes stripped, and no `--` separator added.
         assert!(argv.iter().any(|a| a == "oProxyCommand=evil"));
