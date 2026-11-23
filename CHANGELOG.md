@@ -34,6 +34,9 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- `http.sslCert` and `http.sslKey` send a client certificate without
+  `http.sslCAInfo`, and with `http.sslVerify=false`. Before, they were
+  ignored unless `http.sslCAInfo` was set.
 - `git lfs migrate` works with an annotated tag that points at another
   tag, and the outer tag points at the rewritten inner one. It failed
   before rewriting anything. `migrate` now needs Git 2.24 or later.

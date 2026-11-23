@@ -155,7 +155,6 @@ come from reading the code.
 - **`git lfs clone`:** a failed pull in a submodule exits 0, `-bmain` is
   read as `-n` and skips the pull, and `--bare` skips the fetch and hooks.
 - **`create_lock` drops `Retry-After`** on rate-limit and server errors.
-- **`http.sslCert` and `http.sslKey` only work with `http.sslCAInfo`.**
 
 ### Minor differences from upstream
 

@@ -4189,6 +4189,61 @@ MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgiL/YQe/UK/XFaiYJ
 /// the same port, so one server can play two hosts: `localhost` and
 /// `127.0.0.1`. A connection that fails its handshake is dropped.
 fn serve_lfs_over_tls(oid: &'static str, content: &'static [u8], storage_host: &str) -> u16 {
+    serve_lfs_over_tls_with(oid, content, storage_host, false)
+}
+
+/// Accepts any client certificate, but requires one.
+///
+/// The handshake signature is still checked, so the client must hold the
+/// certificate's key.
+#[derive(Debug)]
+struct AnyClientCert(rustls::crypto::WebPkiSupportedAlgorithms);
+
+impl rustls::server::danger::ClientCertVerifier for AnyClientCert {
+    fn root_hint_subjects(&self) -> &[rustls::DistinguishedName] {
+        &[]
+    }
+
+    fn verify_client_cert(
+        &self,
+        _end_entity: &rustls_pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls_pki_types::CertificateDer<'_>],
+        _now: rustls_pki_types::UnixTime,
+    ) -> Result<rustls::server::danger::ClientCertVerified, rustls::Error> {
+        Ok(rustls::server::danger::ClientCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls_pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(message, cert, dss, &self.0)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls_pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.0)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.0.supported_schemes()
+    }
+}
+
+/// [`serve_lfs_over_tls`], requiring a client certificate when
+/// `require_client_cert` is set.
+fn serve_lfs_over_tls_with(
+    oid: &'static str,
+    content: &'static [u8],
+    storage_host: &str,
+    require_client_cert: bool,
+) -> u16 {
     use std::io::{BufRead, BufReader, Read};
     use std::net::TcpListener;
     use std::sync::Arc;
@@ -4200,14 +4255,16 @@ fn serve_lfs_over_tls(oid: &'static str, content: &'static [u8], storage_host: &
         .unwrap()
         .unwrap();
     let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let config = Arc::new(
-        rustls::ServerConfig::builder_with_provider(provider)
-            .with_safe_default_protocol_versions()
-            .unwrap()
-            .with_no_client_auth()
-            .with_single_cert(cert, key)
-            .unwrap(),
-    );
+    let algorithms = provider.signature_verification_algorithms;
+    let builder = rustls::ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .unwrap();
+    let builder = if require_client_cert {
+        builder.with_client_cert_verifier(Arc::new(AnyClientCert(algorithms)))
+    } else {
+        builder.with_no_client_auth()
+    };
+    let config = Arc::new(builder.with_single_cert(cert, key).unwrap());
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let storage = format!("https://{storage_host}:{port}/storage/{oid}");
@@ -4312,4 +4369,45 @@ fn ssl_verify_for_the_endpoint_does_not_cover_storage_hosts() {
         "smudge verified the storage host with the endpoint's settings"
     );
     assert_ne!(out.stdout, CONTENT);
+}
+
+/// `http.sslCert` and `http.sslKey` send a client certificate without
+/// `http.sslCAInfo`, here with `http.sslVerify=false`.
+#[test]
+fn client_certificate_is_sent_without_ssl_ca_info() {
+    const OID: &str = "30031a9831674dd684c3817399acebc88a116ce5a7a3fbc0cf34d92521a534e6";
+    const CONTENT: &[u8] = b"downloaded\n";
+    let port = serve_lfs_over_tls_with(OID, CONTENT, "localhost", true);
+
+    let repo = fresh_repo();
+    let cert = repo.path().join("client.crt");
+    let key = repo.path().join("client.key");
+    std::fs::write(&cert, TLS_CERT).unwrap();
+    std::fs::write(&key, TLS_KEY).unwrap();
+    for (k, v) in [
+        ("lfs.url", format!("https://localhost:{port}/repo")),
+        ("lfs.transfer.maxretries", "1".to_owned()),
+        ("http.sslVerify", "false".to_owned()),
+        ("http.sslCert", cert.display().to_string()),
+        ("http.sslKey", key.display().to_string()),
+    ] {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(["config", k, &v])
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+    let pointer = format!(
+        "version https://git-lfs.github.com/spec/v1\noid sha256:{OID}\nsize {}\n",
+        CONTENT.len(),
+    );
+    let out = run_in(repo.path(), &["smudge"], pointer.as_bytes());
+    assert!(
+        out.status.success(),
+        "smudge failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(out.stdout, CONTENT);
 }

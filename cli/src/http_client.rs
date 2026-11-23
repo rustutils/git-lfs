@@ -81,18 +81,31 @@ fn build_with(cwd: &Path, opts: &HttpOptions) -> reqwest::Client {
     // Redirects are followed by `git_lfs_api::send_with_redirects`.
     let mut builder = reqwest::ClientBuilder::new().redirect(reqwest::redirect::Policy::none());
 
-    if opts.ssl_verify == Some(false) {
-        builder = builder.danger_accept_invalid_certs(true);
-    } else if let Some(path) = opts.ssl_ca_info.as_deref()
-        && let Some(config) = pinned_cert_config(
-            path,
-            opts.ssl_cert
-                .as_deref()
-                .zip(opts.ssl_key.as_deref())
-                .and_then(|(cert, key)| load_client_identity(cwd, cert, key)),
-        )
-    {
+    // The client certificate doesn't depend on how the server's
+    // certificate is checked.
+    let identity = opts
+        .ssl_cert
+        .as_deref()
+        .zip(opts.ssl_key.as_deref())
+        .and_then(|(cert, key)| load_client_identity(cwd, cert, key));
+    let pinned = match opts.ssl_ca_info.as_deref() {
+        Some(path) if opts.ssl_verify != Some(false) => {
+            pinned_cert_config(path, identity.as_ref().map(clone_identity))
+        }
+        _ => None,
+    };
+    if let Some(config) = pinned {
         builder = builder.use_preconfigured_tls(config);
+    } else {
+        if opts.ssl_verify == Some(false) {
+            builder = builder.danger_accept_invalid_certs(true);
+        }
+        if let Some(identity) = identity {
+            match reqwest::Identity::from_pem(&identity_pem(&identity)) {
+                Ok(identity) => builder = builder.identity(identity),
+                Err(e) => eprintln!("warning: can't use the client certificate: {e}"),
+            }
+        }
     }
 
     if let Some(path) = opts.cookie_file.as_deref()
@@ -176,8 +189,7 @@ type Identity = (Vec<CertificateDer<'static>>, PrivateKeyDer<'static>);
 /// Build a rustls config that trusts exactly the PEM certificates in
 /// `path`, and sends `identity` as the client certificate if there is one.
 ///
-/// The client certificate settings have no effect without
-/// `http.sslCAInfo`. Returns `None` if `path` has no certificates.
+/// Returns `None` if `path` has no certificates.
 fn pinned_cert_config(path: &str, identity: Option<Identity>) -> Option<rustls::ClientConfig> {
     let pem = std::fs::read(path).ok()?;
     let mut cursor = std::io::Cursor::new(&pem);
@@ -204,6 +216,36 @@ fn pinned_cert_config(path: &str, identity: Option<Identity>) -> Option<rustls::
         None => builder.with_no_client_auth(),
     };
     Some(config)
+}
+
+fn clone_identity((certs, key): &Identity) -> Identity {
+    (certs.clone(), key.clone_key())
+}
+
+/// Encode `identity` as PEM, the certificates first, for reqwest.
+fn identity_pem((certs, key): &Identity) -> Vec<u8> {
+    let mut out = Vec::new();
+    for cert in certs {
+        pem_section(&mut out, "CERTIFICATE", cert.as_ref());
+    }
+    let label = match key {
+        PrivateKeyDer::Pkcs1(_) => "RSA PRIVATE KEY",
+        PrivateKeyDer::Sec1(_) => "EC PRIVATE KEY",
+        _ => "PRIVATE KEY",
+    };
+    pem_section(&mut out, label, key.secret_der());
+    out
+}
+
+fn pem_section(out: &mut Vec<u8>, label: &str, der: &[u8]) {
+    use base64::Engine as _;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(der);
+    out.extend_from_slice(format!("-----BEGIN {label}-----\n").as_bytes());
+    for line in encoded.as_bytes().chunks(64) {
+        out.extend_from_slice(line);
+        out.push(b'\n');
+    }
+    out.extend_from_slice(format!("-----END {label}-----\n").as_bytes());
 }
 
 /// Load a client certificate chain and private key from two PEM files
@@ -428,6 +470,18 @@ gK5S8+YxJvFLdXrxncZ47Udpx0Y7Hf9UmASWvx2Tfgnth0/rVfoPtZUq
             client.process_new_packets()?;
         }
         Ok(())
+    }
+
+    #[test]
+    fn identity_pem_is_read_back_by_reqwest() {
+        let key = rustls_pemfile::private_key(&mut CERT_KEY.as_bytes())
+            .unwrap()
+            .unwrap();
+        let pem = identity_pem(&(vec![pem_cert()], key));
+        let text = String::from_utf8(pem.clone()).unwrap();
+        assert!(text.starts_with("-----BEGIN CERTIFICATE-----\n"), "{text}");
+        assert!(text.contains("-----BEGIN PRIVATE KEY-----\n"), "{text}");
+        reqwest::Identity::from_pem(&pem).unwrap();
     }
 
     #[test]
