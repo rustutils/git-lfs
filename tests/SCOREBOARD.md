@@ -1,44 +1,27 @@
 # Test scoreboard
 
-Results of upstream's shell tests, as of 2026-11-22.
+Results of upstream's shell tests, as of 2026-11-23.
 
-**777 of 856 tests pass (91%), across 106 suites.**
+**848 of 856 tests pass (99%), across 106 suites.**
 
 To refresh, run `cargo xtask test`, which prints these numbers per suite.
 
 ## Passing
 
-79 suites pass completely, with 594 tests between them.
+96 suites pass completely, with 740 tests between them.
 
 ## Failing
 
-24 suites have failing tests. 183 of their 262 tests pass.
+7 suites have failing tests. 108 of their 116 tests pass.
 
 | Suite | Passing |
 | --- | --- |
-| `t-batch-error-handling.sh` | 0 of 1 |
-| `t-batch-storage-corrupt.sh` | 0 of 3 |
-| `t-batch-storage-encoding.sh` | 2 of 7 |
-| `t-batch-storage-upload-tus.sh` | 0 of 2 |
-| `t-batch-unknown-oids.sh` | 0 of 1 |
+| `t-batch-storage-encoding.sh` | 6 of 7 |
 | `t-clone.sh` | 11 of 13 |
-| `t-completion.sh` | 0 of 5 |
-| `t-config.sh` | 13 of 14 |
-| `t-credentials.sh` | 18 of 20 |
-| `t-custom-transfers-protect.sh` | 0 of 4 |
-| `t-custom-transfers.sh` | 0 of 9 |
-| `t-dedup.sh` | 0 of 3 |
-| `t-header-redirect.sh` | 6 of 7 |
-| `t-ls-files.sh` | 27 of 31 |
-| `t-migrate-export.sh` | 16 of 17 |
-| `t-migrate-import.sh` | 44 of 51 |
-| `t-multiple-remotes.sh` | 0 of 12 |
+| `t-migrate-import.sh` | 50 of 51 |
 | `t-post-checkout.sh` | 2 of 3 |
-| `t-progress.sh` | 0 of 4 |
 | `t-push.sh` | 26 of 27 |
 | `t-ssh.sh` | 13 of 14 |
-| `t-standalone-file.sh` | 2 of 9 |
-| `t-submodule-lfsconfig.sh` | 3 of 4 |
 | `t-usage.sh` | 0 of 1 |
 
 ## Skipped

@@ -8,6 +8,8 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-23
+
 ### Security
 
 - `.lfsconfig` values containing a newline can no longer add other settings,
@@ -508,7 +510,8 @@ commands below. About 58% of upstream's shell tests pass.
   `lfs.url`, `remote.<name>.lfsurl`, or the remote's URL.
 - Parallel uploads and downloads.
 
-[Unreleased]: https://gitlab.com/rustutils/git-lfs/-/compare/v0.8.0...HEAD
+[Unreleased]: https://gitlab.com/rustutils/git-lfs/-/compare/v0.9.0...HEAD
+[0.9.0]: https://gitlab.com/rustutils/git-lfs/-/compare/v0.8.0...v0.9.0
 [0.8.0]: https://gitlab.com/rustutils/git-lfs/-/compare/v0.7.0...v0.8.0
 [0.7.0]: https://gitlab.com/rustutils/git-lfs/-/compare/v0.6.0...v0.7.0
 [0.6.0]: https://gitlab.com/rustutils/git-lfs/-/compare/v0.5.0...v0.6.0
