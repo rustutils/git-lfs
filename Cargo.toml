@@ -26,7 +26,7 @@ inherits = "release"
 opt-level = "z"
 
 [workspace.package]
-version      = "0.10.0"
+version      = "0.11.0"
 edition      = "2024"
 rust-version = "1.95"
 license      = "MIT"
@@ -37,13 +37,13 @@ homepage     = "https://rustutils.gitlab.io/git-lfs/"
 [workspace.dependencies]
 # Internal crates — single source of truth for paths.
 # Consumers depend via `dep = { workspace = true }`.
-git-lfs-pointer  = { path = "pointer",  version = "0.10.0" }
-git-lfs-store    = { path = "store",    version = "0.10.0" }
-git-lfs-git      = { path = "git",      version = "0.10.0" }
-git-lfs-api      = { path = "api",      version = "0.10.0" }
-git-lfs-transfer = { path = "transfer", version = "0.10.0" }
-git-lfs-creds    = { path = "creds",    version = "0.10.0" }
-git-lfs-filter   = { path = "filter",   version = "0.10.0" }
+git-lfs-pointer  = { path = "pointer",  version = "0.11.0" }
+git-lfs-store    = { path = "store",    version = "0.11.0" }
+git-lfs-git      = { path = "git",      version = "0.11.0" }
+git-lfs-api      = { path = "api",      version = "0.11.0" }
+git-lfs-transfer = { path = "transfer", version = "0.11.0" }
+git-lfs-creds    = { path = "creds",    version = "0.11.0" }
+git-lfs-filter   = { path = "filter",   version = "0.11.0" }
 
 # External crates shared across multiple members.
 thiserror      = "2"
