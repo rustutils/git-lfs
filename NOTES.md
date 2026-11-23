@@ -71,9 +71,6 @@ a feature.
   action, where upstream sends a new batch request first. So an expired
   action fails instead of being renewed, and the tests that count batch
   requests see one fewer.
-- **`git lfs migrate import` with a tag of a tag** (medium,
-  `t-migrate-import` 35). `git fast-export` refuses it, so the migrate
-  fails before rewriting anything.
 - **`git-lfs-authenticate` options.** We don't support `lfs.ssh.retries`
   or `lfs.defaulttokenttl`.
 - **NTLM and Negotiate authentication**, and acting on `LFS-Authenticate`

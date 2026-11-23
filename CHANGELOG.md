@@ -26,6 +26,9 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- `git lfs migrate` works with an annotated tag that points at another
+  tag, and the outer tag points at the rewritten inner one. It failed
+  before rewriting anything. `migrate` now needs Git 2.24 or later.
 - A leading `~` in `http.sslCert`, `http.sslKey`, and `http.cookieFile` is
   expanded to the home directory.
 - An attributes file with a pattern upstream can't parse, such as

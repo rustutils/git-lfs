@@ -113,6 +113,9 @@ pub struct Transform<'a> {
     attrs_add_initial: Vec<String>,
     /// [`Options::attrs_remove_initial`].
     attrs_remove: BTreeSet<String>,
+    /// Tags and resets of `refs/tags/`, held back until the end of the
+    /// stream by [`Self::write_tags`].
+    tags: Vec<Command>,
     pub stats: Stats,
 }
 
@@ -136,6 +139,7 @@ impl<'a> Transform<'a> {
             attrs_add: BTreeSet::new(),
             attrs_add_initial,
             attrs_remove,
+            tags: Vec::new(),
             stats: Stats::default(),
         }
     }
@@ -148,6 +152,7 @@ impl<'a> Transform<'a> {
         while let Some(cmd) = reader.next()? {
             self.process(cmd, &mut writer)?;
         }
+        self.write_tags(&mut writer)?;
         writer.flush()?;
         self.stats.patterns = self.attrs_add.clone();
         for p in &self.attrs_add_initial {
@@ -174,8 +179,80 @@ impl<'a> Transform<'a> {
                 Mode::Fixup => self.process_commit_fixup(c, writer),
                 _ => self.process_commit(c, writer),
             },
+            Command::Tag(t) => {
+                self.tags.push(Command::Tag(t));
+                Ok(())
+            }
+            Command::Reset(r) if r.ref_name.starts_with("refs/tags/") => {
+                self.tags.push(Command::Reset(r));
+                Ok(())
+            }
             other => writer.write(&other),
         }
+    }
+
+    /// Write the held-back tags, with each tag of a tag fixed.
+    ///
+    /// fast-export writes the tag that another tag points at under the
+    /// outer tag's name, so fast-import would store it with that name and
+    /// the outer tag wouldn't point at the rewritten inner one. Each inner
+    /// tag gets its own name back from the original object. The inner
+    /// tag's own entry later in the stream is then dropped, since
+    /// fast-import refuses two updates to one ref, and references to its
+    /// mark go to the first entry.
+    ///
+    /// Only tags can refer to a tag, so holding them back is safe.
+    fn write_tags<W: Write>(&mut self, writer: &mut Writer<W>) -> io::Result<()> {
+        let inner: HashSet<&str> = self
+            .tags
+            .iter()
+            .filter_map(|c| match c {
+                Command::Tag(t) => t.from.strip_prefix(':'),
+                _ => None,
+            })
+            .collect();
+        let mut renames = Vec::new();
+        for (i, cmd) in self.tags.iter().enumerate() {
+            if let Command::Tag(t) = cmd
+                && let (Some(mark), Some(oid)) = (t.mark, &t.original_oid)
+                && inner.contains(mark.to_string().as_str())
+            {
+                let name = tag_name(&self.opts.cwd, oid)?;
+                if name != t.name {
+                    renames.push((i, name));
+                }
+            }
+        }
+        for (i, name) in renames {
+            if let Command::Tag(t) = &mut self.tags[i] {
+                t.name = name;
+            }
+        }
+        // The mark each original tag was written under, and the name it
+        // was written with.
+        let mut written: HashMap<String, (u32, String)> = HashMap::new();
+        let mut aliases: HashMap<String, String> = HashMap::new();
+        for mut cmd in std::mem::take(&mut self.tags) {
+            if let Command::Tag(t) = &mut cmd {
+                if let Some(to) = aliases.get(&t.from) {
+                    t.from = to.clone();
+                }
+                if let (Some(mark), Some(oid)) = (t.mark, &t.original_oid) {
+                    match written.get(oid) {
+                        Some((first, name)) if *name == t.name => {
+                            aliases.insert(format!(":{mark}"), format!(":{first}"));
+                            continue;
+                        }
+                        Some(_) => {}
+                        None => {
+                            written.insert(oid.clone(), (mark, t.name.clone()));
+                        }
+                    }
+                }
+            }
+            writer.write(&cmd)?;
+        }
+        Ok(())
     }
 
     /// Convert the commit's new blobs that its attributes say are LFS
@@ -575,6 +652,26 @@ fn read_blob(cwd: &Path, id: &str) -> io::Result<Vec<u8>> {
         )));
     }
     Ok(out.stdout)
+}
+
+/// The name in the header of the tag object `id`.
+fn tag_name(cwd: &Path, id: &str) -> io::Result<String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["cat-file", "tag", id])
+        .output()?;
+    if !out.status.success() {
+        return Err(io::Error::other(format!(
+            "git cat-file tag {id} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .take_while(|l| !l.is_empty())
+        .find_map(|l| l.strip_prefix("tag ").map(str::to_owned))
+        .ok_or_else(|| io::Error::other(format!("tag {id} has no name")))
 }
 
 /// Whether `path` is a `.gitattributes` file in any directory.

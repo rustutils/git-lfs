@@ -2,22 +2,21 @@
 
 Results of upstream's shell tests, as of 2026-11-23.
 
-**852 of 856 tests pass (99%), across 106 suites.**
+**853 of 856 tests pass (99%), across 106 suites.**
 
 To refresh, run `cargo xtask test`, which prints these numbers per suite.
 
 ## Passing
 
-99 suites pass completely, with 770 tests between them.
+100 suites pass completely, with 821 tests between them.
 
 ## Failing
 
-4 suites have failing tests. 82 of their 86 tests pass.
+3 suites have failing tests. 32 of their 35 tests pass.
 
 | Suite | Passing |
 | --- | --- |
 | `t-batch-storage-encoding.sh` | 6 of 7 |
-| `t-migrate-import.sh` | 50 of 51 |
 | `t-push.sh` | 26 of 27 |
 | `t-usage.sh` | 0 of 1 |
 

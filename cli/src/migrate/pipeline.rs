@@ -113,6 +113,9 @@ fn spawn_fast_export(
         // The transform pairs these with fast-import's marks to map
         // old commits to new ones.
         "--show-original-ids",
+        // Without a mark, a tag of a tag can't refer to the tag it
+        // points at, and fast-export refuses it.
+        "--mark-tags",
     ]);
     for r in include {
         cmd.arg(r);
