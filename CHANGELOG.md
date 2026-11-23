@@ -19,6 +19,9 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 - A leading `~` in `http.sslCert`, `http.sslKey`, and `http.cookieFile` is
   expanded to the home directory.
+- An attributes file with a pattern upstream can't parse, such as
+  `[[:space]]` with an unclosed character class, is ignored as a whole,
+  like upstream. With `GIT_TRACE`, a line says which pattern and why.
 
 ## [0.9.0] - 2026-11-23
 

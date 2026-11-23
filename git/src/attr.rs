@@ -121,9 +121,11 @@ impl AttrSet {
         let info = repo_root.join(".git").join("info").join("attributes");
         if info.exists() {
             let bytes = fs::read(&info)?;
-            let rewritten = me.intake_buffer(&bytes);
-            me.search
-                .add_patterns_buffer(&rewritten, info, None, &mut me.collection, true);
+            if patterns_parse(&bytes, info.display()) {
+                let rewritten = me.intake_buffer(&bytes);
+                me.search
+                    .add_patterns_buffer(&rewritten, info, None, &mut me.collection, true);
+            }
         }
 
         let mut found = Vec::new();
@@ -133,6 +135,9 @@ impl AttrSet {
         found.sort_by_key(|p| p.components().count());
         for path in found {
             let bytes = fs::read(&path)?;
+            if !patterns_parse(&bytes, path.display()) {
+                continue;
+            }
             let rewritten = me.intake_buffer(&bytes);
             // gix-glob strips `repo_root` from the file's parent to get the
             // directory its patterns are relative to, such as `sub/` for
@@ -386,20 +391,24 @@ pub fn list_lfs_patterns(repo_root: &Path) -> io::Result<PatternListing> {
     let mut macros = MacroState::default();
 
     // The global file comes first, as in upstream's listing.
-    if let Some((path, bytes)) = read_global_attributes(repo_root) {
+    if let Some((path, bytes)) = read_global_attributes(repo_root)
+        && patterns_parse(&bytes, &path)
+    {
         scan_attr_lines(&bytes, &path, &mut listing, &mut macros, true);
     }
 
     let info = repo_root.join(".git").join("info").join("attributes");
     if info.exists() {
         let bytes = fs::read(&info)?;
-        scan_attr_lines(
-            &bytes,
-            ".git/info/attributes",
-            &mut listing,
-            &mut macros,
-            true,
-        );
+        if patterns_parse(&bytes, info.display()) {
+            scan_attr_lines(
+                &bytes,
+                ".git/info/attributes",
+                &mut listing,
+                &mut macros,
+                true,
+            );
+        }
     }
 
     let mut found = Vec::new();
@@ -407,6 +416,9 @@ pub fn list_lfs_patterns(repo_root: &Path) -> io::Result<PatternListing> {
     found.sort_by_key(|p| p.components().count());
     for path in found {
         let bytes = fs::read(&path)?;
+        if !patterns_parse(&bytes, path.display()) {
+            continue;
+        }
         let rel = path
             .strip_prefix(repo_root)
             .unwrap_or(&path)
@@ -489,6 +501,32 @@ fn scan_attr_lines(
             });
         }
     }
+}
+
+/// Whether the patterns in the attributes file `path` all parse.
+///
+/// Like upstream, a file with a pattern its matcher rejects is ignored as
+/// a whole, with a `GIT_TRACE` line saying why.
+fn patterns_parse(bytes: &[u8], path: impl std::fmt::Display) -> bool {
+    let text = String::from_utf8_lossy(bytes);
+    for line in text.lines() {
+        let body = line.trim();
+        if body.is_empty() || body.starts_with('#') || body.starts_with("[attr]") {
+            continue;
+        }
+        let Some(pattern) = body.split_whitespace().next() else {
+            continue;
+        };
+        if let Some(err) = crate::wildmatch::pattern_error(pattern) {
+            if crate::trace_enabled() {
+                eprintln!(
+                    "Error parsing attributes from {path}: invalid attribute pattern {pattern:?}: {err}"
+                );
+            }
+            return false;
+        }
+    }
+    true
 }
 
 fn walk_for_gitattributes(dir: &Path, out: &mut Vec<PathBuf>) -> io::Result<()> {

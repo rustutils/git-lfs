@@ -115,8 +115,6 @@ come from reading the code.
 
 ### Wrong results or failures
 
-- **An invalid `.gitattributes` pattern is ignored** instead of reported
-  (`t-post-checkout` 3).
 - **Flaky tests**: `t-migrate-export` test 2 or 15 sometimes fails with
   "Expanded 0 pointer(s)". `t-status` test 17 (permission change) sometimes
   lists `a.dat` as changed with the same OID, probably Git's racy-timestamp

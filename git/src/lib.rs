@@ -31,6 +31,7 @@ pub mod pktline;
 pub mod refs;
 pub mod rev_list;
 pub mod scanner;
+mod wildmatch;
 
 pub use attr::AttrSet;
 pub use config::ConfigScope;
@@ -64,6 +65,14 @@ pub(crate) fn run_git(cwd: &Path, args: &[&str]) -> Result<String, Error> {
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
         .trim()
         .to_owned())
+}
+
+/// Whether `GIT_TRACE` asks for trace output.
+pub(crate) fn trace_enabled() -> bool {
+    std::env::var_os("GIT_TRACE").is_some_and(|v| {
+        let v = v.to_string_lossy().trim().to_lowercase();
+        !matches!(v.as_str(), "" | "0" | "false" | "no" | "off")
+    })
 }
 
 #[cfg(test)]
