@@ -127,8 +127,6 @@ come from reading the code.
   may kill the master before its clients.
 - **The askpass program is split on whitespace**, so a path with a space
   or a quoted argument breaks.
-- **`git lfs clone`:** a failed pull in a submodule exits 0, `-bmain` is
-  read as `-n` and skips the pull, and `--bare` skips the fetch and hooks.
 - **`create_lock` drops `Retry-After`** on rate-limit and server errors.
 
 ### Minor differences from upstream

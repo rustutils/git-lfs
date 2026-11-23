@@ -504,7 +504,16 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             }
         }
         Command::Clone(CloneArgs { args }) => {
-            clone::run(&cwd, &args)?;
+            match clone::run(&cwd, &args) {
+                Ok(()) => {}
+                // Upstream exits 2 with this, after the submodules'
+                // own errors.
+                Err(e @ clone::CloneError::Submodules(_)) => {
+                    eprintln!("{e}");
+                    return Ok(2);
+                }
+                Err(e) => return Err(e.into()),
+            }
         }
         Command::FilterProcess(FilterProcessArgs { skip }) => {
             let _ = install::try_install_hooks(&cwd);

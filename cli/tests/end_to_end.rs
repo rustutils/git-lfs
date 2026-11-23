@@ -4784,3 +4784,115 @@ fn fetch_prune_runs_without_downloads() {
     assert!(out.status.success());
     assert!(!dir.join(&oid).exists(), "the object wasn't pruned");
 }
+
+// ---------- clone -----------------------------------------------------------
+
+/// A repository in `parent/name` with `a.bin` committed as an LFS file.
+/// Returns its object's OID.
+fn lfs_source_repo(parent: &Path, name: &str) -> String {
+    let src = parent.join(name);
+    std::fs::create_dir(&src).unwrap();
+    git_in(&src, &["init", "-q", "-b", "main"]);
+    git_in(&src, &["config", "user.email", "test@example.com"]);
+    git_in(&src, &["config", "user.name", "test"]);
+    install_lfs(&src);
+    commit_gitattributes(&src, "*.bin filter=lfs diff=lfs merge=lfs -text\n");
+    let content = b"payload\n";
+    std::fs::write(src.join("a.bin"), content).unwrap();
+    git_in(&src, &["add", "a.bin"]);
+    git_in(&src, &["commit", "-q", "-m", "add a.bin"]);
+    let cleaned = run_in(&src, &["clean"], content);
+    oid_from_pointer(&cleaned.stdout)
+}
+
+/// `git lfs clone --bare` and `--no-checkout` fetch the current ref's
+/// objects, and install the hooks, as in upstream.
+#[test]
+fn clone_without_checkout_fetches_objects() {
+    let tmp = TempDir::new().unwrap();
+    let oid = lfs_source_repo(tmp.path(), "src");
+    let object = |git_dir: &Path| {
+        git_dir
+            .join("lfs/objects")
+            .join(&oid[0..2])
+            .join(&oid[2..4])
+            .join(&oid)
+    };
+
+    let out = run_in(tmp.path(), &["clone", "--bare", "src", "bare.git"], b"");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let bare = tmp.path().join("bare.git");
+    assert!(object(&bare).exists(), "--bare didn't fetch");
+    assert!(
+        bare.join("hooks/pre-push").exists(),
+        "--bare didn't install hooks"
+    );
+
+    let out = run_in(tmp.path(), &["clone", "-n", "src", "co"], b"");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        object(&tmp.path().join("co/.git")).exists(),
+        "-n didn't fetch"
+    );
+}
+
+/// A failed `git lfs pull` in a submodule fails the clone with exit code
+/// 2, as in upstream.
+#[test]
+fn clone_fails_when_a_submodule_pull_fails() {
+    let tmp = TempDir::new().unwrap();
+    let oid = lfs_source_repo(tmp.path(), "sub");
+    // The submodule's own remote no longer has the object.
+    std::fs::remove_file(
+        tmp.path()
+            .join("sub/.git/lfs/objects")
+            .join(&oid[0..2])
+            .join(&oid[2..4])
+            .join(&oid),
+    )
+    .unwrap();
+
+    let sup = tmp.path().join("super");
+    std::fs::create_dir(&sup).unwrap();
+    git_in(&sup, &["init", "-q", "-b", "main"]);
+    git_in(&sup, &["config", "user.email", "test@example.com"]);
+    git_in(&sup, &["config", "user.name", "test"]);
+    git_in(
+        &sup,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            "../sub",
+            "sub",
+        ],
+    );
+    git_in(&sup, &["commit", "-q", "-m", "add sub"]);
+
+    let out = run_in_env(
+        tmp.path(),
+        &["clone", "--recursive", "super", "dst"],
+        b"",
+        &[
+            ("GIT_CONFIG_COUNT", "1"),
+            ("GIT_CONFIG_KEY_0", "protocol.file.allow"),
+            ("GIT_CONFIG_VALUE_0", "always"),
+        ],
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr.contains("Error performing `git lfs pull` for submodules"),
+        "{stderr}"
+    );
+}

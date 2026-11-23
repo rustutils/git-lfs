@@ -18,6 +18,15 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- `git lfs clone` from a local path downloads the LFS objects. Before, the
+  transfer always failed with "expected value at line 1 column 1".
+- `git lfs clone --bare` and `--no-checkout` fetch the current ref's
+  objects without checking them out, and `--bare` installs the hooks, as
+  in upstream. Before, they downloaded nothing.
+- `git lfs clone` exits 2 when `git lfs pull` fails in a submodule, as in
+  upstream. Before, it exited 0.
+- `git lfs clone -bmain` no longer reads the `n` in `main` as
+  `--no-checkout`. Bundled short options are read as Git does.
 - `git lfs uninstall` removes the hooks even when a filter setting can't
   be unset, and prints that as a warning, as in upstream. Before, it
   stopped at the first setting and left the hooks in place.
