@@ -115,8 +115,6 @@ come from reading the code.
   over HTTP, so with `sshtransfer=always` every lockable file becomes
   read-only. An empty `next_cursor` makes them loop. Unlock by path sends
   `unlock` on a download connection.
-- **Pure SSH connections:** ending the pool may kill the master before its
-  clients.
 
 ### Minor differences from upstream
 

@@ -175,7 +175,7 @@ impl Pool {
     }
 
     /// End every connection that isn't checked out with
-    /// [`Connection::end`].
+    /// [`Connection::end`], the master last.
     ///
     /// Tries all of them, then returns the first error.
     pub fn shutdown(self) -> Result<(), ConnectionError> {
@@ -184,7 +184,8 @@ impl Pool {
             .into_inner()
             .expect("Pool::shutdown lock poisoned");
         let mut first_err: Option<ConnectionError> = None;
-        for slot in slots.drain(..) {
+        for i in end_order(slots.len()) {
+            let slot = std::mem::replace(&mut slots[i], SlotState::Vacant);
             if let SlotState::Available(conn) = slot
                 && let Err(e) = conn.end()
                 && first_err.is_none()
@@ -199,7 +200,8 @@ impl Pool {
         }
     }
 
-    /// End every connection that isn't checked out, ignoring errors.
+    /// End every connection that isn't checked out, ignoring errors, the
+    /// master last.
     ///
     /// Unlike [`shutdown`](Self::shutdown), this works through a shared
     /// reference, for a pool behind an `Arc`. The slots become vacant.
@@ -208,15 +210,23 @@ impl Pool {
             Ok(s) => s,
             Err(p) => p.into_inner(),
         };
-        for slot in slots.iter_mut() {
-            if matches!(slot, SlotState::Available(_)) {
-                let taken = std::mem::replace(slot, SlotState::Vacant);
-                if let SlotState::Available(conn) = taken {
-                    let _ = conn.end();
-                }
+        for i in end_order(slots.len()) {
+            // A checked-out connection stays with its guard.
+            if !matches!(slots[i], SlotState::Available(_)) {
+                continue;
+            }
+            if let SlotState::Available(conn) = std::mem::replace(&mut slots[i], SlotState::Vacant)
+            {
+                let _ = conn.end();
             }
         }
     }
+}
+
+/// The order to end `len` slots in: the clients, then the master in slot
+/// 0, whose control socket they may be using, as upstream does.
+fn end_order(len: usize) -> impl Iterator<Item = usize> {
+    (1..len).chain((len > 0).then_some(0))
 }
 
 fn spawn(
@@ -407,6 +417,68 @@ mod tests {
             }
             Err(other) => panic!("expected Protocol error, got {other:?}"),
             Ok(_) => panic!("expected acquire to fail"),
+        }
+    }
+
+    /// A stub like [`working_stub_script`] that logs `start <pid>` and
+    /// `quit <pid>` to `log`.
+    #[cfg(unix)]
+    fn logging_stub_script(tmp: &TempDir, log: &std::path::Path) -> SshProgram {
+        let script = tmp.path().join("logging.sh");
+        std::fs::write(
+            &script,
+            format!(
+                "echo \"start $$\" >> {log}\n\
+                 printf '000eversion=1\\n0000'\n\
+                 dd bs=1 count=18 of=/dev/null 2>/dev/null\n\
+                 printf '000fstatus 200\\n00010000'\n\
+                 dd bs=1 count=13 of=/dev/null 2>/dev/null\n\
+                 echo \"quit $$\" >> {log}\n\
+                 printf '000fstatus 200\\n0000'\n",
+                log = log.display()
+            ),
+        )
+        .unwrap();
+        SshProgram::Shell(format!("sh {}", script.to_string_lossy()))
+    }
+
+    /// The order the stub's processes quit in, as indexes into the order
+    /// they started in. The master starts first, at 0.
+    #[cfg(unix)]
+    fn quit_order(log: &std::path::Path) -> Vec<usize> {
+        let text = std::fs::read_to_string(log).unwrap();
+        let started: Vec<&str> = text
+            .lines()
+            .filter_map(|l| l.strip_prefix("start "))
+            .collect();
+        text.lines()
+            .filter_map(|l| l.strip_prefix("quit "))
+            .map(|pid| started.iter().position(|s| *s == pid).unwrap())
+            .collect()
+    }
+
+    /// Clients are ended before the master, whose control socket they may
+    /// use, as upstream does.
+    #[test]
+    #[cfg(unix)]
+    fn the_master_is_ended_last() {
+        for use_shutdown in [true, false] {
+            let tmp = TempDir::new().unwrap();
+            let log = tmp.path().join("log");
+            let mut config = fake_pool_config();
+            config.program = logging_stub_script(&tmp, &log);
+
+            let pool = Pool::new(config, 2).expect("pool spawn");
+            let master = pool.acquire().expect("master");
+            let client = pool.acquire().expect("client");
+            master.release();
+            client.release();
+            if use_shutdown {
+                pool.shutdown().expect("shutdown");
+            } else {
+                pool.end_all_available();
+            }
+            assert_eq!(quit_order(&log), [1, 0], "shutdown: {use_shutdown}");
         }
     }
 

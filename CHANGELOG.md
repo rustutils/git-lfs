@@ -18,6 +18,8 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- Pure SSH connections are closed with the shared multiplexing connection
+  last, as in upstream, so the others can still quit cleanly through it.
 - When a pure SSH connection can't be set up, the error includes what ssh
   printed, such as "Permission denied (publickey).", after "Failed to
   connect to remote SSH server:", as in upstream. ssh's messages are read
