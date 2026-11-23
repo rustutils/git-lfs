@@ -31,6 +31,20 @@ pub fn read(cwd: &Path) -> Vec<Lock> {
     serde_json::from_slice::<Vec<Lock>>(&bytes).unwrap_or_default()
 }
 
+/// Read the cached locks, telling a cache that can't be read apart from
+/// a missing one.
+///
+/// A missing cache gives no locks. `None` means the file exists but can't
+/// be read or parsed.
+pub fn read_checked(cwd: &Path) -> Option<Vec<Lock>> {
+    let path = cache_path(cwd).ok()?;
+    match fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).ok(),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Some(Vec::new()),
+        Err(_) => None,
+    }
+}
+
 /// Add `lock` to the cache, replacing an entry with the same id.
 pub fn add(cwd: &Path, lock: &Lock) {
     let Ok(path) = cache_path(cwd) else {

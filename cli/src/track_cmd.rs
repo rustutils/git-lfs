@@ -202,7 +202,7 @@ pub fn run(args: Args<'_>) -> Result<u8, Box<dyn std::error::Error>> {
                     attrs = Some(git_lfs_git::AttrSet::from_workdir(args.cwd)?);
                 }
                 if held.is_none() {
-                    held = Some(HeldLocks::from_server(args.cwd));
+                    held = Some(HeldLocks::load(args.cwd));
                 }
                 lockable::apply_modes(
                     args.cwd,

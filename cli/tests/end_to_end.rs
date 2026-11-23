@@ -4935,3 +4935,131 @@ fn extension_gets_a_path_with_spaces_as_one_argument() {
     );
     assert!(String::from_utf8_lossy(&out.stdout).contains("ext-0-check"));
 }
+
+// ---------- lockable files in hooks ------------------------------------------
+
+/// A repository with lockable `a.bin` and `b.bin` committed and writable,
+/// and `lfs.url` pointing at `server`.
+#[cfg(unix)]
+fn lockable_repo(server: &str) -> TempDir {
+    let repo = fresh_repo_with_identity();
+    git_in(repo.path(), &["config", "lfs.url", server]);
+    commit_gitattributes(repo.path(), "*.bin lockable\n");
+    for name in ["a.bin", "b.bin"] {
+        std::fs::write(repo.path().join(name), b"x").unwrap();
+        git_in(repo.path(), &["add", name]);
+    }
+    git_in(repo.path(), &["commit", "-q", "-m", "add files"]);
+    repo
+}
+
+#[cfg(unix)]
+fn is_writable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).unwrap().permissions().mode() & 0o200 != 0
+}
+
+#[cfg(unix)]
+fn write_lock_cache(repo: &Path, content: &str) {
+    let dir = repo.join(".git/lfs/cache");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("locks.json"), content).unwrap();
+}
+
+/// The hooks take the user's locks from the local cache that `git lfs
+/// lock` keeps, as upstream does, without asking the server.
+#[cfg(unix)]
+#[tokio::test]
+async fn hooks_use_the_lock_cache() {
+    use wiremock::MockServer;
+
+    let server = MockServer::start().await;
+    let repo = lockable_repo(&server.uri());
+    write_lock_cache(
+        repo.path(),
+        r#"[{"id":"1","path":"a.bin","locked_at":"2026-01-01T00:00:00Z"}]"#,
+    );
+
+    let path = repo.path().to_owned();
+    let out = tokio::task::spawn_blocking(move || run_in(&path, &["post-commit"], b""))
+        .await
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        is_writable(&repo.path().join("a.bin")),
+        "a held lock went read-only"
+    );
+    assert!(
+        !is_writable(&repo.path().join("b.bin")),
+        "the hook didn't run"
+    );
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+/// With a cache that can't be read, the server is asked, and an empty
+/// `next_cursor` ends the list.
+#[cfg(unix)]
+#[tokio::test]
+async fn hooks_ask_the_server_when_the_cache_is_damaged() {
+    use serde_json::json;
+    use wiremock::matchers::{method as m_method, path as m_path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(m_method("POST"))
+        .and(m_path("/locks/verify"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ours": [{ "id": "1", "path": "a.bin", "locked_at": "2026-01-01T00:00:00Z" }],
+            "theirs": [],
+            "next_cursor": ""
+        })))
+        .mount(&server)
+        .await;
+    let repo = lockable_repo(&server.uri());
+    write_lock_cache(repo.path(), "not json");
+
+    // The old code looped forever on the empty cursor.
+    let path = repo.path().to_owned();
+    let out = tokio::task::spawn_blocking(move || {
+        let bin_dir = Path::new(BIN).parent().unwrap();
+        let mut child = Command::new(BIN)
+            .arg("post-commit")
+            .current_dir(&path)
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    bin_dir.display(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            )
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                return Some(status);
+            }
+            if std::time::Instant::now() > deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    })
+    .await
+    .unwrap();
+    let status = out.expect("post-commit kept asking for more locks");
+    assert!(status.success());
+    assert!(is_writable(&repo.path().join("a.bin")));
+    assert!(!is_writable(&repo.path().join("b.bin")));
+}

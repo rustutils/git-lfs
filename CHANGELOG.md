@@ -18,6 +18,12 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- The post-checkout, post-commit, and post-merge hooks, and `git lfs track
+  --lockable`, take your locks from the local record that `git lfs lock`
+  keeps, as upstream does, instead of asking the server each time. So they
+  no longer contact the server, and no longer make every lockable file
+  read-only with `lfs.<url>.sshtransfer=always`. The server is asked only
+  when the record can't be read.
 - Pure SSH connections are closed with the shared multiplexing connection
   last, as in upstream, so the others can still quit cleanly through it.
 - When a pure SSH connection can't be set up, the error includes what ssh

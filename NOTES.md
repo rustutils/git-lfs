@@ -111,10 +111,6 @@ come from reading the code.
   that adds `.gitattributes`, and fails on any commit with a symlink.**
   Confirmed. `--above` fails when the root `.gitattributes` is empty and
   nothing is converted.
-- **Lockable files with pure SSH.** The read-only hooks always query locks
-  over HTTP, so with `sshtransfer=always` every lockable file becomes
-  read-only. An empty `next_cursor` makes them loop. Unlock by path sends
-  `unlock` on a download connection.
 
 ### Minor differences from upstream
 

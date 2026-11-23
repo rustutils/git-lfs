@@ -16,8 +16,8 @@ use git_lfs_git::AttrSet;
 /// Paths the user holds locks for, relative to the repository root with
 /// `/` separators.
 ///
-/// `Empty` means no locks, whether because none are held or because the
-/// server couldn't be asked.
+/// `Empty` means no locks, whether because none are held or because they
+/// couldn't be found out.
 pub enum HeldLocks {
     Empty,
     Paths(HashSet<String>),
@@ -31,40 +31,55 @@ impl HeldLocks {
         }
     }
 
-    /// Ask the default remote's server which locks are ours, over HTTP.
+    /// The locks `git lfs lock` recorded in the local cache, as upstream's
+    /// hooks use.
+    ///
+    /// Only if the cache can't be read is the server asked, as upstream
+    /// does too.
+    pub fn load(cwd: &Path) -> Self {
+        match crate::lock_cache::read_checked(cwd) {
+            Some(locks) => Self::from_paths(locks.into_iter().map(|l| l.path).collect()),
+            None => Self::from_server(cwd),
+        }
+    }
+
+    fn from_paths(held: HashSet<String>) -> Self {
+        if held.is_empty() {
+            Self::Empty
+        } else {
+            Self::Paths(held)
+        }
+    }
+
+    /// Ask the default remote's server which locks are ours, over HTTP or
+    /// pure SSH, whichever the lock commands use.
     ///
     /// Any failure stops the query and keeps the locks found so far, so a
     /// hook never fails because of it. A failure on the first page gives
-    /// `Empty`, which makes every lockable file read-only. An empty
-    /// `next_cursor` is sent back as the cursor rather than ending the
-    /// loop.
-    pub fn from_server(cwd: &Path) -> Self {
-        let remote = crate::lock_client::lock_remote(cwd, None);
-        let Ok(api) = crate::fetcher::build_api_client(cwd, remote.as_deref()) else {
-            return Self::Empty;
-        };
+    /// `Empty`, which makes every lockable file read-only.
+    fn from_server(cwd: &Path) -> Self {
         let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
         else {
             return Self::Empty;
         };
+        let Ok(client) =
+            crate::lock_client::build_lock_client(cwd, None, std::sync::Arc::new(runtime))
+        else {
+            return Self::Empty;
+        };
         let mut held = HashSet::new();
         let mut req = git_lfs_api::VerifyLocksRequest::default();
-        while let Ok(resp) = runtime.block_on(api.verify_locks(&req)) {
-            for l in resp.ours {
-                held.insert(l.path);
-            }
-            match resp.next_cursor {
+        while let Ok(page) = client.verify_locks(&req) {
+            held.extend(page.ours.into_iter().map(|l| l.path));
+            // An empty cursor ends the list too.
+            match page.next_cursor.filter(|c| !c.is_empty()) {
                 Some(c) => req.cursor = Some(c),
                 None => break,
             }
         }
-        if held.is_empty() {
-            Self::Empty
-        } else {
-            Self::Paths(held)
-        }
+        Self::from_paths(held)
     }
 }
 
@@ -102,8 +117,7 @@ pub fn enforce_readonly_if_lockable(cwd: &Path, attrs: &AttrSet, path: &str) -> 
 /// Set the mode of every lockable file in the index.
 ///
 /// The post-checkout, post-commit, and post-merge hooks call this. The
-/// server is only asked if some file is lockable, because asking can run
-/// credential helpers, which may prompt or store credentials.
+/// locks are only looked up if some file is lockable.
 pub fn enforce_workdir(cwd: &Path) -> io::Result<()> {
     if !lockable_readonly_enabled(cwd) {
         return Ok(());
@@ -113,7 +127,7 @@ pub fn enforce_workdir(cwd: &Path) -> io::Result<()> {
     if !files.iter().any(|f| attrs.is_lockable(f)) {
         return Ok(());
     }
-    let held = HeldLocks::from_server(cwd);
+    let held = HeldLocks::load(cwd);
     apply_modes(cwd, files, &attrs, &held)
 }
 
