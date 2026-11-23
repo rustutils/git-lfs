@@ -623,8 +623,13 @@ fn http_compatible_endpoint(url_str: &str) -> Result<String, git_lfs_git::endpoi
 fn build_ssh_resolver(cwd: &Path, info: SshInfo) -> SharedSshResolver {
     let program = resolve_ssh_program(cwd);
     let variant = resolve_ssh_variant(cwd, &program);
+    let mut client = SshAuthClient::new(program).with_variant(variant);
+    // Seconds, for a server that enforces a lifetime without sending one.
+    if let Some(ttl) = positive_setting(cwd, "lfs.defaulttokenttl") {
+        client = client.with_default_ttl(Duration::from_secs(ttl.into()));
+    }
     Arc::new(SshAuthAdapter {
-        client: Arc::new(SshAuthClient::new(program).with_variant(variant)),
+        client: Arc::new(client),
         ssh: info,
     })
 }

@@ -9,9 +9,9 @@
 //! The remote command is quoted for the server's shell with [`shell_quote`].
 //!
 //! Responses are cached per user and host, port, path, and operation.
-//! Unlike upstream, the client doesn't read `lfs.ssh.retries` or
-//! `lfs.defaulttokenttl`, and a failed command is an error, with no
-//! fallback to HTTP Basic auth.
+//! Unlike upstream, the client doesn't read `lfs.ssh.retries`, and a failed
+//! command is an error, with no fallback to HTTP Basic auth. The caller
+//! passes `lfs.defaulttokenttl` with [`SshAuthClient::with_default_ttl`].
 //!
 //! The `exec: …`, `ssh cache: …` and `ssh cache expired: …` trace lines use
 //! upstream's wording, which `t-batch-transfer.sh`, `t-expired.sh` and
@@ -280,6 +280,7 @@ impl SshVariant {
 pub struct SshAuthClient {
     program: SshProgram,
     variant: SshVariant,
+    default_ttl: Option<Duration>,
     cache: Mutex<HashMap<CacheKey, SshAuth>>,
 }
 
@@ -312,9 +313,19 @@ impl SshAuthClient {
     pub fn new(program: SshProgram) -> Self {
         Self {
             variant: program.detect_variant(),
+            default_ttl: None,
             program,
             cache: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Treat a response without `expires_in` or `expires_at` as expiring
+    /// after `ttl`, like upstream's `lfs.defaulttokenttl`.
+    ///
+    /// Without it, such a response never expires.
+    pub fn with_default_ttl(mut self, ttl: Duration) -> Self {
+        self.default_ttl = Some(ttl);
+        self
     }
 
     /// Use `variant` instead of the one detected from the program.
@@ -410,7 +421,8 @@ impl SshAuthClient {
         Ok(SshAuth {
             href: wire.href,
             header: wire.header.unwrap_or_default(),
-            expires_at: compute_expires_at(now, wire.expires_at.as_deref(), wire.expires_in),
+            expires_at: compute_expires_at(now, wire.expires_at.as_deref(), wire.expires_in)
+                .or_else(|| self.default_ttl.and_then(|ttl| now.checked_add(ttl))),
         })
     }
 }
@@ -762,6 +774,46 @@ mod tests {
         }
         let lines = std::fs::read_to_string(&counter).unwrap();
         assert_eq!(lines.lines().count(), 1, "expected exactly one ssh spawn");
+    }
+
+    #[test]
+    fn default_ttl_applies_without_an_expiry() {
+        // The response has no expiry. With a default TTL inside the 5s
+        // buffer it's expired at once, so ssh runs for each call. Without
+        // one, it never expires.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let counter = tmp.path().join("count");
+        let prog = tmp.path().join("fakessh");
+        std::fs::write(
+            &prog,
+            format!(
+                "#!/bin/sh\n\
+                 echo invoked >> {counter}\n\
+                 echo '{{\"href\":\"https://lfs.example/repo.git/info/lfs\"}}'\n",
+                counter = counter.display(),
+            ),
+        )
+        .unwrap();
+        let program = SshProgram::Shell(format!("sh {}", prog.display()));
+        let runs = |client: SshAuthClient| {
+            let _ = std::fs::remove_file(&counter);
+            for _ in 0..2 {
+                client
+                    .resolve("git@host", None, "/repo", SshOperation::Upload)
+                    .unwrap();
+            }
+            std::fs::read_to_string(&counter).unwrap().lines().count()
+        };
+
+        assert_eq!(runs(SshAuthClient::new(program.clone())), 1);
+        let short = SshAuthClient::new(program.clone()).with_default_ttl(Duration::from_secs(1));
+        assert_eq!(runs(short), 2);
+
+        let auth = SshAuthClient::new(program)
+            .with_default_ttl(Duration::from_secs(3600))
+            .resolve("git@host", None, "/repo", SshOperation::Upload)
+            .unwrap();
+        assert!(auth.expires_at.is_some());
     }
 
     #[test]

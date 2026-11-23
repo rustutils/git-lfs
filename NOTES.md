@@ -71,8 +71,8 @@ a feature.
   action, where upstream sends a new batch request first. So an expired
   action fails instead of being renewed, and the tests that count batch
   requests see one fewer.
-- **`git-lfs-authenticate` options.** We don't support `lfs.ssh.retries`
-  or `lfs.defaulttokenttl`.
+- **`lfs.ssh.retries`** isn't read, so a failed `git-lfs-authenticate`
+  isn't retried.
 - **NTLM and Negotiate authentication**, and acting on `LFS-Authenticate`
   access modes. Wait for someone who needs it.
 

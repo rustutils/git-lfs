@@ -29,6 +29,9 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
   the port, TortoisePlink also gets `-batch`, and only OpenSSH shares
   connections or gets `--` before a host starting with `-`. Other variants
   get that host with the dashes stripped.
+- `lfs.defaulttokenttl` gives a lifetime in seconds to a
+  `git-lfs-authenticate` response that has no expiry, as in upstream, for
+  servers that enforce one without sending it.
 - `lfs.ssh.automultiplex` turns off sharing one SSH connection between
   pure SSH transfers.
 
