@@ -285,7 +285,7 @@ pub fn working_tree_dirty(cwd: &Path) -> Result<bool, MigrateError> {
 
 /// Read the repository's `info/attributes`, or `None` if it's missing
 /// or unreadable.
-fn read_info_attrs(cwd: &Path) -> Option<Vec<u8>> {
+pub(super) fn read_info_attrs(cwd: &Path) -> Option<Vec<u8>> {
     let out = Command::new("git")
         .arg("-C")
         .arg(cwd)
@@ -313,7 +313,7 @@ fn read_info_attrs(cwd: &Path) -> Option<Vec<u8>> {
 /// That's `core.attributesFile`, or as in Git
 /// `$XDG_CONFIG_HOME/git/attributes` or `$HOME/.config/git/attributes`
 /// when it's unset.
-fn read_global_attrs(cwd: &Path) -> Option<Vec<u8>> {
+pub(super) fn read_global_attrs(cwd: &Path) -> Option<Vec<u8>> {
     let configured = Command::new("git")
         .arg("-C")
         .arg(cwd)

@@ -18,6 +18,15 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- `git lfs migrate export` downloads the objects it needs that aren't
+  local, from `--remote` or the default remote, as upstream does. Before,
+  their files were left as pointers.
+- `git lfs migrate import --fixup` converts files added after the commit
+  that adds `.gitattributes`, and keeps symlinks. Before, those files were
+  missed, and a history with a symlink failed with "mark not declared".
+- `git lfs migrate info --fixup` checks every commit in the range with its
+  own attributes, plus `info/attributes` and the global attributes file,
+  as upstream does. Before, it looked only at the first ref's tip.
 - The post-checkout, post-commit, and post-merge hooks, and `git lfs track
   --lockable`, take your locks from the local record that `git lfs lock`
   keeps, as upstream does, instead of asking the server each time. So they

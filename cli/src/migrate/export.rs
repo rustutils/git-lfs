@@ -96,6 +96,13 @@ pub fn export(cwd: &Path, opts: &ExportOptions) -> Result<Stats, MigrateError> {
         .with_references(git_lfs_git::lfs_alternate_dirs(cwd).unwrap_or_default());
     let include = build_globset(&opts.include)?;
     let exclude = build_globset(&opts.exclude)?;
+    download_missing(
+        cwd,
+        &store,
+        (&include_refs, &exclude_refs),
+        (&include, &exclude),
+        opts.remote.as_deref(),
+    )?;
     let (attrs_add_initial, attrs_remove_initial) =
         build_export_attrs(&opts.include, &opts.exclude);
 
@@ -331,6 +338,57 @@ pub(super) fn update_local_refs(
             .arg(cwd)
             .args(["update-ref", refname, new_sha, sha])
             .output();
+    }
+    Ok(())
+}
+
+/// Download the objects the export will expand that aren't local, as
+/// upstream does before rewriting.
+///
+/// Those are the objects of every pointer in the selected history at a
+/// path the patterns match. A repository whose remote has no LFS endpoint
+/// skips this, and its objects must already be local.
+fn download_missing(
+    cwd: &Path,
+    store: &Store,
+    (include_refs, exclude_refs): (&[String], &[String]),
+    (include, exclude): (&Option<globset::GlobSet>, &Option<globset::GlobSet>),
+    remote: Option<&str>,
+) -> Result<(), MigrateError> {
+    use git_lfs_git::endpoint::Operation;
+
+    if git_lfs_git::endpoint::resolve_endpoint_for(cwd, remote, Operation::Download).is_err() {
+        return Ok(());
+    }
+    let inc: Vec<&str> = include_refs.iter().map(String::as_str).collect();
+    let exc: Vec<&str> = exclude_refs.iter().map(String::as_str).collect();
+    let pointers = git_lfs_git::scanner::scan_pointers(cwd, &inc, &exc)
+        .map_err(|e| MigrateError::Other(e.to_string()))?;
+    let specs: Vec<git_lfs_api::ObjectSpec> = pointers
+        .into_iter()
+        .filter(|p| {
+            p.paths
+                .iter()
+                .any(|path| super::path_matches(&path.to_string_lossy(), include, exclude))
+        })
+        .filter(|p| !store.contains_with_size(p.oid, p.size))
+        .map(|p| git_lfs_api::ObjectSpec {
+            oid: p.oid.to_string(),
+            size: p.size,
+        })
+        .collect();
+    if specs.is_empty() {
+        return Ok(());
+    }
+
+    let fetcher =
+        crate::fetcher::LfsFetcher::from_repo_with_remote(cwd, store, remote, Operation::Download)
+            .map_err(MigrateError::Io)?;
+    let report = fetcher
+        .download_many(specs)
+        .map_err(|e| MigrateError::Other(e.to_string()))?;
+    if let Some((oid, err)) = report.failed.first() {
+        return Err(MigrateError::Other(format!("[{oid}] {err}")));
     }
     Ok(())
 }

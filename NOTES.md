@@ -91,8 +91,6 @@ Gaps no test covers:
 - `git lfs locks --cached`.
 - `git lfs update` doesn't migrate old `lfs.<url>.access` values.
 - `git lfs fsck` without a ref checks HEAD but not the index.
-- `git lfs migrate info --fixup` reads `.gitattributes` from the tip commit
-  only, not from each commit.
 
 ## Known bugs
 
@@ -103,14 +101,11 @@ come from reading the code.
 
 ### Wrong results or failures
 
-- **Flaky tests**: `t-migrate-export` test 2 or 15 sometimes fails with
-  "Expanded 0 pointer(s)". `t-status` test 17 (permission change) sometimes
-  lists `a.dat` as changed with the same OID, probably Git's racy-timestamp
-  check. Neither investigated further.
-- **`git lfs migrate import --fixup` misses files added after the commit
-  that adds `.gitattributes`, and fails on any commit with a symlink.**
-  Confirmed. `--above` fails when the root `.gitattributes` is empty and
-  nothing is converted.
+- **Flaky test**: `t-status` test 17 (permission change) sometimes lists
+  `a.dat` as changed with the same OID, probably Git's racy-timestamp
+  check. Not investigated further.
+- **`git lfs migrate import --above`** fails when the root `.gitattributes`
+  is empty and nothing is converted.
 
 ### Minor differences from upstream
 

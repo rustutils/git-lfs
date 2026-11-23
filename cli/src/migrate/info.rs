@@ -5,8 +5,8 @@
 //! pointers with `git cat-file --batch`. `--fixup` instead looks only at
 //! the tree of the first ref.
 
-use std::collections::HashMap;
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use git_lfs_git::AttrSet;
 use git_lfs_git::cat_file::{CatFileBatch, CatFileBatchCheck, CatFileHeader};
@@ -118,7 +118,7 @@ pub fn info(cwd: &Path, opts: &InfoOptions) -> Result<(), MigrateError> {
         ));
     }
     if opts.fixup {
-        return info_fixup(cwd, opts, &include_refs);
+        return info_fixup(cwd, opts, &include_refs, &exclude_refs);
     }
 
     let include = build_globset(&opts.include)?;
@@ -186,64 +186,109 @@ pub fn info(cwd: &Path, opts: &InfoOptions) -> Result<(), MigrateError> {
 /// `--fixup`: count the files that are tracked by the attributes but
 /// aren't pointers.
 ///
-/// Looks only at the tree of the first ref, with that tree's
-/// `.gitattributes` files, where upstream checks every commit with its
-/// own. `info/attributes` and the global attributes file aren't used.
-fn info_fixup(cwd: &Path, opts: &InfoOptions, include_refs: &[String]) -> Result<(), MigrateError> {
-    let Some(reference) = include_refs.first() else {
-        return Ok(());
-    };
+/// As in upstream, every commit in the range is checked with its own
+/// `.gitattributes` files, plus `info/attributes` and the global
+/// attributes file. Each path and blob is counted once.
+fn info_fixup(
+    cwd: &Path,
+    opts: &InfoOptions,
+    include_refs: &[String],
+    exclude_refs: &[String],
+) -> Result<(), MigrateError> {
+    let info_attrs = super::pipeline::read_info_attrs(cwd).unwrap_or_default();
+    let global_attrs = super::pipeline::read_global_attrs(cwd).unwrap_or_default();
+    let mut batch = CatFileBatch::spawn(cwd)?;
+    // Contents of `.gitattributes` blobs, and which blobs are pointers,
+    // by blob ID, since most commits share them.
+    let mut attrs_blobs: HashMap<String, Vec<u8>> = HashMap::new();
+    let mut is_pointer: HashMap<String, bool> = HashMap::new();
+    let mut seen: HashSet<(PathBuf, String)> = HashSet::new();
+    let mut by_ext: HashMap<String, Entry> = HashMap::new();
 
-    let blobs = scan_tree_blobs(cwd, reference).map_err(|e| MigrateError::Other(e.to_string()))?;
+    for commit in commits_in_range(cwd, include_refs, exclude_refs)? {
+        let blobs =
+            scan_tree_blobs(cwd, &commit).map_err(|e| MigrateError::Other(e.to_string()))?;
 
-    // Add shallow to deep, since the last list added takes precedence.
-    let mut attrs_dirs: Vec<(String, Vec<u8>)> = Vec::new();
-    {
-        let mut batch = CatFileBatch::spawn(cwd)?;
+        // The last list added takes precedence, so add from lowest to
+        // highest: the global file, `.gitattributes` from shallow to
+        // deep, then `info/attributes`.
+        let mut attrs_dirs: Vec<(String, Vec<u8>)> = Vec::new();
         for blob in &blobs {
             let path = blob.path.to_string_lossy();
             if !is_attrs_path(&path) {
                 continue;
             }
-            if let Some(b) = batch.read(&blob.blob_oid)? {
-                attrs_dirs.push((dir_of(&path), b.content));
+            if !attrs_blobs.contains_key(&blob.blob_oid) {
+                let content = batch.read(&blob.blob_oid)?.map(|b| b.content);
+                attrs_blobs.insert(blob.blob_oid.clone(), content.unwrap_or_default());
             }
+            attrs_dirs.push((dir_of(&path), attrs_blobs[&blob.blob_oid].clone()));
         }
-    }
-    attrs_dirs.sort_by_key(|(d, _)| d.matches('/').count());
-
-    let mut attrs = AttrSet::empty();
-    for (dir, content) in &attrs_dirs {
-        attrs.add_buffer_at(content, dir);
-    }
-
-    let mut by_ext: HashMap<String, Entry> = HashMap::new();
-    let mut batch = CatFileBatch::spawn(cwd)?;
-    for blob in &blobs {
-        let path = blob.path.to_string_lossy();
-        if is_attrs_path(&path) {
-            continue;
+        attrs_dirs.sort_by_key(|(d, _)| d.matches('/').count());
+        let mut attrs = AttrSet::empty();
+        if !global_attrs.is_empty() {
+            attrs.add_buffer_at(&global_attrs, "");
         }
-        if blob.mode == "120000" {
-            continue;
+        for (dir, content) in &attrs_dirs {
+            attrs.add_buffer_at(content, dir);
         }
-        if !attrs.is_lfs_tracked(&path) {
-            continue;
-        }
-        if (blob.size as usize) < MAX_POINTER_SIZE
-            && let Some(b) = batch.read(&blob.blob_oid)?
-            && Pointer::parse(&b.content).is_ok()
-        {
-            continue;
+        if !info_attrs.is_empty() {
+            attrs.add_buffer_at(&info_attrs, "");
         }
 
-        let group = ext_group(&path);
-        accumulate(by_ext.entry(group).or_default(), blob.size, opts.above);
+        for blob in blobs {
+            let path = blob.path.to_string_lossy().into_owned();
+            if is_attrs_path(&path) || blob.mode == "120000" || !attrs.is_lfs_tracked(&path) {
+                continue;
+            }
+            if !seen.insert((blob.path.clone(), blob.blob_oid.clone())) {
+                continue;
+            }
+            let pointer = match is_pointer.get(&blob.blob_oid) {
+                Some(&p) => p,
+                None => {
+                    let p = (blob.size as usize) < MAX_POINTER_SIZE
+                        && batch
+                            .read(&blob.blob_oid)?
+                            .is_some_and(|b| Pointer::parse(&b.content).is_ok());
+                    is_pointer.insert(blob.blob_oid.clone(), p);
+                    p
+                }
+            };
+            if pointer {
+                continue;
+            }
+            let group = ext_group(&path);
+            accumulate(by_ext.entry(group).or_default(), blob.size, opts.above);
+        }
     }
 
     let lfs = Entry::default();
     print_table(&by_ext, &lfs, opts);
     Ok(())
+}
+
+/// The commits reachable from `include` but not from `exclude`.
+fn commits_in_range(
+    cwd: &Path,
+    include: &[String],
+    exclude: &[String],
+) -> Result<Vec<String>, MigrateError> {
+    let mut cmd = std::process::Command::new("git");
+    cmd.arg("-C").arg(cwd).arg("rev-list");
+    cmd.args(include);
+    cmd.args(exclude.iter().map(|r| format!("^{r}")));
+    cmd.arg("--");
+    let out = cmd.output()?;
+    if !out.status.success() {
+        return Err(MigrateError::Other(
+            String::from_utf8_lossy(&out.stderr).trim().to_owned(),
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::to_owned)
+        .collect())
 }
 
 fn accumulate(entry: &mut Entry, size: u64, above: u64) {

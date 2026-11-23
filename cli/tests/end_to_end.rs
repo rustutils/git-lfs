@@ -5063,3 +5063,164 @@ async fn hooks_ask_the_server_when_the_cache_is_damaged() {
     assert!(is_writable(&repo.path().join("a.bin")));
     assert!(!is_writable(&repo.path().join("b.bin")));
 }
+
+// ---------- migrate --fixup -------------------------------------------------
+
+/// Commit `files` as raw content, without filters, with message `msg`.
+fn commit_raw(repo: &Path, files: &[(&str, &str)], msg: &str) {
+    for (path, content) in files {
+        std::fs::write(repo.join(path), content).unwrap();
+        git_in(repo, &["add", path]);
+    }
+    git_in(repo, &["commit", "-q", "-m", msg]);
+}
+
+/// `migrate import --fixup` converts files added after the commit that
+/// adds `.gitattributes`, and keeps symlinks.
+#[cfg(unix)]
+#[test]
+fn migrate_import_fixup_uses_attributes_from_earlier_commits() {
+    let repo = fresh_repo_with_identity();
+    commit_raw(
+        repo.path(),
+        &[
+            (
+                ".gitattributes",
+                "*.bin filter=lfs diff=lfs merge=lfs -text\n",
+            ),
+            ("a.bin", "aaa\n"),
+        ],
+        "one",
+    );
+    commit_raw(repo.path(), &[("b.bin", "bbb\n")], "two");
+    std::os::unix::fs::symlink("a.bin", repo.path().join("link")).unwrap();
+    git_in(repo.path(), &["add", "link"]);
+    git_in(repo.path(), &["commit", "-q", "-m", "three"]);
+
+    let out = run_in(
+        repo.path(),
+        &["migrate", "import", "--fixup", "--everything", "--yes"],
+        b"",
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let show = |spec: &str| {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(["cat-file", "-p", spec])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    for f in ["a.bin", "b.bin"] {
+        assert!(
+            show(&format!("HEAD:{f}")).starts_with("version https://git-lfs"),
+            "{f} wasn't converted"
+        );
+    }
+    assert_eq!(show("HEAD:link"), "a.bin");
+}
+
+/// `migrate info --fixup` checks each commit with its own attributes, so
+/// files tracked only in older commits are counted.
+#[test]
+fn migrate_info_fixup_checks_every_commit() {
+    let repo = fresh_repo_with_identity();
+    commit_raw(
+        repo.path(),
+        &[
+            (
+                ".gitattributes",
+                "*.bin filter=lfs diff=lfs merge=lfs -text\n",
+            ),
+            ("a.bin", "aaa\n"),
+        ],
+        "one",
+    );
+    commit_raw(repo.path(), &[("b.bin", "bbb\n")], "two");
+    git_in(repo.path(), &["rm", "-q", ".gitattributes"]);
+    git_in(repo.path(), &["commit", "-q", "-m", "drop attributes"]);
+
+    let out = run_in(
+        repo.path(),
+        &["migrate", "info", "--fixup", "--everything"],
+        b"",
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("2/2 files"), "{stdout}");
+}
+
+/// `migrate export` downloads the objects it expands when they aren't
+/// local, as upstream does before rewriting.
+#[tokio::test]
+async fn migrate_export_downloads_missing_objects() {
+    use serde_json::json;
+    use wiremock::matchers::{method as m_method, path as m_path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    const CONTENT: &[u8] = b"exported content\n";
+    let server = MockServer::start().await;
+    let repo = fresh_repo_with_identity();
+    git_in(repo.path(), &["config", "lfs.url", &server.uri()]);
+    let oid = put_object_in_store(repo.path(), CONTENT);
+    // Only the server has it now.
+    std::fs::remove_dir_all(repo.path().join(".git/lfs/objects")).unwrap();
+    commit_pointer_at(repo.path(), "a.bin", &pointer_text(&oid, CONTENT.len()));
+
+    let href = format!("{}/storage/{oid}", server.uri());
+    Mock::given(m_method("POST"))
+        .and(m_path("/objects/batch"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "transfer": "basic",
+            "objects": [{
+                "oid": oid, "size": CONTENT.len(),
+                "actions": { "download": { "href": href } }
+            }]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(m_method("GET"))
+        .and(m_path(format!("/storage/{oid}")))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(CONTENT))
+        .mount(&server)
+        .await;
+
+    let path = repo.path().to_owned();
+    let out = tokio::task::spawn_blocking(move || {
+        run_in(
+            &path,
+            &[
+                "migrate",
+                "export",
+                "--everything",
+                "--include=*.bin",
+                "--yes",
+            ],
+            b"",
+        )
+    })
+    .await
+    .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let blob = Command::new("git")
+        .arg("-C")
+        .arg(repo.path())
+        .args(["cat-file", "-p", "HEAD:a.bin"])
+        .output()
+        .unwrap();
+    assert_eq!(blob.stdout, CONTENT);
+}

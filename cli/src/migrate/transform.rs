@@ -98,6 +98,9 @@ pub struct Transform<'a> {
     blob_buffer: HashMap<u32, Vec<u8>>,
     /// Marks of blobs already written out.
     emitted: HashSet<u32>,
+    /// The content of each `.gitattributes` [`Mode::Fixup`] has seen, by
+    /// mark or ID, kept for later commits that use the same blob.
+    attrs_contents: HashMap<String, Vec<u8>>,
     /// Original blob IDs, by mark, from `--show-original-ids`.
     original_ids: HashMap<u32, String>,
     /// How each blob written out by [`Self::process_commit`] was written.
@@ -132,6 +135,7 @@ impl<'a> Transform<'a> {
             mode,
             blob_buffer: HashMap::new(),
             emitted: HashSet::new(),
+            attrs_contents: HashMap::new(),
             original_ids: HashMap::new(),
             written: HashMap::new(),
             alternates: HashMap::new(),
@@ -272,16 +276,14 @@ impl<'a> Transform<'a> {
             self.stats.commit_marks.push((mark, oid.clone()));
         }
 
+        // With `--full-tree`, every commit lists each `.gitattributes`,
+        // also when an earlier commit already wrote its blob out.
         let mut attrs_dirs: Vec<(String, Vec<u8>)> = Vec::new();
         for ch in &c.file_changes {
             match ch {
-                FileChange::Modify {
-                    dataref: DataRef::Mark(m),
-                    path,
-                    ..
-                } if is_attrs_path(path) => {
-                    if let Some(content) = self.blob_buffer.get(m) {
-                        attrs_dirs.push((dir_of(path), content.clone()));
+                FileChange::Modify { dataref, path, .. } if is_attrs_path(path) => {
+                    if let Some(content) = self.attrs_content(dataref)? {
+                        attrs_dirs.push((dir_of(path), content));
                     }
                 }
                 FileChange::ModifyInline { path, data, .. } if is_attrs_path(path) => {
@@ -305,9 +307,6 @@ impl<'a> Transform<'a> {
             attrs.add_buffer_at(&self.opts.info_attrs, "");
         }
 
-        // A symlink's blob is its target, never an LFS file. It's
-        // skipped here and never written out, so fast-import fails on a
-        // commit with a symlink.
         for change in &c.file_changes {
             if let FileChange::Modify {
                 dataref: DataRef::Mark(m),
@@ -315,11 +314,11 @@ impl<'a> Transform<'a> {
                 mode,
             } = change
                 && !is_attrs_path(path)
-                && mode != "120000"
                 && !self.emitted.contains(m)
                 && let Some(content) = self.blob_buffer.remove(m)
             {
-                if attrs.is_lfs_tracked(path) {
+                // A symlink's blob is its target, never an LFS file.
+                if mode != "120000" && attrs.is_lfs_tracked(path) {
                     let (out, _) = self.import_blob(path, content)?;
                     writer.write(&Command::Blob(Blob {
                         mark: Some(*m),
@@ -357,6 +356,27 @@ impl<'a> Transform<'a> {
         }
 
         writer.write(&Command::Commit(c))
+    }
+
+    /// The content of the `.gitattributes` blob `dataref`, from the
+    /// buffer, from an earlier commit, or from the repository for an ID.
+    fn attrs_content(&mut self, dataref: &DataRef) -> io::Result<Option<Vec<u8>>> {
+        let key = match dataref {
+            DataRef::Mark(m) => format!(":{m}"),
+            DataRef::Sha(id) => id.clone(),
+        };
+        if let Some(content) = self.attrs_contents.get(&key) {
+            return Ok(Some(content.clone()));
+        }
+        let content = match dataref {
+            DataRef::Mark(m) => match self.blob_buffer.get(m) {
+                Some(content) => content.clone(),
+                None => return Ok(None),
+            },
+            DataRef::Sha(id) => read_blob(&self.opts.cwd, id)?,
+        };
+        self.attrs_contents.insert(key, content.clone());
+        Ok(Some(content))
     }
 
     fn process_commit<W: Write>(
