@@ -950,7 +950,15 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 no_verify_unreachable,
                 continue_when_unverified: when_unverified == "continue",
             };
-            prune::run(&cwd, &opts)?;
+            match prune::run(&cwd, &opts) {
+                Ok(()) => {}
+                // Like upstream's `Exit`, after the failures were listed.
+                Err(e @ prune::PruneError::DeleteFailed) => {
+                    eprintln!("{e}");
+                    return Ok(2);
+                }
+                Err(e) => return Err(e.into()),
+            }
         }
         Command::Fsck(FsckArgs {
             refspec,

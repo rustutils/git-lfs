@@ -4677,3 +4677,37 @@ fn filter_process_skips_download_errors_when_asked() {
     let (out, _, _) = checkout(false);
     assert!(!out.status.success());
 }
+
+/// Prune fails with exit code 2 when it can't delete an object, as in
+/// upstream.
+#[cfg(unix)]
+#[test]
+fn prune_fails_when_an_object_cannot_be_deleted() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let repo = fresh_repo_with_identity();
+    git_in(
+        repo.path(),
+        &["commit", "-q", "--allow-empty", "-m", "init"],
+    );
+    // Nothing refers to this object, so prune deletes it.
+    let oid = put_object_in_store(repo.path(), b"orphan\n");
+    let dir = repo
+        .path()
+        .join(".git/lfs/objects")
+        .join(&oid[0..2])
+        .join(&oid[2..4]);
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+    let out = run_in(repo.path(), &["prune"], b"");
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("Failed to remove file"), "{stderr}");
+    assert!(
+        stderr.contains("Prune failed, see errors above"),
+        "{stderr}"
+    );
+    assert!(dir.join(&oid).exists());
+}

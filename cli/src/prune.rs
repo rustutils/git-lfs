@@ -67,6 +67,9 @@ pub enum PruneError {
     /// The verify batch request failed.
     #[error("prune verify failed: {0}")]
     Verify(String),
+    /// Some objects couldn't be deleted. Each was printed already.
+    #[error("Prune failed, see errors above")]
+    DeleteFailed,
 }
 
 #[derive(Debug, Clone)]
@@ -181,7 +184,7 @@ pub fn run(cwd: &Path, opts: &Options) -> Result<(), PruneError> {
 
     let total = delete_list.len();
     let mut deleted = 0usize;
-    let mut failed: Vec<(Oid, std::io::Error)> = Vec::new();
+    let mut failed: Vec<(std::path::PathBuf, std::io::Error)> = Vec::new();
     for (oid, _) in &delete_list {
         // The store maps the empty object to the null device. Never remove
         // that, as upstream's `pruneDeleteFiles` doesn't.
@@ -193,13 +196,17 @@ pub fn run(cwd: &Path, opts: &Options) -> Result<(), PruneError> {
             Ok(()) => deleted += 1,
             // Another process deleted it first.
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => deleted += 1,
-            Err(e) => failed.push((*oid, e)),
+            Err(e) => failed.push((path, e)),
         }
     }
-    for (oid, e) in &failed {
-        eprintln!("git-lfs: failed to remove {oid}: {e}");
-    }
     println!("Deleting objects: 100% ({deleted}/{total}), done.");
+    if !failed.is_empty() {
+        eprintln!("failed to delete some files");
+        for (path, e) in &failed {
+            eprintln!("Failed to remove file {}: {e}", path.display());
+        }
+        return Err(PruneError::DeleteFailed);
+    }
 
     Ok(())
 }

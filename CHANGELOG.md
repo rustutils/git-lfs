@@ -10,6 +10,9 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- `git lfs prune` exits 2 with "Prune failed, see errors above" when it
+  can't delete an object, as in upstream, after listing each file it
+  couldn't remove. Before, it exited 0.
 - `lfs.skipdownloaderrors` and `GIT_LFS_SKIP_DOWNLOAD_ERRORS` work with the
   filter process that `git clone` and `git checkout` use, as in upstream.
   A failed download leaves the pointer in the file and the checkout goes
