@@ -165,10 +165,12 @@ fn read_setting(cwd: &Path, endpoint: &str) -> Result<Setting, PushCommandError>
     Ok(Setting::Unset)
 }
 
+/// A set value enables verification only if it's true. Anything else
+/// disables it, as in upstream.
 fn parse_bool(s: &str) -> Setting {
-    match s.to_ascii_lowercase().as_str() {
-        "true" | "1" | "yes" | "on" => Setting::Enabled,
-        "false" | "0" | "no" | "off" | "" => Setting::Disabled,
-        _ => Setting::Unset,
+    if git_lfs_git::config::parse_bool(Some(s), false) {
+        Setting::Enabled
+    } else {
+        Setting::Disabled
     }
 }

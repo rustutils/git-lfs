@@ -851,13 +851,7 @@ fn download_encoding_source(cwd: &Path) -> Option<git_lfs_transfer::UrlSetting> 
 
 /// Whether the boolean setting `key` is true, or `default` if it's unset.
 fn config_true(cwd: &Path, key: &str, default: bool) -> bool {
-    match git_lfs_git::config::get_effective(cwd, key) {
-        Ok(Some(v)) => !matches!(
-            v.trim().to_ascii_lowercase().as_str(),
-            "false" | "0" | "no" | "off" | ""
-        ),
-        _ => default,
-    }
+    git_lfs_git::config::get_bool(cwd, key, default)
 }
 
 /// The name of the built-in standalone adapter for `file://` URLs.
@@ -1085,27 +1079,14 @@ fn transfer_config_for(cwd: &Path, endpoint_url: Option<&str>) -> TransferConfig
     // Defaults to true. Without an endpoint only `lfs.contenttype` is read.
     config.detect_content_type = match endpoint_url {
         Some(u) => git_lfs_git::lfs_url_bool(cwd, u, "contenttype", true),
-        None => match git_lfs_git::config::get_effective(cwd, "lfs.contenttype") {
-            Ok(Some(v)) => !matches!(
-                v.trim().to_ascii_lowercase().as_str(),
-                "false" | "0" | "no" | "off"
-            ),
-            _ => true,
-        },
+        None => git_lfs_git::config::get_bool(cwd, "lfs.contenttype", true),
     };
     config
 }
 
 /// Read `lfs.transfer.enablehrefrewrite`, default false.
 fn href_rewrite_enabled(cwd: &Path) -> bool {
-    let raw = git_lfs_git::config::get_effective(cwd, "lfs.transfer.enablehrefrewrite")
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    matches!(
-        raw.to_ascii_lowercase().as_str(),
-        "true" | "1" | "yes" | "on"
-    )
+    git_lfs_git::config::get_bool(cwd, "lfs.transfer.enablehrefrewrite", false)
 }
 
 /// Build the credential helper chain: netrc, the in-process cache, askpass,
@@ -1234,14 +1215,7 @@ fn has_credential_helper(cwd: &Path, cred_url: &url::Url) -> bool {
 /// Read a boolean config value, or `default` if it's unset or not one of
 /// true, false, yes, no, on, off, 1, or 0.
 fn read_bool_default(cwd: &Path, key: &str, default: bool) -> bool {
-    let Ok(Some(raw)) = git_lfs_git::config::get_effective(cwd, key) else {
-        return default;
-    };
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "true" | "1" | "yes" | "on" => true,
-        "false" | "0" | "no" | "off" => false,
-        _ => default,
-    }
+    git_lfs_git::config::get_bool(cwd, key, default)
 }
 
 #[cfg(test)]

@@ -30,7 +30,7 @@ pub fn pre_push<R: BufRead>(
     stdin: R,
     dry_run: bool,
 ) -> Result<PushOutcome, PushCommandError> {
-    if std::env::var_os("GIT_LFS_SKIP_PUSH").is_some_and(|v| v != "0" && !v.is_empty()) {
+    if git_lfs_git::config::env_bool("GIT_LFS_SKIP_PUSH", false) {
         return Ok(PushOutcome::default());
     }
 

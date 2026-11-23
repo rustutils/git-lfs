@@ -34,6 +34,13 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- Boolean environment variables and settings are read like upstream:
+  `true`, `1`, `on`, `yes`, and `t` are true, `false`, `0`, `off`, `no`,
+  and `f` are false, and empty means the default. Before,
+  `GIT_LFS_SKIP_PUSH=false` skipped the push and `GIT_LFS_SKIP_SMUDGE=no`
+  skipped smudging, and some settings didn't accept every spelling. As in
+  upstream, any other value is false.
+- `lfs.forceprogress` is read, like `GIT_LFS_FORCE_PROGRESS`.
 - `http.sslCert` and `http.sslKey` send a client certificate without
   `http.sslCAInfo`, and with `http.sslVerify=false`. Before, they were
   ignored unless `http.sslCAInfo` was set.

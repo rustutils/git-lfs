@@ -266,25 +266,13 @@ fn emit_static_defaults(cwd: &Path) {
 /// When it is, `git lfs smudge` writes the pointer instead of failing
 /// when a download fails.
 pub(crate) fn skip_download_errors(cwd: &Path) -> bool {
-    bool_config(cwd, "lfs.skipdownloaderrors") || bool_env("GIT_LFS_SKIP_DOWNLOAD_ERRORS")
+    git_lfs_git::config::env_bool("GIT_LFS_SKIP_DOWNLOAD_ERRORS", false)
+        || bool_config(cwd, "lfs.skipdownloaderrors")
 }
 
-/// Whether config `key` is exactly `true`, `1`, `yes`, or `on`.
+/// Whether the boolean setting `key` is true.
 fn bool_config(cwd: &Path, key: &str) -> bool {
-    matches!(
-        git_lfs_git::config::get_effective(cwd, key)
-            .ok()
-            .flatten()
-            .as_deref(),
-        Some("true" | "1" | "yes" | "on")
-    )
-}
-
-fn bool_env(name: &str) -> bool {
-    matches!(
-        std::env::var(name).ok().as_deref(),
-        Some("true" | "1" | "yes" | "on")
-    )
+    git_lfs_git::config::get_bool(cwd, key, false)
 }
 
 /// The names of the custom transfer adapters, sorted.

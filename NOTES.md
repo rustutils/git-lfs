@@ -145,11 +145,6 @@ come from reading the code.
 - **`expires_in: 0` from `git-lfs-authenticate` means expired at once**,
   so ssh runs before every request. Confirmed. Upstream treats 0 as no
   expiry.
-- **Boolean environment variables and settings.** `GIT_LFS_SKIP_PUSH=false`
-  skips the push, and `GIT_LFS_SKIP_SMUDGE=no` skips smudging. `get_bool`
-  in `git/src/fetch_prune.rs`, `lfs_url_bool` in `git/src/http_options.rs`,
-  `lfs.allowincompletepush`, and `lfs.locksverify` each parse booleans
-  differently from Git and upstream.
 - **`git lfs uninstall` stops at the first config error** and leaves the
   hooks in place, exiting 0.
 - **`git lfs clone`:** a failed pull in a submodule exits 0, `-bmain` is
@@ -208,6 +203,9 @@ come from reading the code.
   like object transfers. Upstream only retries a 429 and fails at once on a
   5xx from the batch API, although it retries a 5xx from storage. A 502 or
   503 from a proxy is often gone in seconds.
+- **`lfs.locksverify` accepts `yes` and `on`.** Upstream reads it with Go's
+  `strconv.ParseBool`, which treats them as false, unlike its other
+  booleans.
 
 ## Deferred improvements
 

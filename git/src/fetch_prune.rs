@@ -79,14 +79,7 @@ fn get_int(cwd: &Path, key: &str, default: i64) -> i64 {
 /// Upstream's `config.Bool` differs: it also accepts `t` and `f`, reads an
 /// empty value as `default`, and reads anything else as false.
 fn get_bool(cwd: &Path, key: &str, default: bool) -> bool {
-    let Ok(Some(raw)) = config::get_effective(cwd, key) else {
-        return default;
-    };
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "true" | "yes" | "on" | "1" => true,
-        "false" | "no" | "off" | "0" | "" => false,
-        _ => default,
-    }
+    config::get_bool(cwd, key, default)
 }
 
 fn get_string(cwd: &Path, key: &str, default: &str) -> String {

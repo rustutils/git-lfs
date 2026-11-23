@@ -546,7 +546,7 @@ pub(crate) fn upload_in_range_with_args(
         Ok(Report::default())
     } else {
         fetcher.set_progress_names(&paths);
-        crate::fetch::print_starting_progress("Uploading", total);
+        crate::fetch::print_starting_progress(cwd, "Uploading", total);
         let uploaded = fetcher.upload_many(to_upload);
         fetcher.persist_access_mode();
         uploaded
@@ -638,15 +638,9 @@ fn changed_paths_in_range(
     Ok(seen.into_iter().collect())
 }
 
-/// Whether `lfs.allowincompletepush` is set to `true` or `1`.
-///
-/// Upstream also accepts the other boolean spellings Git does.
+/// Whether `lfs.allowincompletepush` is true.
 fn allow_incomplete_push(cwd: &Path) -> bool {
-    git_lfs_git::config::get_effective(cwd, "lfs.allowincompletepush")
-        .ok()
-        .flatten()
-        .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
-        .unwrap_or(false)
+    git_lfs_git::config::get_bool(cwd, "lfs.allowincompletepush", false)
 }
 
 /// Format a byte count in decimal units, like go-humanize's `Bytes`, which

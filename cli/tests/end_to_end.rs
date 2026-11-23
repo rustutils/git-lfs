@@ -33,6 +33,11 @@ fn fresh_repo() -> TempDir {
 /// git's filter machinery — `git checkout` notably — silently no-ops on
 /// LFS-tracked files.
 fn run_in(cwd: &Path, args: &[&str], input: &[u8]) -> Output {
+    run_in_env(cwd, args, input, &[])
+}
+
+/// [`run_in`] with extra environment variables.
+fn run_in_env(cwd: &Path, args: &[&str], input: &[u8], env: &[(&str, &str)]) -> Output {
     let bin_dir = Path::new(BIN).parent().unwrap();
     let path_var = std::env::var("PATH").unwrap_or_default();
     let new_path = format!("{}:{path_var}", bin_dir.display());
@@ -46,6 +51,7 @@ fn run_in(cwd: &Path, args: &[&str], input: &[u8]) -> Output {
         // (or any other filter) installed globally.
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .envs(env.iter().copied())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -4410,4 +4416,58 @@ fn client_certificate_is_sent_without_ssl_ca_info() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(out.stdout, CONTENT);
+}
+
+// ---------- boolean environment variables -----------------------------------
+
+/// `GIT_LFS_SKIP_SMUDGE` is read like upstream's booleans: `no` and
+/// `false` don't skip.
+#[test]
+fn skip_smudge_reads_false_values() {
+    let repo = fresh_repo();
+    let content = b"hello\n";
+    let cleaned = run_in(repo.path(), &["clean"], content);
+    assert!(cleaned.status.success());
+    let pointer = cleaned.stdout;
+
+    for value in ["no", "false", "0", "off"] {
+        let out = run_in_env(
+            repo.path(),
+            &["smudge"],
+            &pointer,
+            &[("GIT_LFS_SKIP_SMUDGE", value)],
+        );
+        assert!(out.status.success());
+        assert_eq!(out.stdout, content, "GIT_LFS_SKIP_SMUDGE={value}");
+    }
+    let out = run_in_env(
+        repo.path(),
+        &["smudge"],
+        &pointer,
+        &[("GIT_LFS_SKIP_SMUDGE", "yes")],
+    );
+    assert_eq!(out.stdout, pointer, "GIT_LFS_SKIP_SMUDGE=yes");
+}
+
+/// `GIT_LFS_SKIP_PUSH=false` doesn't skip the push.
+#[test]
+fn skip_push_reads_false_values() {
+    let repo = fresh_repo();
+    let push = |value: &str| {
+        run_in_env(
+            repo.path(),
+            &["pre-push", "no-such-remote", "https://example.invalid/repo"],
+            b"",
+            &[("GIT_LFS_SKIP_PUSH", value)],
+        )
+    };
+    // Skipped, the hook doesn't look at the remote at all.
+    assert!(push("true").status.success());
+    for value in ["false", "no", "0"] {
+        let out = push(value);
+        assert!(
+            !out.status.success(),
+            "GIT_LFS_SKIP_PUSH={value} skipped the push"
+        );
+    }
 }

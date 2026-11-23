@@ -113,6 +113,35 @@ pub fn get_effective(cwd: &Path, key: &str) -> Result<Option<String>, Error> {
     get_from_lfsconfig(cwd, key)
 }
 
+/// Read a boolean setting or environment variable, like upstream's
+/// `config.Bool`.
+///
+/// Unset or empty gives `default`. `true`, `1`, `on`, `yes`, and `t` are
+/// true, and `false`, `0`, `off`, `no`, and `f` are false, in any case.
+/// Anything else is false, even when `default` is true.
+pub fn parse_bool(value: Option<&str>, default: bool) -> bool {
+    match value.map(str::to_ascii_lowercase).as_deref() {
+        None | Some("") => default,
+        Some("true" | "1" | "on" | "yes" | "t") => true,
+        _ => false,
+    }
+}
+
+/// The boolean setting `key`, from [`get_effective`], read with
+/// [`parse_bool`].
+pub fn get_bool(cwd: &Path, key: &str, default: bool) -> bool {
+    parse_bool(get_effective(cwd, key).ok().flatten().as_deref(), default)
+}
+
+/// The boolean environment variable `name`, read with [`parse_bool`].
+pub fn env_bool(name: &str, default: bool) -> bool {
+    let value = std::env::var_os(name);
+    parse_bool(
+        value.as_ref().map(|v| v.to_string_lossy()).as_deref(),
+        default,
+    )
+}
+
 /// Look up `key` in the repository's `.lfsconfig`.
 ///
 /// The file is read from the working tree, then the index, then `HEAD`,
@@ -464,6 +493,33 @@ fn filter_safe(entries: LfsConfigEntries) -> (LfsConfigEntries, Vec<String>) {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn booleans_parse_like_upstream() {
+        for (value, default, want) in [
+            (None, true, true),
+            (None, false, false),
+            (Some(""), true, true),
+            (Some(""), false, false),
+            (Some("true"), false, true),
+            (Some("TRUE"), false, true),
+            (Some("1"), false, true),
+            (Some("on"), false, true),
+            (Some("yes"), false, true),
+            (Some("t"), false, true),
+            (Some("false"), true, false),
+            (Some("False"), true, false),
+            (Some("0"), true, false),
+            (Some("off"), true, false),
+            (Some("no"), true, false),
+            (Some("f"), true, false),
+            // Unrecognized is false, whatever the default.
+            (Some("maybe"), true, false),
+            (Some("2"), false, false),
+        ] {
+            assert_eq!(parse_bool(value, default), want, "{value:?}, {default}");
+        }
+    }
 
     fn init_repo() -> TempDir {
         let tmp = TempDir::new().unwrap();

@@ -282,14 +282,10 @@ fn parse_header_line(s: &str) -> Option<(String, String)> {
 /// `true`, `1`, `yes` or `on` reads as false.
 pub fn lfs_url_bool(cwd: &Path, url: &str, subkey: &str, default: bool) -> bool {
     let scoped = lfs_scoped_keys(cwd, url).unwrap_or(Scoped(Vec::new()));
-    if let Some(v) = scoped.lookup(subkey) {
-        return parse_bool(&v);
-    }
-    let global_key = format!("lfs.{subkey}");
-    match get_global(cwd, &global_key) {
-        Ok(Some(v)) => parse_bool(&v),
-        _ => default,
-    }
+    let value = scoped
+        .lookup(subkey)
+        .or_else(|| get_global(cwd, &format!("lfs.{subkey}")).ok().flatten());
+    crate::config::parse_bool(value.as_deref(), default)
 }
 
 /// Read the string `lfs.<url>.<subkey>` that best matches `url`.
@@ -383,14 +379,6 @@ fn parse_ssl_verify(s: &str) -> Option<bool> {
         "false" | "no" | "off" | "0" | "f" => Some(false),
         _ => None,
     }
-}
-
-/// Whether `s` is `true`, `1`, `yes` or `on`, in any case.
-fn parse_bool(s: &str) -> bool {
-    matches!(
-        s.trim().to_ascii_lowercase().as_str(),
-        "true" | "1" | "yes" | "on"
-    )
 }
 
 #[cfg(test)]

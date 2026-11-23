@@ -141,15 +141,7 @@ fn first_remote_for_treeish(cwd: &Path, treeish: &str) -> Option<String> {
 }
 
 fn config_bool(cwd: &Path, key: &str) -> bool {
-    git_lfs_git::config::get_effective(cwd, key)
-        .ok()
-        .flatten()
-        .is_some_and(|v| {
-            matches!(
-                v.trim().to_ascii_lowercase().as_str(),
-                "true" | "1" | "yes" | "on"
-            )
-        })
+    git_lfs_git::config::get_bool(cwd, key, false)
 }
 
 fn trace(message: &str) {

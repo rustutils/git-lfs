@@ -229,20 +229,10 @@ fn bail_if_outside_repo(cwd: &std::path::Path) -> Option<u8> {
     None
 }
 
-/// Whether `GIT_LFS_SKIP_SMUDGE` is set, which makes smudge write pointers
-/// instead of content.
-///
-/// Any value but empty, `0`, or `false` (in three spellings) counts as
-/// set. Upstream's `config.Bool` reads only `true`, `1`, `on`, `yes`,
-/// and `t` as true, in any case.
+/// Whether `GIT_LFS_SKIP_SMUDGE` is true, which makes smudge write
+/// pointers instead of content.
 fn skip_smudge_env() -> bool {
-    match std::env::var_os("GIT_LFS_SKIP_SMUDGE") {
-        None => false,
-        Some(v) => {
-            let s = v.to_string_lossy();
-            !matches!(s.as_ref(), "" | "0" | "false" | "False" | "FALSE")
-        }
-    }
+    git_lfs_git::config::env_bool("GIT_LFS_SKIP_SMUDGE", false)
 }
 
 /// Print a migrate error and return the exit code.

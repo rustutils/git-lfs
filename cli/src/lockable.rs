@@ -124,24 +124,19 @@ pub fn enforce_workdir(cwd: &Path) -> io::Result<()> {
 /// `SetLockableFilesReadOnly`. The setting is read with `git config`, so
 /// `.lfsconfig` isn't consulted.
 pub fn lockable_readonly_enabled(cwd: &Path) -> bool {
-    if let Some(v) = std::env::var_os("GIT_LFS_SET_LOCKABLE_READONLY") {
-        let s = v.to_string_lossy().trim().to_lowercase();
-        if matches!(s.as_str(), "false" | "0" | "no" | "off") {
-            return false;
-        }
+    if !git_lfs_git::config::env_bool("GIT_LFS_SET_LOCKABLE_READONLY", true) {
+        return false;
     }
     let out = Command::new("git")
         .arg("-C")
         .arg(cwd)
         .args(["config", "--get", "lfs.setlockablereadonly"])
         .output();
-    match out {
-        Ok(o) if o.status.success() => {
-            let v = String::from_utf8_lossy(&o.stdout).trim().to_lowercase();
-            !matches!(v.as_str(), "false" | "0" | "no" | "off")
-        }
-        _ => true,
-    }
+    let value = match &out {
+        Ok(o) if o.status.success() => Some(String::from_utf8_lossy(&o.stdout).trim().to_owned()),
+        _ => None,
+    };
+    git_lfs_git::config::parse_bool(value.as_deref(), true)
 }
 
 /// List the paths in the index.

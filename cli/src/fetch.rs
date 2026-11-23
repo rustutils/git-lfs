@@ -320,7 +320,7 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
 
     fetcher.set_progress_names(&paths);
     if !opts.json {
-        print_starting_progress("Downloading", total);
+        print_starting_progress(cwd, "Downloading", total);
     }
     let report = match fetcher.download_many(to_fetch.clone()) {
         Ok(report) => report,
@@ -617,11 +617,11 @@ fn matches_with_prefix(path: &Path, set: &GlobSet) -> bool {
 }
 
 /// Print a progress meter's first line, `<verb> LFS objects:   0% (0/N), 0
-/// B`, when `GIT_LFS_FORCE_PROGRESS` asks for every update. Only the final
-/// line is printed otherwise.
-pub(crate) fn print_starting_progress(verb: &str, total: usize) {
-    let forced = std::env::var_os("GIT_LFS_FORCE_PROGRESS")
-        .is_some_and(|v| !v.is_empty() && v != "0" && v != "false");
+/// B`, when `GIT_LFS_FORCE_PROGRESS` or `lfs.forceprogress` asks for every
+/// update. Only the final line is printed otherwise.
+pub(crate) fn print_starting_progress(cwd: &Path, verb: &str, total: usize) {
+    let forced = git_lfs_git::config::env_bool("GIT_LFS_FORCE_PROGRESS", false)
+        || git_lfs_git::config::get_bool(cwd, "lfs.forceprogress", false);
     if forced {
         eprintln!("{verb} LFS objects:   0% (0/{total}), 0 B");
     }
