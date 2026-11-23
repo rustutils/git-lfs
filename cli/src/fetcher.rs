@@ -1092,7 +1092,7 @@ fn href_rewrite_enabled(cwd: &Path) -> bool {
 /// request. Askpass is only added if a program is configured and no
 /// `credential.helper` matches `cred_url`. `credential.protectProtocol`
 /// (default true) is passed on to `git credential`.
-fn default_helper_chain(cwd: &Path, cred_url: &url::Url) -> Arc<dyn Helper> {
+pub(crate) fn default_helper_chain(cwd: &Path, cred_url: &url::Url) -> Arc<dyn Helper> {
     let protect_protocol = read_bool_default(cwd, "credential.protectProtocol", true);
     let mut helpers: Vec<Box<dyn Helper>> = Vec::new();
     if let Some(netrc) = NetrcCredentialHelper::from_default_location() {

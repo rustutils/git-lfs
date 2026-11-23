@@ -8,6 +8,18 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- Client certificate keys encrypted with a passphrase work, in OpenSSL's
+  legacy PEM format with `Proc-Type: 4,ENCRYPTED`. The passphrase comes
+  from the credential helpers, which are asked with `protocol=cert` and the
+  path in `http.sslKey`, like upstream.
+
+### Fixed
+
+- A leading `~` in `http.sslCert`, `http.sslKey`, and `http.cookieFile` is
+  expanded to the home directory.
+
 ## [0.9.0] - 2026-11-23
 
 ### Security

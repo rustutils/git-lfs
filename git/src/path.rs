@@ -4,6 +4,24 @@ use std::path::{Path, PathBuf};
 
 use crate::{Error, run_git};
 
+/// Expand a leading `~` or `~/` in a path setting to `$HOME`, as Git does.
+///
+/// Unlike Git, `~user` isn't expanded, so such a path stays as it is.
+pub fn expand_tilde(path: &str) -> PathBuf {
+    let home = || std::env::var_os("HOME").map(PathBuf::from);
+    if path == "~"
+        && let Some(home) = home()
+    {
+        return home;
+    }
+    if let Some(rest) = path.strip_prefix("~/")
+        && let Some(home) = home()
+    {
+        return home.join(rest);
+    }
+    PathBuf::from(path)
+}
+
 /// The absolute path of the Git directory of the worktree containing `cwd`.
 ///
 /// In a linked worktree this is `.git/worktrees/<name>`, not the main

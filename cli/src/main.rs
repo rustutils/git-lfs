@@ -9,6 +9,7 @@ use git_lfs_store::Store;
 
 mod action_auth;
 mod checkout;
+mod client_key;
 mod clone;
 mod completion;
 mod dedup;

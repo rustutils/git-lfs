@@ -338,10 +338,9 @@ pub fn effective_hooks_dir(cwd: &Path) -> Result<std::path::PathBuf, InstallErro
     if let Ok(Some(hookspath)) = config::get_effective(cwd, "core.hookspath")
         && !hookspath.is_empty()
     {
-        let expanded = expand_home(&hookspath);
-        let hp = Path::new(&expanded);
+        let hp = git_lfs_git::expand_tilde(&hookspath);
         if hp.is_absolute() {
-            return Ok(hp.to_path_buf());
+            return Ok(hp);
         }
         let base = match git_lfs_git::work_tree_root(cwd) {
             Ok(root) => root,
@@ -350,24 +349,6 @@ pub fn effective_hooks_dir(cwd: &Path) -> Result<std::path::PathBuf, InstallErro
         return Ok(base.join(hp));
     }
     Ok(git_common_dir(cwd)?.join("hooks"))
-}
-
-/// Expand a leading `~` or `~/` to `$HOME`.
-///
-/// Unlike upstream's `tools.ExpandPath`, `~user` isn't expanded, so such a
-/// path is treated as relative.
-fn expand_home(raw: &str) -> String {
-    if raw == "~"
-        && let Some(home) = std::env::var_os("HOME")
-    {
-        return home.to_string_lossy().into_owned();
-    }
-    if let Some(rest) = raw.strip_prefix("~/")
-        && let Some(home) = std::env::var_os("HOME")
-    {
-        return Path::new(&home).join(rest).to_string_lossy().into_owned();
-    }
-    raw.to_owned()
 }
 
 /// Install the hooks that are missing or ours, leaving any other hook as

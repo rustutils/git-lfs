@@ -33,7 +33,8 @@ pub struct HttpOptions {
     /// Verification stays on. The caller can warn about it.
     pub ssl_verify_invalid: Option<String>,
     /// `http.sslCert`: path to a PEM client certificate, used with
-    /// [`Self::ssl_key`].
+    /// [`Self::ssl_key`]. A leading `~` is expanded here, as for the other
+    /// paths.
     pub ssl_cert: Option<String>,
     /// `http.sslKey`: path to the client certificate's PEM private key.
     pub ssl_key: Option<String>,
@@ -62,15 +63,25 @@ impl HttpOptions {
             ssl_verify_invalid,
             ssl_cert: scoped
                 .lookup("sslcert")
-                .or_else(|| get_global(cwd, "http.sslCert").ok().flatten()),
+                .or_else(|| get_global(cwd, "http.sslCert").ok().flatten())
+                .map(expand),
             ssl_key: scoped
                 .lookup("sslkey")
-                .or_else(|| get_global(cwd, "http.sslKey").ok().flatten()),
+                .or_else(|| get_global(cwd, "http.sslKey").ok().flatten())
+                .map(expand),
             cookie_file: scoped
                 .lookup("cookiefile")
-                .or_else(|| get_global(cwd, "http.cookieFile").ok().flatten()),
+                .or_else(|| get_global(cwd, "http.cookieFile").ok().flatten())
+                .map(expand),
         })
     }
+}
+
+/// A path setting with `~` expanded, as upstream does for these.
+fn expand(path: String) -> String {
+    crate::path::expand_tilde(&path)
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// URL-scoped entries that match one URL, as `(url, key, value)`, longest

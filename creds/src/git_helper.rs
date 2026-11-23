@@ -192,8 +192,15 @@ fn write_input(
     protect_protocol: bool,
 ) -> Result<(), HelperError> {
     write_field(sink, "protocol", &query.protocol, protect_protocol)?;
-    write_field(sink, "host", &query.host, protect_protocol)?;
+    // Git refuses input without a host line, so it's sent even when
+    // empty, as for a client certificate key.
+    validate_value("host", &query.host, protect_protocol)?;
+    writeln!(sink, "host={}", query.host)?;
     write_field(sink, "path", &query.path, protect_protocol)?;
+    if let Some(username) = ctx.and_then(|c| c.username.as_deref()) {
+        validate_value("username", username, protect_protocol)?;
+        writeln!(sink, "username={username}")?;
+    }
     if let Some(c) = creds {
         if let (Some(at), Some(cred)) = (&c.authtype, &c.credential) {
             // Send back the fields the helper returned, without username
@@ -410,5 +417,25 @@ mod tests {
         assert!(!s.contains("path="));
         assert!(s.contains("protocol=https\n"));
         assert!(s.contains("host=h.example\n"));
+    }
+
+    #[test]
+    fn write_input_sends_an_empty_username_from_the_context() {
+        let q = Query {
+            protocol: "cert".into(),
+            host: String::new(),
+            path: "/home/me/client.key".into(),
+        };
+        let ctx = FillContext {
+            username: Some(String::new()),
+            ..FillContext::default()
+        };
+        let mut buf = Vec::new();
+        write_input(&mut buf, &q, None, Some(&ctx), true).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert_eq!(
+            s,
+            "protocol=cert\nhost=\npath=/home/me/client.key\nusername=\n\n"
+        );
     }
 }

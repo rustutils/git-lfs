@@ -327,7 +327,7 @@ fn read_global_attrs(cwd: &Path) -> Option<Vec<u8>> {
         });
 
     let path = if let Some(p) = configured {
-        expand_tilde(&p)?
+        git_lfs_git::expand_tilde(&p)
     } else {
         let xdg = std::env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)
@@ -335,15 +335,6 @@ fn read_global_attrs(cwd: &Path) -> Option<Vec<u8>> {
         xdg.join("git").join("attributes")
     };
     std::fs::read(path).ok()
-}
-
-fn expand_tilde(s: &str) -> Option<PathBuf> {
-    if let Some(rest) = s.strip_prefix("~/") {
-        let home = std::env::var_os("HOME")?;
-        Some(PathBuf::from(home).join(rest))
-    } else {
-        Some(PathBuf::from(s))
-    }
 }
 
 #[cfg(test)]

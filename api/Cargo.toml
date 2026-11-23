@@ -14,7 +14,7 @@ categories             = ["web-programming::http-client", "api-bindings"]
 
 [dependencies]
 git-lfs-creds    = { workspace = true }
-base64           = "0.22"
+base64           = { workspace = true }
 flate2           = { workspace = true }
 reqwest          = { workspace = true }
 serde            = { workspace = true }

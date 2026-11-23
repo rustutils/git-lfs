@@ -94,6 +94,13 @@ pub struct FillContext {
     /// Protocol extensions to advertise as `capability[]` lines, such as
     /// `authtype` and `state`.
     pub capabilities: Vec<String>,
+
+    /// A username to send, even when empty.
+    ///
+    /// An empty one asks only for a password, as for the passphrase of a
+    /// client certificate key. Without a username, `git credential fill`
+    /// prompts for one.
+    pub username: Option<String>,
 }
 
 /// What a helper did with an approve or reject call.

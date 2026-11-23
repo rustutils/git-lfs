@@ -429,7 +429,7 @@ pub fn list_lfs_patterns(repo_root: &Path) -> io::Result<PatternListing> {
 /// path.
 fn read_global_attributes(repo_root: &Path) -> Option<(String, Vec<u8>)> {
     if let Ok(Some(path)) = crate::config::get_effective(repo_root, "core.attributesfile") {
-        let expanded = expand_tilde(&path);
+        let expanded = crate::path::expand_tilde(&path);
         if let Ok(bytes) = fs::read(&expanded) {
             return Some((path, bytes));
         }
@@ -441,21 +441,6 @@ fn read_global_attributes(repo_root: &Path) -> Option<(String, Vec<u8>)> {
     let path = xdg.join("git").join("attributes");
     let bytes = fs::read(&path).ok()?;
     Some((path.to_string_lossy().into_owned(), bytes))
-}
-
-/// Expand a leading `~` or `~/` to `$HOME`, as Git does for
-/// `core.attributesfile`.
-fn expand_tilde(path: &str) -> PathBuf {
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home).join(rest);
-        }
-    } else if path == "~"
-        && let Some(home) = std::env::var_os("HOME")
-    {
-        return PathBuf::from(home);
-    }
-    PathBuf::from(path)
 }
 
 fn scan_attr_lines(

@@ -546,6 +546,7 @@ impl Client {
                 wwwauth: wwwauth.clone(),
                 state: state.clone(),
                 capabilities: vec!["authtype".to_owned(), "state".to_owned()],
+                ..FillContext::default()
             };
             let creds =
                 match fill_for_endpoint(helper.clone(), query.clone(), &cred_url_str, ctx).await? {

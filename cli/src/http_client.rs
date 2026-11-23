@@ -1,7 +1,8 @@
 //! Builds the `reqwest::Client` shared by the API client and transfers.
 //!
 //! The client gets the `http.*` settings for the endpoint URL: `sslVerify`,
-//! `sslCAInfo`, `sslCert`, `sslKey`, and `cookieFile`. It uses them for every
+//! `sslCAInfo`, `sslCert`, `sslKey`, and `cookieFile`. An encrypted
+//! `sslKey` is decrypted with a passphrase from the credential helpers. It uses them for every
 //! request, including action URLs on other hosts. Upstream looks the settings
 //! up for each request's URL. `http.extraHeader` is looked up per request,
 //! by the API client and the transfer adapter.
@@ -12,15 +13,19 @@
 //! webpki rejects as a server certificate, but it also rejects a server
 //! certificate signed by a CA in the file.
 
+use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
+use git_lfs_creds::{FillContext, Query};
 use git_lfs_git::HttpOptions;
 use reqwest::cookie::Jar;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::WebPkiSupportedAlgorithms;
 use rustls::{DigitallySignedStruct, SignatureScheme};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
+
+use crate::client_key::{self, EncryptedKey, Key};
 
 /// Build a client with the `http.*` settings for `endpoint_url`.
 ///
@@ -39,8 +44,13 @@ pub fn build(cwd: &Path, endpoint_url: &str) -> reqwest::Client {
     if opts.ssl_verify == Some(false) {
         builder = builder.danger_accept_invalid_certs(true);
     } else if let Some(path) = opts.ssl_ca_info.as_deref()
-        && let Some(config) =
-            pinned_cert_config(path, opts.ssl_cert.as_deref(), opts.ssl_key.as_deref())
+        && let Some(config) = pinned_cert_config(
+            path,
+            opts.ssl_cert
+                .as_deref()
+                .zip(opts.ssl_key.as_deref())
+                .and_then(|(cert, key)| load_client_identity(cwd, cert, key)),
+        )
     {
         builder = builder.use_preconfigured_tls(config);
     }
@@ -120,17 +130,15 @@ fn load_netscape_cookies(path: &str) -> Option<Jar> {
     Some(jar)
 }
 
+/// A client certificate chain and its private key.
+type Identity = (Vec<CertificateDer<'static>>, PrivateKeyDer<'static>);
+
 /// Build a rustls config that trusts exactly the PEM certificates in
-/// `path`.
+/// `path`, and sends `identity` as the client certificate if there is one.
 ///
-/// With `cert_path` and `key_path` (`http.sslCert` and `http.sslKey`), it
-/// also sends a client certificate. Those two settings have no effect
-/// without `http.sslCAInfo`. Returns `None` if `path` has no certificates.
-fn pinned_cert_config(
-    path: &str,
-    cert_path: Option<&str>,
-    key_path: Option<&str>,
-) -> Option<rustls::ClientConfig> {
+/// The client certificate settings have no effect without
+/// `http.sslCAInfo`. Returns `None` if `path` has no certificates.
+fn pinned_cert_config(path: &str, identity: Option<Identity>) -> Option<rustls::ClientConfig> {
     let pem = std::fs::read(path).ok()?;
     let mut cursor = std::io::Cursor::new(&pem);
     let pinned: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cursor)
@@ -151,21 +159,16 @@ fn pinned_cert_config(
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(verifier));
 
-    let config = match (cert_path, key_path) {
-        (Some(cp), Some(kp)) => {
-            let identity = load_client_identity(cp, kp)?;
-            builder.with_client_auth_cert(identity.0, identity.1).ok()?
-        }
-        _ => builder.with_no_client_auth(),
+    let config = match identity {
+        Some((certs, key)) => builder.with_client_auth_cert(certs, key).ok()?,
+        None => builder.with_no_client_auth(),
     };
     Some(config)
 }
 
-/// Load a client certificate chain and private key from two PEM files.
-fn load_client_identity(
-    cert_path: &str,
-    key_path: &str,
-) -> Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {
+/// Load a client certificate chain and private key from two PEM files
+/// (`http.sslCert` and `http.sslKey`).
+fn load_client_identity(cwd: &Path, cert_path: &str, key_path: &str) -> Option<Identity> {
     let cert_pem = std::fs::read(cert_path).ok()?;
     let mut cursor = std::io::Cursor::new(&cert_pem);
     let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cursor)
@@ -174,12 +177,75 @@ fn load_client_identity(
     if certs.is_empty() {
         return None;
     }
+    Some((certs, load_client_key(cwd, key_path)?))
+}
 
-    let key_pem = std::fs::read(key_path).ok()?;
-    let mut cursor = std::io::Cursor::new(&key_pem);
-    let key = rustls_pemfile::private_key(&mut cursor).ok()??;
+/// Load the private key at `path`, asking for its passphrase if it's
+/// encrypted.
+///
+/// The key is kept for the rest of the process, since a command builds
+/// more than one client and the passphrase should be asked for once.
+fn load_client_key(cwd: &Path, path: &str) -> Option<PrivateKeyDer<'static>> {
+    type Cache = HashMap<String, Option<PrivateKeyDer<'static>>>;
+    static KEYS: OnceLock<Mutex<Cache>> = OnceLock::new();
+    let mut keys = KEYS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let key = keys
+        .entry(path.to_owned())
+        .or_insert_with(|| read_client_key(cwd, path));
+    key.as_ref().map(PrivateKeyDer::clone_key)
+}
 
-    Some((certs, key))
+fn read_client_key(cwd: &Path, path: &str) -> Option<PrivateKeyDer<'static>> {
+    let pem = std::fs::read(path).ok()?;
+    let result = match client_key::parse(&pem) {
+        Ok(Key::Plain(key)) => Ok(key),
+        Ok(Key::Encrypted(key)) => decrypt_client_key(cwd, path, &key),
+        Err(e) => Err(e.to_string()),
+    };
+    result
+        .inspect_err(|e| eprintln!("warning: can't use client key file {path:?}: {e}"))
+        .ok()
+}
+
+/// Decrypt `key` with the passphrase from the credential helpers, as
+/// upstream does.
+///
+/// The helpers get `protocol=cert` and the key's path, like Git's query
+/// for `http.sslCertPasswordProtected`. The passphrase is approved if it
+/// works, and rejected if it doesn't.
+fn decrypt_client_key(
+    cwd: &Path,
+    path: &str,
+    key: &EncryptedKey,
+) -> Result<PrivateKeyDer<'static>, String> {
+    let query = Query {
+        protocol: "cert".to_owned(),
+        host: String::new(),
+        path: path.replace('\\', "/"),
+    };
+    let url = url::Url::parse(&format!("cert:///{}", query.path)).map_err(|e| e.to_string())?;
+    let helpers = crate::fetcher::default_helper_chain(cwd, &url);
+    let ctx = FillContext {
+        username: Some(String::new()),
+        ..FillContext::default()
+    };
+    let creds = helpers
+        .fill_with_context(&query, &ctx)
+        .map_err(|e| e.to_string())?
+        .ok_or("no passphrase from the credential helpers")?;
+    match key.decrypt(creds.password.as_bytes()) {
+        Ok(der) => {
+            let _ = helpers.approve(&query, &creds);
+            Ok(der)
+        }
+        Err(e) => {
+            let _ = helpers.reject(&query, &creds);
+            Err(e.to_string())
+        }
+    }
 }
 
 /// Accepts a server certificate only if its bytes match a pinned one.
@@ -292,7 +358,7 @@ gK5S8+YxJvFLdXrxncZ47Udpx0Y7Hf9UmASWvx2Tfgnth0/rVfoPtZUq
         let dir = tempfile::tempdir().unwrap();
         let ca = dir.path().join("ca.pem");
         std::fs::write(&ca, CERT).unwrap();
-        let client_config = pinned_cert_config(ca.to_str().unwrap(), None, None).unwrap();
+        let client_config = pinned_cert_config(ca.to_str().unwrap(), None).unwrap();
 
         let provider = Arc::new(rustls::crypto::ring::default_provider());
         let key = rustls_pemfile::private_key(&mut server_key.as_bytes())
