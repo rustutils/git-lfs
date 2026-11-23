@@ -40,6 +40,9 @@ pub enum FilterProcessError {
 ///
 /// `fetch` downloads missing objects, as for [`smudge_with_fetch`]. A
 /// closure that always fails makes every missing object a `status=error`.
+/// With `skip_download_errors` (`lfs.skipdownloaderrors`), a failed
+/// download instead gives Git the pointer with `status=success`, so the
+/// checkout goes on.
 ///
 /// When `skip_smudge` is set (as by `GIT_LFS_SKIP_SMUDGE`), smudge requests
 /// get the pointer back unchanged. So do paths for which
@@ -69,6 +72,7 @@ pub fn filter_process<R, W, F>(
     output: W,
     mut fetch: F,
     skip_smudge: bool,
+    skip_download_errors: bool,
     clean_extensions: &[CleanExtension],
     smudge_extensions: &[SmudgeExtension],
     smudge_path_filter: &dyn Fn(&str) -> bool,
@@ -121,6 +125,7 @@ where
                     &request,
                     smudge_extensions,
                     &mut fetch,
+                    skip_download_errors,
                 )?;
                 if matches!(outcome, Some(SmudgeOutcome::Passthrough)) {
                     malformed.push(pathname.to_owned());
@@ -274,6 +279,7 @@ fn process_smudge<W, F>(
     request: &SmudgeRequest,
     smudge_extensions: &[SmudgeExtension],
     fetch: &mut F,
+    skip_download_errors: bool,
 ) -> Result<Option<SmudgeOutcome>, FilterProcessError>
 where
     W: Write,
@@ -296,8 +302,15 @@ where
                 Ok(())
             }
             Err(e) => {
-                if let Some(line) = e.download_error_line() {
+                let line = e.download_error_line();
+                if let Some(line) = &line {
                     eprintln!("{line}");
+                }
+                // Only a failed download is skipped, and nothing has been
+                // written yet, so the pointer goes out in its place.
+                if skip_download_errors && line.is_some() {
+                    sink.write_all(payload)?;
+                    return Ok(());
                 }
                 Err(io::Error::other(e.to_string()))
             }
@@ -420,6 +433,10 @@ mod tests {
     }
 
     fn run(store: &Store, input: Vec<u8>) -> Vec<u8> {
+        run_with(store, input, false)
+    }
+
+    fn run_with(store: &Store, input: Vec<u8>, skip_download_errors: bool) -> Vec<u8> {
         let mut output = Vec::new();
         filter_process(
             store,
@@ -427,6 +444,7 @@ mod tests {
             &mut output,
             no_fetch,
             false,
+            skip_download_errors,
             &[],
             &[],
             &|_| true,
@@ -510,6 +528,30 @@ mod tests {
     }
 
     #[test]
+    fn skipped_download_error_sends_the_pointer() {
+        let (_t, store) = fixture();
+        let unknown = "0000000000000000000000000000000000000000000000000000000000000001";
+        let pointer = format!("version {VERSION_LATEST}\noid sha256:{unknown}\nsize 5\n");
+        let input = handshake_input()
+            .text("command=smudge")
+            .text("pathname=missing.dat")
+            .flush()
+            .data(pointer.as_bytes())
+            .flush()
+            .build();
+        let output = run_with(&store, input, true);
+        let toks = decode(&output);
+        assert_eq!(toks.last(), Some(&Tok::Flush));
+        assert_eq!(
+            toks[toks.len() - 2],
+            Tok::Text("status=success".into()),
+            "{toks:?}"
+        );
+        let text = String::from_utf8_lossy(&output);
+        assert!(text.contains(&format!("oid sha256:{unknown}")), "{text}");
+    }
+
+    #[test]
     fn smudge_missing_object_emits_status_error() {
         let (_t, store) = fixture();
         let unknown = "0000000000000000000000000000000000000000000000000000000000000001";
@@ -563,6 +605,7 @@ mod tests {
                 assert_eq!(p.oid, parsed.oid);
                 Ok(())
             },
+            false,
             false,
             &[],
             &[],

@@ -4624,3 +4624,56 @@ fn checkout_writes_pointer_for_missing_object_in_new_directory() {
         b"hello world\n"
     );
 }
+
+/// With `lfs.skipdownloaderrors`, filter-process gives Git the pointer when
+/// a download fails, so the checkout goes on, as in upstream.
+#[test]
+fn filter_process_skips_download_errors_when_asked() {
+    let checkout = |skip: bool| {
+        let repo = fresh_repo_with_identity();
+        install_lfs(repo.path());
+        commit_gitattributes(repo.path(), "*.bin filter=lfs diff=lfs merge=lfs -text\n");
+        // Not in the store, and the server can't be reached.
+        let missing = "4d4c7eee2e28d03cb2dbf3df639c3290ade66e18755e83caade2d8f37bd8c044";
+        commit_pointer_at(repo.path(), "z.bin", &pointer_text(missing, 7));
+        git_in(
+            repo.path(),
+            &["config", "lfs.url", "http://127.0.0.1:1/repo"],
+        );
+        git_in(repo.path(), &["config", "lfs.transfer.maxretries", "1"]);
+        if skip {
+            git_in(repo.path(), &["config", "lfs.skipdownloaderrors", "true"]);
+        }
+        std::fs::remove_file(repo.path().join("z.bin")).unwrap();
+
+        let bin_dir = Path::new(BIN).parent().unwrap();
+        let path = format!(
+            "{}:{}",
+            bin_dir.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(["checkout", "--", "z.bin"])
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env("PATH", path)
+            .output()
+            .unwrap();
+        let content = std::fs::read(repo.path().join("z.bin")).ok();
+        (out, content, pointer_text(missing, 7))
+    };
+
+    let (out, content, pointer) = checkout(true);
+    assert!(
+        out.status.success(),
+        "checkout failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(content, Some(pointer));
+
+    // Without the setting, the failed download fails the checkout.
+    let (out, _, _) = checkout(false);
+    assert!(!out.status.success());
+}

@@ -118,8 +118,6 @@ come from reading the code.
   that adds `.gitattributes`, and fails on any commit with a symlink.**
   Confirmed. `--above` fails when the root `.gitattributes` is empty and
   nothing is converted.
-- **`git lfs filter-process` ignores `lfs.skipdownloaderrors`** and
-  `GIT_LFS_SKIP_DOWNLOAD_ERRORS`, so a clone with them fails.
 - **Extensions:** `%f` paths with spaces become several arguments
   (confirmed), smudge writes the last extension's output before checking
   its OID, and clean stores it before checking the exit status.

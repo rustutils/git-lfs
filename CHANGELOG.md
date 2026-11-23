@@ -10,6 +10,10 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- `lfs.skipdownloaderrors` and `GIT_LFS_SKIP_DOWNLOAD_ERRORS` work with the
+  filter process that `git clone` and `git checkout` use, as in upstream.
+  A failed download leaves the pointer in the file and the checkout goes
+  on. Before, only `git lfs smudge` read them.
 - `git lfs checkout` no longer stops when a file's object isn't local and
   its directory doesn't exist. It writes the pointer, says "Skipped
   checkout for ..., content not local. Use fetch to download." like

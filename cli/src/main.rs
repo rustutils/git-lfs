@@ -543,6 +543,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 stdout,
                 |p, request| fetcher.fetch(p, request.treeish),
                 skip || skip_smudge_env(),
+                env::skip_download_errors(&cwd),
                 &clean_extensions,
                 &smudge_extensions,
                 &path_filter,
