@@ -1,6 +1,7 @@
 //! Read git's `http.<key>` and `http.<url>.<key>` settings.
 //!
-//! [`HttpOptions`] holds the TLS settings and `http.cookieFile`.
+//! [`HttpOptions`] holds the TLS settings and `http.cookieFile` for one URL,
+//! and [`HttpConfig`] reads them once to look up for many URLs.
 //! [`ExtraHeaders`] gives the `http.extraHeader` values for a URL, and
 //! [`lfs_url_bool`] reads URL-scoped `lfs.<url>.<key>` booleans.
 //!
@@ -18,7 +19,9 @@ use std::process::Command;
 use crate::Error;
 
 /// HTTP settings that apply to one URL.
-#[derive(Debug, Default, Clone)]
+///
+/// Two URLs with equal options can share an HTTP client.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
 pub struct HttpOptions {
     /// `http.sslCAInfo`: path to a PEM bundle of trusted CAs.
     pub ssl_ca_info: Option<String>,
@@ -47,33 +50,67 @@ impl HttpOptions {
     /// Read the settings for `url`.
     ///
     /// Each setting comes from the best matching `http.<url>.<key>`, or
-    /// from `http.<key>` when none matches.
+    /// from `http.<key>` when none matches. To look up several URLs, use
+    /// [`HttpConfig`], which reads the config once.
     pub fn for_url(cwd: &Path, url: &str) -> Result<Self, Error> {
-        let scoped = scoped_keys(cwd, url)?;
-        let ssl_verify_raw = scoped
-            .lookup("sslverify")
-            .or_else(|| get_global(cwd, "http.sslVerify").ok().flatten());
+        Ok(HttpConfig::load(cwd)?.options_for(url))
+    }
+}
+
+/// The `http.*` TLS and cookie settings, read once, to look up per URL.
+#[derive(Debug, Clone, Default)]
+pub struct HttpConfig {
+    /// Every `http.<url>.<key>` entry, as `(url, key, value)`.
+    scoped: Vec<(String, String, String)>,
+    /// The unscoped `http.<key>` values, by lowercase key.
+    global: Vec<(&'static str, Option<String>)>,
+}
+
+/// The settings [`HttpOptions`] holds, as lowercase keys.
+const KEYS: [&str; 5] = ["sslverify", "sslcainfo", "sslcert", "sslkey", "cookiefile"];
+
+impl HttpConfig {
+    /// Read the settings from git's merged config.
+    pub fn load(cwd: &Path) -> Result<Self, Error> {
+        let scoped = read_scoped_entries(cwd)?;
+        let global = KEYS
+            .iter()
+            .map(|key| (*key, get_global(cwd, &format!("http.{key}")).ok().flatten()))
+            .collect();
+        Ok(Self { scoped, global })
+    }
+
+    /// The settings for a request to `url`.
+    pub fn options_for(&self, url: &str) -> HttpOptions {
+        let mut matching: Vec<&(String, String, String)> = self
+            .scoped
+            .iter()
+            .filter(|(prefix, _, _)| url_matches(prefix, url))
+            .collect();
+        matching.sort_by_key(|e| std::cmp::Reverse(e.0.len()));
+        let get = |key: &str| {
+            matching
+                .iter()
+                .find(|(_, k, _)| k.eq_ignore_ascii_case(key))
+                .map(|(_, _, v)| v.clone())
+                .or_else(|| {
+                    self.global
+                        .iter()
+                        .find(|(k, _)| *k == key)
+                        .and_then(|(_, v)| v.clone())
+                })
+        };
+        let ssl_verify_raw = get("sslverify");
         let ssl_verify = ssl_verify_raw.as_deref().and_then(parse_ssl_verify);
         let ssl_verify_invalid = ssl_verify_raw.filter(|v| !v.is_empty() && ssl_verify.is_none());
-        Ok(Self {
-            ssl_ca_info: scoped
-                .lookup("sslcainfo")
-                .or_else(|| get_global(cwd, "http.sslcainfo").ok().flatten()),
+        HttpOptions {
+            ssl_ca_info: get("sslcainfo"),
             ssl_verify,
             ssl_verify_invalid,
-            ssl_cert: scoped
-                .lookup("sslcert")
-                .or_else(|| get_global(cwd, "http.sslCert").ok().flatten())
-                .map(expand),
-            ssl_key: scoped
-                .lookup("sslkey")
-                .or_else(|| get_global(cwd, "http.sslKey").ok().flatten())
-                .map(expand),
-            cookie_file: scoped
-                .lookup("cookiefile")
-                .or_else(|| get_global(cwd, "http.cookieFile").ok().flatten())
-                .map(expand),
-        })
+            ssl_cert: get("sslcert").map(expand),
+            ssl_key: get("sslkey").map(expand),
+            cookie_file: get("cookiefile").map(expand),
+        }
     }
 }
 
@@ -97,16 +134,6 @@ impl Scoped {
             .find(|(_, k, _)| k.to_ascii_lowercase() == key)
             .map(|(_, _, v)| v.clone())
     }
-}
-
-/// Read the `http.<url>.<key>` entries that match `url`, longest URL first.
-fn scoped_keys(cwd: &Path, url: &str) -> Result<Scoped, Error> {
-    let mut entries: Vec<_> = read_scoped_entries(cwd)?
-        .into_iter()
-        .filter(|(prefix, _, _)| url_matches(prefix, url))
-        .collect();
-    entries.sort_by_key(|e| std::cmp::Reverse(e.0.len()));
-    Ok(Scoped(entries))
 }
 
 /// Read every `http.<url>.<key>` entry as `(url, key, value)`.
@@ -386,6 +413,32 @@ mod tests {
         git(&["init", "--quiet"]);
         git(&["config", key, value]);
         tmp
+    }
+
+    #[test]
+    fn options_follow_the_request_url() {
+        let config = HttpConfig {
+            scoped: vec![
+                (
+                    "https://lfs.test".into(),
+                    "sslVerify".into(),
+                    "false".into(),
+                ),
+                (
+                    "https://lfs.test/repo".into(),
+                    "sslCAInfo".into(),
+                    "/ca.pem".into(),
+                ),
+            ],
+            global: vec![("sslcainfo", Some("/global.pem".into()))],
+        };
+        let lfs = config.options_for("https://lfs.test/repo/info/lfs");
+        assert_eq!(lfs.ssl_verify, Some(false));
+        assert_eq!(lfs.ssl_ca_info.as_deref(), Some("/ca.pem"));
+
+        let storage = config.options_for("https://storage.test/abc");
+        assert_eq!(storage.ssl_verify, None);
+        assert_eq!(storage.ssl_ca_info.as_deref(), Some("/global.pem"));
     }
 
     #[test]

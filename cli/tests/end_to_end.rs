@@ -4162,3 +4162,154 @@ fn unlock_requires_either_id_or_path() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("--id or a set of paths"), "{stderr}");
 }
+
+// ---------- TLS settings per host -------------------------------------------
+
+/// A self-signed certificate for `localhost`, and its key.
+const TLS_CERT: &str = "-----BEGIN CERTIFICATE-----
+MIIBdDCCARqgAwIBAgIUbDDaPQe0JitNWNZtyXPaOF8VhrMwCgYIKoZIzj0EAwIw
+FDESMBAGA1UEAwwJbG9jYWxob3N0MCAXDTI2MTEyMTEyMzAwNFoYDzIxMjYxMDI4
+MTIzMDA0WjAUMRIwEAYDVQQDDAlsb2NhbGhvc3QwWTATBgcqhkjOPQIBBggqhkjO
+PQMBBwNCAASMWY/4opDRYJtPjAFg8JCeWyef3IQS/o705xYB7usuXqPw8QTl0vOw
++v5FymCgO6j6vxo99PqSy1+8h3DaDfhJo0gwRjAdBgNVHQ4EFgQUN7Gi76lonwhi
+7t/nVioYnt3Ly8wwDwYDVR0TAQH/BAUwAwEB/zAUBgNVHREEDTALgglsb2NhbGhv
+c3QwCgYIKoZIzj0EAwIDSAAwRQIhAPSzpgjN85fZfsHoQ9VH/zCwwsQXB+eVQswq
+9odyYJl3AiBLQgdiX2lsZPf7gxQ86yskFV8a8UjefmA2BI1poMNzzQ==
+-----END CERTIFICATE-----";
+const TLS_KEY: &str = "-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgiL/YQe/UK/XFaiYJ
+3RvAJZRBbrEtn+eSiiZemVGAcRuhRANCAASMWY/4opDRYJtPjAFg8JCeWyef3IQS
+/o705xYB7usuXqPw8QTl0vOw+v5FymCgO6j6vxo99PqSy1+8h3DaDfhJ
+-----END PRIVATE KEY-----";
+
+/// Serve an LFS API over HTTPS with [`TLS_CERT`] on a background thread,
+/// and return its port.
+///
+/// The batch response sends the download for `oid` to `storage_host` on
+/// the same port, so one server can play two hosts: `localhost` and
+/// `127.0.0.1`. A connection that fails its handshake is dropped.
+fn serve_lfs_over_tls(oid: &'static str, content: &'static [u8], storage_host: &str) -> u16 {
+    use std::io::{BufRead, BufReader, Read};
+    use std::net::TcpListener;
+    use std::sync::Arc;
+
+    let cert = rustls_pemfile::certs(&mut TLS_CERT.as_bytes())
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let key = rustls_pemfile::private_key(&mut TLS_KEY.as_bytes())
+        .unwrap()
+        .unwrap();
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let config = Arc::new(
+        rustls::ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(cert, key)
+            .unwrap(),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let storage = format!("https://{storage_host}:{port}/storage/{oid}");
+
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let conn = rustls::ServerConnection::new(config.clone()).unwrap();
+            let mut tls = BufReader::new(rustls::StreamOwned::new(conn, stream));
+            let mut request_line = String::new();
+            if tls.read_line(&mut request_line).is_err() {
+                continue;
+            }
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                if tls.read_line(&mut line).is_err() || line.trim().is_empty() {
+                    break;
+                }
+                if let Some((k, v)) = line.split_once(':')
+                    && k.eq_ignore_ascii_case("content-length")
+                {
+                    length = v.trim().parse().unwrap_or(0);
+                }
+            }
+            let mut body = vec![0; length];
+            let _ = tls.read_exact(&mut body);
+            let (content_type, reply) = if request_line.starts_with("POST") {
+                let json = format!(
+                    r#"{{"transfer":"basic","objects":[{{"oid":"{oid}","size":{},"actions":{{"download":{{"href":"{storage}"}}}}}}]}}"#,
+                    content.len()
+                );
+                ("application/vnd.git-lfs+json", json.into_bytes())
+            } else {
+                ("application/octet-stream", content.to_vec())
+            };
+            let mut out = tls.into_inner();
+            let _ = write!(
+                out,
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                reply.len()
+            );
+            let _ = out.write_all(&reply);
+            let _ = out.flush();
+            out.conn.send_close_notify();
+            let _ = out.flush();
+        }
+    });
+    port
+}
+
+/// `http.<url>.sslVerify` applies to the URLs it names, not to every host
+/// a transfer goes to. Upstream looks the settings up per request URL.
+#[test]
+fn ssl_verify_for_the_endpoint_does_not_cover_storage_hosts() {
+    const OID: &str = "30031a9831674dd684c3817399acebc88a116ce5a7a3fbc0cf34d92521a534e6";
+    const CONTENT: &[u8] = b"downloaded\n";
+    let port = serve_lfs_over_tls(OID, CONTENT, "127.0.0.1");
+    let pointer = format!(
+        "version https://git-lfs.github.com/spec/v1\noid sha256:{OID}\nsize {}\n",
+        CONTENT.len(),
+    );
+    let smudge = |unverified: &[String]| {
+        let repo = fresh_repo();
+        let config = |args: &[&str]| {
+            let status = Command::new("git")
+                .arg("-C")
+                .arg(repo.path())
+                .arg("config")
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        };
+        config(&["lfs.url", &format!("https://localhost:{port}/repo")]);
+        // A failed download isn't worth retrying here.
+        config(&["lfs.transfer.maxretries", "1"]);
+        for url in unverified {
+            config(&[&format!("http.{url}.sslVerify"), "false"]);
+        }
+        let out = run_in(repo.path(), &["smudge"], pointer.as_bytes());
+        (repo, out)
+    };
+
+    // With verification off for both hosts, the download works, so the
+    // server is fine.
+    let (_repo, out) = smudge(&[
+        format!("https://localhost:{port}/"),
+        format!("https://127.0.0.1:{port}/"),
+    ]);
+    assert!(
+        out.status.success(),
+        "smudge failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(out.stdout, CONTENT);
+
+    // With it off only for the endpoint, the storage host's self-signed
+    // certificate is rejected.
+    let (_repo, out) = smudge(&[format!("https://localhost:{port}/")]);
+    assert!(
+        !out.status.success(),
+        "smudge verified the storage host with the endpoint's settings"
+    );
+    assert_ne!(out.stdout, CONTENT);
+}

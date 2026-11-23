@@ -35,7 +35,9 @@ mod wildmatch;
 
 pub use attr::AttrSet;
 pub use config::ConfigScope;
-pub use http_options::{ExtraHeaders, HttpOptions, lfs_url_bool, lfs_url_value, url_value};
+pub use http_options::{
+    ExtraHeaders, HttpConfig, HttpOptions, lfs_url_bool, lfs_url_value, url_value,
+};
 pub use path::{
     expand_tilde, git_common_dir, git_dir, lfs_alternate_dirs, lfs_dir, work_tree_root,
 };

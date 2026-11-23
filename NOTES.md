@@ -101,13 +101,6 @@ Where an upstream test fails because of a bug, the entry names it.
 "Confirmed" means reproduced with a test or the built binary. The others
 come from reading the code.
 
-### Security
-
-- **TLS settings apply to every host.** `cli/src/http_client.rs` reads
-  `http.<url>.sslVerify`, `sslCAInfo`, `sslCert`, and `sslKey` for the LFS
-  endpoint and uses them for storage hosts too. Upstream looks them up per
-  request URL.
-
 ### Wrong results or failures
 
 - **Flaky tests**: `t-migrate-export` test 2 or 15 sometimes fails with

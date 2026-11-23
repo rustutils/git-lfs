@@ -17,6 +17,7 @@ use crate::config::TransferConfig;
 use crate::custom::Workers;
 use crate::error::{Report, TransferError};
 use crate::event::Event;
+use crate::http_clients::HttpClients;
 use crate::sshtransfer::adapter as ssh;
 use crate::tus;
 
@@ -67,6 +68,17 @@ impl Transfer {
         store: Store,
         config: TransferConfig,
         http: reqwest::Client,
+    ) -> Self {
+        Self::with_http_clients(api, store, config, HttpClients::single(http))
+    }
+
+    /// Build an HTTP transfer queue that picks a client for each action
+    /// URL, so each host can have its own TLS settings.
+    pub fn with_http_clients(
+        api: ApiClient,
+        store: Store,
+        config: TransferConfig,
+        http: HttpClients,
     ) -> Self {
         Self {
             backend: Backend::Http {

@@ -1,11 +1,12 @@
-//! Builds the `reqwest::Client` shared by the API client and transfers.
+//! Builds the `reqwest::Client`s for the API client and transfers.
 //!
-//! The client gets the `http.*` settings for the endpoint URL: `sslVerify`,
-//! `sslCAInfo`, `sslCert`, `sslKey`, and `cookieFile`. An encrypted
-//! `sslKey` is decrypted with a passphrase from the credential helpers. It uses them for every
-//! request, including action URLs on other hosts. Upstream looks the settings
-//! up for each request's URL. `http.extraHeader` is looked up per request,
-//! by the API client and the transfer adapter.
+//! Each client gets the `http.*` settings for one URL: `sslVerify`,
+//! `sslCAInfo`, `sslCert`, `sslKey`, and `cookieFile`. An encrypted `sslKey`
+//! is decrypted with a passphrase from the credential helpers. [`Clients`]
+//! looks the settings up for each request's URL, like upstream, so a
+//! storage host gets its own settings rather than the LFS endpoint's.
+//! `http.extraHeader` is looked up per request too, by the API client and
+//! the transfer adapter.
 //!
 //! With `http.sslCAInfo`, a server certificate is accepted only if it's
 //! byte for byte one of the certificates in the file. That accepts the
@@ -14,11 +15,11 @@
 //! certificate signed by a CA in the file.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use git_lfs_creds::{FillContext, Query};
-use git_lfs_git::HttpOptions;
+use git_lfs_git::{HttpConfig, HttpOptions};
 use reqwest::cookie::Jar;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::WebPkiSupportedAlgorithms;
@@ -27,14 +28,53 @@ use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 
 use crate::client_key::{self, EncryptedKey, Key};
 
-/// Build a client with the `http.*` settings for `endpoint_url`.
+/// Build a client with the `http.*` settings for `url`.
+pub fn build(cwd: &Path, url: &str) -> reqwest::Client {
+    Clients::load(cwd).for_url(url)
+}
+
+/// The clients for one command, one for each distinct set of settings.
 ///
-/// `http.<url>.<key>` wins over `http.<key>`, except for `extraHeader`,
-/// where all matching values are sent. Settings that can't be read, and
-/// files that can't be loaded, are skipped, so a bad setting doesn't break
-/// commands that never use the network.
-pub fn build(cwd: &Path, endpoint_url: &str) -> reqwest::Client {
-    let opts = HttpOptions::for_url(cwd, endpoint_url).unwrap_or_default();
+/// The config is read once. Requests whose URLs have the same settings
+/// share a client, and with it a connection pool.
+pub struct Clients {
+    cwd: PathBuf,
+    config: HttpConfig,
+    cache: Mutex<HashMap<HttpOptions, reqwest::Client>>,
+}
+
+impl Clients {
+    /// Read the `http.*` settings of the repository at `cwd`.
+    ///
+    /// Settings that can't be read are skipped, so a bad setting doesn't
+    /// break commands that never use the network.
+    pub fn load(cwd: &Path) -> Self {
+        Self {
+            cwd: cwd.to_owned(),
+            config: HttpConfig::load(cwd).unwrap_or_default(),
+            cache: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// The client for a request to `url`.
+    ///
+    /// `http.<url>.<key>` wins over `http.<key>`.
+    pub fn for_url(&self, url: &str) -> reqwest::Client {
+        let opts = self.config.options_for(url);
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(client) = cache.get(&opts) {
+            return client.clone();
+        }
+        let client = build_with(&self.cwd, &opts);
+        cache.insert(opts, client.clone());
+        client
+    }
+}
+
+/// Build a client with `opts`.
+///
+/// Files that can't be loaded are skipped.
+fn build_with(cwd: &Path, opts: &HttpOptions) -> reqwest::Client {
     if let Some(value) = &opts.ssl_verify_invalid {
         warn_invalid_ssl_verify(value);
     }

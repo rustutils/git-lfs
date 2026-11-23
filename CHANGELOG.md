@@ -8,6 +8,14 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ## [Unreleased]
 
+### Security
+
+- The `http.<url>.*` TLS settings (`sslVerify`, `sslCAInfo`, `sslCert`,
+  `sslKey`) and `http.<url>.cookieFile` are looked up for each request's
+  URL, like upstream. Before, the LFS endpoint's settings were used for
+  storage hosts too, so `sslVerify=false` for the endpoint also turned off
+  certificate checks for downloads and uploads on other hosts.
+
 ### Added
 
 - Client certificate keys encrypted with a passphrase work, in OpenSSL's

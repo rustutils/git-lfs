@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use git_lfs_api::{Client as ApiClient, Operation};
 
+use crate::http_clients::HttpClients;
 use crate::sshtransfer::connection::ConnectionError;
 use crate::sshtransfer::pool::Pool;
 
@@ -22,8 +23,8 @@ pub enum Backend {
     Http {
         /// LFS batch API client.
         api: Box<ApiClient>,
-        /// `reqwest::Client` for action-URL transfers.
-        http: reqwest::Client,
+        /// Clients for action-URL transfers.
+        http: HttpClients,
     },
     /// Pure SSH, with an optional HTTP fallback. See [`SshBackend`].
     Ssh(Arc<SshBackend>),
@@ -35,8 +36,8 @@ pub enum Backend {
 pub struct HttpTransport {
     /// LFS batch API client.
     pub api: Box<ApiClient>,
-    /// `reqwest::Client` for action-URL transfers.
-    pub http: reqwest::Client,
+    /// Clients for action-URL transfers.
+    pub http: HttpClients,
 }
 
 /// Closure that spawns a fresh [`Pool`] for one direction.

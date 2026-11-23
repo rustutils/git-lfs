@@ -34,7 +34,7 @@ use git_lfs_transfer::sshtransfer::connection::{
     ConnectionError, Metadata as PoolMetadata, Operation as SshOperation,
 };
 use git_lfs_transfer::sshtransfer::pool::{Pool, PoolConfig};
-use git_lfs_transfer::{CustomAdapter, Report, Transfer, TransferConfig};
+use git_lfs_transfer::{CustomAdapter, HttpClients, Report, Transfer, TransferConfig};
 use tokio::runtime::Runtime;
 
 /// Owns the tokio runtime and the configured [`Transfer`].
@@ -89,14 +89,15 @@ impl LfsFetcher {
             .build()?;
         let endpoint_info = git_lfs_git::endpoint::resolve_endpoint_for(cwd, remote, operation);
         let endpoint_url = endpoint_info.as_ref().ok().map(|i| i.url.clone());
-        // The HTTP client takes its `http.*` settings from the endpoint URL
-        // and uses them for every request, including action URLs on other
-        // hosts. For an SSH endpoint that's the SSH URL, so only the global
-        // settings match.
+        // The API client takes its `http.*` settings from the endpoint URL.
+        // For an SSH endpoint that's the SSH URL, so only the global
+        // settings match. Transfers look them up for each action URL.
+        let clients = Arc::new(crate::http_client::Clients::load(cwd));
         let http = endpoint_url
             .as_deref()
-            .map(|u| crate::http_client::build(cwd, u))
+            .map(|u| clients.for_url(u))
             .unwrap_or_default();
+        let action_clients = HttpClients::per_url(move |url| clients.for_url(url));
         let api = build_api_client_with(cwd, remote, operation, http.clone());
         let mut config = transfer_config_for(cwd, endpoint_url.as_deref());
         config.remote = remote.unwrap_or("origin").to_owned();
@@ -149,7 +150,7 @@ impl LfsFetcher {
                     Ok(api_client) => {
                         let fallback = HttpTransport {
                             api: Box::new(api_client),
-                            http: http.clone(),
+                            http: action_clients.clone(),
                         };
                         Ok(Transfer::new_ssh(
                             SshBackend::new(spawner, Some(fallback)),
@@ -168,7 +169,7 @@ impl LfsFetcher {
             }
             Some((_, SshMode::Never)) | None => api
                 .clone()
-                .map(|c| Transfer::with_http_client(c, store.clone(), config, http)),
+                .map(|c| Transfer::with_http_clients(c, store.clone(), config, action_clients)),
         };
         let refspec = git_lfs_git::refs::current_refspec(cwd).map(Ref::new);
         Ok(Self {

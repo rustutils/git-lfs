@@ -30,6 +30,7 @@ use crate::basic::{
 };
 use crate::error::TransferError;
 use crate::event::Event;
+use crate::http_clients::HttpClients;
 
 /// The protocol version sent in `Tus-Resumable`.
 const TUS_VERSION: &str = "1.0.0";
@@ -38,7 +39,7 @@ const TUS_VERSION: &str = "1.0.0";
 /// server already has, then call the verify action if there is one.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn upload(
-    http: &reqwest::Client,
+    clients: &HttpClients,
     store: Arc<Store>,
     oid: &str,
     size: u64,
@@ -54,6 +55,7 @@ pub(crate) async fn upload(
         )))
     })?;
     let href = &action.href;
+    let http = &clients.for_url(href);
     let extra = extra_for(extra_headers, href);
     let auth = auth_for(auth, &action.header, &extra);
     let base = |method: Method| {
@@ -133,7 +135,7 @@ pub(crate) async fn upload(
 
     if let Some(verify_action) = &actions.verify {
         verify(
-            http,
+            clients,
             oid,
             size,
             verify_action,

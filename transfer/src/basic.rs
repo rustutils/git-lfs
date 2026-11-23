@@ -25,6 +25,7 @@ use crate::action_auth::{ActionAuth, RequestAuth};
 use crate::config::{HeaderSource, UrlSetting};
 use crate::error::TransferError;
 use crate::event::Event;
+use crate::http_clients::HttpClients;
 
 /// Upload `Content-Type` when detection is off or finds nothing.
 const OCTET_STREAM: &str = "application/octet-stream";
@@ -52,7 +53,7 @@ struct VerifyBody<'a> {
 /// reuses the decoder in `zstd_slot`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn download(
-    http: &reqwest::Client,
+    clients: &HttpClients,
     store: Arc<Store>,
     oid: &str,
     size: u64,
@@ -78,6 +79,7 @@ pub(crate) async fn download(
         .map(|m| m.len())
         .filter(|&n| n > 0 && n < size);
 
+    let http = &clients.for_url(&action.href);
     let mut req = http.request(Method::GET, &action.href);
     let extra = extra_for(extra_headers, &action.href);
     for (k, v) in action
@@ -160,7 +162,7 @@ pub(crate) async fn download(
         }
         let _ = std::fs::remove_file(&partial_path);
         return Box::pin(download(
-            http,
+            clients,
             store,
             oid,
             size,
@@ -452,7 +454,7 @@ fn hash_file(path: &Path) -> std::io::Result<Oid> {
 /// says how the `Content-Type` is chosen.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn upload(
-    http: &reqwest::Client,
+    clients: &HttpClients,
     store: Arc<Store>,
     oid: &str,
     size: u64,
@@ -533,6 +535,8 @@ pub(crate) async fn upload(
         });
         let body = Body::wrap_stream(stream);
 
+        // A redirect to another host uses that host's settings.
+        let http = clients.for_url(&href);
         let mut req = http.request(Method::PUT, &href);
         if !chunked {
             req = req.header(CONTENT_LENGTH, size);
@@ -615,7 +619,7 @@ pub(crate) async fn upload(
 
     if let Some(verify_action) = &actions.verify {
         verify(
-            http,
+            clients,
             oid,
             size,
             verify_action,
@@ -702,7 +706,7 @@ fn detect_content_type_bytes(bytes: &[u8]) -> &'static str {
 }
 
 pub(crate) async fn verify(
-    http: &reqwest::Client,
+    clients: &HttpClients,
     oid: &str,
     size: u64,
     action: &Action,
@@ -711,6 +715,7 @@ pub(crate) async fn verify(
     auth: Option<&Arc<dyn ActionAuth>>,
 ) -> Result<(), TransferError> {
     let short = oid.get(..7).unwrap_or(oid);
+    let http = &clients.for_url(&action.href);
     let extra = extra_for(extra_headers, &action.href);
     let mut request_auth =
         RequestAuth::start(auth_for(auth, &action.header, &extra), &action.href, oid).await;
