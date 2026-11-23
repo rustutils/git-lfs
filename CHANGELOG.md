@@ -10,6 +10,10 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- `git lfs fetch --prune` prunes even when there's nothing to download,
+  does a dry run of the prune with `--dry-run`, and fails when the prune
+  fails, as in upstream. Before, it skipped the prune in the first two
+  cases and ignored its errors.
 - `git lfs prune` exits 2 with "Prune failed, see errors above" when it
   can't delete an object, as in upstream, after listing each file it
   couldn't remove. Before, it exited 0.

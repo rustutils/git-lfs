@@ -4711,3 +4711,48 @@ fn prune_fails_when_an_object_cannot_be_deleted() {
     );
     assert!(dir.join(&oid).exists());
 }
+
+/// `git lfs fetch --prune` prunes even when nothing needs downloading,
+/// does a dry run with `--dry-run`, and fails when the prune fails, as in
+/// upstream.
+#[cfg(unix)]
+#[test]
+fn fetch_prune_runs_without_downloads() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let repo = fresh_repo_with_identity();
+    git_in(
+        repo.path(),
+        &["commit", "-q", "--allow-empty", "-m", "init"],
+    );
+    // Never contacted: there's nothing to fetch.
+    git_in(
+        repo.path(),
+        &["config", "lfs.url", "http://127.0.0.1:1/repo"],
+    );
+    let oid = put_object_in_store(repo.path(), b"orphan\n");
+    let dir = repo
+        .path()
+        .join(".git/lfs/objects")
+        .join(&oid[0..2])
+        .join(&oid[2..4]);
+
+    let out = run_in(repo.path(), &["fetch", "--prune", "--dry-run"], b"");
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains(&oid));
+    assert!(dir.join(&oid).exists(), "a dry run deleted the object");
+
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let out = run_in(repo.path(), &["fetch", "--prune"], b"");
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr.contains("Prune failed, see errors above"),
+        "{stderr}"
+    );
+
+    let out = run_in(repo.path(), &["fetch", "--prune"], b"");
+    assert!(out.status.success());
+    assert!(!dir.join(&oid).exists(), "the object wasn't pruned");
+}

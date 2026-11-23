@@ -42,6 +42,9 @@ pub enum FetchCommandError {
     /// An error whose message is shown as is.
     #[error("{0}")]
     Usage(String),
+    /// `--prune` failed.
+    #[error(transparent)]
+    Prune(Box<crate::prune::PruneError>),
 }
 
 /// Arguments for [`fetch`].
@@ -245,19 +248,23 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
         if opts.json {
             print_json_transfers(&store, &[], &paths, None)?;
         }
+        prune_after_fetch(cwd, opts)?;
         return Ok(FetchOutcome::default());
     }
 
     if opts.dry_run {
-        if opts.json {
-            return run_dry_run_with_json(cwd, remote.as_deref(), to_fetch, paths, &store);
-        }
-        for spec in &to_fetch {
-            if let Some(p) = paths.get(&spec.oid) {
-                println!("fetch {} => {}", spec.oid, p.display());
+        let outcome = if opts.json {
+            run_dry_run_with_json(cwd, remote.as_deref(), to_fetch, paths, &store)?
+        } else {
+            for spec in &to_fetch {
+                if let Some(p) = paths.get(&spec.oid) {
+                    println!("fetch {} => {}", spec.oid, p.display());
+                }
             }
-        }
-        return Ok(FetchOutcome::default());
+            FetchOutcome::default()
+        };
+        prune_after_fetch(cwd, opts)?;
+        return Ok(outcome);
     }
 
     // t-fetch.sh sets `http.sslKey` to `/dev/null` and expects this
@@ -359,23 +366,7 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
         eprintln!("[{oid}] {err}");
     }
 
-    if opts.prune {
-        // Prune errors are ignored. Upstream exits with them. Prune is
-        // also skipped when there was nothing to download or with
-        // `--dry-run`, which upstream doesn't do.
-        let prune_opts = crate::prune::Options {
-            dry_run: false,
-            verbose: false,
-            recent: false,
-            force: false,
-            verify_remote: false,
-            no_verify_remote: false,
-            verify_unreachable: false,
-            no_verify_unreachable: false,
-            continue_when_unverified: false,
-        };
-        let _ = crate::prune::run(cwd, &prune_opts);
-    }
+    prune_after_fetch(cwd, opts)?;
 
     let endpoint = git_lfs_git::endpoint::resolve_endpoint_for(
         cwd,
@@ -385,6 +376,30 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
     .map(|info| info.url)
     .unwrap_or_default();
     Ok(FetchOutcome { report, endpoint })
+}
+
+/// Run the prune for `--prune`, as upstream does after every fetch, even
+/// one with nothing to download.
+///
+/// With `--dry-run` the prune is a verbose dry run too. The remote checks
+/// follow `lfs.pruneverifyremotealways` and
+/// `lfs.pruneverifyunreachablealways`.
+fn prune_after_fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<(), FetchCommandError> {
+    if !opts.prune {
+        return Ok(());
+    }
+    let prune_opts = crate::prune::Options {
+        dry_run: opts.dry_run,
+        verbose: opts.dry_run,
+        recent: false,
+        force: false,
+        verify_remote: false,
+        no_verify_remote: false,
+        verify_unreachable: false,
+        no_verify_unreachable: false,
+        continue_when_unverified: false,
+    };
+    crate::prune::run(cwd, &prune_opts).map_err(|e| FetchCommandError::Prune(Box::new(e)))
 }
 
 /// Print the `--dry-run --json` output, which needs a batch request for

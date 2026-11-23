@@ -603,6 +603,12 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                     println!("{msg}");
                     return Ok(128);
                 }
+                Err(fetch::FetchCommandError::Prune(e))
+                    if matches!(*e, prune::PruneError::DeleteFailed) =>
+                {
+                    eprintln!("{e}");
+                    return Ok(2);
+                }
                 Err(e) => return Err(e.into()),
             }
         }
