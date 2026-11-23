@@ -107,9 +107,6 @@ come from reading the code.
   "Expanded 0 pointer(s)". `t-status` test 17 (permission change) sometimes
   lists `a.dat` as changed with the same OID, probably Git's racy-timestamp
   check. Neither investigated further.
-- **`.git/info/attributes` has the lowest precedence instead of the
-  highest** (`AttrSet::from_workdir` in `git/src/attr.rs`), and is assumed
-  to be under the working tree, which is wrong in linked worktrees.
 - **`git lfs migrate import --fixup` misses files added after the commit
   that adds `.gitattributes`, and fails on any commit with a symlink.**
   Confirmed. `--above` fails when the root `.gitattributes` is empty and

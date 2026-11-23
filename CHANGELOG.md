@@ -18,6 +18,10 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- `.git/info/attributes` wins over every `.gitattributes`, as in Git, for
+  deciding which files are lockable, tracked, or locked. Before, it lost
+  to them. In a linked worktree, the main repository's
+  `info/attributes` is read, where before none was.
 - `git lfs clone` from a local path downloads the LFS objects. Before, the
   transfer always failed with "expected value at line 1 column 1".
 - `git lfs clone --bare` and `--no-checkout` fetch the current ref's

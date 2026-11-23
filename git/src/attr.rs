@@ -7,10 +7,9 @@
 //! An [`AttrSet`] is built in one of three ways:
 //!
 //! - [`AttrSet::from_workdir`] loads every `.gitattributes` in the working
-//!   tree, plus `.git/info/attributes`. Deeper directories win over
-//!   shallower ones, and every `.gitattributes` wins over
-//!   `.git/info/attributes`. Git gives `.git/info/attributes` the highest
-//!   precedence instead.
+//!   tree, plus the repository's `info/attributes`. As in Git, deeper
+//!   directories win over shallower ones, and `info/attributes` wins over
+//!   them all.
 //! - [`AttrSet::from_buffer`] loads a single in-memory buffer.
 //! - [`AttrSet::empty`] followed by [`AttrSet::add_buffer_at`] for each
 //!   directory, for reading attributes out of a commit rather than the
@@ -110,23 +109,23 @@ impl AttrSet {
         );
     }
 
-    /// Load every `.gitattributes` under `repo_root`, plus
-    /// `.git/info/attributes` if it exists.
+    /// Load every `.gitattributes` under `repo_root`, plus the
+    /// repository's `info/attributes` if it exists.
     ///
     /// Directories named `.git` are skipped at any depth. See the
     /// [module docs](self) for precedence.
     pub fn from_workdir(repo_root: &Path) -> io::Result<Self> {
         let mut me = Self::empty();
 
-        let info = repo_root.join(".git").join("info").join("attributes");
-        if info.exists() {
-            let bytes = fs::read(&info)?;
-            if patterns_parse(&bytes, info.display()) {
-                let rewritten = me.intake_buffer(&bytes);
-                me.search
-                    .add_patterns_buffer(&rewritten, info, None, &mut me.collection, true);
-            }
-        }
+        // Read first, so its macros are known to every `.gitattributes`,
+        // but added last.
+        let info = info_attributes_path(repo_root);
+        let info_patterns = match fs::read(&info) {
+            Ok(bytes) if patterns_parse(&bytes, info.display()) => Some(me.intake_buffer(&bytes)),
+            Ok(_) => None,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e),
+        };
 
         let mut found = Vec::new();
         walk_for_gitattributes(repo_root, &mut found)?;
@@ -149,6 +148,12 @@ impl AttrSet {
                 &mut me.collection,
                 true,
             );
+        }
+
+        // Added last, so it wins over every `.gitattributes`, as in Git.
+        if let Some(rewritten) = info_patterns {
+            me.search
+                .add_patterns_buffer(&rewritten, info, None, &mut me.collection, true);
         }
         Ok(me)
     }
@@ -397,7 +402,7 @@ pub fn list_lfs_patterns(repo_root: &Path) -> io::Result<PatternListing> {
         scan_attr_lines(&bytes, &path, &mut listing, &mut macros, true);
     }
 
-    let info = repo_root.join(".git").join("info").join("attributes");
+    let info = info_attributes_path(repo_root);
     if info.exists() {
         let bytes = fs::read(&info)?;
         if patterns_parse(&bytes, info.display()) {
@@ -501,6 +506,20 @@ fn scan_attr_lines(
             });
         }
     }
+}
+
+/// The repository's `info/attributes`.
+///
+/// It's in the common Git directory, so a linked worktree, whose `.git` is
+/// a file, shares the main worktree's.
+fn info_attributes_path(repo_root: &Path) -> PathBuf {
+    let dot_git = repo_root.join(".git");
+    let git_dir = if dot_git.is_dir() {
+        dot_git
+    } else {
+        crate::path::git_common_dir(repo_root).unwrap_or(dot_git)
+    };
+    git_dir.join("info").join("attributes")
 }
 
 /// Whether the patterns in the attributes file `path` all parse.
@@ -837,6 +856,83 @@ mod tests {
         assert!(listing.patterns[0].tracked);
         assert_eq!(listing.patterns[1].pattern, "a.dat");
         assert!(!listing.patterns[1].tracked);
+    }
+
+    #[test]
+    fn info_attributes_win_over_gitattributes() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git/info")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("sub")).unwrap();
+        std::fs::write(
+            tmp.path().join(".gitattributes"),
+            "*.bin filter=lfs lockable\n",
+        )
+        .unwrap();
+        std::fs::write(tmp.path().join("sub/.gitattributes"), "*.bin filter=lfs\n").unwrap();
+        std::fs::write(
+            tmp.path().join(".git/info/attributes"),
+            "*.bin -filter -lockable\n",
+        )
+        .unwrap();
+
+        let s = AttrSet::from_workdir(tmp.path()).unwrap();
+        assert!(!s.is_lfs_tracked("a.bin"));
+        assert!(!s.is_lfs_tracked("sub/a.bin"));
+        assert!(!s.is_lockable("a.bin"));
+    }
+
+    #[test]
+    fn info_attributes_macros_apply_to_gitattributes() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git/info")).unwrap();
+        std::fs::write(
+            tmp.path().join(".git/info/attributes"),
+            "[attr]lfs filter=lfs diff=lfs merge=lfs -text\n",
+        )
+        .unwrap();
+        std::fs::write(tmp.path().join(".gitattributes"), "*.dat lfs\n*.tmp !lfs\n").unwrap();
+
+        let s = AttrSet::from_workdir(tmp.path()).unwrap();
+        assert!(s.is_lfs_tracked("a.dat"));
+        assert!(!s.is_lfs_tracked("a.tmp"));
+    }
+
+    #[test]
+    fn linked_worktree_reads_the_common_info_attributes() {
+        let tmp = TempDir::new().unwrap();
+        let main = tmp.path().join("main");
+        let git = |cwd: &Path, args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(cwd)
+                .args(args)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_SYSTEM", "/dev/null")
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?}");
+        };
+        std::fs::create_dir(&main).unwrap();
+        git(&main, &["init", "-q"]);
+        git(
+            &main,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "x",
+            ],
+        );
+        std::fs::write(main.join(".git/info/attributes"), "*.bin filter=lfs\n").unwrap();
+        git(&main, &["worktree", "add", "-q", "../wt"]);
+
+        let s = AttrSet::from_workdir(&tmp.path().join("wt")).unwrap();
+        assert!(s.is_lfs_tracked("a.bin"));
     }
 
     #[test]
