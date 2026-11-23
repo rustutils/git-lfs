@@ -27,9 +27,9 @@ pub struct AskpassHelper {
 impl AskpassHelper {
     /// Build a helper that runs `program`.
     ///
-    /// `program` is split on whitespace: the first word is the executable
-    /// and the rest are arguments before the prompt. A path containing
-    /// spaces can't be used.
+    /// `program` is the path of the executable, which gets the prompt as
+    /// its only argument, as Git and upstream run it. It isn't split, so
+    /// a path may contain spaces.
     pub fn new(program: impl Into<String>) -> Self {
         Self {
             program: program.into(),
@@ -37,12 +37,11 @@ impl AskpassHelper {
     }
 
     fn spawn(&self, prompt: &str) -> Result<String, HelperError> {
-        let mut parts = self.program.split_whitespace();
-        let prog = parts
-            .next()
-            .ok_or_else(|| HelperError::Failed("askpass program is empty".into()))?;
-        let mut args: Vec<&str> = parts.collect();
-        args.push(prompt);
+        let prog = self.program.as_str();
+        if prog.is_empty() {
+            return Err(HelperError::Failed("askpass program is empty".into()));
+        }
+        let args = [prompt];
 
         let mut e = std::io::stderr().lock();
         let _ = write!(e, "creds: filling with GIT_ASKPASS: {prog}");
@@ -53,7 +52,7 @@ impl AskpassHelper {
         drop(e);
 
         let out = match Command::new(prog)
-            .args(&args)
+            .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -166,21 +165,33 @@ mod tests {
         assert_eq!(format_url(&q, None), "http://h:42");
     }
 
+    /// An executable script in a directory whose name has a space, which
+    /// must still run as one program.
+    #[cfg(unix)]
+    fn script(tmp: &tempfile::TempDir, body: &str) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tmp.path().join("my tools");
+        std::fs::create_dir_all(&dir).unwrap();
+        let prog = dir.join("ask");
+        std::fs::write(&prog, body).unwrap();
+        std::fs::set_permissions(&prog, std::fs::Permissions::from_mode(0o755)).unwrap();
+        prog.display().to_string()
+    }
+
+    #[cfg(unix)]
     #[test]
     fn fill_runs_program_and_returns_credentials() {
         // Answers each prompt differently, so both must have run.
         let tmp = tempfile::TempDir::new().unwrap();
-        let prog = tmp.path().join("ask");
-        std::fs::write(
-            &prog,
+        let prog = script(
+            &tmp,
             "#!/bin/sh\n\
              case \"$1\" in\n\
                Username*) echo alice;;\n\
                Password*) echo s3cret;;\n\
              esac\n",
-        )
-        .unwrap();
-        let helper = AskpassHelper::new(format!("sh {}", prog.display()));
+        );
+        let helper = AskpassHelper::new(prog);
         let q = Query {
             protocol: "https".into(),
             host: "h.example".into(),
@@ -191,12 +202,11 @@ mod tests {
         assert_eq!(creds.password, "s3cret");
     }
 
+    #[cfg(unix)]
     #[test]
     fn fill_returns_none_on_empty_username() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let prog = tmp.path().join("ask");
-        std::fs::write(&prog, "#!/bin/sh\necho\n").unwrap();
-        let helper = AskpassHelper::new(format!("sh {}", prog.display()));
+        let helper = AskpassHelper::new(script(&tmp, "#!/bin/sh\necho\n"));
         let q = Query {
             protocol: "https".into(),
             host: "h.example".into(),

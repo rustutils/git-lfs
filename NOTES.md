@@ -119,8 +119,6 @@ come from reading the code.
   pool mid-message, so the next command on it fails. ssh's stderr is never
   read, so errors are lost and a chatty ssh could block. Ending the pool
   may kill the master before its clients.
-- **The askpass program is split on whitespace**, so a path with a space
-  or a quoted argument breaks.
 - **`create_lock` drops `Retry-After`** on rate-limit and server errors.
 
 ### Minor differences from upstream

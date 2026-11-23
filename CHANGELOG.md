@@ -18,6 +18,9 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- `GIT_ASKPASS`, `core.askPass`, and `SSH_ASKPASS` are run as one program
+  path, as by Git and upstream, so a path with spaces works. Before, the
+  value was split on whitespace.
 - `%f` in an extension command is one argument, so a path with spaces
   reaches the extension whole, as in upstream.
 - Smudging through extensions writes nothing unless every extension's
