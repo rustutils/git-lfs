@@ -18,6 +18,10 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- When a pure SSH connection can't be set up, the error includes what ssh
+  printed, such as "Permission denied (publickey).", after "Failed to
+  connect to remote SSH server:", as in upstream. ssh's messages are read
+  as they come, so an ssh that prints a lot no longer hangs the transfer.
 - With pure SSH transfers, a connection that failed partway through a
   transfer or lock command is closed instead of reused, so it no longer
   breaks the next command.

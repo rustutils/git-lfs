@@ -21,7 +21,10 @@
 
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::mpsc::{Receiver, channel};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use git_lfs_creds::{SshProgram, SshVariant, exec_trace, shell_quote};
 
@@ -80,6 +83,13 @@ pub enum ConnectionError {
     /// SSH subprocess exited non-zero with the given stderr.
     #[error("ssh subprocess failed: {0}")]
     Failed(String),
+    /// The connection couldn't be set up, with what ssh printed, as
+    /// upstream reports it.
+    #[error("{source}\nFailed to connect to remote SSH server: {stderr}")]
+    Connect {
+        source: Box<ConnectionError>,
+        stderr: String,
+    },
 }
 
 /// How to spawn one [`Connection`].
@@ -379,11 +389,55 @@ impl<R: Read, W: Write> ProtoStream<R, W> {
 /// Dropping a connection kills the subprocess if it is still running and
 /// waits for it. Use [`Connection::end`] to send `quit` first.
 ///
-/// The subprocess's stderr is piped but never read.
+/// The subprocess's stderr is read on a thread, so ssh never blocks on it,
+/// and shown if the connection can't be set up.
 pub struct Connection {
     id: u32,
     child: Child,
     stream: ProtoStream<ChildStdout, ChildStdin>,
+    stderr: StderrDrain,
+}
+
+/// Reads a subprocess's stderr into memory on a thread.
+struct StderrDrain {
+    text: Arc<Mutex<Vec<u8>>>,
+    /// Gets a message, or disconnects, when the stream closes.
+    closed: Receiver<()>,
+}
+
+impl StderrDrain {
+    /// The most kept. ssh rarely prints much, but a long session with a
+    /// chatty ssh shouldn't grow without bound.
+    const LIMIT: usize = 64 * 1024;
+
+    fn start(mut stderr: ChildStderr) -> Self {
+        let text = Arc::new(Mutex::new(Vec::new()));
+        let sink = text.clone();
+        let (done, closed) = channel();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = stderr.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                let mut kept = sink.lock().unwrap_or_else(|e| e.into_inner());
+                let room = Self::LIMIT.saturating_sub(kept.len());
+                kept.extend_from_slice(&buf[..n.min(room)]);
+            }
+            let _ = done.send(());
+        });
+        Self { text, closed }
+    }
+
+    /// Wait briefly for the stream to close, then return what was read.
+    ///
+    /// The wait is bounded because a process ssh started, such as a
+    /// multiplexing master, may keep the stream open.
+    fn finish(&self) -> String {
+        let _ = self.closed.recv_timeout(Duration::from_secs(1));
+        let text = self.text.lock().unwrap_or_else(|e| e.into_inner());
+        String::from_utf8_lossy(&text).trim().to_owned()
+    }
 }
 
 impl Connection {
@@ -407,11 +461,13 @@ impl Connection {
         let mut child = cmd.spawn()?;
         let stdout = child.stdout.take().expect("stdout was piped");
         let stdin = child.stdin.take().expect("stdin was piped");
+        let stderr = StderrDrain::start(child.stderr.take().expect("stderr was piped"));
 
         let mut conn = Self {
             id: config.id,
             child,
             stream: ProtoStream::new(stdout, stdin),
+            stderr,
         };
         match conn.negotiate_version() {
             Ok(()) => {
@@ -426,7 +482,15 @@ impl Connection {
                     "pure SSH connection unsuccessful (#{id})",
                     id = config.id
                 ));
-                Err(e)
+                let stderr = conn.stop();
+                if stderr.is_empty() {
+                    Err(e)
+                } else {
+                    Err(ConnectionError::Connect {
+                        source: Box::new(e),
+                        stderr,
+                    })
+                }
             }
         }
     }
@@ -473,11 +537,30 @@ impl Drop for Connection {
     /// such as the one used for locks.
     fn drop(&mut self) {
         // `try_wait` reaps a child that has already exited.
-        if let Ok(Some(_)) = self.child.try_wait() {
-            return;
+        if !matches!(self.child.try_wait(), Ok(Some(_))) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+        // The stderr thread ends when the stream closes.
+    }
+}
+
+impl Connection {
+    /// End a connection that failed to start, and return what ssh printed.
+    ///
+    /// ssh usually exits by itself after an error, so it gets a moment to
+    /// finish writing before it's killed.
+    fn stop(&mut self) -> String {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < deadline {
+            if matches!(self.child.try_wait(), Ok(Some(_))) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
         }
         let _ = self.child.kill();
         let _ = self.child.wait();
+        self.stderr.finish()
     }
 }
 
@@ -956,6 +1039,64 @@ mod tests {
         // `size=4\n`, and a flush.
         let sent = into_writer_bytes(s);
         assert_eq!(sent, b"0016get-object abc123\n000bsize=4\n0000");
+    }
+
+    /// A config that runs `body` as the ssh program.
+    #[cfg(unix)]
+    fn stub_config(tmp: &tempfile::TempDir, body: &str) -> Config {
+        let script = tmp.path().join("fakessh.sh");
+        std::fs::write(&script, body).unwrap();
+        let mut config = Config::new(
+            0,
+            SshProgram::Shell(format!("sh {}", script.to_string_lossy())),
+            meta("git@host"),
+            Operation::Upload,
+        );
+        config.multiplex = Multiplex::Disabled;
+        config
+    }
+
+    /// What ssh prints when it fails is in the error, as upstream shows it.
+    #[test]
+    #[cfg(unix)]
+    fn spawn_error_includes_ssh_stderr() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config = stub_config(
+            &tmp,
+            "echo 'git@host: Permission denied (publickey).' >&2\nexit 255\n",
+        );
+        let err = Connection::spawn(&config).err().expect("spawn should fail");
+        let text = err.to_string();
+        assert!(text.contains("Permission denied (publickey)."), "{text}");
+        assert!(
+            text.contains("Failed to connect to remote SSH server"),
+            "{text}"
+        );
+    }
+
+    /// An ssh that writes more to stderr than a pipe holds doesn't block.
+    #[test]
+    #[cfg(unix)]
+    fn chatty_stderr_does_not_block() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config = stub_config(
+            &tmp,
+            "head -c 1048576 /dev/zero | tr '\\0' x >&2\n\
+             printf '000eversion=1\\n0000'\n\
+             dd bs=1 count=18 of=/dev/null 2>/dev/null\n\
+             printf '000fstatus 200\\n00010000'\n\
+             dd bs=1 count=13 of=/dev/null 2>/dev/null\n\
+             printf '000fstatus 200\\n0000'\n",
+        );
+        // Old code would hang, so fail on a timeout instead.
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(Connection::spawn(&config).map(|c| c.end()));
+        });
+        let result = rx
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .expect("spawn blocked on ssh's stderr");
+        result.expect("handshake").expect("quit");
     }
 
     /// End-to-end test against a tiny "remote" implemented as a
