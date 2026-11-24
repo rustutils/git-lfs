@@ -113,6 +113,12 @@ pub enum ApiError {
     /// upstream's message.
     #[error("parse {href:?}: net/url: invalid control character in URL")]
     ControlCharacterInHref { href: String },
+    /// SSH auth failed: `git-lfs-authenticate` failed or is disabled.
+    ///
+    /// Returned by an [`SshResolver`](crate::SshResolver). Displays the
+    /// resolver's message as is.
+    #[error("{0}")]
+    SshAuth(String),
     /// A redirect wasn't followed: from HTTPS to HTTP, or one too many.
     #[error("{0}")]
     Redirect(String),

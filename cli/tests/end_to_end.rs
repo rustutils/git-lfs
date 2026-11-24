@@ -1274,6 +1274,13 @@ fn lfs_ssh_retries_sets_the_authenticate_retries() {
             &[("GIT_SSH_COMMAND", &ssh_command)],
         );
         assert!(!out.status.success());
+        // The error is ssh's, not a malformed response.
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("ssh git-lfs-authenticate failed: boom"),
+            "{stderr}"
+        );
+        assert!(!stderr.contains("malformed"), "{stderr}");
         let log = std::fs::read_to_string(&runs).unwrap();
         assert!(log.contains("git-lfs-authenticate"), "{log}");
         assert_eq!(log.lines().count(), expected, "retries {retries}: {log}");

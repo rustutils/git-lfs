@@ -594,7 +594,7 @@ struct DisabledSshResolver;
 
 impl SshResolver for DisabledSshResolver {
     fn resolve(&self, _op: ApiSshOperation) -> Result<ApiSshAuth, git_lfs_api::ApiError> {
-        Err(git_lfs_api::ApiError::Decode(
+        Err(git_lfs_api::ApiError::SshAuth(
             "git-lfs-authenticate has been disabled by request".into(),
         ))
     }
@@ -792,9 +792,7 @@ impl SshResolver for SshAuthAdapter {
                 });
             }
             Err(e) => {
-                return Err(git_lfs_api::ApiError::Decode(format!(
-                    "ssh git-lfs-authenticate: {e}"
-                )));
+                return Err(git_lfs_api::ApiError::SshAuth(e.to_string()));
             }
         };
         Ok(ApiSshAuth {

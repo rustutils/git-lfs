@@ -39,6 +39,8 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 - `git lfs pull` checks out the files whose objects did download when
   others fail, then exits with an error, like upstream. It used to check
   out nothing.
+- A failed `git-lfs-authenticate` is reported as such, not as a "malformed
+  response body".
 - `git lfs status` no longer lists a file as not staged when only its
   timestamps or permissions changed. It refreshes the index first, like
   upstream.
