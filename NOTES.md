@@ -8,7 +8,8 @@ shipped is in `CHANGELOG.md`, and per-suite test results are in
 
 1.0 means full parity with upstream Git LFS:
 
-- All of upstream's shell tests pass.
+- All of upstream's shell tests pass. Done, except `t-usage`, which checks
+  upstream's usage line and stays failing on purpose.
 - Complete documentation, `--help` output, and man pages.
 - Binary releases for Linux, macOS, and Windows (done since 0.5).
 - An audit of our own code's style and design.
@@ -61,10 +62,6 @@ Local changes to the vendored tests, which an update must keep:
   and `lfstest-testutils` are ported to Rust.
 
 ## Known gaps
-
-Ordered by failing tests fixed per effort, from the triage after the
-v3.8.1 update. Small means under an hour or so, medium a few hours, large
-a feature.
 
 - **NTLM and Negotiate authentication**, and acting on `LFS-Authenticate`
   access modes. Wait for someone who needs it.
