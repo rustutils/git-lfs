@@ -1183,6 +1183,62 @@ async fn pull_materializes_pointer_files_into_real_content() {
     assert_eq!(wt_after, CONTENT, "working tree not materialized");
 }
 
+/// When some objects fail to download, `pull` still checks out the ones
+/// that did, then fails, as in upstream.
+#[tokio::test]
+async fn pull_checks_out_what_downloaded_before_failing() {
+    use serde_json::json;
+    use wiremock::matchers::{method as m_method, path as m_path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    const OID_A: &str = "30031a9831674dd684c3817399acebc88a116ce5a7a3fbc0cf34d92521a534e6";
+    const A: &[u8] = b"downloaded\n";
+    // sha256("two\n")
+    const OID_B: &str = "27dd8ed44a83ff94d557f9fd0412ed5a8cbca69ea04922d88c01184a07300a5a";
+    const B_SIZE: usize = 4;
+
+    let server = MockServer::start().await;
+    let url_a = format!("{}/storage/{OID_A}", server.uri());
+    Mock::given(m_method("POST"))
+        .and(m_path("/objects/batch"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "transfer": "basic",
+            "objects": [
+                { "oid": OID_A, "size": A.len(), "actions": { "download": { "href": url_a } } },
+                { "oid": OID_B, "size": B_SIZE,
+                  "error": { "code": 404, "message": "not on server" } }
+            ]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(m_method("GET"))
+        .and(m_path(format!("/storage/{OID_A}")))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(A))
+        .mount(&server)
+        .await;
+
+    let repo = fresh_repo_with_identity();
+    install_lfs(repo.path());
+    git_in(
+        repo.path(),
+        &["config", "--local", "lfs.url", &server.uri()],
+    );
+    commit_gitattributes(repo.path(), "*.bin filter=lfs diff=lfs merge=lfs -text\n");
+    commit_pointer_at(repo.path(), "a.bin", &pointer_text(OID_A, A.len()));
+    commit_pointer_at(repo.path(), "b.bin", &pointer_text(OID_B, B_SIZE));
+
+    let path = repo.path().to_owned();
+    let out = tokio::task::spawn_blocking(move || run_in(&path, &["pull"], b""))
+        .await
+        .unwrap();
+    assert!(!out.status.success(), "pull should have failed");
+    assert_eq!(std::fs::read(repo.path().join("a.bin")).unwrap(), A);
+    assert_eq!(
+        std::fs::read(repo.path().join("b.bin")).unwrap(),
+        pointer_text(OID_B, B_SIZE),
+    );
+}
+
 #[tokio::test]
 async fn fetch_returns_failure_exit_when_some_objects_fail() {
     use serde_json::json;

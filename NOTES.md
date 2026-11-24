@@ -83,8 +83,6 @@ Tests that won't pass:
 
 Gaps no test covers:
 
-- `git lfs pull` checks out nothing when some objects fail to download.
-  Upstream checks out the ones that did, then fails.
 - `git lfs fsck` without a ref checks HEAD but not the index.
 
 ## Known bugs

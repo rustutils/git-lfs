@@ -58,10 +58,18 @@ pub fn pull_with_filter(
         exclude,
     };
     let outcome = fetch::fetch(cwd, &opts)?;
+    // Like upstream, the objects that did download are checked out before
+    // the failures are reported.
+    checkout(cwd, include, exclude)?;
     if !outcome.report.failed.is_empty() {
         return Err(PullCommandError::FetchFailures(outcome.endpoint));
     }
+    Ok(())
+}
 
+/// Replace the pointer files whose objects are in the store with their
+/// content.
+fn checkout(cwd: &Path, include: &[String], exclude: &[String]) -> Result<(), PullCommandError> {
     // Like upstream's `newSingleCheckout`, which checks
     // `filter.lfs.clean`. The objects are already fetched.
     if !smudge_filter_installed(cwd) {
