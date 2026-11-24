@@ -1026,6 +1026,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             refspec,
             verify,
             local,
+            cached,
             json,
         }) => {
             let opts = lock::LocksOptions {
@@ -1036,6 +1037,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 limit,
                 verify,
                 local,
+                cached,
                 json,
             };
             match lock::locks(&cwd, &opts) {

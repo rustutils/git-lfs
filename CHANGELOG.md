@@ -12,6 +12,9 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 - `GIT_SSL_NO_VERIFY` turns off certificate verification for every host,
   like `http.sslVerify=false`, and takes precedence over it.
+- `git lfs locks --cached` lists the locks from the last search without
+  filters or a limit, instead of asking the server. Each such search saves
+  its results, separately with and without `--verify`.
 
 ### Fixed
 

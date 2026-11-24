@@ -4662,6 +4662,97 @@ fn locks_verify_rejects_local_and_filters() {
     }
 }
 
+/// `git lfs locks --cached` lists the results of the last search without
+/// filters or a limit, with or without `--verify`, without the server.
+#[tokio::test]
+async fn locks_cached_lists_the_last_search() {
+    use serde_json::json;
+    use wiremock::matchers::{method as m_method, path as m_path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let lock = |id: &str, path: &str, owner: &str| {
+        json!({ "id": id, "path": path, "locked_at": "2026-04-25T12:00:00Z",
+                "owner": { "name": owner } })
+    };
+    let server = MockServer::start().await;
+    Mock::given(m_method("GET"))
+        .and(m_path("/locks"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "locks": [lock("1", "a.bin", "me"), lock("2", "b.bin", "them")]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(m_method("POST"))
+        .and(m_path("/locks/verify"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ours": [lock("1", "a.bin", "me")],
+            "theirs": [lock("2", "b.bin", "them")]
+        })))
+        .mount(&server)
+        .await;
+
+    let repo = lock_test_repo(&server.uri()).await;
+    let path = repo.path().to_owned();
+    let run = move |args: &'static [&'static str]| {
+        let path = path.clone();
+        async move {
+            tokio::task::spawn_blocking(move || run_in(&path, args, b""))
+                .await
+                .unwrap()
+        }
+    };
+
+    // Nothing is saved yet.
+    let out = run(&["locks", "--cached"]).await;
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("Error while retrieving locks: no cached locks present"),
+        "{stderr}"
+    );
+
+    let live = run(&["locks"]).await;
+    assert!(live.status.success());
+    let live_verify = run(&["locks", "--verify", "--json"]).await;
+    assert!(live_verify.status.success());
+    // A filtered search doesn't replace the saved results.
+    assert!(run(&["locks", "--id", "1"]).await.status.success());
+
+    drop(server);
+    let cached = run(&["locks", "--cached"]).await;
+    assert!(
+        cached.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cached.stderr)
+    );
+    assert_eq!(cached.stdout, live.stdout);
+    assert!(String::from_utf8_lossy(&cached.stdout).contains("b.bin"));
+    let cached_verify = run(&["locks", "--cached", "--verify", "--json"]).await;
+    assert!(cached_verify.status.success());
+    assert_eq!(cached_verify.stdout, live_verify.stdout);
+}
+
+/// `git lfs locks --cached` can't be combined with filters, `--limit`, or
+/// `--local`.
+#[test]
+fn locks_cached_rejects_filters_limit_and_local() {
+    let repo = fresh_repo();
+    for (args, other) in [
+        (&["locks", "--cached", "--limit", "1"][..], "--limit"),
+        (&["locks", "--cached", "--id", "1"][..], "filters"),
+        (&["locks", "--cached", "--path", "a.bin"][..], "filters"),
+        (&["locks", "--cached", "--local"][..], "--local"),
+    ] {
+        let out = run_in(repo.path(), args, b"");
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains(&format!("--cached option can't be combined with {other}")),
+            "{args:?}: {stderr}"
+        );
+    }
+}
+
 /// A missing object whose directory is gone gets its pointer written, and
 /// checkout goes on with the other files, as in upstream.
 #[test]

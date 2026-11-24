@@ -4,15 +4,15 @@
 //! sent relative to the repository root with `/` separators.
 //!
 //! `git lfs locks --local` reads the [`lock_cache`] that `lock` and `unlock`
-//! keep up to date. There's no `--cached`
-//! option.
+//! keep up to date. `git lfs locks --cached` reads the results of the last
+//! search without filters or a limit, which `locks` saves there.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
 use git_lfs_api::{ApiError, ListLocksFilter, Lock, Ref, VerifyLocksRequest};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::runtime::Runtime;
 
 use crate::lock_cache;
@@ -21,8 +21,8 @@ use crate::lockable;
 
 #[derive(Debug, thiserror::Error)]
 pub enum LockCommandError {
-    /// Options that can't be used together. Printed as is, with exit
-    /// code 2, like upstream's `Exit`.
+    /// Options that can't be used together, or no saved search for
+    /// `--cached`. Printed as is, with exit code 2, like upstream's `Exit`.
     #[error("{0}")]
     Usage(String),
     #[error(transparent)]
@@ -57,6 +57,9 @@ pub struct LocksOptions {
     ///
     /// `--path`, `--id`, and `--limit` filter the cache.
     pub local: bool,
+    /// List the saved results of the last search without filters or a
+    /// limit, instead of asking the server.
+    pub cached: bool,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -131,15 +134,32 @@ pub fn lock(cwd: &Path, paths: &[String], opts: &LockOptions) -> Result<bool, Lo
 // locks (list)
 // --------------------------------------------------------------------------
 
-#[derive(Debug, Serialize)]
-struct VerifyJsonOutput<'a> {
-    ours: &'a [Lock],
-    theirs: &'a [Lock],
+/// The `--verify` JSON output, which is also how its results are saved.
+#[derive(Debug, Serialize, Deserialize)]
+struct VerifyJsonOutput {
+    ours: Vec<Lock>,
+    theirs: Vec<Lock>,
 }
 
 pub fn locks(cwd: &Path, opts: &LocksOptions) -> Result<(), LockCommandError> {
     let root = repo_root(cwd).map_err(LockCommandError::Build)?;
 
+    if opts.cached {
+        let conflict = if opts.limit.is_some() {
+            Some("--limit")
+        } else if opts.path.is_some() || opts.id.is_some() {
+            Some("filters")
+        } else if opts.local {
+            Some("--local")
+        } else {
+            None
+        };
+        if let Some(other) = conflict {
+            return Err(LockCommandError::Usage(format!(
+                "--cached option can't be combined with {other}"
+            )));
+        }
+    }
     if opts.verify {
         if opts.path.is_some() || opts.id.is_some() {
             return Err(LockCommandError::Usage(
@@ -180,25 +200,48 @@ pub fn locks(cwd: &Path, opts: &LocksOptions) -> Result<(), LockCommandError> {
         return Ok(());
     }
 
+    let refspec = resolve_refspec(&root, opts.refspec.as_deref());
+    let kind = if opts.verify { "verifiable" } else { "remote" };
+    let saved = lock_cache::search_path(cwd, refspec.as_deref(), kind)
+        .map_err(|e| LockCommandError::Build(e.to_string()))?;
+
+    if opts.cached {
+        let bytes = std::fs::read(&saved).map_err(|e| {
+            let reason = if e.kind() == std::io::ErrorKind::NotFound {
+                "no cached locks present".to_owned()
+            } else {
+                e.to_string()
+            };
+            LockCommandError::Usage(format!("Error while retrieving locks: {reason}"))
+        })?;
+        let bad = |e: serde_json::Error| {
+            LockCommandError::Usage(format!("Error while retrieving locks: {e}"))
+        };
+        if opts.verify {
+            let resp: VerifyJsonOutput = serde_json::from_slice(&bytes).map_err(bad)?;
+            print_verify(&resp, opts.json)?;
+        } else {
+            let locks: Vec<Lock> = serde_json::from_slice(&bytes).map_err(bad)?;
+            print_locks(&locks, opts.json)?;
+        }
+        return Ok(());
+    }
+
     let runtime = Arc::new(build_runtime()?);
     let client = build_lock_client(cwd, opts.remote.as_deref(), runtime.clone())
         .map_err(LockCommandError::Build)?;
-    let refspec = resolve_refspec(&root, opts.refspec.as_deref());
 
     if opts.verify {
         let resp = verify_all(&client, opts.limit, refspec.clone())
             .map_err(|e| LockCommandError::Api(lock_client_error_reason(&e)))?;
-        if opts.json {
-            println!(
-                "{}",
-                serde_json::to_string(&VerifyJsonOutput {
-                    ours: &resp.ours,
-                    theirs: &resp.theirs,
-                })?
-            );
-        } else {
-            print_verify_table(&resp);
+        let resp = VerifyJsonOutput {
+            ours: resp.ours,
+            theirs: resp.theirs,
+        };
+        if opts.limit.is_none() {
+            lock_cache::save_search(&saved, &resp);
         }
+        print_verify(&resp, opts.json)?;
         return Ok(());
     }
 
@@ -237,10 +280,31 @@ pub fn locks(cwd: &Path, opts: &LocksOptions) -> Result<(), LockCommandError> {
         }
     }
 
-    if opts.json {
-        println!("{}", serde_json::to_string(&all_locks)?);
+    if opts.path.is_none() && opts.id.is_none() && opts.limit.is_none() {
+        lock_cache::save_search(&saved, &all_locks);
+    }
+    print_locks(&all_locks, opts.json)
+}
+
+fn print_locks(locks: &[Lock], json: bool) -> Result<(), LockCommandError> {
+    if json {
+        println!("{}", serde_json::to_string(locks)?);
     } else {
-        print_lock_table(&all_locks, None);
+        print_lock_table(locks, None);
+    }
+    Ok(())
+}
+
+fn print_verify(resp: &VerifyJsonOutput, json: bool) -> Result<(), LockCommandError> {
+    if json {
+        println!("{}", serde_json::to_string(resp)?);
+    } else {
+        let mut combined = Vec::with_capacity(resp.ours.len() + resp.theirs.len());
+        combined.extend(resp.ours.iter().cloned());
+        combined.extend(resp.theirs.iter().cloned());
+        let owned: std::collections::HashSet<String> =
+            resp.ours.iter().map(|l| l.id.clone()).collect();
+        print_lock_table(&combined, Some(&owned));
     }
     Ok(())
 }
@@ -636,14 +700,6 @@ fn print_lock_table(locks: &[Lock], owned: Option<&std::collections::HashSet<Str
             lock.path, owner_name, lock.id,
         );
     }
-}
-
-fn print_verify_table(resp: &VerifyPage) {
-    let mut combined = Vec::with_capacity(resp.ours.len() + resp.theirs.len());
-    combined.extend(resp.ours.iter().cloned());
-    combined.extend(resp.theirs.iter().cloned());
-    let owned: std::collections::HashSet<String> = resp.ours.iter().map(|l| l.id.clone()).collect();
-    print_lock_table(&combined, Some(&owned));
 }
 
 #[cfg(test)]

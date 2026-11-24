@@ -39,6 +39,11 @@ Lists current locks from the Git LFS server. Without filters, all locks visible 
 
     Own locks are held by us and the corresponding files can be updated for the next push. All other locks are held by someone else. Contrary to `--local`, this also detects locks held by us despite no local lock information being available (e.g. because the file had been locked from a different clone) and detects "broken" locks (e.g. someone else forcibly unlocked our files).
 
+- `--cached`
+    List the locks from the last search, instead of asking the server.
+
+    Each search without `--path`, `--id`, or `--limit` saves its results, separately with and without `--verify`. Can't be combined with those options or with `--local`.
+
 - `-l`, `--limit` `<LIMIT>`
     Maximum number of results to return
 

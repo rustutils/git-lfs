@@ -1468,6 +1468,14 @@ pub struct LocksArgs {
     #[arg(long)]
     pub verify: bool,
 
+    /// List the locks from the last search, instead of asking the server.
+    ///
+    /// Each search without `--path`, `--id`, or `--limit` saves its
+    /// results, separately with and without `--verify`. Can't be combined
+    /// with those options or with `--local`.
+    #[arg(long)]
+    pub cached: bool,
+
     /// Maximum number of results to return.
     #[arg(short, long)]
     pub limit: Option<u32>,

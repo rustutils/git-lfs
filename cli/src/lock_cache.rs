@@ -5,7 +5,11 @@
 //! all remotes and refs. Concurrent updates can lose entries, since nothing
 //! locks the file.
 //!
-//! Every function here is best-effort: errors are ignored, so a failed
+//! The results of the last full `git lfs locks` search are saved under
+//! `<lfs dir>/cache/locks/<ref>/`, for `git lfs locks --cached`, in the same
+//! place and format as upstream.
+//!
+//! Every update here is best-effort: errors are ignored, so a failed
 //! update never fails the lock command.
 
 use std::fs;
@@ -13,6 +17,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use git_lfs_api::Lock;
+use serde::Serialize;
 
 /// Path of the cache file for the repository at `cwd`.
 pub fn cache_path(cwd: &Path) -> Result<PathBuf, git_lfs_git::Error> {
@@ -85,6 +90,33 @@ pub fn remove_by_path(cwd: &Path, repo_relative_path: &str) {
         return;
     }
     let _ = write(&file, &locks);
+}
+
+/// Path of the saved search results of `kind` for `refspec`.
+///
+/// `kind` is `remote` for a plain search, or `verifiable` for one with
+/// `--verify`.
+pub fn search_path(
+    cwd: &Path,
+    refspec: Option<&str>,
+    kind: &str,
+) -> Result<PathBuf, git_lfs_git::Error> {
+    let mut dir = git_lfs_git::lfs_dir(cwd)?.join("cache").join("locks");
+    if let Some(r) = refspec {
+        dir.push(r);
+    }
+    Ok(dir.join(kind))
+}
+
+/// Save search results to `path`.
+pub fn save_search<T: Serialize + ?Sized>(path: &Path, results: &T) {
+    let Ok(bytes) = serde_json::to_vec(results) else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(path, bytes);
 }
 
 fn write(path: &Path, locks: &[Lock]) -> io::Result<()> {
