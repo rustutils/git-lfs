@@ -628,6 +628,15 @@ fn build_ssh_resolver(cwd: &Path, info: SshInfo) -> SharedSshResolver {
     if let Some(ttl) = positive_setting(cwd, "lfs.defaulttokenttl") {
         client = client.with_default_ttl(Duration::from_secs(ttl.into()));
     }
+    // Like upstream, a negative value means no retries, and anything that
+    // isn't a number means the default.
+    if let Some(retries) = git_lfs_git::config::get_effective(cwd, "lfs.ssh.retries")
+        .ok()
+        .flatten()
+        .and_then(|v| v.trim().parse::<i64>().ok())
+    {
+        client = client.with_retries(retries.clamp(0, u32::MAX.into()) as u32);
+    }
     Arc::new(SshAuthAdapter {
         client: Arc::new(client),
         ssh: info,

@@ -15,6 +15,9 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 - `git lfs locks --cached` lists the locks from the last search without
   filters or a limit, instead of asking the server. Each such search saves
   its results, separately with and without `--verify`.
+- `lfs.ssh.retries` sets how many times a failed `git-lfs-authenticate` is
+  retried, 5 by default, like upstream. A server without the command isn't
+  retried.
 - `git lfs install --manual` prints what to add to each hook instead of
   installing the hooks, like `git lfs update --manual`.
 

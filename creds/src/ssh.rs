@@ -8,10 +8,12 @@
 //! configured. Otherwise the variant is guessed from the program's name.
 //! The remote command is quoted for the server's shell with [`shell_quote`].
 //!
-//! Responses are cached per user and host, port, path, and operation.
-//! Unlike upstream, the client doesn't read `lfs.ssh.retries`, and a failed
-//! command is an error, with no fallback to HTTP Basic auth. The caller
-//! passes `lfs.defaulttokenttl` with [`SshAuthClient::with_default_ttl`].
+//! Responses are cached per user and host, port, path, and operation. A
+//! failed command is retried, 5 times by default, unless the server has no
+//! `git-lfs-authenticate`. After the last try it's an error, with no
+//! fallback to HTTP Basic auth. The caller passes `lfs.ssh.retries` with
+//! [`SshAuthClient::with_retries`] and `lfs.defaulttokenttl` with
+//! [`SshAuthClient::with_default_ttl`].
 //!
 //! The `exec: …`, `ssh cache: …` and `ssh cache expired: …` trace lines use
 //! upstream's wording, which `t-batch-transfer.sh`, `t-expired.sh` and
@@ -281,8 +283,13 @@ pub struct SshAuthClient {
     program: SshProgram,
     variant: SshVariant,
     default_ttl: Option<Duration>,
+    retries: u32,
     cache: Mutex<HashMap<CacheKey, SshAuth>>,
 }
+
+/// How many times a failed command is retried, as upstream's default for
+/// `lfs.ssh.retries`.
+const DEFAULT_RETRIES: u32 = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct CacheKey {
@@ -314,6 +321,7 @@ impl SshAuthClient {
         Self {
             variant: program.detect_variant(),
             default_ttl: None,
+            retries: DEFAULT_RETRIES,
             program,
             cache: Mutex::new(HashMap::new()),
         }
@@ -328,6 +336,15 @@ impl SshAuthClient {
         self
     }
 
+    /// Retry a failed command `retries` times, like upstream's
+    /// `lfs.ssh.retries`. The default is 5.
+    ///
+    /// A server without `git-lfs-authenticate` isn't retried.
+    pub fn with_retries(mut self, retries: u32) -> Self {
+        self.retries = retries;
+        self
+    }
+
     /// Use `variant` instead of the one detected from the program.
     pub fn with_variant(mut self, variant: SshVariant) -> Self {
         self.variant = variant;
@@ -337,8 +354,8 @@ impl SshAuthClient {
     /// Get the auth response for an SSH remote and operation.
     ///
     /// Returns the cached response unless it's missing or expired.
-    /// Otherwise runs the command and caches the result. Errors aren't
-    /// cached.
+    /// Otherwise runs the command, retrying it if it fails, and caches the
+    /// result. Errors aren't cached.
     pub fn resolve(
         &self,
         user_and_host: &str,
@@ -369,7 +386,19 @@ impl SshAuthClient {
             ));
         }
 
-        let resolved = self.spawn(user_and_host, port, path, operation)?;
+        let tries = self.retries.saturating_add(1);
+        let mut attempt = 1;
+        let resolved = loop {
+            match self.spawn(user_and_host, port, path, operation) {
+                Ok(r) => break r,
+                Err(e @ SshAuthError::Unavailable(_)) => return Err(e),
+                Err(e) if attempt >= tries => return Err(e),
+                Err(e) => trace(format_args!(
+                    "ssh: {user_and_host} failed, error: {e} (try: {attempt}/{tries})"
+                )),
+            }
+            attempt += 1;
+        };
         self.cache.lock().unwrap().insert(key, resolved.clone());
         Ok(resolved)
     }
@@ -865,6 +894,78 @@ mod tests {
             SshAuthError::Failed(msg) => assert!(msg.contains("permission denied"), "got {msg}"),
             other => panic!("unexpected: {other}"),
         }
+    }
+
+    /// A fake ssh that counts its runs in a file next to it, fails the
+    /// first `failures` with `fail`, and then succeeds.
+    fn counting_ssh(tmp: &tempfile::TempDir, failures: u32, fail: &str) -> SshProgram {
+        let prog = tmp.path().join("fakessh");
+        let count = tmp.path().join("count");
+        std::fs::write(
+            &prog,
+            format!(
+                "#!/bin/sh\n\
+                 n=$(($(cat {c} 2>/dev/null || echo 0) + 1))\n\
+                 echo $n > {c}\n\
+                 if [ $n -le {failures} ]; then {fail}; fi\n\
+                 echo '{{\"href\":\"https://lfs.example/repo\"}}'\n",
+                c = count.display(),
+            ),
+        )
+        .unwrap();
+        SshProgram::Shell(format!("sh {}", prog.display()))
+    }
+
+    fn runs(tmp: &tempfile::TempDir) -> u32 {
+        std::fs::read_to_string(tmp.path().join("count"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap()
+    }
+
+    #[test]
+    fn failed_command_is_retried() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let fail = "echo 'connection reset' >&2; exit 255";
+        let client = SshAuthClient::new(counting_ssh(&tmp, 3, fail));
+        let auth = client
+            .resolve("git@host", None, "/repo", SshOperation::Download)
+            .unwrap();
+        assert_eq!(auth.href, "https://lfs.example/repo");
+        assert_eq!(runs(&tmp), 4);
+    }
+
+    #[test]
+    fn retries_stop_after_the_configured_count() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let fail = "echo 'connection reset' >&2; exit 255";
+        let client = SshAuthClient::new(counting_ssh(&tmp, 10, fail)).with_retries(2);
+        let err = client
+            .resolve("git@host", None, "/repo", SshOperation::Download)
+            .unwrap_err();
+        assert!(matches!(err, SshAuthError::Failed(_)), "{err}");
+        assert_eq!(runs(&tmp), 3);
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let client = SshAuthClient::new(counting_ssh(&tmp, 10, fail)).with_retries(0);
+        assert!(
+            client
+                .resolve("git@host", None, "/repo", SshOperation::Download)
+                .is_err()
+        );
+        assert_eq!(runs(&tmp), 1);
+    }
+
+    #[test]
+    fn missing_git_lfs_authenticate_is_not_retried() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let client = SshAuthClient::new(counting_ssh(&tmp, 10, "exit 127"));
+        let err = client
+            .resolve("git@host", None, "/repo", SshOperation::Download)
+            .unwrap_err();
+        assert!(matches!(err, SshAuthError::Unavailable(_)), "{err}");
+        assert_eq!(runs(&tmp), 1);
     }
 
     /// Format a `SystemTime` as an RFC 3339 string in UTC.

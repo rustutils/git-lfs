@@ -1239,6 +1239,47 @@ async fn pull_checks_out_what_downloaded_before_failing() {
     );
 }
 
+/// `lfs.ssh.retries` sets how many times a failed `git-lfs-authenticate`
+/// is retried.
+#[test]
+fn lfs_ssh_retries_sets_the_authenticate_retries() {
+    let repo = fresh_repo_with_identity();
+    commit_gitattributes(repo.path(), "*.bin filter=lfs diff=lfs merge=lfs -text\n");
+    commit_pointer_at(repo.path(), "a.bin", &pointer_text(HELLO_OID, HELLO_LEN));
+    git_in(
+        repo.path(),
+        &["remote", "add", "origin", "ssh://git@example.invalid/repo"],
+    );
+    // Only git-lfs-authenticate, not the pure SSH protocol.
+    git_in(repo.path(), &["config", "lfs.sshtransfer", "never"]);
+    let runs = repo.path().join("ssh-runs");
+    let ssh = repo.path().join("fakessh");
+    std::fs::write(
+        &ssh,
+        format!(
+            "#!/bin/sh\necho \"$@\" >> '{}'\necho boom >&2\nexit 255\n",
+            runs.display()
+        ),
+    )
+    .unwrap();
+    let ssh_command = format!("sh '{}'", ssh.display());
+
+    for (retries, expected) in [("2", 3), ("0", 1), ("-1", 1)] {
+        let _ = std::fs::remove_file(&runs);
+        git_in(repo.path(), &["config", "lfs.ssh.retries", retries]);
+        let out = run_in_env(
+            repo.path(),
+            &["fetch"],
+            b"",
+            &[("GIT_SSH_COMMAND", &ssh_command)],
+        );
+        assert!(!out.status.success());
+        let log = std::fs::read_to_string(&runs).unwrap();
+        assert!(log.contains("git-lfs-authenticate"), "{log}");
+        assert_eq!(log.lines().count(), expected, "retries {retries}: {log}");
+    }
+}
+
 #[tokio::test]
 async fn fetch_returns_failure_exit_when_some_objects_fail() {
     use serde_json::json;
