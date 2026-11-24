@@ -438,6 +438,9 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                 eprintln!("{}", update::FORCE_AND_MANUAL);
                 return Ok(2);
             }
+            if hooks_active {
+                update::migrate_access(&cwd);
+            }
             let opts = install::InstallOptions {
                 scope,
                 force,

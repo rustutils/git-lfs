@@ -380,6 +380,67 @@ fn force_and_manual_are_rejected() {
     }
 }
 
+/// `update` rewrites old `lfs.<url>.access` values: `private` becomes
+/// `basic`, and other values than `basic` are removed.
+#[test]
+fn update_migrates_access_values() {
+    let repo = fresh_repo();
+    let config = |args: &[&str]| {
+        Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .arg("config")
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    for (url, value) in [
+        ("http://example.com", "private"),
+        ("https://example.com", "private"),
+        ("https://example2.com", "basic"),
+        ("https://example3.com", "other"),
+    ] {
+        assert!(
+            config(&[&format!("lfs.{url}.access"), value])
+                .status
+                .success()
+        );
+    }
+
+    let out = run_in(repo.path(), &["update"], b"");
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "Updated http://example.com access from private to basic.\n\
+         Updated https://example.com access from private to basic.\n\
+         Removed invalid https://example3.com access of other.\n\
+         Updated Git hooks.\n"
+    );
+    let get = |url: &str| {
+        String::from_utf8_lossy(&config(&[&format!("lfs.{url}.access")]).stdout)
+            .trim()
+            .to_owned()
+    };
+    assert_eq!(get("http://example.com"), "basic");
+    assert_eq!(get("https://example.com"), "basic");
+    assert_eq!(get("https://example2.com"), "basic");
+    assert_eq!(get("https://example3.com"), "");
+
+    // `install` does the same in a repository.
+    assert!(
+        config(&["lfs.https://example4.com.access", "private"])
+            .status
+            .success()
+    );
+    let out = run_in(repo.path(), &["install", "--local"], b"");
+    assert!(out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stdout)
+            .contains("Updated https://example4.com access from private to basic."),
+    );
+    assert_eq!(get("https://example4.com"), "basic");
+}
+
 // ---------- uninstall ----------
 
 /// A setting that can't be unset is a warning, and the hooks are still

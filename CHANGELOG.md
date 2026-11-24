@@ -22,6 +22,9 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 - `git lfs install` and `git lfs update` reject `--force` with `--manual`
   and exit 2, like upstream. `update` used to ignore `--force`.
+- `git lfs update`, and `git lfs install` in a repository, rewrite old
+  `lfs.<url>.access` settings in the local config, like upstream: `private`
+  becomes `basic`, and values other than `basic` are removed.
 
 ### Fixed
 

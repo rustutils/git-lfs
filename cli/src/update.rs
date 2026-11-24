@@ -6,11 +6,12 @@
 //! hooks, and `--manual` prints what to add to each hook instead of
 //! writing anything. The two can't be combined.
 //!
-//! Upstream also rewrites old `lfs.<url>.access` values. This command
-//! doesn't.
+//! First, old `lfs.<url>.access` values are rewritten in the local config:
+//! `private` becomes `basic`, and anything other than `basic` is removed.
 
 use std::path::Path;
 
+use git_lfs_git::config::{self, ConfigScope};
 use git_lfs_git::git_dir;
 
 use crate::install;
@@ -39,6 +40,7 @@ pub enum UpdateError {
 /// caller prints and turns into exit code 128, as upstream does.
 pub fn run(cwd: &Path, force: bool, manual: bool) -> Result<u8, UpdateError> {
     git_dir(cwd).map_err(|_| UpdateError::NotInRepo)?;
+    migrate_access(cwd);
     if force && manual {
         eprintln!("{FORCE_AND_MANUAL}");
         return Ok(2);
@@ -65,6 +67,51 @@ pub fn run(cwd: &Path, force: bool, manual: bool) -> Result<u8, UpdateError> {
         }
         Err(e) => Err(e.into()),
     }
+}
+
+/// Rewrite the `lfs.<url>.access` values older versions wrote, as
+/// upstream does in `update`, and in `install` in a repository.
+///
+/// Changes are made in the local config, and failures are ignored, so a
+/// value set in another file is reported but stays.
+pub fn migrate_access(cwd: &Path) {
+    for (key, value) in access_settings(cwd) {
+        let url = &key["lfs.".len()..key.len() - ".access".len()];
+        match value.as_str() {
+            "basic" => {}
+            "private" => {
+                let _ = config::set(cwd, ConfigScope::Local, &key, "basic");
+                println!("Updated {url} access from private to basic.");
+            }
+            _ => {
+                let _ = config::unset(cwd, ConfigScope::Local, &key);
+                println!("Removed invalid {url} access of {value}.");
+            }
+        }
+    }
+}
+
+/// Every `lfs.<url>.access` key with its effective value, in config order.
+fn access_settings(cwd: &Path) -> Vec<(String, String)> {
+    let Ok(out) = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["config", "-z", "--get-regexp", r"^lfs\..*\.access$"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    let mut settings: Vec<(String, String)> = Vec::new();
+    for entry in out.stdout.split(|&b| b == 0).filter(|e| !e.is_empty()) {
+        let entry = String::from_utf8_lossy(entry);
+        let (key, value) = entry.split_once('\n').unwrap_or((&entry, ""));
+        // A later value overrides an earlier one.
+        match settings.iter_mut().find(|(k, _)| k == key) {
+            Some(existing) => existing.1 = value.to_owned(),
+            None => settings.push((key.to_owned(), value.to_owned())),
+        }
+    }
+    settings
 }
 
 /// Show the hooks directory relative to the Git directory's parent (the
