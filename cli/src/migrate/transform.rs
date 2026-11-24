@@ -476,7 +476,13 @@ impl<'a> Transform<'a> {
             &self.attrs_add_initial,
             &self.attrs_remove,
         );
-        if !new_attrs.is_empty() {
+        // The original blob isn't written out, so a commit that changes
+        // the top-level file needs the rewrite even when it's empty.
+        let has_attrs = c.file_changes.iter().any(|ch| {
+            matches!(ch, FileChange::Modify { path, .. }
+                | FileChange::ModifyInline { path, .. } if path == ATTRS_PATH)
+        });
+        if !new_attrs.is_empty() || has_attrs {
             let attrs_mark = self.alloc_fresh();
             writer.write(&Command::Blob(Blob {
                 mark: Some(attrs_mark),
@@ -969,6 +975,41 @@ mod tests {
         };
         let (_, stats) = run_transform(input, opts);
         assert_eq!(stats.blobs_converted, 0);
+    }
+
+    #[test]
+    fn keeps_empty_gitattributes_when_nothing_is_converted() {
+        // The commit refers to the empty file's blob, which is replaced by
+        // a rewrite. Without one, fast-import fails on the missing mark.
+        let input = b"blob\n\
+                      mark :1\n\
+                      data 0\n\
+                      blob\n\
+                      mark :2\n\
+                      data 5\n\
+                      hello\n\
+                      commit refs/heads/main\n\
+                      committer A <a@b> 1 +0000\n\
+                      data 1\nm\n\
+                      M 100644 :1 .gitattributes\n\
+                      M 100644 :2 a.txt\n\
+                      \n";
+        let opts = Options {
+            above: 100,
+            ..Default::default()
+        };
+        let (out, stats) = run_transform(input, opts);
+        assert_eq!(stats.blobs_converted, 0);
+        let s = String::from_utf8(out).unwrap();
+        let line = s
+            .lines()
+            .find(|l| l.ends_with(" .gitattributes"))
+            .expect("commit keeps .gitattributes");
+        let mark = line.split(' ').nth(2).unwrap();
+        assert!(
+            s.contains(&format!("mark {mark}\ndata 0\n")),
+            "no empty blob for {mark}: {s}"
+        );
     }
 
     #[test]

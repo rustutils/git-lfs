@@ -8,6 +8,12 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- `git lfs migrate import` no longer fails when a commit has an empty
+  `.gitattributes` and nothing is added to it, such as with `--above` when
+  no file is large enough.
+
 ## [0.11.0] - 2026-11-23
 
 ### Changed

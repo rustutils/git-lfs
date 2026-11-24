@@ -104,8 +104,6 @@ come from reading the code.
 - **Flaky test**: `t-status` test 17 (permission change) sometimes lists
   `a.dat` as changed with the same OID, probably Git's racy-timestamp
   check. Not investigated further.
-- **`git lfs migrate import --above`** fails when the root `.gitattributes`
-  is empty and nothing is converted.
 
 ### Minor differences from upstream
 
