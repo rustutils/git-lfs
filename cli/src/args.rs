@@ -213,6 +213,15 @@ pub struct InstallArgs {
     /// or `--file`.
     #[arg(long)]
     pub skip_repo: bool,
+
+    /// Print instructions for adding the Git LFS hooks by hand, instead
+    /// of installing them.
+    ///
+    /// Use this option if the install fails because of existing hooks
+    /// and you want to keep what they do. Can't be combined with
+    /// `--force` in a repository.
+    #[arg(short, long)]
+    pub manual: bool,
 }
 
 /// Remove Git LFS configuration

@@ -324,6 +324,62 @@ fn install_skip_repo_writes_no_hooks() {
     assert!(!repo.path().join(".git/hooks/pre-push").exists());
 }
 
+/// `install --manual` sets the config but prints the hooks instead of
+/// writing them, so an existing hook is left alone.
+#[test]
+fn install_manual_prints_hooks_instead_of_writing_them() {
+    let repo = fresh_repo();
+    let hook = repo.path().join(".git/hooks/pre-push");
+    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    std::fs::write(&hook, "#!/bin/sh\necho mine\n").unwrap();
+
+    let out = run_in(repo.path(), &["install", "--local", "--manual"], b"");
+    assert!(
+        out.status.success(),
+        "install failed: {}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("Add the following to '.git/hooks/pre-push':"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("\tgit lfs pre-push \"$@\""), "{stdout}");
+    assert!(!stdout.contains("Updated Git hooks."), "{stdout}");
+    assert!(stdout.ends_with("Git LFS initialized.\n"), "{stdout}");
+
+    assert!(read_local_config(repo.path(), "filter.lfs.clean").is_some());
+    assert_eq!(
+        std::fs::read_to_string(&hook).unwrap(),
+        "#!/bin/sh\necho mine\n"
+    );
+    assert!(!repo.path().join(".git/hooks/post-checkout").exists());
+}
+
+/// `--force` and `--manual` can't be combined, for `install` in a
+/// repository or for `update`, and nothing is changed.
+#[test]
+fn force_and_manual_are_rejected() {
+    for args in [
+        &["install", "--local", "--force", "--manual"][..],
+        &["update", "--force", "--manual"][..],
+    ] {
+        let repo = fresh_repo();
+        let out = run_in(repo.path(), args, b"");
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("You cannot use --force and --manual options together"),
+            "{args:?}: {stderr}"
+        );
+        assert!(
+            !repo.path().join(".git/hooks/pre-push").exists(),
+            "{args:?}"
+        );
+        assert!(read_local_config(repo.path(), "filter.lfs.clean").is_none());
+    }
+}
+
 // ---------- uninstall ----------
 
 /// A setting that can't be unset is a warning, and the hooks are still

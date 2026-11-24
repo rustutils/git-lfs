@@ -417,6 +417,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             force,
             skip_repo,
             skip_smudge,
+            manual,
         }) => {
             let scope = match resolve_install_scope(local, system, worktree, file) {
                 Ok(s) => s,
@@ -430,18 +431,25 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             {
                 return Ok(code);
             }
+            // The same condition `install::install` uses for hooks.
+            let hooks_active =
+                !skip_repo && (scope.is_repo_scope() || git_lfs_git::git_dir(&cwd).is_ok());
+            if hooks_active && force && manual {
+                eprintln!("{}", update::FORCE_AND_MANUAL);
+                return Ok(2);
+            }
             let opts = install::InstallOptions {
                 scope,
                 force,
-                skip_repo,
+                // With `--manual`, the hooks are printed instead.
+                skip_repo: skip_repo || manual,
                 skip_smudge,
             };
-            // The same condition `install::install` uses for hooks.
-            let hooks_active = !opts.skip_repo
-                && (opts.scope.is_repo_scope() || git_lfs_git::git_dir(&cwd).is_ok());
             match install::install(&cwd, &opts) {
                 Ok(()) => {
-                    if hooks_active {
+                    if hooks_active && manual {
+                        update::print_manual(&cwd)?;
+                    } else if hooks_active {
                         println!("Updated Git hooks.");
                     }
                     println!("Git LFS initialized.");

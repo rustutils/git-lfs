@@ -83,7 +83,6 @@ Tests that won't pass:
 
 Gaps no test covers:
 
-- `git lfs install --manual` (`git lfs update --manual` works).
 - `git lfs pull` checks out nothing when some objects fail to download.
   Upstream checks out the ones that did, then fails.
 - `git lfs update` doesn't migrate old `lfs.<url>.access` values.
@@ -100,7 +99,7 @@ come from reading the code.
 
 - Exit codes: `fetch` with failed objects and `logs show` for a missing log
   exit 1 where upstream exits 2. `status` in a bare repository exits 1, not
-  128. `update --force --manual` isn't rejected.
+  128.
 - Sizes: `ls-files --size` uses powers of 1024 with two decimals, and
   `migrate --above` reads `k`, `m`, and `g` as powers of 1024. Upstream
   uses powers of 1000.

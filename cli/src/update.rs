@@ -4,7 +4,7 @@
 //! written. If any hook has other content, nothing is written: the
 //! conflict is printed and the exit code is 2. `--force` overwrites such
 //! hooks, and `--manual` prints what to add to each hook instead of
-//! writing anything.
+//! writing anything. The two can't be combined.
 //!
 //! Upstream also rewrites old `lfs.<url>.access` values. This command
 //! doesn't.
@@ -14,6 +14,9 @@ use std::path::Path;
 use git_lfs_git::git_dir;
 
 use crate::install;
+
+/// The error for `--force` with `--manual`, which `install` also uses.
+pub const FORCE_AND_MANUAL: &str = "You cannot use --force and --manual options together";
 
 /// The hooks, in the order `--manual` prints them, which is upstream's.
 const HOOKS: &[&str] = &["pre-push", "post-checkout", "post-commit", "post-merge"];
@@ -35,12 +38,13 @@ pub enum UpdateError {
 /// Outside a repository it returns [`UpdateError::NotInRepo`], which the
 /// caller prints and turns into exit code 128, as upstream does.
 pub fn run(cwd: &Path, force: bool, manual: bool) -> Result<u8, UpdateError> {
-    let git_dir = git_dir(cwd).map_err(|_| UpdateError::NotInRepo)?;
-    let hooks_dir = install::effective_hooks_dir(cwd)?;
-    let display_dir = display_hooks_dir(cwd, &git_dir, &hooks_dir);
-
+    git_dir(cwd).map_err(|_| UpdateError::NotInRepo)?;
+    if force && manual {
+        eprintln!("{FORCE_AND_MANUAL}");
+        return Ok(2);
+    }
     if manual {
-        print_manual(&display_dir);
+        print_manual(cwd)?;
         return Ok(0);
     }
 
@@ -77,7 +81,11 @@ fn display_hooks_dir(cwd: &Path, git_dir: &Path, hooks_dir: &Path) -> String {
     hooks_dir.display().to_string()
 }
 
-fn print_manual(display_dir: &str) {
+/// Print what to add to each hook to install it by hand.
+pub fn print_manual(cwd: &Path) -> Result<(), UpdateError> {
+    let git_dir = git_dir(cwd).map_err(|_| UpdateError::NotInRepo)?;
+    let hooks_dir = install::effective_hooks_dir(cwd)?;
+    let display_dir = display_hooks_dir(cwd, &git_dir, &hooks_dir);
     let mut first = true;
     for hook in HOOKS {
         if !first {
@@ -90,4 +98,5 @@ fn print_manual(display_dir: &str) {
             println!("\t{line}");
         }
     }
+    Ok(())
 }

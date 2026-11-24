@@ -49,6 +49,11 @@ Without any options, only sets up the `lfs` smudge and clean filters if they are
 
     Use if you want to install the LFS filters but not make changes to the hooks. Valid alongside `--local`, `--worktree`, `--system`, or `--file`.
 
+- `-m`, `--manual`
+    Print instructions for adding the Git LFS hooks by hand, instead of installing them.
+
+    Use this option if the install fails because of existing hooks and you want to keep what they do. Can't be combined with `--force` in a repository.
+
 ## See also
 
 [git-lfs-uninstall(1)](./git-lfs-uninstall.md), [git-worktree(1)](https://git-scm.com/docs/git-worktree).
