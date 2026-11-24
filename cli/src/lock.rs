@@ -241,6 +241,10 @@ pub fn locks(cwd: &Path, opts: &LocksOptions) -> Result<(), LockCommandError> {
         if opts.limit.is_none() {
             lock_cache::save_search(&saved, &resp);
         }
+        // The server's view of our locks replaces the local record, as in
+        // upstream, which also records other people's locks there.
+        // `verify_all` fetches every page, so this is the full list.
+        lock_cache::replace(cwd, &resp.ours);
         print_verify(&resp, opts.json)?;
         return Ok(());
     }

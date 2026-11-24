@@ -41,6 +41,9 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
   out nothing.
 - A failed `git-lfs-authenticate` is reported as such, not as a "malformed
   response body".
+- `git lfs locks --verify` updates the local record of our locks from the
+  server, like upstream, so `git lfs locks --local` and the hooks see locks
+  taken from another clone and stop seeing ones removed elsewhere.
 - `git lfs status` no longer lists a file as not staged when only its
   timestamps or permissions changed. It refreshes the index first, like
   upstream.

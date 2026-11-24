@@ -4979,6 +4979,48 @@ async fn locks_cached_lists_the_last_search() {
     assert_eq!(cached_verify.stdout, live_verify.stdout);
 }
 
+/// `git lfs locks --verify` replaces the local lock record with our locks
+/// on the server, so `--local` shows a lock taken from another clone and
+/// drops one someone else removed.
+#[tokio::test]
+async fn locks_verify_refreshes_the_local_record() {
+    use serde_json::json;
+    use wiremock::matchers::{method as m_method, path as m_path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let lock = |id: &str, path: &str, owner: &str| {
+        json!({ "id": id, "path": path, "locked_at": "2026-04-25T12:00:00Z",
+                "owner": { "name": owner } })
+    };
+    let server = MockServer::start().await;
+    Mock::given(m_method("POST"))
+        .and(m_path("/locks/verify"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ours": [lock("1", "mine.bin", "me")],
+            "theirs": [lock("2", "theirs.bin", "them")]
+        })))
+        .mount(&server)
+        .await;
+
+    let repo = lock_test_repo(&server.uri()).await;
+    write_lock_cache(
+        repo.path(),
+        &serde_json::to_string(&json!([lock("9", "stale.bin", "me")])).unwrap(),
+    );
+    let path = repo.path().to_owned();
+    let out = tokio::task::spawn_blocking(move || {
+        assert!(run_in(&path, &["locks", "--verify"], b"").status.success());
+        run_in(&path, &["locks", "--local"], b"")
+    })
+    .await
+    .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("mine.bin"), "{stdout}");
+    assert!(!stdout.contains("stale.bin"), "{stdout}");
+    assert!(!stdout.contains("theirs.bin"), "{stdout}");
+}
+
 /// `git lfs locks --cached` can't be combined with filters, `--limit`, or
 /// `--local`.
 #[test]

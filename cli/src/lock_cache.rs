@@ -61,6 +61,13 @@ pub fn add(cwd: &Path, lock: &Lock) {
     let _ = write(&path, &locks);
 }
 
+/// Replace the cached locks with `locks`.
+pub fn replace(cwd: &Path, locks: &[Lock]) {
+    if let Ok(path) = cache_path(cwd) {
+        let _ = write(&path, locks);
+    }
+}
+
 /// Remove the entry with `id`, if there is one.
 pub fn remove_by_id(cwd: &Path, id: &str) {
     let Ok(path) = cache_path(cwd) else {
