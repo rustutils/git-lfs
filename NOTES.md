@@ -86,8 +86,6 @@ Gaps no test covers:
 - `git lfs install --manual` (`git lfs update --manual` works).
 - `git lfs pull` checks out nothing when some objects fail to download.
   Upstream checks out the ones that did, then fails.
-- `GIT_SSL_NO_VERIFY` isn't read, so it can't turn off certificate
-  verification.
 - `git lfs locks --cached`.
 - `git lfs update` doesn't migrate old `lfs.<url>.access` values.
 - `git lfs fsck` without a ref checks HEAD but not the index.

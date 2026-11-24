@@ -4408,6 +4408,49 @@ fn ssl_verify_for_the_endpoint_does_not_cover_storage_hosts() {
     assert!(stderr.contains("certificate"), "{stderr}");
 }
 
+/// `GIT_SSL_NO_VERIFY` turns certificate verification off for every host,
+/// even where `http.sslVerify` turns it on.
+#[test]
+fn git_ssl_no_verify_turns_verification_off() {
+    const OID: &str = "30031a9831674dd684c3817399acebc88a116ce5a7a3fbc0cf34d92521a534e6";
+    const CONTENT: &[u8] = b"downloaded\n";
+    let port = serve_lfs_over_tls(OID, CONTENT, "127.0.0.1");
+    let pointer = format!(
+        "version https://git-lfs.github.com/spec/v1\noid sha256:{OID}\nsize {}\n",
+        CONTENT.len(),
+    );
+    let smudge = |env: &[(&str, &str)]| {
+        let repo = fresh_repo();
+        for (k, v) in [
+            ("lfs.url", format!("https://localhost:{port}/repo")),
+            ("lfs.transfer.maxretries", "1".to_owned()),
+            ("http.sslVerify", "true".to_owned()),
+        ] {
+            let status = Command::new("git")
+                .arg("-C")
+                .arg(repo.path())
+                .args(["config", k, &v])
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+        let out = run_in_env(repo.path(), &["smudge"], pointer.as_bytes(), env);
+        (repo, out)
+    };
+
+    // The self-signed certificate is rejected by default.
+    let (_repo, out) = smudge(&[]);
+    assert!(!out.status.success(), "smudge accepted a self-signed cert");
+
+    let (_repo, out) = smudge(&[("GIT_SSL_NO_VERIFY", "1")]);
+    assert!(
+        out.status.success(),
+        "smudge failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(out.stdout, CONTENT);
+}
+
 /// `http.sslCert` and `http.sslKey` send a client certificate without
 /// `http.sslCAInfo`, here with `http.sslVerify=false`.
 #[test]

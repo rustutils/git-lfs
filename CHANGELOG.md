@@ -8,6 +8,11 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- `GIT_SSL_NO_VERIFY` turns off certificate verification for every host,
+  like `http.sslVerify=false`, and takes precedence over it.
+
 ### Fixed
 
 - `git lfs migrate import` no longer fails when a commit has an empty

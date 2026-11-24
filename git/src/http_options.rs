@@ -28,7 +28,8 @@ pub struct HttpOptions {
     /// `http.sslVerify`: whether to verify the server's certificate.
     ///
     /// `None` when unset or not a boolean, which means verify. Only `false`,
-    /// `no`, `off`, `0`, and `f` turn verification off. Upstream also turns
+    /// `no`, `off`, `0`, and `f` turn verification off, or a true
+    /// `GIT_SSL_NO_VERIFY`, which takes precedence. Upstream also turns
     /// it off for a global value it doesn't recognize, such as a typo.
     pub ssl_verify: Option<bool>,
     /// The `http.sslVerify` value, when it's set but isn't a boolean.
@@ -64,20 +65,27 @@ pub struct HttpConfig {
     scoped: Vec<(String, String, String)>,
     /// The unscoped `http.<key>` values, by lowercase key.
     global: Vec<(&'static str, Option<String>)>,
+    /// `GIT_SSL_NO_VERIFY`, which turns verification off for every URL.
+    no_verify: bool,
 }
 
 /// The settings [`HttpOptions`] holds, as lowercase keys.
 const KEYS: [&str; 5] = ["sslverify", "sslcainfo", "sslcert", "sslkey", "cookiefile"];
 
 impl HttpConfig {
-    /// Read the settings from git's merged config.
+    /// Read the settings from git's merged config, and
+    /// `GIT_SSL_NO_VERIFY` from the environment.
     pub fn load(cwd: &Path) -> Result<Self, Error> {
         let scoped = read_scoped_entries(cwd)?;
         let global = KEYS
             .iter()
             .map(|key| (*key, get_global(cwd, &format!("http.{key}")).ok().flatten()))
             .collect();
-        Ok(Self { scoped, global })
+        Ok(Self {
+            scoped,
+            global,
+            no_verify: crate::config::env_bool("GIT_SSL_NO_VERIFY", false),
+        })
     }
 
     /// The settings for a request to `url`.
@@ -101,8 +109,13 @@ impl HttpConfig {
                 })
         };
         let ssl_verify_raw = get("sslverify");
-        let ssl_verify = ssl_verify_raw.as_deref().and_then(parse_ssl_verify);
-        let ssl_verify_invalid = ssl_verify_raw.filter(|v| !v.is_empty() && ssl_verify.is_none());
+        let (ssl_verify, ssl_verify_invalid) = if self.no_verify {
+            (Some(false), None)
+        } else {
+            let verify = ssl_verify_raw.as_deref().and_then(parse_ssl_verify);
+            let invalid = ssl_verify_raw.filter(|v| !v.is_empty() && verify.is_none());
+            (verify, invalid)
+        };
         HttpOptions {
             ssl_ca_info: get("sslcainfo"),
             ssl_verify,
@@ -419,6 +432,7 @@ mod tests {
                 ),
             ],
             global: vec![("sslcainfo", Some("/global.pem".into()))],
+            no_verify: false,
         };
         let lfs = config.options_for("https://lfs.test/repo/info/lfs");
         assert_eq!(lfs.ssl_verify, Some(false));
