@@ -42,7 +42,20 @@ impl DiffEntry {
 /// index, which shows staged changes. Without it, this compares against
 /// the working tree, which shows staged and unstaged changes together.
 /// `-M` detects renames like upstream's `git lfs status`.
+///
+/// Without `cached`, this first refreshes the index with `git
+/// update-index -q --refresh`, so a file whose timestamps or permissions
+/// changed but whose content didn't isn't reported.
 pub fn diff_index(cwd: &Path, refname: &str, cached: bool) -> Result<Vec<DiffEntry>, Error> {
+    if !cached {
+        // Best effort: if the index can't be written, such as while
+        // another Git command holds its lock, diff-index still works.
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(cwd)
+            .args(["update-index", "-q", "--refresh"])
+            .output();
+    }
     let mut cmd = Command::new("git");
     cmd.arg("-C").arg(cwd).args(["diff-index", "-M", "-z"]);
     if cached {
@@ -237,5 +250,26 @@ mod tests {
         // responsible for deduping (which `status` does).
         let unstaged = diff_index(repo.path(), "HEAD", false).unwrap();
         assert_eq!(unstaged.len(), 1);
+    }
+
+    #[test]
+    fn diff_index_ignores_a_stat_only_change() {
+        use crate::tests::commit_helper::*;
+        let repo = init_repo();
+        commit_file(&repo, "a.txt", b"same");
+        // An mtime older than the index's isn't racy, so without a
+        // refresh Git reports the file as modified without reading it.
+        let f = std::fs::File::options()
+            .write(true)
+            .open(repo.path().join("a.txt"))
+            .unwrap();
+        f.set_modified(
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000),
+        )
+        .unwrap();
+        drop(f);
+
+        let unstaged = diff_index(repo.path(), "HEAD", false).unwrap();
+        assert!(unstaged.is_empty(), "{unstaged:?}");
     }
 }

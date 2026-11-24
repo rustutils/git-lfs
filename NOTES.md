@@ -99,12 +99,6 @@ Where an upstream test fails because of a bug, the entry names it.
 "Confirmed" means reproduced with a test or the built binary. The others
 come from reading the code.
 
-### Wrong results or failures
-
-- **Flaky test**: `t-status` test 17 (permission change) sometimes lists
-  `a.dat` as changed with the same OID, probably Git's racy-timestamp
-  check. Not investigated further.
-
 ### Minor differences from upstream
 
 - Exit codes: `fetch` with failed objects and `logs show` for a missing log
