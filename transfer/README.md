@@ -12,8 +12,9 @@ progress as it goes. Downloads go into [git-lfs-store].
 Objects stream through without being held in memory, and downloads are checked
 against their OID before they're stored. A failed object doesn't stop the
 others. Rate limits, server errors, and network errors are retried with
-backoff, or after the server's Retry-After delay. Expired URLs are caught
-before they're used, and interrupted downloads resume where they stopped.
+backoff, or after the server's Retry-After delay. Each retry asks the server
+for fresh URLs, so expired ones are renewed, and interrupted downloads resume
+where they stopped.
 
 Two transfer methods are implemented: HTTPS, and the pure-SSH protocol of
 `git-lfs-transfer`, which runs batch requests, transfers, and locking over SSH.

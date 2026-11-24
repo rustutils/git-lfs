@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use git_lfs_api::{ApiError, ObjectError};
 use git_lfs_pointer::{Oid, OidParseError};
@@ -83,10 +83,11 @@ pub enum TransferError {
 
     /// An action expires within 5 seconds, so it wasn't used.
     ///
-    /// Upstream requests a fresh batch and retries. This crate fails the
-    /// object instead.
-    #[error("action \"{rel}\" expired")]
-    ActionExpired { rel: String },
+    /// Retried with a fresh batch request, which gives new actions.
+    /// Displays with upstream's wording, which the shell tests match, but
+    /// in UTC.
+    #[error("LFS: action \"{rel}\" expires at {}", format_rfc822(*.at))]
+    ActionExpired { rel: String, at: SystemTime },
 
     /// An upload was redirected from HTTPS to HTTP.
     #[error("refusing insecure redirect: HTTPS to HTTP")]
@@ -145,6 +146,35 @@ fn format_action_status(status: u16, url: &str) -> String {
     }
 }
 
+/// Format `time` in UTC like Go's `time.RFC822`, such as
+/// `02 Jan 06 15:04 UTC`.
+fn format_rfc822(time: SystemTime) -> String {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let secs = time
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let (days, rem) = (secs / 86_400, secs % 86_400);
+    // Howard Hinnant's civil_from_days.
+    let z = days as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{day:02} {} {:02} {:02}:{:02} UTC",
+        MONTHS[(month - 1) as usize],
+        year.rem_euclid(100),
+        rem / 3600,
+        rem % 3600 / 60
+    )
+}
+
 impl TransferError {
     /// Whether the failed attempt is worth repeating.
     ///
@@ -160,7 +190,7 @@ impl TransferError {
             TransferError::ActionStatus { status, .. } => {
                 matches!(status, 408 | 429 | 500..=599)
             }
-            TransferError::Io(_) => true,
+            TransferError::Io(_) | TransferError::ActionExpired { .. } => true,
             TransferError::ServerObject(_)
             | TransferError::NoDownloadAction
             | TransferError::Store(_)
@@ -168,7 +198,6 @@ impl TransferError {
             | TransferError::InvalidOid(_)
             | TransferError::UnknownOid
             | TransferError::UnsupportedHashAlgo(_)
-            | TransferError::ActionExpired { .. }
             | TransferError::InsecureRedirect
             | TransferError::Redirect(_)
             | TransferError::VerifyExhausted(_)
@@ -218,5 +247,17 @@ impl Report {
     /// Whether no object failed.
     pub fn is_complete_success(&self) -> bool {
         self.failed.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rfc822_formats_utc() {
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_795_523_460);
+        assert_eq!(format_rfc822(at), "24 Nov 26 12:31 UTC");
+        assert_eq!(format_rfc822(SystemTime::UNIX_EPOCH), "01 Jan 70 00:00 UTC");
     }
 }

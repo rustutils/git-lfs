@@ -1,7 +1,8 @@
 //! The transfer queue: batch request, then concurrent object transfers.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use git_lfs_api::{
     BatchRequest, BatchResponse, Client as ApiClient, ObjectResult, ObjectSpec, Operation, Ref,
@@ -176,9 +177,128 @@ impl Transfer {
             return Ok(report);
         }
 
+        let mut session = Session::new(self.config.concurrency.max(1));
+        let result = self
+            .run_rounds(dir, objects, r#ref, events, &mut session)
+            .await;
+        if let Some(workers) = session.workers {
+            workers.shutdown().await;
+        }
+        basic::close_zstd_slots(&session.zstd_slots);
+        result
+    }
+
+    /// Transfer `objects`, retrying failures in rounds.
+    ///
+    /// As in upstream, each round sends a new batch request with the
+    /// objects whose retry delay has passed, so a retry gets fresh actions
+    /// instead of reusing an expired one.
+    async fn run_rounds(
+        &self,
+        dir: Dir,
+        objects: Vec<ObjectSpec>,
+        r#ref: Option<Ref>,
+        events: Option<UnboundedSender<Event>>,
+        session: &mut Session,
+    ) -> Result<Report, TransferError> {
+        let mut report = Report::default();
+        let mut retries: HashMap<String, RetryState> = HashMap::new();
+        let mut waiting: Vec<(Instant, ObjectSpec)> = Vec::new();
+        let mut next = objects;
+        loop {
+            let results = self
+                .run_batch(dir, next, r#ref.clone(), events.clone(), session)
+                .await?;
+            for (spec, result) in results {
+                match result {
+                    Ok(()) => {
+                        if let Some(s) = &events {
+                            let _ = s.send(Event::Completed {
+                                oid: spec.oid.clone(),
+                            });
+                        }
+                        report.succeeded.push(spec.oid);
+                    }
+                    Err(err) => match self.retry_delay(&spec, &err, &mut retries) {
+                        Some(delay) => waiting.push((Instant::now() + delay, spec)),
+                        None => {
+                            if let Some(s) = &events {
+                                let _ = s.send(Event::Failed {
+                                    oid: spec.oid.clone(),
+                                    error: err.to_string(),
+                                });
+                            }
+                            report.failed.push((spec.oid, err));
+                        }
+                    },
+                }
+            }
+            let Some(earliest) = waiting.iter().map(|(at, _)| *at).min() else {
+                return Ok(report);
+            };
+            tokio::time::sleep_until(earliest.into()).await;
+            let now = Instant::now();
+            let (ready, later) = waiting.into_iter().partition(|(at, _)| *at <= now);
+            waiting = later;
+            next = ready.into_iter().map(|(_, spec)| spec).collect();
+        }
+    }
+
+    /// Decide whether a failed object is retried, and after how long.
+    ///
+    /// Waits for the error's `Retry-After` delay when it has one, and
+    /// otherwise for the object's exponential backoff. Returns `None` when
+    /// the error isn't retryable, the object has used up `max_attempts`,
+    /// or a `Retry-After` delay is longer than `max_retry_time`.
+    fn retry_delay(
+        &self,
+        spec: &ObjectSpec,
+        err: &TransferError,
+        retries: &mut HashMap<String, RetryState>,
+    ) -> Option<Duration> {
+        let config = &self.config;
+        let state = retries.entry(spec.oid.clone()).or_insert(RetryState {
+            attempts: 0,
+            backoff: config.initial_backoff,
+        });
+        state.attempts += 1;
+        if !err.is_retryable() || state.attempts >= config.max_attempts {
+            return None;
+        }
+        let server_delay = err.retry_after();
+        if let Some(wait) = server_delay
+            && wait > config.max_retry_time
+        {
+            trace_retry_refused(&spec.oid, wait, config.max_retry_time);
+            return None;
+        }
+        let delay = server_delay.unwrap_or(state.backoff);
+        // A Retry-After delay doesn't advance the backoff.
+        if server_delay.is_none() {
+            state.backoff = (state.backoff * 2).min(config.backoff_max);
+        }
+        emit_retry_trace(&spec.oid, spec.size, state.attempts, delay, err);
+        Some(delay)
+    }
+
+    /// Send one batch request for `objects` and make one attempt at each
+    /// object in the response.
+    ///
+    /// Returns each object's outcome, including objects the response
+    /// didn't ask for, which fail with
+    /// [`UnknownOid`](TransferError::UnknownOid). Emits `Started` the first
+    /// time an object starts. The caller emits `Completed` or `Failed`.
+    async fn run_batch(
+        &self,
+        dir: Dir,
+        objects: Vec<ObjectSpec>,
+        r#ref: Option<Ref>,
+        events: Option<UnboundedSender<Event>>,
+        session: &mut Session,
+    ) -> Result<Vec<(ObjectSpec, Result<(), TransferError>)>, TransferError> {
         // Some servers, including the upstream test server, omit `size`
         // from the response. Fill it back in from the request.
-        let req_sizes: std::collections::HashMap<String, u64> =
+        let req_sizes: HashMap<String, u64> =
             objects.iter().map(|o| (o.oid.clone(), o.size)).collect();
 
         // Largest objects first, so they start early and small ones fill
@@ -264,30 +384,28 @@ impl Transfer {
         if tus {
             adapter = "tus";
         }
-        let mut workers: Option<Arc<Workers>> = None;
 
         let limit = Arc::new(Semaphore::new(self.config.concurrency.max(1)));
-        // One zstd decoder slot per concurrent download, handed out in
-        // turn, so concurrent downloads get different slots.
-        let zstd_slots: Vec<basic::ZstdSlot> = (0..self.config.concurrency.max(1))
-            .map(|_| basic::ZstdSlot::default())
-            .collect();
         let free_slots = Arc::new(std::sync::Mutex::new(
-            zstd_slots
+            session
+                .zstd_slots
                 .iter()
                 .cloned()
                 .collect::<std::collections::VecDeque<_>>(),
         ));
         let mut join: JoinSet<(String, Result<(), TransferError>)> = JoinSet::new();
 
-        let mut unknown = Vec::new();
-        let mut adapter_started = false;
+        let mut results = Vec::new();
         for mut obj in resp.objects {
             // Only act on objects this batch asked for, as upstream does.
             // An upload of any other OID would send whatever the store has
             // under it.
             if !req_sizes.contains_key(&obj.oid) {
-                unknown.push(obj.oid);
+                let spec = ObjectSpec {
+                    oid: obj.oid,
+                    size: obj.size,
+                };
+                results.push((spec, Err(TransferError::UnknownOid)));
                 continue;
             }
             if obj.size == 0
@@ -317,12 +435,12 @@ impl Transfer {
             }
             // Like upstream, start the adapter only once an object needs
             // transferring.
-            if (obj.actions.is_some() || standalone.is_some()) && !adapter_started {
-                adapter_started = true;
+            if (obj.actions.is_some() || standalone.is_some()) && !session.adapter_started {
+                session.adapter_started = true;
                 if trace_enabled() {
                     eprintln!("tq: starting transfer adapter {adapter:?}");
                 }
-                workers = custom.map(|c| {
+                session.workers = custom.map(|c| {
                     Arc::new(Workers::new(
                         c.clone(),
                         dir.is_upload(),
@@ -331,7 +449,10 @@ impl Transfer {
                     ))
                 });
             }
-            let custom_workers = workers.clone();
+            // The adapter started in the first round keeps running for
+            // the retries.
+            let custom_workers = custom.and(session.workers.clone());
+            let announce = session.started.insert(obj.oid.clone());
             let permit_src = limit.clone();
             let free_slots = free_slots.clone();
             let backend = self.backend.clone();
@@ -352,6 +473,7 @@ impl Transfer {
                     store,
                     &config,
                     obj,
+                    announce,
                     events.as_ref(),
                 )
                 .await;
@@ -362,42 +484,13 @@ impl Transfer {
             });
         }
 
-        let mut report = Report::default();
-        for oid in unknown {
-            if let Some(s) = &events {
-                let _ = s.send(Event::Failed {
-                    oid: oid.clone(),
-                    error: TransferError::UnknownOid.to_string(),
-                });
-            }
-            report.failed.push((oid, TransferError::UnknownOid));
-        }
         while let Some(joined) = join.join_next().await {
             let (oid, result) =
                 joined.map_err(|e| TransferError::Io(std::io::Error::other(e.to_string())))?;
-            match result {
-                Ok(()) => {
-                    if let Some(s) = &events {
-                        let _ = s.send(Event::Completed { oid: oid.clone() });
-                    }
-                    report.succeeded.push(oid);
-                }
-                Err(err) => {
-                    if let Some(s) = &events {
-                        let _ = s.send(Event::Failed {
-                            oid: oid.clone(),
-                            error: err.to_string(),
-                        });
-                    }
-                    report.failed.push((oid, err));
-                }
-            }
+            let size = req_sizes.get(&oid).copied().unwrap_or(0);
+            results.push((ObjectSpec { oid, size }, result));
         }
-        if let Some(workers) = workers {
-            workers.shutdown().await;
-        }
-        basic::close_zstd_slots(&zstd_slots);
-        Ok(report)
+        Ok(results)
     }
 
     /// Send a batch request, retrying like an object transfer.
@@ -462,14 +555,47 @@ impl Transfer {
     }
 }
 
+/// State shared by the rounds of one transfer.
+struct Session {
+    /// The custom adapter's processes, started with the first transfer.
+    workers: Option<Arc<Workers>>,
+    /// Whether the `starting transfer adapter` trace was printed.
+    adapter_started: bool,
+    /// One zstd decoder slot per concurrent download, handed out in turn,
+    /// so concurrent downloads get different slots.
+    zstd_slots: Vec<basic::ZstdSlot>,
+    /// OIDs that have had their `Started` event.
+    started: HashSet<String>,
+}
+
+impl Session {
+    fn new(concurrency: usize) -> Self {
+        Self {
+            workers: None,
+            adapter_started: false,
+            zstd_slots: (0..concurrency)
+                .map(|_| basic::ZstdSlot::default())
+                .collect(),
+            started: HashSet::new(),
+        }
+    }
+}
+
+/// An object's attempts so far and its next backoff delay.
+struct RetryState {
+    attempts: u32,
+    backoff: Duration,
+}
+
 /// Whether `GIT_TRACE` is set to something other than empty or `0`.
 fn trace_enabled() -> bool {
     std::env::var_os("GIT_TRACE").is_some_and(|v| !v.is_empty() && v != "0")
 }
 
-/// Transfer one object from the batch response, with retries.
+/// Make one attempt at transferring an object from the batch response.
 ///
-/// Emits `Started`. The caller emits `Completed` or `Failed`.
+/// Emits `Started` when `announce` is set. The caller emits `Completed`
+/// or `Failed`, or retries the object in a new batch.
 #[allow(clippy::too_many_arguments)]
 async fn process_object(
     dir: Dir,
@@ -480,13 +606,14 @@ async fn process_object(
     store: Arc<Store>,
     config: &TransferConfig,
     obj: ObjectResult,
+    announce: bool,
     events: Option<&UnboundedSender<Event>>,
 ) -> Result<(), TransferError> {
     if let Some(err) = obj.error {
         return Err(TransferError::ServerObject(err));
     }
 
-    if let Some(s) = events {
+    if announce && let Some(s) = events {
         let _ = s.send(Event::Started {
             oid: obj.oid.clone(),
             size: obj.size,
@@ -514,7 +641,7 @@ async fn process_object(
                 .as_ref()
                 .ok_or(TransferError::NoDownloadAction)?;
             check_not_expired("download", action)?;
-            with_retry(config, &obj.oid, obj.size, || async {
+            async {
                 match &transport {
                     Transport::Http(http) => basic::download(
                         &http.http,
@@ -545,7 +672,7 @@ async fn process_object(
                         Err(TransferError::Io(std::io::Error::other(e.to_string())))
                     }
                 }
-            })
+            }
             .await
         }
         (Dir::Download, None) => Err(TransferError::NoDownloadAction),
@@ -556,7 +683,7 @@ async fn process_object(
             if let Some(verify) = actions.verify.as_ref() {
                 check_not_expired("verify", verify)?;
             }
-            with_retry(config, &obj.oid, obj.size, || async {
+            async {
                 match &transport {
                     Transport::Http(http) if tus => {
                         tus::upload(
@@ -602,7 +729,7 @@ async fn process_object(
                         Err(TransferError::Io(std::io::Error::other(e.to_string())))
                     }
                 }
-            })
+            }
             .await
         }
         // No actions: the server already has the object.
@@ -633,10 +760,9 @@ async fn process_custom(
                 let action = action.ok_or(TransferError::NoDownloadAction)?;
                 check_not_expired("download", action)?;
             }
-            with_retry(config, &obj.oid, obj.size, || {
-                workers.download(store.clone(), &obj.oid, obj.size, action, events)
-            })
-            .await
+            workers
+                .download(store.clone(), &obj.oid, obj.size, action, events)
+                .await
         }
         Dir::Upload => {
             let action = actions.and_then(|a| a.upload.as_ref());
@@ -651,10 +777,9 @@ async fn process_custom(
             if let Some(v) = verify {
                 check_not_expired("verify", v)?;
             }
-            with_retry(config, &obj.oid, obj.size, || {
-                workers.upload(&store, &obj.oid, obj.size, action, events)
-            })
-            .await?;
+            workers
+                .upload(&store, &obj.oid, obj.size, action, events)
+                .await?;
             match (verify, transport) {
                 (Some(v), Transport::Http(http)) => {
                     basic::verify(
@@ -702,66 +827,16 @@ fn resolve_transport(backend: &Backend, dir: Dir) -> Transport {
 const ACTION_EXPIRATION_BUFFER: Duration = Duration::from_secs(5);
 
 fn check_not_expired(rel: &str, action: &git_lfs_api::Action) -> Result<(), TransferError> {
-    if action.is_expired_within(SystemTime::now(), ACTION_EXPIRATION_BUFFER) {
+    let now = SystemTime::now();
+    if let Some(at) = action.expiration(now)
+        && at < now + ACTION_EXPIRATION_BUFFER
+    {
         return Err(TransferError::ActionExpired {
             rel: rel.to_owned(),
+            at,
         });
     }
     Ok(())
-}
-
-/// Run `op` until it succeeds, fails with an error that isn't retryable,
-/// or uses up `max_attempts`.
-///
-/// Waits for the error's `Retry-After` delay when it has one, and
-/// otherwise for the exponential backoff. A `Retry-After` delay longer than
-/// `max_retry_time` ends the retries.
-async fn with_retry<F, Fut>(
-    config: &TransferConfig,
-    oid: &str,
-    size: u64,
-    mut op: F,
-) -> Result<(), TransferError>
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<(), TransferError>>,
-{
-    let mut backoff = config.initial_backoff;
-    let mut retry_count: u32 = 0;
-    let mut last_err: Option<TransferError> = None;
-    for attempt in 0..config.max_attempts {
-        match op().await {
-            Ok(()) => return Ok(()),
-            Err(e) => {
-                let retry = e.is_retryable() && attempt + 1 < config.max_attempts;
-                if !retry {
-                    last_err = Some(e);
-                    break;
-                }
-                if let Some(wait) = e.retry_after()
-                    && wait > config.max_retry_time
-                {
-                    trace_retry_refused(oid, wait, config.max_retry_time);
-                    last_err = Some(e);
-                    break;
-                }
-                let delay = e.retry_after().unwrap_or(backoff);
-                retry_count += 1;
-                emit_retry_trace(oid, size, retry_count, delay, &e);
-                last_err = Some(e);
-                tokio::time::sleep(delay).await;
-                // A Retry-After delay doesn't advance the backoff.
-                if last_err
-                    .as_ref()
-                    .and_then(TransferError::retry_after)
-                    .is_none()
-                {
-                    backoff = (backoff * 2).min(config.backoff_max);
-                }
-            }
-        }
-    }
-    Err(last_err.expect("loop ran at least once"))
 }
 
 /// Log under `GIT_TRACE` that a `Retry-After` delay was too long, in

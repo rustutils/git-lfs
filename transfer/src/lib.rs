@@ -11,8 +11,10 @@
 //! are in flight at once, the retry budget and backoff, the batch size, and
 //! optional rewriters for action URLs. Network errors, local I/O errors,
 //! and 408, 429, or 5xx responses are retried with exponential backoff, or
-//! after the server's `Retry-After` delay. Interrupted downloads resume from
-//! the partial file with a `Range` request.
+//! after the server's `Retry-After` delay. Each retry sends a new batch
+//! request, so it gets fresh actions, and an action about to expire is
+//! renewed the same way. Interrupted downloads resume from the partial file
+//! with a `Range` request.
 //!
 //! The [`backend::Backend`] picks how bytes move. [`Transfer::new`] uses
 //! HTTPS: batch requests go through the [`git_lfs_api`] client and objects

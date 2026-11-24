@@ -196,6 +196,110 @@ async fn download_5xx_retries_then_succeeds() {
     assert!(store.contains(Oid::from_hex(ABC_OID).unwrap()));
 }
 
+/// A batch response with a download action for `abc` at `href`.
+fn download_batch(href: &str, expires_in: Option<i64>) -> ResponseTemplate {
+    let mut action = json!({ "href": href });
+    if let Some(secs) = expires_in {
+        action["expires_in"] = json!(secs);
+    }
+    ResponseTemplate::new(200).set_body_json(json!({
+        "transfer": "basic",
+        "objects": [{
+            "oid": ABC_OID, "size": 3,
+            "actions": { "download": action }
+        }]
+    }))
+}
+
+#[tokio::test]
+async fn retry_uses_the_action_from_a_new_batch() {
+    let server = MockServer::start().await;
+    let first = format!("{}/first/{ABC_OID}", server.uri());
+    let second = format!("{}/second/{ABC_OID}", server.uri());
+
+    Mock::given(method("POST"))
+        .and(path("/objects/batch"))
+        .respond_with(FlakyResponder::new(vec![
+            download_batch(&first, None),
+            download_batch(&second, None),
+        ]))
+        .expect(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/first/{ABC_OID}")))
+        .respond_with(ResponseTemplate::new(503))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/second/{ABC_OID}")))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(ABC_BYTES))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_tmp, store, transfer) = make_transfer(&server);
+    let (tx, mut rx) = unbounded_channel();
+    let report = transfer
+        .download(
+            vec![ObjectSpec {
+                oid: ABC_OID.into(),
+                size: 3,
+            }],
+            None,
+            Some(tx),
+        )
+        .await
+        .unwrap();
+
+    assert!(report.is_complete_success(), "{:?}", report.failed);
+    assert!(store.contains(Oid::from_hex(ABC_OID).unwrap()));
+    let started = drain(&mut rx)
+        .into_iter()
+        .filter(|e| matches!(e, Event::Started { .. }))
+        .count();
+    assert_eq!(started, 1);
+}
+
+#[tokio::test]
+async fn expired_action_is_renewed_with_a_new_batch() {
+    let server = MockServer::start().await;
+    let href = format!("{}/storage/{ABC_OID}", server.uri());
+
+    Mock::given(method("POST"))
+        .and(path("/objects/batch"))
+        .respond_with(FlakyResponder::new(vec![
+            download_batch(&href, Some(-5)),
+            download_batch(&href, None),
+        ]))
+        .expect(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/storage/{ABC_OID}")))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(ABC_BYTES))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_tmp, store, transfer) = make_transfer(&server);
+    let report = transfer
+        .download(
+            vec![ObjectSpec {
+                oid: ABC_OID.into(),
+                size: 3,
+            }],
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert!(report.is_complete_success(), "{:?}", report.failed);
+    assert!(store.contains(Oid::from_hex(ABC_OID).unwrap()));
+}
+
 #[tokio::test]
 async fn download_per_object_error_surfaces_in_report() {
     let server = MockServer::start().await;

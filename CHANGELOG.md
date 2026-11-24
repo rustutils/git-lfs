@@ -31,6 +31,9 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- A failed transfer is retried with a new batch request, like upstream, so
+  it gets fresh URLs from the server. An action that is about to expire is
+  renewed the same way, where the object used to fail.
 - `git lfs migrate import` no longer fails when a commit has an empty
   `.gitattributes` and nothing is added to it, such as with `--above` when
   no file is large enough.

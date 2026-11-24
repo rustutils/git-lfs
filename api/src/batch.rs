@@ -204,23 +204,27 @@ impl Action {
     /// Otherwise `expires_at` is used. An action with neither, or with an
     /// `expires_at` that doesn't parse, never expires.
     pub fn is_expired_within(&self, now: SystemTime, buffer: Duration) -> bool {
-        let expiration = match (self.expires_in, self.expires_at.as_deref()) {
-            (Some(secs), _) if secs != 0 => {
-                // Negative means already expired.
-                if secs < 0 {
-                    SystemTime::UNIX_EPOCH
-                } else {
-                    now.checked_add(Duration::from_secs(secs as u64))
-                        .unwrap_or(SystemTime::UNIX_EPOCH)
-                }
-            }
-            (_, Some(s)) => match parse_rfc3339(s) {
-                Some(t) => t,
-                None => return false,
-            },
-            _ => return false,
-        };
-        expiration < now + buffer
+        self.expiration(now)
+            .is_some_and(|expiration| expiration < now + buffer)
+    }
+
+    /// When the action expires, counting a relative `expires_in` from
+    /// `now`.
+    ///
+    /// A negative `expires_in` gives the Unix epoch. `None` when the
+    /// action never expires, as for
+    /// [`is_expired_within`](Self::is_expired_within).
+    pub fn expiration(&self, now: SystemTime) -> Option<SystemTime> {
+        match (self.expires_in, self.expires_at.as_deref()) {
+            (Some(secs), _) if secs != 0 => Some(if secs < 0 {
+                SystemTime::UNIX_EPOCH
+            } else {
+                now.checked_add(Duration::from_secs(secs as u64))
+                    .unwrap_or(SystemTime::UNIX_EPOCH)
+            }),
+            (_, Some(s)) => parse_rfc3339(s),
+            _ => None,
+        }
     }
 }
 

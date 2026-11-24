@@ -66,11 +66,6 @@ Ordered by failing tests fixed per effort, from the triage after the
 v3.8.1 update. Small means under an hour or so, medium a few hours, large
 a feature.
 
-- **Retries reuse the batch response** (medium, `t-push` 18 and
-  `t-batch-storage-encoding` 4). A failed object is retried with the same
-  action, where upstream sends a new batch request first. So an expired
-  action fails instead of being renewed, and the tests that count batch
-  requests see one fewer.
 - **NTLM and Negotiate authentication**, and acting on `LFS-Authenticate`
   access modes. Wait for someone who needs it.
 
