@@ -14,23 +14,23 @@ git-lfs-fsck [OPTIONS] [REFSPEC]
 
 Check Git LFS files for consistency
 
-Check all Git LFS files in the current HEAD for consistency. Corrupted files are moved to `.git/lfs/bad`.
+Check all Git LFS files in the current HEAD, and the objects of pointers staged in the index, for consistency. Corrupted files are moved to `.git/lfs/bad`.
 
-A single committish may be given to inspect that commit instead of HEAD. The `<a>..<b>` range form from upstream is not yet supported — only a single ref is accepted. With no argument, HEAD is examined.
+A committish may be given to inspect that commit instead, or a range `<a>..<b>` to inspect the commits in it. The index isn't checked then.
 
-The default is to perform all checks. `lfs.fetchexclude` is also not yet honored on this command; objects whose paths match the exclude list will still be checked.
+The default is to perform all checks. Objects whose paths match `lfs.fetchexclude` aren't expected locally, so they aren't checked.
 
 ## Options
 
 ### Arguments
 
 - `<REFSPEC>`
-    Ref to scan. Defaults to HEAD
+    Ref or range to scan. Defaults to HEAD and the index
 
 ### Flags
 
 - `--objects`
-    Check that each object in HEAD matches its expected hash and that each object exists on disk
+    Check that each object matches its expected hash and exists on disk
 
 - `--pointers`
     Check that each pointer is canonical and that each file which should be stored as a Git LFS file is so stored

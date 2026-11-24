@@ -81,10 +81,6 @@ Tests that won't pass:
 - `t-usage` expects upstream's usage line. Our help output comes from
   clap, so this test stays failing on purpose.
 
-Gaps no test covers:
-
-- `git lfs fsck` without a ref checks HEAD but not the index.
-
 ## Known bugs
 
 Found during the docs review and the v3.8.1 test update, not fixed yet.

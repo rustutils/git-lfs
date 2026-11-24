@@ -9,15 +9,17 @@
 //!   an `unexpectedGitObject`, and a pointer that isn't canonical is a
 //!   `nonCanonicalPointer`.
 //!
-//! Both run when neither is given. Without a ref, HEAD is checked, but not
-//! the index as upstream does.
+//! Both run when neither is given. Without a ref, HEAD is checked, and
+//! `--objects` also checks the objects of pointers staged in the index.
 
 use std::io::Read;
 use std::path::Path;
 
 use git_lfs_git::AttrSet;
 use git_lfs_git::cat_file::CatFileBatch;
-use git_lfs_git::scanner::{scan_pointers_with_args, scan_tree_blobs};
+use git_lfs_git::scanner::{
+    PointerEntry, scan_index_pointers, scan_pointers_with_args, scan_tree_blobs,
+};
 use git_lfs_pointer::{MAX_POINTER_SIZE, Oid, Pointer};
 use git_lfs_store::Store;
 use sha2::{Digest, Sha256};
@@ -97,33 +99,51 @@ pub fn run(cwd: &Path, refspec: Option<&str>, opts: &Options) -> Result<i32, Fsc
             &["--no-walk"]
         };
         let pointers = scan_pointers_with_args(cwd, &[r], &[], walk)?;
-        for entry in &pointers {
+        let check = |entry: &PointerEntry, corrupt_oids: &mut Vec<Oid>| -> std::io::Result<()> {
             if !crate::fetch::path_passes_filter(entry.path.as_deref(), &include_set, &exclude_set)
             {
-                continue;
+                return Ok(());
             }
+            let name = || {
+                entry
+                    .path
+                    .as_deref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| entry.oid.to_string())
+            };
             match verify_object(&store, entry.oid, entry.size)? {
                 ObjectVerify::Ok => {}
                 ObjectVerify::Missing => {
-                    let name = entry
-                        .path
-                        .as_deref()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_else(|| entry.oid.to_string());
                     println!(
-                        "objects: openError: {name} ({}) could not be checked: no such file",
+                        "objects: openError: {} ({}) could not be checked: no such file",
+                        name(),
                         entry.oid
                     );
                     corrupt_oids.push(entry.oid);
                 }
                 ObjectVerify::Corrupt => {
-                    let name = entry
-                        .path
-                        .as_deref()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_else(|| entry.oid.to_string());
-                    println!("objects: corruptObject: {name} ({}) is corrupt", entry.oid);
+                    println!(
+                        "objects: corruptObject: {} ({}) is corrupt",
+                        name(),
+                        entry.oid
+                    );
                     corrupt_oids.push(entry.oid);
+                }
+            }
+            Ok(())
+        };
+        for entry in &pointers {
+            check(entry, &mut corrupt_oids)?;
+        }
+        // The index is scanned after HEAD's objects are checked, as in
+        // upstream: `git diff-index` can run the clean filter on files
+        // that look racily modified, which stores their objects again.
+        if refspec.is_none() {
+            let seen: std::collections::HashSet<_> =
+                pointers.iter().map(|e| (e.oid, e.path.clone())).collect();
+            for entry in scan_index_pointers(cwd, "HEAD")? {
+                if !seen.contains(&(entry.oid, entry.path.clone())) {
+                    check(&entry, &mut corrupt_oids)?;
                 }
             }
         }

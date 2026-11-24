@@ -31,6 +31,8 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 - `git lfs migrate import` no longer fails when a commit has an empty
   `.gitattributes` and nothing is added to it, such as with `--above` when
   no file is large enough.
+- `git lfs fsck` without a ref also checks the objects of pointers staged
+  in the index, like upstream.
 - `git lfs pull` checks out the files whose objects did download when
   others fail, then exits with an error, like upstream. It used to check
   out nothing.

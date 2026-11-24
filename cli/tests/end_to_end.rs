@@ -3614,6 +3614,32 @@ fn fsck_reports_ok_when_pointers_match_store() {
     assert!(stdout.contains("Git LFS fsck OK"), "{stdout}");
 }
 
+/// Without a ref, `fsck` also checks the objects of pointers staged in the
+/// index, as upstream does. With a ref, it doesn't.
+#[test]
+fn fsck_checks_staged_pointers_without_a_ref() {
+    let repo = fresh_repo_with_identity();
+    let oid = put_object_in_store(repo.path(), b"hello world\n");
+    commit_pointer_at(repo.path(), "x.bin", &pointer_text(&oid, 12));
+    // sha256("two\n"), which isn't in the store.
+    const MISSING: &str = "27dd8ed44a83ff94d557f9fd0412ed5a8cbca69ea04922d88c01184a07300a5a";
+    std::fs::write(repo.path().join("staged.bin"), pointer_text(MISSING, 4)).unwrap();
+    git_in(repo.path(), &["add", "staged.bin"]);
+
+    let out = run_in(repo.path(), &["fsck", "--dry-run"], b"");
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains(&format!(
+            "objects: openError: staged.bin ({MISSING}) could not be checked"
+        )),
+        "{stdout}"
+    );
+
+    let out = run_in(repo.path(), &["fsck", "--dry-run", "HEAD"], b"");
+    assert!(out.status.success());
+}
+
 #[test]
 fn fsck_reports_missing_object_and_exits_one() {
     let repo = fresh_repo_with_identity();
