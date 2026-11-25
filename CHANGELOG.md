@@ -10,6 +10,9 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- `git lfs prune` and `git lfs fetch --prune` exit 2, like upstream, when
+  they stop because objects to prune are missing on the remote. Before, they
+  exited 1.
 - `git lfs fetch --refetch` skips empty files, as upstream does. Before, it
   tried to download an object for them and exited 1.
 - `http.sslCAInfo` is read as a list of trusted CAs, as upstream. Before,

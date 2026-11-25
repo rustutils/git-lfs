@@ -688,6 +688,33 @@ fn fetch_prune() {
     repo.refute_local_object(&oid(commit2));
 }
 
+/// Not in t-fetch: the prune after a fetch stops, and exits 2, when an
+/// object to prune is missing on the remote.
+#[test]
+fn fetch_prune_missing_on_remote() {
+    let t = Test::new();
+    let name = "remote_fetch_prune_missing";
+    let repo = t.remote_and_clone(name);
+    repo.lfs(["track", "*.dat"]).ok().has(r#"Tracking "*.dat""#);
+    let old = "Old content (prune)";
+    let head = "HEAD content (prune)";
+    repo.add_commits(&[
+        Commit::new().days_ago(50).file("file.dat", old),
+        Commit::new().days_ago(25).file("file.dat", head),
+    ]);
+    repo.git(["push", "origin", "main"]).ok();
+    repo.git(["config", "lfs.fetchrecentrefsdays", "0"]).ok();
+    repo.git(["config", "lfs.fetchrecentcommitsdays", "0"]).ok();
+    repo.git(["config", "lfs.pruneverifyremotealways", "true"])
+        .ok();
+    t.server().delete_object(name, &oid(old));
+
+    let run = repo.lfs_command().args(["fetch", "--prune"]).run();
+    assert_eq!(run.code(), Some(2), "{run}");
+    run.has("missing on remote:").has(&oid(old));
+    repo.assert_local_object(&oid(old), old.len());
+}
+
 #[test]
 fn fetch_raw_remote_url() {
     let t = Test::new();

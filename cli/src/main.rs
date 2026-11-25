@@ -612,9 +612,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
                     println!("{msg}");
                     return Ok(128);
                 }
-                Err(fetch::FetchCommandError::Prune(e))
-                    if matches!(*e, prune::PruneError::DeleteFailed) =>
-                {
+                Err(fetch::FetchCommandError::Prune(e)) if e.exits_2() => {
                     eprintln!("{e}");
                     return Ok(2);
                 }
@@ -967,8 +965,7 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             };
             match prune::run(&cwd, &opts) {
                 Ok(()) => {}
-                // Like upstream's `Exit`, after the failures were listed.
-                Err(e @ prune::PruneError::DeleteFailed) => {
+                Err(e) if e.exits_2() => {
                     eprintln!("{e}");
                     return Ok(2);
                 }

@@ -42,11 +42,12 @@ fn prune(repo: &Repo, args: &[&str], lines: &[&str], listed: &[&str]) {
 }
 
 /// [`prune`], for a run that stops because objects are missing on the
-/// remote, which it lists.
+/// remote, which it lists before exiting 2.
 #[track_caller]
 fn prune_halted(repo: &Repo, args: &[&str], lines: &[&str], listed: &[&str]) {
-    let run = prune_run(repo, args).fails().has("missing on remote:");
-    check_output(run, lines, listed);
+    let run = prune_run(repo, args);
+    assert_eq!(run.code(), Some(2), "{run}");
+    check_output(run.has("missing on remote:"), lines, listed);
 }
 
 fn prune_run(repo: &Repo, args: &[&str]) -> Run {

@@ -72,6 +72,14 @@ pub enum PruneError {
     DeleteFailed,
 }
 
+impl PruneError {
+    /// Whether the command exits 2 after printing this error, like
+    /// upstream's `Exit`. Both cases have listed their objects already.
+    pub fn exits_2(&self) -> bool {
+        matches!(self, Self::UnverifiedHalt | Self::DeleteFailed)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Options {
     pub dry_run: bool,
