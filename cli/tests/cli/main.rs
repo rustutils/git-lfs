@@ -6,4 +6,5 @@
 mod harness;
 
 mod fetch;
+mod pull;
 mod push;

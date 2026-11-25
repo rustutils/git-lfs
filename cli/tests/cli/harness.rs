@@ -137,6 +137,17 @@ impl Test {
         self.repo(dir)
     }
 
+    /// Clone the remote repository `name` into `dir` without downloading
+    /// LFS objects, so the working tree has pointers.
+    pub fn clone_skip_smudge(&self, name: &str, dir: &str) -> Repo<'_> {
+        self.command(self.root.path(), "git")
+            .args(["clone", &self.remote_url(name), dir])
+            .env("GIT_LFS_SKIP_SMUDGE", "1")
+            .run()
+            .ok();
+        self.repo(dir)
+    }
+
     /// Create the remote repository `name` and clone it into a directory
     /// of the same name.
     pub fn remote_and_clone(&self, name: &str) -> Repo<'_> {
@@ -150,6 +161,28 @@ impl Test {
             test: self,
             dir: self.root.path().join(dir),
         }
+    }
+
+    /// Whether the tests run as root, which permissions don't apply to.
+    pub fn is_root(&self) -> bool {
+        let uid = self.command(self.root.path(), "id").args(["-u"]).run();
+        uid.ok().stdout().trim() == "0"
+    }
+
+    /// Git's major and minor version.
+    pub fn git_version(&self) -> (u32, u32) {
+        let version = self
+            .command(self.root.path(), "git")
+            .args(["version"])
+            .run()
+            .ok()
+            .stdout();
+        let mut parts = version
+            .trim()
+            .trim_start_matches("git version ")
+            .split('.')
+            .map(|p| p.parse().unwrap_or(0));
+        (parts.next().unwrap_or(0), parts.next().unwrap_or(0))
     }
 
     /// A command that runs `program` in `cwd`, with the test's environment.
@@ -196,6 +229,14 @@ pub struct Repo<'a> {
 impl Repo<'_> {
     pub fn path(&self) -> &Path {
         &self.dir
+    }
+
+    /// The same repository, with commands run from the subdirectory `dir`.
+    pub fn at(&self, dir: &str) -> Repo<'_> {
+        Repo {
+            test: self.test,
+            dir: self.dir.join(dir),
+        }
     }
 
     /// Run `git` with `args`.
@@ -276,6 +317,79 @@ impl Repo<'_> {
                 self.git(["tag", "-a", "-m", "Added tag", tag]).ok();
             }
         }
+    }
+
+    /// Check that the index matches HEAD, like the shell suites'
+    /// `assert_clean_index`.
+    #[track_caller]
+    pub fn assert_clean_index(&self) {
+        let run = self.git(["diff-index", "--cached", "HEAD"]).ok();
+        assert!(run.stdout().is_empty(), "index differs from HEAD\n{run}");
+    }
+
+    /// Check that the working tree matches HEAD, except for the paths in
+    /// `exceptions`.
+    #[track_caller]
+    pub fn assert_clean_worktree_except(&self, exceptions: &[&str]) {
+        let run = self
+            .git(["-c", "core.quotePath=false", "diff-index", "HEAD"])
+            .ok();
+        let changed: Vec<String> = run
+            .stdout()
+            .lines()
+            .filter_map(|l| l.split_once('\t').map(|(_, path)| path.to_owned()))
+            .filter(|path| !exceptions.contains(&path.as_str()))
+            .collect();
+        assert!(changed.is_empty(), "changed: {changed:?}\n{run}");
+    }
+
+    /// Check that the working tree and index match HEAD, like the shell
+    /// suites' `assert_clean_status`.
+    #[track_caller]
+    pub fn assert_clean_status(&self) {
+        self.assert_clean_worktree_except(&[]);
+        let run = self.git(["status"]).ok();
+        assert!(run.stdout().contains("working tree clean"), "{run}");
+    }
+
+    /// Check that `path` at `rev` is a pointer to the object `oid` of
+    /// `size` bytes.
+    #[track_caller]
+    pub fn assert_pointer(&self, rev: &str, path: &str, oid: &str, size: usize) {
+        let blob = self.git(["cat-file", "-p", &format!("{rev}:{path}")]).ok();
+        assert_eq!(blob.stdout(), pointer(oid, size), "{rev}:{path}");
+    }
+
+    /// Configure the case-inverting pointer extension, like the shell
+    /// suites' `setup_case_inverter_extension`. It logs each run to the
+    /// returned file.
+    pub fn case_inverter_extension(&self) -> PathBuf {
+        let root = self.test.root.path();
+        let script = root.join("caseinverterextension");
+        let log = root.join("caseinverterextension.log");
+        // Like upstream's lfstest-caseinverterextension: it runs at the
+        // repository's root, and logs which file it filters.
+        let body = format!(
+            "#!/bin/sh\n\
+             log={}\n\
+             if [ ! -d .git ]; then echo '\".git\" directory not found' >>\"$log\"; exit 1; fi\n\
+             echo \"$1: $3\" >>\"$log\"\n\
+             exec tr '[:lower:][:upper:]' '[:upper:][:lower:]'\n",
+            log.display()
+        );
+        std::fs::write(&script, body).unwrap();
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+        for (key, value) in [
+            ("clean", format!("{} clean -- %f", script.display())),
+            ("smudge", format!("{} smudge -- %f", script.display())),
+            ("priority", "0".into()),
+        ] {
+            let key = format!("lfs.extension.caseinverter.{key}");
+            self.git(["config", &key, &value]).ok();
+        }
+        log
     }
 
     /// Point the remote `origin` at a new remote repository `name`, like
@@ -523,6 +637,11 @@ impl fmt::Display for Run {
             self.stderr()
         )
     }
+}
+
+/// A pointer file's contents, like the shell suites' `pointer`.
+pub fn pointer(oid: &str, size: usize) -> String {
+    format!("version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {size}\n")
 }
 
 /// The SHA-256 of `data` in hex, like the shell suites' `calc_oid`.
