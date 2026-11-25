@@ -118,6 +118,33 @@ impl Test {
         }
     }
 
+    /// Check that `run`, a `git lfs lock --json`, locked `path`, and that
+    /// the server has the lock in the remote repository `name`. Returns the
+    /// lock's ID.
+    #[track_caller]
+    pub fn assert_lock(&self, name: &str, run: &Run, path: &str) -> String {
+        let id = lock_id(&run.stdout(), path).unwrap_or_else(|| panic!("no lock on {path}\n{run}"));
+        self.assert_server_lock(name, &id, path);
+        id
+    }
+
+    /// Check that the remote repository `name` has the lock `id` on `path`.
+    #[track_caller]
+    pub fn assert_server_lock(&self, name: &str, id: &str, path: &str) {
+        assert_eq!(
+            self.server.lock_path(name, id).as_deref(),
+            Some(path),
+            "lock {id} in {name}"
+        );
+    }
+
+    /// Check that the remote repository `name` doesn't have the lock `id`.
+    #[track_caller]
+    pub fn refute_server_lock(&self, name: &str, id: &str) {
+        let path = self.server.lock_path(name, id);
+        assert_eq!(path, None, "lock {id} in {name}");
+    }
+
     /// The home directory, with the global Git config.
     pub fn home(&self) -> PathBuf {
         self.root.path().join("home")
@@ -323,6 +350,30 @@ impl Repo<'_> {
 
     pub fn read(&self, path: &str) -> String {
         std::fs::read_to_string(self.dir.join(path)).unwrap()
+    }
+
+    /// Append `contents` to `path`.
+    pub fn append(&self, path: &str, contents: &str) {
+        let mut data = std::fs::read(self.dir.join(path)).unwrap();
+        data.extend_from_slice(contents.as_bytes());
+        self.write(path, data);
+    }
+
+    /// Whether the owner can write to `path`.
+    pub fn is_writeable(&self, path: &str) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        let meta = std::fs::metadata(self.dir.join(path)).unwrap();
+        meta.permissions().mode() & 0o200 != 0
+    }
+
+    #[track_caller]
+    pub fn assert_writeable(&self, path: &str) {
+        assert!(self.is_writeable(path), "{path} is read-only");
+    }
+
+    #[track_caller]
+    pub fn refute_writeable(&self, path: &str) {
+        assert!(!self.is_writeable(path), "{path} is writeable");
     }
 
     /// Stage everything and commit it.
@@ -689,6 +740,17 @@ impl fmt::Display for Run {
 /// A pointer file's contents, like the shell suites' `pointer`.
 pub fn pointer(oid: &str, size: usize) -> String {
     format!("version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {size}\n")
+}
+
+/// The ID of the lock on `path` in `json`, the output of `git lfs lock
+/// --json` for one lock or several.
+pub fn lock_id(json: &str, path: &str) -> Option<String> {
+    let path_field = format!(r#""path":"{path}""#);
+    json.split(r#"{"id":""#)
+        .skip(1)
+        .find(|lock| lock.contains(&path_field))
+        .and_then(|lock| lock.split('"').next())
+        .map(str::to_owned)
 }
 
 /// The SHA-256 of `data` in hex, like the shell suites' `calc_oid`.

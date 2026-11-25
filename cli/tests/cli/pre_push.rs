@@ -439,24 +439,9 @@ fn pre_push_delete_branch() {
         .ok();
 }
 
-/// Lock `path` with `git lfs lock --json`, check the server has the
-/// lock, and return its ID.
+/// Lock `path`, check the server has the lock, and return its ID.
 fn lock(t: &Test, repo: &Repo, name: &str, path: &str) -> String {
-    let run = repo.lfs(["lock", "--json", path]).ok();
-    let stdout = run.stdout();
-    let id = stdout
-        .split(r#""id":""#)
-        .nth(1)
-        .and_then(|rest| rest.split('"').next())
-        .unwrap_or_else(|| panic!("no lock ID\n{run}"))
-        .to_owned();
-    assert_lock(t, name, &id, path);
-    id
-}
-
-#[track_caller]
-fn assert_lock(t: &Test, name: &str, id: &str, path: &str) {
-    assert_eq!(t.server().lock_path(name, id).as_deref(), Some(path));
+    t.assert_lock(name, &repo.lfs(["lock", "--json", path]).ok(), path)
 }
 
 #[test]
@@ -477,7 +462,7 @@ fn pre_push_with_our_lock() {
         .ok()
         .has("Consider unlocking your own locked files")
         .has("* locked.dat");
-    assert_lock(&t, name, &id, "locked.dat");
+    t.assert_server_lock(name, &id, "locked.dat");
 }
 
 /// A second clone of `name`, with lock verification on.

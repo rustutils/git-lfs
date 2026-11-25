@@ -194,6 +194,14 @@ impl Server {
         Some(lock.path.clone())
     }
 
+    /// The paths of the locks in the repository `repo`, named without
+    /// `.git`.
+    pub fn locked_paths(&self, repo: &str) -> Vec<String> {
+        let locks = self.state.locks.lock().unwrap();
+        let locks = locks.get(repo).map(Vec::as_slice).unwrap_or_default();
+        locks.iter().map(|l| l.path.clone()).collect()
+    }
+
     /// Block until a client sends `POST /shutdown`, as the shell tests do
     /// when they finish.
     pub fn wait_for_shutdown_request(&self) {
