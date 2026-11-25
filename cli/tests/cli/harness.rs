@@ -52,10 +52,12 @@ impl Test {
         let cert = test.root.path().join("cert.pem");
         std::fs::write(&cert, test.server.cert_pem()).unwrap();
         // Git's credential store: user:pass for each of the server's URLs,
-        // as the shell suites' credential helper gives for 127.0.0.1.
+        // as the shell suites' credential helper gives for 127.0.0.1. The
+        // plain URL also as localhost, for the tests that need a host name.
         let creds = test.root.path().join("creds");
         let entries: String = [
             test.server.url(),
+            &test.localhost_url(),
             test.server.ssl_url(),
             test.server.client_cert_url(),
         ]
@@ -79,10 +81,7 @@ impl Test {
             ("http.sslcainfo", cert.display().to_string()),
             ("init.defaultBranch", "main".into()),
         ] {
-            test.command(&home, "git")
-                .args(["config", "--global", key, &value])
-                .run()
-                .ok();
+            test.git_config_global(key, &value);
         }
         test
     }
@@ -90,6 +89,19 @@ impl Test {
     /// The server the remote repositories live on.
     pub fn server(&self) -> &Server {
         &self.server
+    }
+
+    /// The server's plain URL, with `localhost` for its IP address.
+    pub fn localhost_url(&self) -> String {
+        self.server.url().replace("127.0.0.1", "localhost")
+    }
+
+    /// Set `key` to `value` in the global Git config.
+    pub fn git_config_global(&self, key: &str, value: &str) {
+        self.command(&self.home(), "git")
+            .args(["config", "--global", key, value])
+            .run()
+            .ok();
     }
 
     /// Check which objects the remote repository `name` has.

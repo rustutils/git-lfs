@@ -7,6 +7,7 @@ mod conflicts;
 mod harness;
 
 mod checkout;
+mod clone;
 mod fetch;
 mod pre_push;
 mod prune;
