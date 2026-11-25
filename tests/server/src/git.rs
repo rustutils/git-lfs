@@ -48,6 +48,19 @@ pub(crate) async fn http_backend(state: &State, req: &Request) -> Resp {
         Err(e) => return error(500, &format!("git http-backend: {e}")),
     };
     let _ = writer.await;
+    backend_response(&output)
+}
+
+/// The response for `git http-backend`'s output.
+///
+/// It exits 0 even for a missing repository, so a failure with no output
+/// means it didn't run, as when Git is installed without it. Answering 200
+/// then would make Git fall back to the dumb HTTP protocol, and only fail
+/// later, on push.
+fn backend_response(output: &std::process::Output) -> Resp {
+    if !output.status.success() && output.stdout.is_empty() {
+        return error(500, "git http-backend failed without output");
+    }
     cgi_response(&output.stdout)
 }
 
@@ -90,5 +103,26 @@ mod tests {
         assert_eq!(resp.status(), 200);
         assert_eq!(resp.headers()["content-type"], "text/plain");
         assert!(!resp.headers().contains_key("status"));
+    }
+
+    fn output(code: i32, stdout: &[u8]) -> std::process::Output {
+        use std::os::unix::process::ExitStatusExt;
+        std::process::Output {
+            status: std::process::ExitStatus::from_raw(code << 8),
+            stdout: stdout.to_vec(),
+            stderr: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_backend_that_did_not_run_is_an_error() {
+        // What `git http-backend` gives when Git doesn't have it.
+        assert_eq!(backend_response(&output(1, b"")).status(), 500);
+    }
+
+    #[test]
+    fn a_missing_repository_is_still_ok() {
+        let out = output(0, b"Status: 404 Not Found\r\n\r\nNot a git repository");
+        assert_eq!(backend_response(&out).status(), 200);
     }
 }
