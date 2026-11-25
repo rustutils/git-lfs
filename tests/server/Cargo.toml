@@ -1,0 +1,41 @@
+# A Rust port of upstream's lfstest-gitserver: the Git and LFS server the
+# shell tests run against. The library starts it in-process for Rust tests,
+# and the `lfstest-gitserver` binary replaces the Go one for the shell
+# tests. Not published.
+[package]
+name                   = "lfstest-server"
+version                = "0.0.0"
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+publish                = false
+
+[[bin]]
+name = "lfstest-gitserver"
+path = "src/main.rs"
+
+[dependencies]
+aes            = { workspace = true }
+base64         = { workspace = true }
+bytes          = "1"
+cbc            = { workspace = true }
+flate2         = { workspace = true }
+http-body-util = "0.1"
+hyper          = { version = "1", features = ["server", "http1"] }
+hyper-util     = { version = "0.1", features = ["tokio"] }
+md-5           = { workspace = true }
+rcgen          = { version = "0.13", default-features = false, features = ["crypto", "pem", "ring"] }
+rsa            = "0.9"
+ruzstd         = { workspace = true }
+rustls         = { workspace = true }
+serde          = { workspace = true }
+serde_json     = { workspace = true }
+sha2           = { workspace = true }
+tokio          = { workspace = true, features = ["rt-multi-thread", "net", "process", "io-util", "macros", "sync", "time"] }
+tokio-rustls   = { version = "0.26", default-features = false, features = ["ring", "logging", "tls12"] }
+url            = { workspace = true }
+
+[dev-dependencies]
+reqwest  = { workspace = true }
+tempfile = { workspace = true }
+tokio    = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

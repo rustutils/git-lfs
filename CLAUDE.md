@@ -32,8 +32,10 @@ rates, and `NOTES.md` has the known gaps, open questions, and the path to 1.0.
 | `filter/`   | `git-lfs-filter`   | Clean and smudge filters, filter-process                 | pointer, store, git           |
 | `cli/`      | `git-lfs` (binary) | The CLI, wiring the crates together                      | all of the above              |
 
-Two more workspace members aren't published: `xtask/` (doc generation and
-`cargo xtask test`) and `tests/cmd/` (test helpers written in Rust).
+Three more workspace members aren't published: `xtask/` (doc generation and
+`cargo xtask test`), `tests/cmd/` (test helpers written in Rust), and
+`tests/server/` (the Git and LFS server the tests run against, as a library
+and as the `lfstest-gitserver` binary).
 
 If something doesn't clearly fit one of these crates, raise it before adding a
 new one.

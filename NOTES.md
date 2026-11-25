@@ -59,7 +59,10 @@ Local changes to the vendored tests, which an update must keep:
 - `tests/cmd/lfstest-getlimit.go`: defines two constants itself instead of
   importing upstream's internal packages.
 - `tests/cmd/`: `lfstest-customadapter`, `lfstest-standalonecustomadapter`,
-  and `lfstest-testutils` are ported to Rust.
+  and `lfstest-testutils` are ported to Rust. `lfstest-gitserver` is ported
+  too, as the `tests/server/` crate. Its server certificate is a leaf issued
+  by a CA, not a self-signed CA like upstream's, because rustls rejects a
+  CA as a server certificate.
 
 ## Known gaps
 

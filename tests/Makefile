@@ -18,7 +18,8 @@ endif
 
 # Helper binaries the upstream shell tests rely on, built from the Go
 # sources vendored in `cmd/`. The upstream helpers that depend on upstream's
-# internal Go packages are ported to Rust in `cmd/src/bin/` instead.
+# internal Go packages are ported to Rust in `cmd/src/bin/` instead, and
+# `lfstest-gitserver` is ported in `server/`.
 TEST_CMDS =
 TEST_CMDS += ../bin/git-credential-lfsnoop$X
 TEST_CMDS += ../bin/git-credential-lfstest$X
@@ -32,13 +33,13 @@ TEST_CMDS += ../bin/lfstest-exploitcheck$X
 TEST_CMDS += ../bin/lfstest-genrandom$X
 TEST_CMDS += ../bin/lfstest-getlimit$X
 TEST_CMDS += ../bin/lfstest-getnumcpu$X
-TEST_CMDS += ../bin/lfstest-gitserver$X
 TEST_CMDS += ../bin/lfstest-nanomtime$X
 TEST_CMDS += ../bin/lfstest-realpath$X
 
 GIT_LFS_BIN = ../bin/git-lfs$X
 RUST_TEST_CMDS =
 RUST_TEST_CMDS += ../bin/lfstest-customadapter$X
+RUST_TEST_CMDS += ../bin/lfstest-gitserver$X
 RUST_TEST_CMDS += ../bin/lfstest-standalonecustomadapter$X
 RUST_TEST_CMDS += ../bin/lfstest-testutils$X
 

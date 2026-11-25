@@ -15,16 +15,16 @@ default-run            = "git-lfs"
 
 
 [dependencies]
-aes        = "0.9"
+aes        = { workspace = true }
 base64     = { workspace = true }
-cbc        = "0.2"
+cbc        = { workspace = true }
 clap       = { version = "4", features = ["derive", "wrap_help"] }
 des        = "0.9"
 globset    = { workspace = true }
-md-5       = "0.11"
+md-5       = { workspace = true }
 reflink-copy = "0.1.33"
 reqwest    = { workspace = true }
-rustls         = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
+rustls         = { workspace = true }
 rustls-pemfile = "2"
 rustls-pki-types = "1"
 serde      = { workspace = true }
