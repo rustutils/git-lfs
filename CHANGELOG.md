@@ -10,6 +10,10 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- `lfs.<url>.locksverify` applies to every LFS endpoint under the URL, such
+  as `lfs.https://example.com.locksverify` for all of a server's
+  repositories, like upstream. Before, the URL had to be the exact
+  endpoint.
 - `git lfs prune` and `git lfs fetch --prune` exit 2, like upstream, when
   they stop because objects to prune are missing on the remote. Before, they
   exited 1.

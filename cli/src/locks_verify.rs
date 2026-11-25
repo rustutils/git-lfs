@@ -4,8 +4,8 @@
 //! ours and theirs. The caller then refuses to push files someone else has
 //! locked.
 //!
-//! `lfs.<endpoint>.locksverify`, falling back to `lfs.locksverify`, decides
-//! what happens:
+//! `lfs.<url>.locksverify` for the URL that best matches the endpoint,
+//! falling back to `lfs.locksverify`, decides what happens:
 //!
 //! - false: the check is skipped.
 //! - true: any failure aborts the push, except that the server has no
@@ -160,12 +160,13 @@ fn handle_error(
     }
 }
 
-/// Read `lfs.<endpoint>.locksverify`, falling back to `lfs.locksverify`.
+/// Read the `lfs.<url>.locksverify` whose URL best matches the endpoint,
+/// such as the server's URL alone, falling back to `lfs.locksverify`.
 fn read_setting(cwd: &Path, endpoint: &str) -> Result<Setting, PushCommandError> {
-    let endpoint_key = format!("lfs.{endpoint}.locksverify");
-    if let Some(v) = git_lfs_git::config::get_effective(cwd, &endpoint_key)? {
+    if let Some(v) = git_lfs_git::lfs_url_value(cwd, endpoint, "locksverify") {
         return Ok(parse_bool(&v));
     }
+    // Also from `.lfsconfig`, which may set this but not the URL form.
     if let Some(v) = git_lfs_git::config::get_effective(cwd, "lfs.locksverify")? {
         return Ok(parse_bool(&v));
     }

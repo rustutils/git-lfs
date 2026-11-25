@@ -596,7 +596,6 @@ fn pre_push_disable_locks_verify_on_exact_url() {
 /// lock verification doesn't fail, so it passes either way. This sets it
 /// for the server's URL, on a repository whose verification fails.
 #[test]
-#[ignore = "lfs.<url>.locksverify only matches the exact endpoint"]
 fn pre_push_disable_locks_verify_on_partial_url() {
     let t = Test::new();
     let name = "lock-disabled-partial-verify-5xx";
