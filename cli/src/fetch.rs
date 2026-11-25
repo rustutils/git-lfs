@@ -235,7 +235,8 @@ pub fn fetch(cwd: &Path, opts: &FetchOptions<'_>) -> Result<FetchOutcome, FetchC
         if let Some(path) = p.path.clone() {
             paths.entry(oid_str.clone()).or_insert(path);
         }
-        if !opts.refetch && store.contains_with_size(p.oid, p.size) {
+        // Empty files have no object to download, refetch or not.
+        if p.size == 0 || (!opts.refetch && store.contains_with_size(p.oid, p.size)) {
             continue;
         }
         to_fetch.push(ObjectSpec {

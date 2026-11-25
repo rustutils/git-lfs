@@ -264,7 +264,6 @@ fn fetch_json_with_remote_and_branches() {
 }
 
 #[test]
-#[ignore = "fetch --refetch downloads empty objects, and fails on them"]
 fn fetch_refetch_with_remote_and_branches() {
     let t = Test::new();
     let clone = clone_with_newbranch(&t);

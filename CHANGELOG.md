@@ -10,6 +10,8 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- `git lfs fetch --refetch` skips empty files, as upstream does. Before, it
+  tried to download an object for them and exited 1.
 - `http.sslCAInfo` is read as a list of trusted CAs, as upstream. Before,
   only a server certificate that was itself in the file was accepted, so a
   server with a certificate issued by one of the file's CAs was rejected.
