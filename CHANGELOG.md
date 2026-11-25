@@ -10,6 +10,10 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- `git lfs clean`, `smudge`, and `filter-process` refuse stdin that's a
+  terminal or other character device, like upstream, saying they should be
+  run by Git. Before, run by hand, they waited for input, or for
+  `/dev/null` cleaned an empty file, and installed the hooks either way.
 - `git lfs pointer --stdin` refuses stdin that's a character device, such
   as `/dev/null`, like upstream, with upstream's message. Before, it only
   refused a terminal, and printed an empty pointer section for the rest.

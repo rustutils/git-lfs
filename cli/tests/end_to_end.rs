@@ -5647,3 +5647,35 @@ async fn migrate_export_downloads_missing_objects() {
         .unwrap();
     assert_eq!(blob.stdout, CONTENT);
 }
+
+/// Like upstream's `requireStdin`, the filters refuse stdin that's a
+/// character device, such as a terminal or `/dev/null`, before installing
+/// the hooks.
+#[test]
+fn filters_refuse_a_character_device_on_stdin() {
+    for (command, purpose) in [
+        ("clean", "the Git 'clean' filter"),
+        ("smudge", "the Git 'smudge' filter"),
+        ("filter-process", "the Git filter process"),
+    ] {
+        let repo = fresh_repo();
+        let out = Command::new(BIN)
+            .arg(command)
+            .current_dir(repo.path())
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(1), "{command}: {out:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stderr),
+            format!("Cannot read from STDIN: This command should be run by {purpose}\n"),
+            "{command}"
+        );
+        assert!(out.stdout.is_empty(), "{command}: {out:?}");
+        let hook = repo.path().join(".git/hooks/pre-push");
+        let hook = std::fs::read_to_string(hook).unwrap_or_default();
+        assert!(!hook.contains("git lfs"), "{command} installed the hooks");
+    }
+}

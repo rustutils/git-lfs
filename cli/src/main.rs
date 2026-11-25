@@ -229,6 +229,35 @@ fn bail_if_outside_repo(cwd: &std::path::Path) -> Option<u8> {
     None
 }
 
+/// Check that stdin isn't a character device, such as a terminal or
+/// `/dev/null`, which can't be what the command expects. If it is, print
+/// why, with `purpose`, like upstream's `requireStdin`, and return false.
+fn require_stdin(purpose: &str) -> bool {
+    if stdin_is_char_device() {
+        eprintln!("Cannot read from STDIN: {purpose}");
+        return false;
+    }
+    true
+}
+
+fn stdin_is_char_device() -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsFd;
+        use std::os::unix::fs::FileTypeExt;
+        let Ok(fd) = io::stdin().as_fd().try_clone_to_owned() else {
+            return false;
+        };
+        std::fs::File::from(fd)
+            .metadata()
+            .is_ok_and(|m| m.file_type().is_char_device())
+    }
+    #[cfg(not(unix))]
+    {
+        io::IsTerminal::is_terminal(&io::stdin())
+    }
+}
+
 /// Whether `GIT_LFS_SKIP_SMUDGE` is true, which makes smudge write
 /// pointers instead of content.
 fn skip_smudge_env() -> bool {
@@ -330,6 +359,9 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
 
     match cmd {
         Command::Clean(CleanArgs { path }) => {
+            if !require_stdin("This command should be run by the Git 'clean' filter") {
+                return Ok(1);
+            }
             let _ = install::try_install_hooks(&cwd);
             let mut store = Store::new(git_lfs_git::lfs_dir(&cwd)?);
             if let Some(v) = shared_repo_config(&cwd) {
@@ -348,6 +380,9 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             output.flush()?;
         }
         Command::Smudge(SmudgeArgs { path, skip }) => {
+            if !require_stdin("This command should be run by the Git 'smudge' filter") {
+                return Ok(1);
+            }
             let _ = install::try_install_hooks(&cwd);
             let mut store = Store::new(git_lfs_git::lfs_dir(&cwd)?)
                 .with_references(git_lfs_git::lfs_alternate_dirs(&cwd).unwrap_or_default());
@@ -527,6 +562,9 @@ fn dispatch(cmd: Command) -> Result<u8, Box<dyn std::error::Error>> {
             }
         }
         Command::FilterProcess(FilterProcessArgs { skip }) => {
+            if !require_stdin("This command should be run by the Git filter process") {
+                return Ok(1);
+            }
             let _ = install::try_install_hooks(&cwd);
             let mut store = Store::new(git_lfs_git::lfs_dir(&cwd)?)
                 .with_references(git_lfs_git::lfs_alternate_dirs(&cwd).unwrap_or_default());

@@ -150,11 +150,7 @@ pub fn run(opts: &Options) -> Result<i32, PointerError> {
             return Ok(1);
         }
     } else if opts.stdin {
-        if stdin_is_char_device() {
-            // Upstream's `requireStdin` message.
-            eprintln!(
-                "Cannot read from STDIN: The --stdin flag expects a pointer file from STDIN."
-            );
+        if !crate::require_stdin("The --stdin flag expects a pointer file from STDIN.") {
             return Ok(1);
         }
         something = true;
@@ -287,26 +283,6 @@ fn run_check(opts: &Options) -> Result<i32, PointerError> {
             }
         }
         Err(_) => Ok(1),
-    }
-}
-
-/// Whether stdin is a character device, such as a terminal or `/dev/null`,
-/// which can't hold a pointer. Upstream's `requireStdin` checks the same.
-fn stdin_is_char_device() -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::fd::AsFd;
-        use std::os::unix::fs::FileTypeExt;
-        let Ok(fd) = std::io::stdin().as_fd().try_clone_to_owned() else {
-            return false;
-        };
-        std::fs::File::from(fd)
-            .metadata()
-            .is_ok_and(|m| m.file_type().is_char_device())
-    }
-    #[cfg(not(unix))]
-    {
-        std::io::IsTerminal::is_terminal(&std::io::stdin())
     }
 }
 
