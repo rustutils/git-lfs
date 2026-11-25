@@ -1,8 +1,8 @@
 //! `t-pull.sh`.
 
-use std::os::unix::fs::{PermissionsExt, symlink};
-use std::path::Path;
+use std::os::unix::fs::PermissionsExt;
 
+use crate::conflicts::{self, CaseSymlinks, remove};
 use crate::harness::{Repo, Run, Test, oid};
 
 const NAME: &str = "t-pull";
@@ -223,55 +223,22 @@ fn conflict_setup<'a>(t: &'a Test, name: &str, files: &[&str]) -> Repo<'a> {
 }
 
 /// Remove the local objects, run `git lfs pull` from the subdirectory
-/// `cwd`, and check it succeeds, prints each of `messages`, and fetches
-/// the object.
-#[track_caller]
-fn pull_with_conflicts(repo: &Repo, cwd: &str, messages: &[&str]) -> Run {
-    repo.remove_local_objects();
-    let mut run = repo.at(cwd).lfs(["pull"]).ok();
-    for message in messages {
-        run = run.has(message);
-    }
-    repo.assert_local_object(&oid("a"), 1);
-    repo.assert_clean_index();
-    run
-}
-
-/// Replace `path`, a file, directory, or symlink, with nothing.
-fn remove(path: &Path) {
-    if path.is_dir() && !path.is_symlink() {
-        std::fs::remove_dir_all(path).unwrap();
-    } else if path.symlink_metadata().is_ok() {
-        std::fs::remove_file(path).unwrap();
+/// `cwd`, and check it succeeds and fetches the object.
+fn pull_in<'a>(repo: &'a Repo) -> impl Fn(&str) -> Run + 'a {
+    move |cwd| {
+        repo.remove_local_objects();
+        let run = repo.at(cwd).lfs(["pull"]).ok();
+        repo.assert_local_object(&oid("a"), 1);
+        run
     }
 }
-
-fn is_symlink(path: &Path) -> bool {
-    path.symlink_metadata()
-        .is_ok_and(|m| m.file_type().is_symlink())
-}
-
-const NOT_A_DIRECTORY: [&str; 2] = [
-    r#""dir1/a.dat": not a directory"#,
-    r#""dir2/dir3/dir4/a.dat": not a directory"#,
-];
 
 #[test]
 fn pull_skip_directory_file_conflicts() {
     let t = Test::new();
     let files = ["dir1/a.dat", "dir2/dir3/dir4/a.dat"];
     let repo = conflict_setup(&t, "pull-skip-dir-file-conflicts", &files);
-
-    remove(&repo.path().join("dir1"));
-    remove(&repo.path().join("dir2/dir3"));
-    repo.write("dir1", "");
-    repo.write("dir2/dir3", "");
-
-    for cwd in ["", "dir2"] {
-        pull_with_conflicts(&repo, cwd, &NOT_A_DIRECTORY);
-        assert!(repo.path().join("dir1").is_file());
-        assert!(repo.path().join("dir2/dir3").is_file());
-    }
+    conflicts::directory_file(&repo, pull_in(&repo));
 }
 
 #[test]
@@ -279,246 +246,36 @@ fn pull_skip_directory_symlink_conflicts() {
     let t = Test::new();
     let files = ["dir1/a.dat", "dir2/dir3/dir4/a.dat"];
     let repo = conflict_setup(&t, "pull-skip-dir-symlink-conflicts", &files);
-    let root = repo.path();
-    let outside = t.dir();
-    let not_beyond = |run: Run| {
-        assert_eq!(run.count("is beyond a symbolic link"), 0, "{run}");
-    };
-    let relink = |link1: &str, link2: &str| {
-        remove(&root.join("dir1"));
-        remove(&root.join("dir2/dir3"));
-        symlink(link1, root.join("dir1")).unwrap();
-        symlink(link2, root.join("dir2/dir3")).unwrap();
-    };
-
-    // Symlinks to directories outside the working tree.
-    std::fs::create_dir(outside.join("link1")).unwrap();
-    std::fs::create_dir(outside.join("link2")).unwrap();
-    relink("../link1", "../../link2");
-    not_beyond(pull_with_conflicts(&repo, "", &NOT_A_DIRECTORY));
-    assert!(is_symlink(&root.join("dir1")));
-    assert!(is_symlink(&root.join("dir2/dir3")));
-    assert!(!outside.join("link1/a.dat").exists());
-    assert!(!outside.join("link2/dir4").exists());
-
-    // Symlinks to directories inside it.
-    std::fs::create_dir(root.join("link1")).unwrap();
-    std::fs::create_dir(root.join("link2")).unwrap();
-    relink("link1", "../link2");
-    for cwd in ["", "dir2"] {
-        not_beyond(pull_with_conflicts(&repo, cwd, &NOT_A_DIRECTORY));
-        assert!(is_symlink(&root.join("dir1")));
-        assert!(is_symlink(&root.join("dir2/dir3")));
-        assert!(!root.join("link1/a.dat").exists());
-        assert!(!root.join("link2/dir4").exists());
-    }
-
-    // A symlink to a file outside, and a dangling one.
-    remove(&outside.join("link1"));
-    remove(&outside.join("link2"));
-    std::fs::write(outside.join("link1"), "").unwrap();
-    relink("../link1", "../../link2");
-    pull_with_conflicts(&repo, "", &NOT_A_DIRECTORY);
-    assert!(is_symlink(&root.join("dir1")));
-    assert!(is_symlink(&root.join("dir2/dir3")));
-    assert!(outside.join("link1").is_file());
-    assert!(!outside.join("link2").exists());
-
-    // The same, inside.
-    remove(&root.join("link1"));
-    remove(&root.join("link2"));
-    std::fs::write(root.join("link1"), "").unwrap();
-    relink("link1", "../link2");
-    for cwd in ["", "dir2"] {
-        pull_with_conflicts(&repo, cwd, &NOT_A_DIRECTORY);
-        assert!(is_symlink(&root.join("dir1")));
-        assert!(is_symlink(&root.join("dir2/dir3")));
-        assert!(root.join("link1").is_file());
-        assert!(!root.join("link2").exists());
-    }
+    conflicts::directory_symlink(&t, &repo, pull_in(&repo));
 }
-
-const NOT_A_REGULAR_FILE: [&str; 2] = [
-    r#""a.dat": not a regular file"#,
-    r#""dir1/dir2/dir3/a.dat": not a regular file"#,
-];
 
 #[test]
 fn pull_skip_file_symlink_conflicts() {
     let t = Test::new();
     let files = ["a.dat", "dir1/dir2/dir3/a.dat"];
     let repo = conflict_setup(&t, "pull-skip-file-symlink-conflicts", &files);
-    let root = repo.path();
-    let outside = t.dir();
-    let pointer = repo.git(["cat-file", "-p", ":a.dat"]).ok().stdout();
-    let relink = |link1: &str, link2: &str| {
-        remove(&root.join("a.dat"));
-        remove(&root.join("dir1/dir2/dir3/a.dat"));
-        symlink(link1, root.join("a.dat")).unwrap();
-        symlink(link2, root.join("dir1/dir2/dir3/a.dat")).unwrap();
-    };
-    let assert_links = || {
-        assert!(is_symlink(&root.join("a.dat")));
-        assert!(is_symlink(&root.join("dir1/dir2/dir3/a.dat")));
-    };
-
-    // Symlinks to pointer files outside the working tree.
-    std::fs::write(outside.join("link1"), &pointer).unwrap();
-    std::fs::write(outside.join("link2"), &pointer).unwrap();
-    relink("../link1", "../../../../link2");
-    pull_with_conflicts(&repo, "", &NOT_A_REGULAR_FILE);
-    assert_links();
-    assert_eq!(
-        std::fs::read_to_string(outside.join("link1")).unwrap(),
-        pointer
-    );
-    assert_eq!(
-        std::fs::read_to_string(outside.join("link2")).unwrap(),
-        pointer
-    );
-
-    // Symlinks to pointer files inside it.
-    std::fs::write(root.join("link1"), &pointer).unwrap();
-    std::fs::write(root.join("link2"), &pointer).unwrap();
-    relink("link1", "../../../link2");
-    for cwd in ["", "dir1/dir2"] {
-        pull_with_conflicts(&repo, cwd, &NOT_A_REGULAR_FILE);
-        assert_links();
-        assert_eq!(repo.read("link1"), pointer);
-        assert_eq!(repo.read("link2"), pointer);
-    }
-
-    // A symlink to a directory outside, and a dangling one.
-    remove(&outside.join("link1"));
-    remove(&outside.join("link2"));
-    std::fs::create_dir(outside.join("link1")).unwrap();
-    relink("../link1", "../../../../link2");
-    pull_with_conflicts(&repo, "", &NOT_A_REGULAR_FILE);
-    assert_links();
-    assert!(outside.join("link1").is_dir());
-    assert!(!outside.join("link2").exists());
-
-    // The same, inside.
-    remove(&root.join("link1"));
-    remove(&root.join("link2"));
-    std::fs::create_dir(root.join("link1")).unwrap();
-    relink("link1", "../../../link2");
-    for cwd in ["", "dir1/dir2"] {
-        pull_with_conflicts(&repo, cwd, &NOT_A_REGULAR_FILE);
-        assert_links();
-        assert!(root.join("link1").is_dir());
-        assert!(!root.join("link2").exists());
-    }
+    conflicts::file_symlink(&t, &repo, pull_in(&repo));
 }
 
-/// On a case-insensitive file system, files whose names differ only in case
-/// from symlinks must not be written through them. On a case-sensitive one,
-/// they're all just checked out.
 #[test]
 fn pull_skip_case_based_symlink_conflicts() {
     let t = Test::new();
-    let name = "pull-skip-case-symlink-conflicts";
-    let repo = t.remote_and_clone(name);
-    let root = repo.path();
-    std::fs::create_dir(root.join("dir1")).unwrap();
-    symlink("../link1", root.join("A.dat")).unwrap();
-    symlink("../../link2", root.join("dir1/a.dat")).unwrap();
-    symlink("../link3", root.join("DIR3")).unwrap();
-    symlink("../../link4", root.join("dir1/dir2")).unwrap();
-    repo.git(["add", "A.dat", "dir1", "DIR3"]).ok();
-    repo.git(["commit", "-m", "initial commit"]).ok();
-    for link in ["A.dat", "dir1/a.dat", "DIR3", "dir1/dir2"] {
-        remove(&root.join(link));
-    }
-
-    repo.write(
-        ".gitattributes",
-        "*.dat filter=lfs diff=lfs merge=lfs -text\n",
+    conflicts::case_symlinks(
+        &t,
+        CaseSymlinks {
+            name: "pull-skip-case-symlink-conflicts",
+            prepare: &|clone| clone.refute_local_object(&oid("a")),
+            run: &|clone| clone.lfs(["pull"]).ok(),
+            progress: None,
+        },
     );
-    let files = ["a.dat", "dir1/A.dat", "dir3/a.dat", "dir1/DIR2/a.dat"];
-    for file in files {
-        repo.write(file, "a");
-    }
-    let mut add = vec!["-c", "core.ignoreCase=false", "add", ".gitattributes"];
-    add.extend(files);
-    repo.git(add).ok();
-    repo.git(["commit", "-m", "case-conflicting commit"]).ok();
-    repo.git(["push", "origin", "main"]).ok();
-    assert!(t.server().object(name, &oid("a")).is_some());
-
-    let clone_run = t
-        .command(t.dir(), "git")
-        .args(["clone", &t.remote_url(name), &format!("{name}-assert")])
-        .env("GIT_LFS_SKIP_SMUDGE", "1")
-        .run()
-        .ok();
-    let case_insensitive = clone_run.count("collided") > 0;
-    let clone = t.repo(&format!("{name}-assert"));
-    let root = clone.path();
-    let outside = t.dir();
-    clone.refute_local_object(&oid("a"));
-
-    for path in ["a.dat", "A.dat", "dir1", "dir3", "DIR3"] {
-        remove(&root.join(path));
-    }
-    std::fs::create_dir(outside.join("link3")).unwrap();
-    std::fs::create_dir(outside.join("link4")).unwrap();
-
-    clone.lfs(["pull"]).ok();
-    clone.assert_local_object(&oid("a"), 1);
-    for file in files {
-        assert_eq!(clone.read(file), "a", "{file}");
-    }
-    let assert_outside_untouched = || {
-        assert!(!outside.join("link1").exists());
-        assert!(!outside.join("link2").exists());
-        assert!(!outside.join("link3/a.dat").exists());
-        assert!(!outside.join("link4/a.dat").exists());
-    };
-    assert_outside_untouched();
-    clone.assert_clean_index();
-
-    for path in ["a.dat", "dir1/A.dat", "dir3", "dir1/DIR2"] {
-        remove(&root.join(path));
-    }
-    clone
-        .git(["checkout", "--", "A.dat", "dir1/a.dat", "DIR3", "dir1/dir2"])
-        .ok();
-
-    let run = clone.lfs(["pull"]).ok();
-    if case_insensitive {
-        run.has(r#""a.dat": not a regular file"#)
-            .has(r#""dir1/A.dat": not a regular file"#)
-            .has(r#""dir3/a.dat": not a directory"#)
-            .has(r#""dir1/DIR2/a.dat": not a directory"#)
-            .lacks("is beyond a symbolic link");
-        for path in ["a.dat", "dir1/A.dat", "dir3", "dir1/DIR2"] {
-            assert!(is_symlink(&root.join(path)), "{path}");
-        }
-    } else {
-        for file in files {
-            assert_eq!(clone.read(file), "a", "{file}");
-        }
-    }
-    assert_outside_untouched();
-    clone.assert_clean_index();
 }
 
 #[test]
 fn pull_skip_changed_files() {
     let t = Test::new();
     let repo = conflict_setup(&t, "pull-skip-changed-files", &["a.dat"]);
-
-    repo.write("a.dat", "a +extra");
-    pull_with_conflicts(&repo, "", &[]);
-    assert_eq!(repo.read("a.dat"), "a +extra");
-
-    remove(&repo.path().join("a.dat"));
-    std::fs::create_dir(repo.path().join("a.dat")).unwrap();
-    for cwd in ["", "a.dat"] {
-        pull_with_conflicts(&repo, cwd, &[]);
-        assert!(repo.path().join("a.dat").is_dir());
-    }
+    conflicts::changed_files(&repo, pull_in(&repo));
 }
 
 #[test]
@@ -526,24 +283,7 @@ fn pull_break_hard_links_to_existing_files() {
     let t = Test::new();
     let files = ["a.dat", "dir1/dir2/dir3/a.dat"];
     let repo = conflict_setup(&t, "pull-break-file-hardlinks", &files);
-    let link = t.dir().join("link");
-    let pointer = repo.git(["cat-file", "-p", ":a.dat"]).ok().stdout();
-    std::fs::write(&link, &pointer).unwrap();
-
-    for cwd in ["", "dir1/dir2"] {
-        for file in files {
-            remove(&repo.path().join(file));
-            std::fs::hard_link(&link, repo.path().join(file)).unwrap();
-        }
-        repo.remove_local_objects();
-        repo.at(cwd).lfs(["pull"]).ok();
-        repo.assert_local_object(&oid("a"), 1);
-        for file in files {
-            assert_eq!(repo.read(file), "a", "{file}");
-        }
-        assert_eq!(std::fs::read_to_string(&link).unwrap(), pointer);
-        repo.assert_clean_status();
-    }
+    conflicts::hard_links(&t, &repo, pull_in(&repo));
 }
 
 #[test]
@@ -742,16 +482,7 @@ fn pull_read_only_file() {
     let t = Test::new();
     let name = "pull-locked";
     let file = "a.txt";
-    let repo = t.remote_and_clone(name);
-    repo.lfs(["track", file]).ok();
-    repo.write(file, format!("{file}\n"));
-    repo.git(["add", ".gitattributes", file]).ok();
-    repo.git(["commit", "-m", &format!("add {file}")])
-        .ok()
-        .has("main (root-commit)");
-    repo.git(["push", "origin", "main"])
-        .ok()
-        .has("main -> main");
+    t.remote_with_file(name, file);
     let contents_oid = oid(format!("{file}\n"));
 
     let clone = t.clone_skip_smudge(name, "pull-locked-assert");

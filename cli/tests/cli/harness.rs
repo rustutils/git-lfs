@@ -24,7 +24,7 @@ use tempfile::TempDir;
 
 /// The `git-lfs` binary the tests run: the one Cargo built, or the one in
 /// `LFSTEST_GIT_LFS`, such as upstream's, to check a test against it.
-fn git_lfs() -> PathBuf {
+pub fn git_lfs() -> PathBuf {
     std::env::var_os("LFSTEST_GIT_LFS")
         .filter(|path| !path.is_empty())
         .map(PathBuf::from)
@@ -135,6 +135,27 @@ impl Test {
             .run()
             .ok();
         self.repo(dir)
+    }
+
+    /// Create the remote repository `name` with `file` tracked, containing
+    /// its own name and a newline, and pushed, like the shell suites'
+    /// `setup_remote_repo_with_file`. The clone is in `clone_<name>`.
+    pub fn remote_with_file(&self, name: &str, file: &str) -> Repo<'_> {
+        self.remote(name);
+        let repo = self.clone(name, &format!("clone_{name}"));
+        repo.lfs(["track", file]).ok();
+        repo.write(file, format!("{file}\n"));
+        repo.git(["add", ".gitattributes", file]).ok();
+        repo.git(["commit", "-m", &format!("add {file}")])
+            .ok()
+            .has("main (root-commit)")
+            .has("2 files changed")
+            .has(&format!("create mode 100644 {file}"))
+            .has("create mode 100644 .gitattributes");
+        repo.git(["push", "origin", "main"])
+            .ok()
+            .has("main -> main");
+        repo
     }
 
     /// Clone the remote repository `name` into `dir` without downloading
