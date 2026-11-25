@@ -10,6 +10,9 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- `git lfs pointer --stdin` refuses stdin that's a character device, such
+  as `/dev/null`, like upstream, with upstream's message. Before, it only
+  refused a terminal, and printed an empty pointer section for the rest.
 - `lfs.<url>.locksverify` applies to every LFS endpoint under the URL, such
   as `lfs.https://example.com.locksverify` for all of a server's
   repositories, like upstream. Before, the URL had to be the exact

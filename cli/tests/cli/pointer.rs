@@ -101,7 +101,6 @@ fn pointer_stdin() {
 /// gives an invalid header, so it only passes when it skips itself, which
 /// it does when stdin is a terminal.
 #[test]
-#[ignore = "pointer --stdin only refuses a terminal, not /dev/null"]
 fn pointer_stdin_without_stdin() {
     let t = Test::new();
     let run = t
