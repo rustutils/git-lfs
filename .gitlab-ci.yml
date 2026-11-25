@@ -76,8 +76,9 @@ test:
   script:
     # Some tests check what happens when a file can't be written, which
     # root always can. The toolchain and caches are in the project
-    # directory, so a plain user can run everything from there.
-    - apk add --no-cache su-exec
+    # directory, so a plain user can run everything from there. The test
+    # server needs git-http-backend, which Alpine ships in git-daemon.
+    - apk add --no-cache su-exec git-daemon
     - adduser -D tester
     - chown -R tester "$CI_PROJECT_DIR"
     - su-exec tester env HOME=/home/tester cargo test --workspace
