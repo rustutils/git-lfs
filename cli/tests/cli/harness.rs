@@ -809,6 +809,17 @@ pub fn lock_id(json: &str, path: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// `size` bytes of text that differs for each `name` and `size`, in place
+/// of the shell suites' random data from `lfstest-genrandom`.
+pub fn sized(name: &str, size: usize) -> String {
+    let mut s = format!("{name} {size} ");
+    while s.len() < size {
+        s.push('.');
+    }
+    s.truncate(size);
+    s
+}
+
 /// The SHA-256 of `data` in hex, like the shell suites' `calc_oid`.
 pub fn oid(data: impl AsRef<[u8]>) -> String {
     Sha256::digest(data.as_ref())

@@ -3,18 +3,7 @@
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
-use crate::harness::{Commit, Repo, Run, Test, git_lfs, oid, pointer};
-
-/// `size` bytes of content that differs for each `name` and `size`, in
-/// place of the shell suites' random data.
-fn sized(name: &str, size: usize) -> String {
-    let mut s = format!("{name} {size} ");
-    while s.len() < size {
-        s.push('.');
-    }
-    s.truncate(size);
-    s
-}
+use crate::harness::{Commit, Repo, Run, Test, git_lfs, oid, pointer, sized};
 
 /// Run `git lfs clone` with `args` in the test's directory.
 fn lfs_clone(t: &Test, args: &[&str]) -> Run {
