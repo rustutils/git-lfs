@@ -77,6 +77,8 @@ new one.
   suite, and run with `cargo test -p git-lfs --test cli`. Each test keeps its
   shell test's name and checks the same things, with the setup from
   `harness.rs`. When porting, check the test fails if the behavior breaks.
+  `LFSTEST_GIT_LFS=<path>` runs them against another `git-lfs`, such as
+  one built from upstream's checkout, to check the tests themselves.
 
 ## Writing
 

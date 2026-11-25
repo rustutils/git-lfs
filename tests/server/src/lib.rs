@@ -181,6 +181,11 @@ impl Server {
         self.state.objects.lock().unwrap().get(repo, oid).cloned()
     }
 
+    /// Delete an object from the repository `repo`, named without `.git`.
+    pub fn delete_object(&self, repo: &str, oid: &str) {
+        self.state.objects.lock().unwrap().delete(repo, oid);
+    }
+
     /// Block until a client sends `POST /shutdown`, as the shell tests do
     /// when they finish.
     pub fn wait_for_shutdown_request(&self) {

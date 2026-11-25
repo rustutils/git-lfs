@@ -16,12 +16,20 @@ use std::fmt;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use lfstest_server::Server;
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
-const GIT_LFS: &str = env!("CARGO_BIN_EXE_git-lfs");
+/// The `git-lfs` binary the tests run: the one Cargo built, or the one in
+/// `LFSTEST_GIT_LFS`, such as upstream's, to check a test against it.
+fn git_lfs() -> PathBuf {
+    std::env::var_os("LFSTEST_GIT_LFS")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_git-lfs").into())
+}
 
 /// One test's home directory, server, and working directories.
 pub struct Test {
@@ -57,7 +65,7 @@ impl Test {
         std::fs::write(&creds, entries).unwrap();
 
         let home = test.home();
-        test.command(&home, GIT_LFS)
+        test.command(&home, git_lfs())
             .args(["install", "--skip-repo"])
             .run()
             .ok();
@@ -87,6 +95,11 @@ impl Test {
     /// The home directory, with the global Git config.
     pub fn home(&self) -> PathBuf {
         self.root.path().join("home")
+    }
+
+    /// The directory the test's clones are in.
+    pub fn dir(&self) -> &Path {
+        self.root.path()
     }
 
     /// The URL to clone the remote repository `name` from.
@@ -141,7 +154,8 @@ impl Test {
 
     /// A command that runs `program` in `cwd`, with the test's environment.
     pub fn command(&self, cwd: &Path, program: impl AsRef<OsStr>) -> Cmd {
-        let bin_dir = Path::new(GIT_LFS).parent().unwrap();
+        let git_lfs = git_lfs();
+        let bin_dir = git_lfs.parent().unwrap();
         let path = std::env::var_os("PATH").unwrap_or_default();
         let path = std::env::join_paths(
             std::iter::once(bin_dir.to_owned()).chain(std::env::split_paths(&path)),
@@ -160,7 +174,12 @@ impl Test {
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GIT_LFS_FORCE_PROGRESS", "1")
-            .env("GIT_TEMPLATE_DIR", templates);
+            .env("GIT_TEMPLATE_DIR", templates)
+            // Git doesn't look for a repository above the test's directory.
+            .env(
+                "GIT_CEILING_DIRECTORIES",
+                self.root.path().parent().unwrap(),
+            );
         Cmd {
             command,
             stdin: Vec::new(),
@@ -194,7 +213,7 @@ impl Repo<'_> {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        self.command(GIT_LFS).args(args).run()
+        self.command(git_lfs()).args(args).run()
     }
 
     /// A command to run here, for when it needs stdin or more environment.
@@ -204,7 +223,7 @@ impl Repo<'_> {
 
     /// `git lfs`, to run with stdin or more environment.
     pub fn lfs_command(&self) -> Cmd {
-        self.command(GIT_LFS)
+        self.command(git_lfs())
     }
 
     /// Write `contents` to `path`, creating its directory.
@@ -212,6 +231,10 @@ impl Repo<'_> {
         let path = self.dir.join(path);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, contents).unwrap();
+    }
+
+    pub fn read(&self, path: &str) -> String {
+        std::fs::read_to_string(self.dir.join(path)).unwrap()
     }
 
     /// Stage everything and commit it.
@@ -225,18 +248,30 @@ impl Repo<'_> {
     /// so tracked ones are stored as LFS objects.
     pub fn add_commits(&self, commits: &[Commit]) {
         for (i, commit) in commits.iter().enumerate() {
-            if let Some(parent) = commit.parent {
+            if let Some(parent) = &commit.parent {
                 self.git(["checkout", parent]).ok();
             }
-            if let Some(branch) = commit.new_branch {
+            if let Some(branch) = &commit.new_branch {
                 self.git(["checkout", "-b", branch]).ok();
             }
             for (path, contents) in &commit.files {
                 self.write(path, contents);
                 self.git(["add", path]).ok();
             }
-            self.git(["commit", "--allow-empty", "-m", &format!("Test commit {i}")])
-                .ok();
+            let mut commit_cmd = self.command("git").args([
+                "commit",
+                "--allow-empty",
+                "-m",
+                &format!("Test commit {i}"),
+            ]);
+            if let Some(days) = commit.days_ago {
+                let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+                let date = format!("@{} +0000", now.as_secs() - u64::from(days) * 86400);
+                commit_cmd = commit_cmd
+                    .env("GIT_AUTHOR_DATE", &date)
+                    .env("GIT_COMMITTER_DATE", &date);
+            }
+            commit_cmd.run().ok();
             for tag in &commit.tags {
                 self.git(["tag", "-a", "-m", "Added tag", tag]).ok();
             }
@@ -252,25 +287,69 @@ impl Repo<'_> {
             .ok();
     }
 
-    /// Delete an object from the local LFS store.
-    pub fn delete_local_object(&self, oid: &str) {
-        let path = self
-            .dir
-            .join(".git/lfs/objects")
+    /// The Git directory, `.git` in a working tree.
+    pub fn git_dir(&self) -> PathBuf {
+        let dir = self.git(["rev-parse", "--absolute-git-dir"]).ok().stdout();
+        PathBuf::from(dir.trim())
+    }
+
+    /// Where the local LFS store keeps the object `oid`.
+    pub fn local_object_path(&self, oid: &str) -> PathBuf {
+        self.git_dir()
+            .join("lfs/objects")
             .join(&oid[0..2])
             .join(&oid[2..4])
-            .join(oid);
-        std::fs::remove_file(path).unwrap();
+            .join(oid)
+    }
+
+    /// The contents of the object `oid` in the local LFS store.
+    pub fn local_object(&self, oid: &str) -> Option<Vec<u8>> {
+        std::fs::read(self.local_object_path(oid)).ok()
+    }
+
+    /// Check that the local LFS store has the object `oid`, `size` bytes
+    /// long.
+    #[track_caller]
+    pub fn assert_local_object(&self, oid: &str, size: usize) {
+        match self.local_object(oid) {
+            Some(data) => assert_eq!(data.len(), size, "local object {oid}"),
+            None => panic!("no local object {oid}"),
+        }
+    }
+
+    /// Check that the local LFS store doesn't have the object `oid`.
+    #[track_caller]
+    pub fn refute_local_object(&self, oid: &str) {
+        assert!(self.local_object(oid).is_none(), "local object {oid}");
+    }
+
+    /// Delete an object from the local LFS store.
+    pub fn delete_local_object(&self, oid: &str) {
+        std::fs::remove_file(self.local_object_path(oid)).unwrap();
+    }
+
+    /// Empty an object in the local LFS store.
+    pub fn corrupt_local_object(&self, oid: &str) {
+        std::fs::write(self.local_object_path(oid), "").unwrap();
+    }
+
+    /// Delete the local LFS store's objects.
+    pub fn remove_local_objects(&self) {
+        let dir = self.git_dir().join("lfs/objects");
+        if dir.exists() {
+            std::fs::remove_dir_all(dir).unwrap();
+        }
     }
 }
 
 /// A commit for [`Repo::add_commits`].
 #[derive(Default)]
 pub struct Commit {
-    parent: Option<&'static str>,
-    new_branch: Option<&'static str>,
-    files: Vec<(&'static str, &'static str)>,
-    tags: Vec<&'static str>,
+    days_ago: Option<u32>,
+    parent: Option<String>,
+    new_branch: Option<String>,
+    files: Vec<(String, String)>,
+    tags: Vec<String>,
 }
 
 impl Commit {
@@ -278,26 +357,32 @@ impl Commit {
         Self::default()
     }
 
+    /// Date the commit `days` days ago.
+    pub fn days_ago(mut self, days: u32) -> Self {
+        self.days_ago = Some(days);
+        self
+    }
+
     /// Commit on top of the branch `name`, checking it out first.
-    pub fn on(mut self, name: &'static str) -> Self {
-        self.parent = Some(name);
+    pub fn on(mut self, name: &str) -> Self {
+        self.parent = Some(name.into());
         self
     }
 
     /// Create the branch `name` and commit on it.
-    pub fn new_branch(mut self, name: &'static str) -> Self {
-        self.new_branch = Some(name);
+    pub fn new_branch(mut self, name: &str) -> Self {
+        self.new_branch = Some(name.into());
         self
     }
 
-    pub fn file(mut self, path: &'static str, contents: &'static str) -> Self {
-        self.files.push((path, contents));
+    pub fn file(mut self, path: &str, contents: impl Into<String>) -> Self {
+        self.files.push((path.into(), contents.into()));
         self
     }
 
     /// Tag the commit with an annotated tag.
-    pub fn tag(mut self, name: &'static str) -> Self {
-        self.tags.push(name);
+    pub fn tag(mut self, name: &str) -> Self {
+        self.tags.push(name.into());
         self
     }
 }

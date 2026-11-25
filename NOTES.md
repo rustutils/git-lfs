@@ -107,7 +107,8 @@ come from reading the code.
   repositories.
 - `git lfs fetch`: `--all` applies `lfs.fetchinclude`, conflicting flags
   such as `--all --recent` are accepted, and `--recent` without a remote
-  looks at every remote.
+  looks at every remote. It doesn't print "Fetching reference" for each
+  ref on stderr.
 - `git lfs push --object-id` doesn't find objects that exist only in an
   alternate store.
 - `git lfs uninstall` only removes hooks that exactly match the current
