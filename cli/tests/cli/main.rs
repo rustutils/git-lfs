@@ -8,6 +8,7 @@ mod harness;
 
 mod checkout;
 mod fetch;
+mod pre_push;
 mod prune;
 mod pull;
 mod push;

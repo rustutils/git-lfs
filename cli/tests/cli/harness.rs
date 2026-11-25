@@ -92,6 +92,20 @@ impl Test {
         &self.server
     }
 
+    /// Check which objects the remote repository `name` has.
+    #[track_caller]
+    pub fn assert_server_objects(&self, name: &str, present: &[&str], absent: &[&str]) {
+        for oid in present {
+            assert!(
+                self.server.object(name, oid).is_some(),
+                "{name} lacks {oid}"
+            );
+        }
+        for oid in absent {
+            assert!(self.server.object(name, oid).is_none(), "{name} has {oid}");
+        }
+    }
+
     /// The home directory, with the global Git config.
     pub fn home(&self) -> PathBuf {
         self.root.path().join("home")

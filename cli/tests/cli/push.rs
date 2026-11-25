@@ -18,17 +18,6 @@ fn set_locksverify(t: &Test, repo: &Repo, name: &str, value: bool) {
     repo.git(["config", &key, &value.to_string()]).ok();
 }
 
-/// Check which objects the remote repository `name` has.
-#[track_caller]
-fn assert_server_objects(t: &Test, name: &str, present: &[&str], absent: &[&str]) {
-    for oid in present {
-        assert!(t.server().object(name, oid).is_some(), "{name} lacks {oid}");
-    }
-    for oid in absent {
-        assert!(t.server().object(name, oid).is_none(), "{name} has {oid}");
-    }
-}
-
 #[test]
 fn push_with_good_ref() {
     let t = Test::new();
@@ -261,7 +250,8 @@ impl<'a> PushAll<'a> {
             .lfs(["push", "--object-id", "origin", &oids.initial])
             .ok();
         let all = oids.all();
-        assert_server_objects(self.t, &self.remote, &all[..1], &all[1..]);
+        self.t
+            .assert_server_objects(&self.remote, &all[..1], &all[1..]);
         self.repo.delete_local_object(&oids.initial);
     }
 }
@@ -276,7 +266,7 @@ fn push_all_no_ref_args() {
     p.assert_dry_run(&dry_run, "", &all);
     let run = p.repo.git(["push", "--all", "origin"]).ok();
     assert_eq!(run.count("Uploading LFS objects: 100% (6/6)"), 1, "{run}");
-    assert_server_objects(&t, &p.remote, &all, &[]);
+    t.assert_server_objects(&p.remote, &all, &[]);
 
     // Push while missing old objects locally.
     p.push_first_object_to_new_remote(&oids);
@@ -287,7 +277,7 @@ fn push_all_no_ref_args() {
         .git(["push", "--all", "origin"])
         .ok()
         .has("Uploading LFS objects: 100% (6/6)");
-    assert_server_objects(&t, &p.remote, &all, &[]);
+    t.assert_server_objects(&p.remote, &all, &[]);
 }
 
 #[test]
@@ -302,7 +292,7 @@ fn push_all_1_ref_arg() {
     p.assert_dry_run(&dry_run, "", branch);
     let run = p.repo.lfs(["push", "--all", "origin", "branch"]).ok();
     assert_eq!(run.count("Uploading LFS objects: 100% (3/3)"), 1, "{run}");
-    assert_server_objects(&t, &p.remote, branch, rest);
+    t.assert_server_objects(&p.remote, branch, rest);
 
     p.push_first_object_to_new_remote(&oids);
 
@@ -310,7 +300,7 @@ fn push_all_1_ref_arg() {
     p.assert_dry_run(&dry_run, "", branch);
     let run = p.repo.git(["push", "origin", "branch"]).ok();
     assert_eq!(run.count("Uploading LFS objects: 100% (3/3)"), 1, "{run}");
-    assert_server_objects(&t, &p.remote, &branch[1..], rest);
+    t.assert_server_objects(&p.remote, &branch[1..], rest);
 }
 
 #[test]
@@ -334,7 +324,7 @@ fn push_all_multiple_ref_args() {
         .lfs(["push", "--all", "origin", "branch", "tag"])
         .ok();
     assert_eq!(run.count("Uploading LFS objects: 100% (4/4)"), 1, "{run}");
-    assert_server_objects(&t, &p.remote, refs, rest);
+    t.assert_server_objects(&p.remote, refs, rest);
 
     p.push_first_object_to_new_remote(&oids);
 
@@ -345,7 +335,7 @@ fn push_all_multiple_ref_args() {
         .git(["push", "origin", "branch", "refs/tags/tag"])
         .ok();
     assert_eq!(run.count("Uploading LFS objects: 100% (4/4)"), 1, "{run}");
-    assert_server_objects(&t, &p.remote, &refs[1..], rest);
+    t.assert_server_objects(&p.remote, &refs[1..], rest);
 }
 
 #[test]
@@ -366,7 +356,7 @@ fn push_all_ref_with_deleted_files() {
     p.assert_dry_run(&dry_run, "", &main);
     let run = p.repo.lfs(["push", "--all", "origin", "main"]).ok();
     assert_eq!(run.count("Uploading LFS objects: 100% (5/5)"), 1, "{run}");
-    assert_server_objects(&t, &p.remote, &main, &branch);
+    t.assert_server_objects(&p.remote, &main, &branch);
 
     p.push_first_object_to_new_remote(&oids);
 
@@ -374,7 +364,7 @@ fn push_all_ref_with_deleted_files() {
     p.assert_dry_run(&dry_run, "", &main);
     let run = p.repo.git(["push", "origin", "main"]).ok();
     assert_eq!(run.count("Uploading LFS objects: 100% (5/5)"), 1, "{run}");
-    assert_server_objects(&t, &p.remote, &main[1..], &branch);
+    t.assert_server_objects(&p.remote, &main[1..], &branch);
 }
 
 /// A clone of the new remote repository `name` in `dir`, with `a.dat`
@@ -460,7 +450,7 @@ fn push_modified_files() {
     repo.lfs(["push", "origin", "other_branch"]).ok();
     let oids: Vec<String> = (1..=5).map(|i| oid(format!("filecontent{i}"))).collect();
     let oids: Vec<&str> = oids.iter().map(String::as_str).collect();
-    assert_server_objects(&t, name, &oids, &[]);
+    t.assert_server_objects(name, &oids, &[]);
 }
 
 #[test]
@@ -542,9 +532,9 @@ fn push_to_raw_remote_url() {
         .has("create mode 100644 raw.dat")
         .has("create mode 100644 .gitattributes");
 
-    assert_server_objects(&t, "push-raw", &[], &[&oid(contents)]);
+    t.assert_server_objects("push-raw", &[], &[&oid(contents)]);
     repo.lfs(["push", &t.remote_url("push-raw"), "main"]).ok();
-    assert_server_objects(&t, "push-raw", &[&oid(contents)], &[]);
+    t.assert_server_objects("push-raw", &[&oid(contents)], &[]);
 }
 
 #[test]
@@ -566,7 +556,7 @@ fn push_with_invalid_object_size() {
     let run = repo.git(["push", "origin", "main"]).fails();
     assert!(run.stderr().contains("invalid size (got: -1)"), "{run}");
     assert!(!run.stderr().contains("panic"), "{run}");
-    assert_server_objects(&t, name, &[], &[&oid(contents)]);
+    t.assert_server_objects(name, &[], &[&oid(contents)]);
 }
 
 #[test]
@@ -581,7 +571,7 @@ fn push_with_deprecated_links() {
     repo.commit_all("add a.dat");
 
     repo.git(["push", "origin", "main"]).ok();
-    assert_server_objects(&t, name, &[&oid(contents)], &[]);
+    t.assert_server_objects(name, &[&oid(contents)], &[]);
 }
 
 #[test]
@@ -618,7 +608,7 @@ fn server_data_setup<'a>(t: &'a Test, name: &str) -> Repo<'a> {
     repo.write("a.dat", "abc123");
     repo.commit_all("add a.dat");
     repo.git(["push", "origin", "main"]).ok();
-    assert_server_objects(t, name, &[&oid("abc123")], &[]);
+    t.assert_server_objects(name, &[&oid("abc123")], &[]);
     repo
 }
 
@@ -641,7 +631,7 @@ fn push_with_data_the_server_already_has() {
     // server has. The push walks the whole history, and mustn't fail on
     // the deleted object.
     repo.git(["push", &t.remote_url(name), "side"]).ok();
-    assert_server_objects(&t, name, &[&oid("def456")], &[]);
+    t.assert_server_objects(name, &[&oid("def456")], &[]);
 }
 
 #[test]
@@ -671,7 +661,7 @@ fn push_with_multiple_refs_and_data_the_server_already_has() {
     // No batch request for the object in the earlier main, which the
     // remote has.
     assert_eq!(run.count(&oid("abc123")), 0, "{run}");
-    assert_server_objects(&t, name, &[&oid("def456")], &[]);
+    t.assert_server_objects(name, &[&oid("def456")], &[]);
 }
 
 #[test]
@@ -686,14 +676,14 @@ fn push_with_multiple_tag_refs() {
     repo.git(["tag", "v1.0.0"]).ok();
 
     repo.git(["push", "origin", "main", "v1.0.0"]).ok();
-    assert_server_objects(&t, name, &[&oid("abc123")], &[]);
+    t.assert_server_objects(name, &[&oid("abc123")], &[]);
 
     repo.write("b.dat", "def456");
     repo.commit_all("add b.dat");
     repo.git(["tag", "v1.0.1"]).ok();
 
     repo.lfs(["push", "origin", "v1.0.1"]).ok();
-    assert_server_objects(&t, name, &[&oid("def456")], &[]);
+    t.assert_server_objects(name, &[&oid("def456")], &[]);
 }
 
 #[test]
@@ -713,7 +703,7 @@ fn push_custom_reference() {
     .ok();
     repo.lfs(["push", "origin", "refs/custom/remote/heads/main"])
         .ok();
-    assert_server_objects(&t, name, &[&oid("filecontent")], &[]);
+    t.assert_server_objects(name, &[&oid("filecontent")], &[]);
 }
 
 #[test]

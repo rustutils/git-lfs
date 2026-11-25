@@ -186,6 +186,14 @@ impl Server {
         self.state.objects.lock().unwrap().delete(repo, oid);
     }
 
+    /// The path of the lock `id` in the repository `repo`, named without
+    /// `.git`, if the server has it.
+    pub fn lock_path(&self, repo: &str, id: &str) -> Option<String> {
+        let locks = self.state.locks.lock().unwrap();
+        let lock = locks.get(repo)?.iter().find(|l| l.id == id)?;
+        Some(lock.path.clone())
+    }
+
     /// Block until a client sends `POST /shutdown`, as the shell tests do
     /// when they finish.
     pub fn wait_for_shutdown_request(&self) {
