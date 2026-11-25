@@ -197,9 +197,14 @@ impl Repo<'_> {
         self.command(GIT_LFS).args(args).run()
     }
 
-    /// A command to run here, for when it needs stdin.
+    /// A command to run here, for when it needs stdin or more environment.
     pub fn command(&self, program: impl AsRef<OsStr>) -> Cmd {
         self.test.command(&self.dir, program)
+    }
+
+    /// `git lfs`, to run with stdin or more environment.
+    pub fn lfs_command(&self) -> Cmd {
+        self.command(GIT_LFS)
     }
 
     /// Write `contents` to `path`, creating its directory.
@@ -213,6 +218,87 @@ impl Repo<'_> {
     pub fn commit_all(&self, message: &str) {
         self.git(["add", "--all"]).ok();
         self.git(["commit", "-m", message]).ok();
+    }
+
+    /// Make the commits in `commits`, in order, like the shell suites'
+    /// `lfstest-testutils addcommits`. The files go through Git's filters,
+    /// so tracked ones are stored as LFS objects.
+    pub fn add_commits(&self, commits: &[Commit]) {
+        for (i, commit) in commits.iter().enumerate() {
+            if let Some(parent) = commit.parent {
+                self.git(["checkout", parent]).ok();
+            }
+            if let Some(branch) = commit.new_branch {
+                self.git(["checkout", "-b", branch]).ok();
+            }
+            for (path, contents) in &commit.files {
+                self.write(path, contents);
+                self.git(["add", path]).ok();
+            }
+            self.git(["commit", "--allow-empty", "-m", &format!("Test commit {i}")])
+                .ok();
+            for tag in &commit.tags {
+                self.git(["tag", "-a", "-m", "Added tag", tag]).ok();
+            }
+        }
+    }
+
+    /// Point the remote `origin` at a new remote repository `name`, like
+    /// the shell suites' `setup_alternate_remote`.
+    pub fn alternate_remote(&self, name: &str) {
+        self.test.remote(name);
+        self.git(["remote", "rm", "origin"]).ok();
+        self.git(["remote", "add", "origin", &self.test.remote_url(name)])
+            .ok();
+    }
+
+    /// Delete an object from the local LFS store.
+    pub fn delete_local_object(&self, oid: &str) {
+        let path = self
+            .dir
+            .join(".git/lfs/objects")
+            .join(&oid[0..2])
+            .join(&oid[2..4])
+            .join(oid);
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+/// A commit for [`Repo::add_commits`].
+#[derive(Default)]
+pub struct Commit {
+    parent: Option<&'static str>,
+    new_branch: Option<&'static str>,
+    files: Vec<(&'static str, &'static str)>,
+    tags: Vec<&'static str>,
+}
+
+impl Commit {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Commit on top of the branch `name`, checking it out first.
+    pub fn on(mut self, name: &'static str) -> Self {
+        self.parent = Some(name);
+        self
+    }
+
+    /// Create the branch `name` and commit on it.
+    pub fn new_branch(mut self, name: &'static str) -> Self {
+        self.new_branch = Some(name);
+        self
+    }
+
+    pub fn file(mut self, path: &'static str, contents: &'static str) -> Self {
+        self.files.push((path, contents));
+        self
+    }
+
+    /// Tag the commit with an annotated tag.
+    pub fn tag(mut self, name: &'static str) -> Self {
+        self.tags.push(name);
+        self
     }
 }
 
@@ -229,6 +315,11 @@ impl Cmd {
         S: AsRef<OsStr>,
     {
         self.command.args(args);
+        self
+    }
+
+    pub fn env(mut self, key: &str, value: impl AsRef<OsStr>) -> Self {
+        self.command.env(key, value);
         self
     }
 
@@ -280,6 +371,18 @@ impl Run {
         self
     }
 
+    /// Check that the command failed.
+    #[track_caller]
+    pub fn fails(self) -> Self {
+        assert!(!self.output.status.success(), "command succeeded\n{self}");
+        self
+    }
+
+    /// The exit code, or `None` if a signal ended the command.
+    pub fn code(&self) -> Option<i32> {
+        self.output.status.code()
+    }
+
     pub fn stdout(&self) -> String {
         String::from_utf8_lossy(&self.output.stdout).into_owned()
     }
@@ -301,6 +404,18 @@ impl Run {
             "no {text:?} in output\n{self}"
         );
         self
+    }
+
+    /// Check that no line in stdout or stderr contains `text`.
+    #[track_caller]
+    pub fn lacks(self, text: &str) -> Self {
+        assert!(!self.output().contains(text), "{text:?} in output\n{self}");
+        self
+    }
+
+    /// The number of lines in stdout and stderr that contain `text`.
+    pub fn count(&self, text: &str) -> usize {
+        self.output().lines().filter(|l| l.contains(text)).count()
     }
 
     /// The number of lines in stdout and stderr that start with `prefix`.
