@@ -12,6 +12,7 @@ mod fetch;
 mod lock;
 mod locks;
 mod ls_files;
+mod pointer;
 mod pre_push;
 mod prune;
 mod pull;

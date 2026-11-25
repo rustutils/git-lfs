@@ -13,7 +13,7 @@
 
 use std::ffi::OsStr;
 use std::fmt;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -298,7 +298,8 @@ impl Test {
             );
         Cmd {
             command,
-            stdin: Vec::new(),
+            stdin: Some(Vec::new()),
+            merged: false,
         }
     }
 }
@@ -611,7 +612,9 @@ impl Commit {
 /// A command with its stdin, ready to run.
 pub struct Cmd {
     command: Command,
-    stdin: Vec<u8>,
+    /// `None` for `/dev/null`.
+    stdin: Option<Vec<u8>>,
+    merged: bool,
 }
 
 impl Cmd {
@@ -630,32 +633,76 @@ impl Cmd {
     }
 
     pub fn stdin(mut self, input: impl Into<Vec<u8>>) -> Self {
-        self.stdin = input.into();
+        self.stdin = Some(input.into());
         self
     }
 
-    pub fn run(mut self) -> Run {
-        let description = std::iter::once(self.command.get_program())
-            .chain(self.command.get_args())
+    /// Give the command `/dev/null` as stdin, a character device rather
+    /// than a pipe.
+    pub fn null_stdin(mut self) -> Self {
+        self.stdin = None;
+        self
+    }
+
+    /// Send stderr to stdout, in the order they're written, like the
+    /// shell's `2>&1`. The run's stderr is then empty.
+    pub fn merged(mut self) -> Self {
+        self.merged = true;
+        self
+    }
+
+    pub fn run(self) -> Run {
+        let Cmd {
+            mut command,
+            stdin: input,
+            merged,
+        } = self;
+        let description = std::iter::once(command.get_program())
+            .chain(command.get_args())
             .map(|a| a.to_string_lossy())
             .collect::<Vec<_>>()
             .join(" ");
-        let mut child = self
-            .command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+        let merged = if merged {
+            let (reader, writer) = std::io::pipe().unwrap();
+            command.stdout(writer.try_clone().unwrap()).stderr(writer);
+            Some(reader)
+        } else {
+            command.stdout(Stdio::piped()).stderr(Stdio::piped());
+            None
+        };
+        let stdin = if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        };
+        let mut child = command
+            .stdin(stdin)
             .spawn()
             .unwrap_or_else(|e| panic!("{description}: {e}"));
-        let mut stdin = child.stdin.take().unwrap();
-        let input = std::mem::take(&mut self.stdin);
+        // Close our copies of the pipe's write end, so reading it ends when
+        // the command exits.
+        drop(command);
+        let reader = merged.map(|mut reader| {
+            std::thread::spawn(move || {
+                let mut out = Vec::new();
+                reader.read_to_end(&mut out).unwrap();
+                out
+            })
+        });
         // Write from another thread, so a command that doesn't read its
         // stdin can't block on a full pipe.
-        let writer = std::thread::spawn(move || {
-            let _ = stdin.write_all(&input);
+        let writer = child.stdin.take().zip(input).map(|(mut stdin, input)| {
+            std::thread::spawn(move || {
+                let _ = stdin.write_all(&input);
+            })
         });
-        let output = child.wait_with_output().unwrap();
-        writer.join().unwrap();
+        let mut output = child.wait_with_output().unwrap();
+        if let Some(writer) = writer {
+            writer.join().unwrap();
+        }
+        if let Some(reader) = reader {
+            output.stdout = reader.join().unwrap();
+        }
         Run {
             description,
             output,
