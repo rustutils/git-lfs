@@ -678,6 +678,7 @@ dependencies = [
  "git-lfs-store",
  "git-lfs-transfer",
  "globset",
+ "lfstest-server",
  "md-5",
  "reflink-copy",
  "reqwest",

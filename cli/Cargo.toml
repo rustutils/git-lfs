@@ -45,6 +45,7 @@ git-lfs-creds    = { workspace = true }
 git-lfs-filter   = { workspace = true }
 
 [dev-dependencies]
+lfstest-server = { workspace = true }
 tokio      = { workspace = true, features = ["macros", "rt-multi-thread"] }
 wiremock   = { workspace = true }
 

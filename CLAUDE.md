@@ -73,6 +73,10 @@ new one.
 - **Running the shell tests:** `cargo xtask test` runs them all and prints a
   summary. `cd tests && make ./t-version.sh` runs one suite. Some upstream
   helpers can't be built here, and NOTES.md lists the tests that need them.
+- **Shell suites ported to Rust** live in `cli/tests/cli/`, one module per
+  suite, and run with `cargo test -p git-lfs --test cli`. Each test keeps its
+  shell test's name and checks the same things, with the setup from
+  `harness.rs`. When porting, check the test fails if the behavior breaks.
 
 ## Writing
 

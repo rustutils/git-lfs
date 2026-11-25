@@ -54,6 +54,7 @@ pub struct Server {
     ssl_url: String,
     client_cert_url: String,
     certs: Certs,
+    state: Arc<State>,
     stop: watch::Sender<bool>,
     shutdown_requests: mpsc::Receiver<()>,
     thread: Option<JoinHandle<()>>,
@@ -91,7 +92,7 @@ impl Server {
         let (stop, stopped) = watch::channel(false);
         let (request_shutdown, shutdown_requests) = mpsc::channel();
         let shared = Arc::new(Shared {
-            state,
+            state: state.clone(),
             request_shutdown: Mutex::new(request_shutdown),
         });
 
@@ -130,6 +131,7 @@ impl Server {
             ssl_url,
             client_cert_url,
             certs,
+            state,
             stop,
             shutdown_requests,
             thread: Some(thread),
@@ -171,6 +173,12 @@ impl Server {
     /// in OpenSSL's legacy PEM format.
     pub fn client_key_encrypted_pem(&self) -> &str {
         &self.certs.client_key_encrypted_pem
+    }
+
+    /// The contents of an object the server has for the repository `repo`,
+    /// named without `.git`.
+    pub fn object(&self, repo: &str, oid: &str) -> Option<Vec<u8>> {
+        self.state.objects.lock().unwrap().get(repo, oid).cloned()
     }
 
     /// Block until a client sends `POST /shutdown`, as the shell tests do
