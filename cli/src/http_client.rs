@@ -8,11 +8,10 @@
 //! `http.extraHeader` is looked up per request too, by the API client and
 //! the transfer adapter.
 //!
-//! With `http.sslCAInfo`, a server certificate is accepted only if it's
-//! byte for byte one of the certificates in the file. That accepts the
-//! self-signed `CA:TRUE` certificate the upstream test server uses, which
-//! webpki rejects as a server certificate, but it also rejects a server
-//! certificate signed by a CA in the file.
+//! With `http.sslCAInfo`, the certificates in the file are the trusted CAs,
+//! as upstream. A server certificate that is byte for byte one of them is
+//! accepted too, even though webpki rejects a CA as a server certificate:
+//! upstream's test server presents its self-signed CA.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -21,6 +20,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use git_lfs_creds::{FillContext, Query};
 use git_lfs_git::{HttpConfig, HttpOptions};
 use reqwest::cookie::Jar;
+use rustls::client::WebPkiServerVerifier;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::WebPkiSupportedAlgorithms;
 use rustls::{DigitallySignedStruct, SignatureScheme};
@@ -186,8 +186,8 @@ fn load_netscape_cookies(path: &str) -> Option<Jar> {
 /// A client certificate chain and its private key.
 type Identity = (Vec<CertificateDer<'static>>, PrivateKeyDer<'static>);
 
-/// Build a rustls config that trusts exactly the PEM certificates in
-/// `path`, and sends `identity` as the client certificate if there is one.
+/// Build a rustls config that trusts the PEM certificates in `path`, and
+/// sends `identity` as the client certificate if there is one.
 ///
 /// Returns `None` if `path` has no certificates.
 fn pinned_cert_config(path: &str, identity: Option<Identity>) -> Option<rustls::ClientConfig> {
@@ -201,7 +201,14 @@ fn pinned_cert_config(path: &str, identity: Option<Identity>) -> Option<rustls::
     }
 
     let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let verifier = PinnedCertVerifier {
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add_parsable_certificates(pinned.iter().cloned());
+    // None when no certificate in the file can be a trust anchor.
+    let webpki = WebPkiServerVerifier::builder_with_provider(Arc::new(roots), provider.clone())
+        .build()
+        .ok();
+    let verifier = CaFileVerifier {
+        webpki,
         pinned,
         algorithms: provider.signature_verification_algorithms,
     };
@@ -330,39 +337,49 @@ fn decrypt_client_key(
     }
 }
 
-/// Accepts a server certificate only if its bytes match a pinned one.
+/// Accepts a server certificate that chains to a CA in `http.sslCAInfo`,
+/// or that is byte for byte one of the file's certificates.
 ///
-/// The host name, chain, and expiry aren't checked, but the handshake
-/// signature is, so the server must hold the certificate's private key.
-/// Pinning exact bytes, rather than trusting the file as CAs like upstream,
-/// accepts self-signed CA certificates that rustls's own verifier rejects as
-/// server certificates.
+/// For an exact match, the host name, chain, and expiry aren't checked, but
+/// the handshake signature is, so the server must hold the certificate's
+/// private key.
 #[derive(Debug)]
-struct PinnedCertVerifier {
+struct CaFileVerifier {
+    webpki: Option<Arc<WebPkiServerVerifier>>,
     pinned: Vec<CertificateDer<'static>>,
     algorithms: WebPkiSupportedAlgorithms,
 }
 
-impl ServerCertVerifier for PinnedCertVerifier {
+impl ServerCertVerifier for CaFileVerifier {
     fn verify_server_cert(
         &self,
         end_entity: &CertificateDer<'_>,
-        _intermediates: &[CertificateDer<'_>],
-        _server_name: &ServerName<'_>,
-        _ocsp_response: &[u8],
-        _now: UnixTime,
+        intermediates: &[CertificateDer<'_>],
+        server_name: &ServerName<'_>,
+        ocsp_response: &[u8],
+        now: UnixTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
-        if self
-            .pinned
-            .iter()
-            .any(|p| p.as_ref() == end_entity.as_ref())
+        let verified = match &self.webpki {
+            Some(webpki) => webpki.verify_server_cert(
+                end_entity,
+                intermediates,
+                server_name,
+                ocsp_response,
+                now,
+            ),
+            None => Err(rustls::Error::General(
+                "no usable CA certificate in http.sslcainfo".into(),
+            )),
+        };
+        if verified.is_err()
+            && self
+                .pinned
+                .iter()
+                .any(|p| p.as_ref() == end_entity.as_ref())
         {
-            Ok(ServerCertVerified::assertion())
-        } else {
-            Err(rustls::Error::General(
-                "presented certificate does not match http.sslcainfo".into(),
-            ))
+            return Ok(ServerCertVerified::assertion());
         }
+        verified
     }
 
     fn verify_tls12_signature(
@@ -417,7 +434,35 @@ d+T6QhWlixzjH5Yp4XkTBs/T9j6hRANCAAQzd5YbwUeACPHItktSLJL9/T2sDHMa
 gK5S8+YxJvFLdXrxncZ47Udpx0Y7Hf9UmASWvx2Tfgnth0/rVfoPtZUq
 -----END PRIVATE KEY-----";
 
-    /// A server that presents `CERT` and signs with the given key.
+    // A CA, a certificate for `localhost` it issued, and that certificate's
+    // key. Generated once with openssl.
+    const CA: &str = "-----BEGIN CERTIFICATE-----
+MIIBaTCCARCgAwIBAgIUYUpiZD3PHCtLrr5cUPY+W3ZUUqowCgYIKoZIzj0EAwIw
+EjEQMA4GA1UEAwwHVGVzdCBDQTAgFw0yNjExMjUwODI4MjFaGA8yMTI2MTEwMTA4
+MjgyMVowEjEQMA4GA1UEAwwHVGVzdCBDQTBZMBMGByqGSM49AgEGCCqGSM49AwEH
+A0IABHTdSLqZbjPIJE96q2Ui/FhvvZNlr0EGIL9QW0yAc6y4Ibg0OoUTS4brq7mO
+5gha3wWC7lDt2jSyt5oa4ICu9ByjQjBAMB0GA1UdDgQWBBS/GtFvsvGdv8W7ZwTf
+KRzEaW3OZjAPBgNVHRMBAf8EBTADAQH/MA4GA1UdDwEB/wQEAwICBDAKBggqhkjO
+PQQDAgNHADBEAiAomNYprddcwEt0Gh3pBRS1mQVKyhEUb99S0XiRm1EyNQIgYhS2
+0gRuHbJOKp8318jdTS8nN/nn+hrtXWeBM5LIEz0=
+-----END CERTIFICATE-----";
+    const LEAF: &str = "-----BEGIN CERTIFICATE-----
+MIIBYjCCAQigAwIBAgIUNkS9LpJ7u8UBQf7z+woq09IEC9IwCgYIKoZIzj0EAwIw
+EjEQMA4GA1UEAwwHVGVzdCBDQTAgFw0yNjExMjUwODI4MjFaGA8yMTI2MTEwMTA4
+MjgyMVowFDESMBAGA1UEAwwJbG9jYWxob3N0MFkwEwYHKoZIzj0CAQYIKoZIzj0D
+AQcDQgAEfUPD00zw5PJJqYuwpm4V2tsRqdcTnfnp1DZCf0X98bGvKatG+D2SGC9V
+OSv5yj7kQmfxWhyFRW0SO5+MqLJmCaM4MDYwCQYDVR0TBAIwADAUBgNVHREEDTAL
+gglsb2NhbGhvc3QwEwYDVR0lBAwwCgYIKwYBBQUHAwEwCgYIKoZIzj0EAwIDSAAw
+RQIgHvZYCC4/iAo80EMOUI/LySGif7y2YH6e6jk1Z7S+tN4CIQD9GvSbAhO4Gybv
+PGxraPF5YLbztQ49lKnntNwOK0cUhg==
+-----END CERTIFICATE-----";
+    const LEAF_KEY: &str = "-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg2FlXT8bMvR669Npw
+VACeLouojjJoT1D5Bxu++bEd5OChRANCAAR9Q8PTTPDk8kmpi7CmbhXa2xGp1xOd
++enUNkJ/Rf3xsa8pq0b4PZIYL1U5K/nKPuRCZ/FaHIVFbRI7n4yosmYJ
+-----END PRIVATE KEY-----";
+
+    /// A server that presents a fixed chain and signs with a fixed key.
     #[derive(Debug)]
     struct FixedCert(Arc<CertifiedKey>);
 
@@ -428,18 +473,22 @@ gK5S8+YxJvFLdXrxncZ47Udpx0Y7Hf9UmASWvx2Tfgnth0/rVfoPtZUq
     }
 
     fn pem_cert() -> CertificateDer<'static> {
-        rustls_pemfile::certs(&mut CERT.as_bytes())
-            .next()
-            .unwrap()
-            .unwrap()
+        pem_certs(CERT).remove(0)
     }
 
-    /// Run a TLS handshake in memory between a client that pins `CERT`
-    /// and a server that presents `CERT` but signs with `server_key`.
-    fn handshake(server_key: &str) -> Result<(), rustls::Error> {
+    fn pem_certs(pem: &str) -> Vec<CertificateDer<'static>> {
+        rustls_pemfile::certs(&mut pem.as_bytes())
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    /// Run a TLS handshake in memory between a client with `ca_info` as
+    /// its `http.sslCAInfo`, and a server that presents `chain` and signs
+    /// with `server_key`.
+    fn handshake(ca_info: &str, chain: &str, server_key: &str) -> Result<(), rustls::Error> {
         let dir = tempfile::tempdir().unwrap();
         let ca = dir.path().join("ca.pem");
-        std::fs::write(&ca, CERT).unwrap();
+        std::fs::write(&ca, ca_info).unwrap();
         let client_config = pinned_cert_config(ca.to_str().unwrap(), None).unwrap();
 
         let provider = Arc::new(rustls::crypto::ring::default_provider());
@@ -447,7 +496,7 @@ gK5S8+YxJvFLdXrxncZ47Udpx0Y7Hf9UmASWvx2Tfgnth0/rVfoPtZUq
             .unwrap()
             .unwrap();
         let signing_key = provider.key_provider.load_private_key(key).unwrap();
-        let certified = CertifiedKey::new(vec![pem_cert()], signing_key);
+        let certified = CertifiedKey::new(pem_certs(chain), signing_key);
         let server_config = rustls::ServerConfig::builder_with_provider(provider)
             .with_safe_default_protocol_versions()
             .unwrap()
@@ -486,13 +535,23 @@ gK5S8+YxJvFLdXrxncZ47Udpx0Y7Hf9UmASWvx2Tfgnth0/rVfoPtZUq
 
     #[test]
     fn pinned_cert_with_its_key_is_accepted() {
-        handshake(CERT_KEY).unwrap();
+        handshake(CERT, CERT, CERT_KEY).unwrap();
     }
 
     #[test]
     fn pinned_cert_with_another_key_is_rejected() {
         // The certificate is public, so an impostor can present it. Without
         // the private key, its handshake signature must fail.
-        assert!(handshake(OTHER_KEY).is_err());
+        assert!(handshake(CERT, CERT, OTHER_KEY).is_err());
+    }
+
+    #[test]
+    fn cert_issued_by_a_ca_in_the_file_is_accepted() {
+        handshake(CA, LEAF, LEAF_KEY).unwrap();
+    }
+
+    #[test]
+    fn cert_issued_by_another_ca_is_rejected() {
+        assert!(handshake(CERT, LEAF, LEAF_KEY).is_err());
     }
 }

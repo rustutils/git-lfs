@@ -8,6 +8,12 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- `http.sslCAInfo` is read as a list of trusted CAs, as upstream. Before,
+  only a server certificate that was itself in the file was accepted, so a
+  server with a certificate issued by one of the file's CAs was rejected.
+
 ## [0.12.0] - 2026-11-25
 
 ### Added
