@@ -11,6 +11,7 @@ mod clone;
 mod fetch;
 mod lock;
 mod locks;
+mod ls_files;
 mod pre_push;
 mod prune;
 mod pull;

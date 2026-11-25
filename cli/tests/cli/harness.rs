@@ -229,6 +229,15 @@ impl Test {
         self.clone(name, name)
     }
 
+    /// A new repository in `dir`, without a remote.
+    pub fn init(&self, dir: &str) -> Repo<'_> {
+        self.command(self.root.path(), "git")
+            .args(["init", dir])
+            .run()
+            .ok();
+        self.repo(dir)
+    }
+
     /// A repository already in `dir`.
     pub fn repo(&self, dir: &str) -> Repo<'_> {
         Repo {
