@@ -11,6 +11,7 @@ mod checkout;
 mod clean;
 mod clone;
 mod config;
+mod env;
 mod fetch;
 mod filter_process;
 mod fsck;

@@ -654,6 +654,12 @@ impl Cmd {
         self
     }
 
+    /// Leave `key` out of the test's environment, such as `LC_ALL`.
+    pub fn env_remove(mut self, key: &str) -> Self {
+        self.command.env_remove(key);
+        self
+    }
+
     pub fn stdin(mut self, input: impl Into<Vec<u8>>) -> Self {
         self.stdin = Some(input.into());
         self
