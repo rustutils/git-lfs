@@ -10,6 +10,9 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- `git lfs env` lists only `basic` as the download and upload transfer
+  methods when `lfs.basictransfersonly` is set, like upstream. Transfers
+  already used only `basic`.
 - `git lfs env` shows the configured values of the `lfs.fetchrecent*` and
   `lfs.prune*` settings, like upstream. Before, it always showed their
   defaults. Fetch and prune themselves already used the settings.

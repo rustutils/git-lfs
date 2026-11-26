@@ -651,7 +651,6 @@ fn env_shows_fetch_and_prune_settings() {
 /// Not from the shell suite: with `lfs.basictransfersonly`, only `basic`
 /// is listed.
 #[test]
-#[ignore = "env lists every transfer method with lfs.basictransfersonly"]
 fn env_with_basic_transfers_only() {
     let t = Test::new();
     let repo = t.init("env-basic-transfers-only");

@@ -56,9 +56,16 @@ pub fn run(cwd: &Path) -> Result<(), EnvError> {
     println!("AccessDownload=none");
     println!("AccessUpload=none");
     let tus = bool_config(cwd, "lfs.tustransfers");
+    let basic_only = bool_config(cwd, "lfs.basictransfersonly");
     let customs = custom_transfer_methods(cwd);
-    println!("DownloadTransfers={}", transfer_list(&customs, false));
-    println!("UploadTransfers={}", transfer_list(&customs, tus));
+    println!(
+        "DownloadTransfers={}",
+        transfer_list(&customs, false, basic_only)
+    );
+    println!(
+        "UploadTransfers={}",
+        transfer_list(&customs, tus, basic_only)
+    );
 
     // In a repository this line was printed with the other paths.
     if git_dir.is_none() {
@@ -295,8 +302,12 @@ fn custom_transfer_methods(cwd: &Path) -> Vec<String> {
 /// The value of `DownloadTransfers` or `UploadTransfers`.
 ///
 /// The built-in adapters come first, then the custom ones, then `tus` if
-/// `with_tus` is set.
-fn transfer_list(customs: &[String], with_tus: bool) -> String {
+/// `with_tus` is set. With `basic_only`, from `lfs.basictransfersonly`,
+/// it's only `basic`, as upstream.
+fn transfer_list(customs: &[String], with_tus: bool, basic_only: bool) -> String {
+    if basic_only {
+        return "basic".into();
+    }
     let mut parts: Vec<&str> = vec!["basic", "lfs-standalone-file", "ssh"];
     for c in customs {
         parts.push(c.as_str());
