@@ -1089,7 +1089,6 @@ fn migrate_import_escapes_patterns() {
 /// Not from the shell suite: with `--above`, a backslash in a path is
 /// escaped in its `.gitattributes` line, so the line matches that file.
 #[test]
-#[ignore = "--above doesn't escape a backslash"]
 fn migrate_import_above_escapes_backslash() {
     let t = Test::new();
     let repo = t.init("repo");

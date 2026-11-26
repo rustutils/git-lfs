@@ -10,6 +10,10 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- `git lfs migrate import --above` escapes a backslash in a file's path
+  in the `.gitattributes` line it writes for that file, like upstream.
+  Before, the line matched a different file, so the converted file wasn't
+  tracked.
 - `git lfs migrate import` and `migrate export` escape the `--include`
   and `--exclude` patterns they write to `.gitattributes`, like upstream:
   a backslash is doubled and a `#` gets a backslash. Before, export didn't

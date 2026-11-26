@@ -198,11 +198,13 @@ pub fn import(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateError> {
 
 /// Escape a path for a `.gitattributes` pattern that matches only it.
 ///
-/// Escapes spaces and the glob characters `*`, `?`, and `[`.
+/// Doubles each backslash, and escapes spaces and the glob characters
+/// `*`, `?`, and `[`.
 pub(crate) fn escape_attr_path(p: &str) -> String {
     let mut out = String::with_capacity(p.len());
     for c in p.chars() {
         match c {
+            '\\' => out.push_str("\\\\"),
             ' ' => out.push_str("[[:space:]]"),
             '*' => out.push_str("[*]"),
             '?' => out.push_str("[?]"),
