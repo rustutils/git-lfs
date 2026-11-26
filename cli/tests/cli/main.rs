@@ -7,6 +7,7 @@ mod conflicts;
 mod harness;
 mod migrate_fixtures;
 
+mod batch_storage_encoding;
 mod checkout;
 mod clean;
 mod clone;
