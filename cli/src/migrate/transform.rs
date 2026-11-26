@@ -801,7 +801,7 @@ mod tests {
     }
 
     fn glob(pat: &str) -> PathPatterns {
-        PathPatterns::new([pat])
+        PathPatterns::new([pat], false)
     }
 
     fn run_transform(input: &[u8], opts: Options) -> (Vec<u8>, Stats) {

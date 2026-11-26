@@ -132,8 +132,8 @@ pub fn import(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateError> {
     print_pre_migrate_refs(cwd, &include_refs);
 
     let store = Store::new(git_lfs_git::lfs_dir(cwd)?);
-    let include = build_patterns(&opts.include);
-    let exclude = build_patterns(&opts.exclude);
+    let include = build_patterns(cwd, &opts.include);
+    let exclude = build_patterns(cwd, &opts.exclude);
 
     let marks_tmp = tempfile::NamedTempFile::new().map_err(MigrateError::Io)?;
 

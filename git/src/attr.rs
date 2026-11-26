@@ -579,17 +579,24 @@ fn walk_for_gitattributes(dir: &Path, out: &mut Vec<PathBuf>) -> io::Result<()> 
 #[derive(Debug, Clone)]
 pub struct PathPatterns {
     patterns: Vec<gix_glob::Pattern>,
+    case: Case,
 }
 
 impl PathPatterns {
     /// Parse `patterns`, skipping empty ones and comments, which match
-    /// nothing.
-    pub fn new<S: AsRef<str>>(patterns: impl IntoIterator<Item = S>) -> Self {
+    /// nothing. With `ignore_case`, as for `core.ignorecase`, they match
+    /// regardless of case.
+    pub fn new<S: AsRef<str>>(patterns: impl IntoIterator<Item = S>, ignore_case: bool) -> Self {
         let patterns = patterns
             .into_iter()
             .filter_map(|p| gix_glob::Pattern::from_bytes_without_negation(p.as_ref().as_bytes()))
             .collect();
-        Self { patterns }
+        let case = if ignore_case {
+            Case::Fold
+        } else {
+            Case::Sensitive
+        };
+        Self { patterns, case }
     }
 
     /// Whether any pattern matches the file at `path`, relative to the
@@ -601,7 +608,7 @@ impl PathPatterns {
                 path.into(),
                 basename,
                 Some(false),
-                Case::Sensitive,
+                self.case,
                 gix_glob::wildmatch::Mode::NO_MATCH_SLASH_LITERAL,
             )
         })
@@ -626,7 +633,7 @@ mod tests {
             ("dir/", &[], &["dir", "dir/a"]),
         ];
         for (pattern, matching, other) in cases {
-            let set = PathPatterns::new([pattern]);
+            let set = PathPatterns::new([pattern], false);
             for path in *matching {
                 assert!(set.is_match(path), "{pattern} should match {path}");
             }
@@ -634,7 +641,14 @@ mod tests {
                 assert!(!set.is_match(path), "{pattern} matched {path}");
             }
         }
-        assert!(!PathPatterns::new(["", "# comment"]).is_match(""));
+        assert!(!PathPatterns::new(["", "# comment"], false).is_match(""));
+    }
+
+    #[test]
+    fn path_patterns_ignore_case() {
+        assert!(!PathPatterns::new(["*.TXT"], false).is_match("dir/a.txt"));
+        assert!(PathPatterns::new(["*.TXT"], true).is_match("dir/a.txt"));
+        assert!(PathPatterns::new(["/DIR/a.txt"], true).is_match("dir/A.txt"));
     }
 
     #[test]

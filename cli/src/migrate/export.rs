@@ -95,8 +95,8 @@ pub fn export(cwd: &Path, opts: &ExportOptions) -> Result<Stats, MigrateError> {
 
     let store = Store::new(git_lfs_git::lfs_dir(cwd)?)
         .with_references(git_lfs_git::lfs_alternate_dirs(cwd).unwrap_or_default());
-    let include = build_patterns(&opts.include);
-    let exclude = build_patterns(&opts.exclude);
+    let include = build_patterns(cwd, &opts.include);
+    let exclude = build_patterns(cwd, &opts.exclude);
     download_missing(
         cwd,
         &store,

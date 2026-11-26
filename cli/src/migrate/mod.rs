@@ -179,9 +179,14 @@ fn is_special_ref(refname: &str) -> bool {
 /// The `--include` or `--exclude` patterns, or `None` if there are none.
 ///
 /// They match like `.gitattributes` patterns, as upstream: `a.txt`
-/// matches `a.txt` in any directory, and `/a.txt` only at the root.
-pub(super) fn build_patterns(patterns: &[String]) -> Option<PathPatterns> {
-    (!patterns.is_empty()).then(|| PathPatterns::new(patterns))
+/// matches `a.txt` in any directory, and `/a.txt` only at the root. They
+/// ignore case if `core.ignorecase` is set.
+pub(super) fn build_patterns(cwd: &Path, patterns: &[String]) -> Option<PathPatterns> {
+    if patterns.is_empty() {
+        return None;
+    }
+    let ignore_case = git_lfs_git::config::get_bool(cwd, "core.ignorecase", false);
+    Some(PathPatterns::new(patterns, ignore_case))
 }
 
 pub(super) fn path_matches(
@@ -331,8 +336,8 @@ mod tests {
 
     #[test]
     fn path_matches_include_and_exclude() {
-        let inc = build_patterns(&["*.bin".into()]);
-        let exc = build_patterns(&["skip.bin".into()]);
+        let inc = Some(PathPatterns::new(["*.bin"], false));
+        let exc = Some(PathPatterns::new(["skip.bin"], false));
         assert!(path_matches("foo.bin", &inc, &exc));
         assert!(!path_matches("foo.txt", &inc, &exc));
         assert!(!path_matches("dir/skip.bin", &inc, &exc));

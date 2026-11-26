@@ -1048,6 +1048,21 @@ fn migrate_import_include_without_slash_matches_any_directory() {
     repo.assert_pointer("refs/heads/main", "dir/a.txt", &txt, 5);
 }
 
+/// Not from the shell suite: with `core.ignorecase`, a pattern matches
+/// regardless of case.
+#[test]
+fn migrate_import_include_ignores_case_with_core_ignorecase() {
+    let t = Test::new();
+    let repo = fixtures::multiple_local_branches(&t);
+    let txt = oid_at(&repo, "main", "a.txt");
+    repo.git(["config", "core.ignorecase", "true"]).ok();
+
+    import(&repo, &["--include=*.TXT"]).ok();
+
+    repo.assert_pointer("refs/heads/main", "a.txt", &txt, 120);
+    repo.refute_pointer("refs/heads/main", "a.md");
+}
+
 #[test]
 fn migrate_import_filename_special_characters() {
     let t = Test::new();
