@@ -178,7 +178,7 @@ fn prune_unreferenced(cwd: &Path, store: &Store) -> Result<(), MigrateError> {
         return Ok(());
     }
     let ref_args: Vec<&str> = refs.iter().map(String::as_str).collect();
-    let remote_refs = list_remote_tracking_refs(cwd);
+    let remote_refs = super::list_remote_tracking_refs(cwd);
     let exclude_args: Vec<&str> = remote_refs.iter().map(String::as_str).collect();
     let entries = git_lfs_git::scanner::scan_pointers(cwd, &ref_args, &exclude_args)?;
     let retained: std::collections::HashSet<git_lfs_pointer::Oid> =
@@ -189,24 +189,6 @@ fn prune_unreferenced(cwd: &Path, store: &Store) -> Result<(), MigrateError> {
         }
     }
     Ok(())
-}
-
-/// Every ref under `refs/remotes/`, or none if `git` fails.
-pub(super) fn list_remote_tracking_refs(cwd: &Path) -> Vec<String> {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(cwd)
-        .args(["for-each-ref", "--format=%(refname)", "refs/remotes/"])
-        .output();
-    let Ok(out) = out else { return Vec::new() };
-    if !out.status.success() {
-        return Vec::new();
-    }
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter(|l| !l.is_empty())
-        .map(String::from)
-        .collect()
 }
 
 /// Whether `remote` is a configured remote.

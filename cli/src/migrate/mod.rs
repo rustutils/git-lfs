@@ -136,11 +136,29 @@ pub(super) fn exclude_remote_refs(
     if everything || !include_ref.is_empty() || !exclude_ref.is_empty() {
         return;
     }
-    for r in export::list_remote_tracking_refs(cwd) {
+    for r in list_remote_tracking_refs(cwd) {
         if !exclude_refs.contains(&r) {
             exclude_refs.push(r);
         }
     }
+}
+
+/// Every ref under `refs/remotes/`, or none if `git` fails.
+pub(super) fn list_remote_tracking_refs(cwd: &Path) -> Vec<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["for-each-ref", "--format=%(refname)", "refs/remotes/"])
+        .output();
+    let Ok(out) = out else { return Vec::new() };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(String::from)
+        .collect()
 }
 
 pub(super) fn head_exists(cwd: &Path) -> bool {
