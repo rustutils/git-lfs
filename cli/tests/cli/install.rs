@@ -8,7 +8,7 @@
 
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-use crate::harness::{Repo, Test};
+use crate::harness::{Repo, Run, Test};
 
 const INSTALLED: &str = "Updated Git hooks.\nGit LFS initialized.\n";
 
@@ -267,6 +267,33 @@ pub(crate) fn assert_other_global_filters(dir: &Repo) {
     );
 }
 
+/// Check that stdout has a line matching `error running.*git.*config`,
+/// as the shell tests grep for when `git config` fails.
+#[track_caller]
+pub(crate) fn assert_config_error(run: &Run) {
+    let found = run.stdout().lines().any(|line| {
+        line.find("error running").is_some_and(|i| {
+            let rest = &line[i..];
+            rest.find("git")
+                .is_some_and(|j| rest[j..].contains("config"))
+        })
+    });
+    assert!(found, "{run}");
+}
+
+/// Check that `git lfs` with `args` in `dir` fails, saying only one scope
+/// option can be given.
+#[track_caller]
+pub(crate) fn assert_scope_conflict(dir: &Repo, args: &[&str]) {
+    let run = dir.lfs_command().args(args).run().fails();
+    assert_eq!(
+        run.stderr(),
+        "Only one of the --local, --system, --worktree, and --file options \
+         can be specified.\n",
+        "{args:?}"
+    );
+}
+
 #[test]
 fn install_local() {
     let t = Test::new();
@@ -308,17 +335,7 @@ fn install_local_with_failed_permissions() {
 
     std::fs::set_permissions(&git_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
     assert_eq!(run.code(), Some(2), "{run}");
-    let stdout = run.stdout();
-    assert!(
-        stdout
-            .lines()
-            .any(|l| l.find("error running").is_some_and(|i| {
-                let rest = &l[i..];
-                rest.find("git")
-                    .is_some_and(|j| rest[j..].contains("config"))
-            })),
-        "{run}"
-    );
+    assert_config_error(&run);
 }
 
 #[test]
@@ -335,18 +352,7 @@ fn install_local_outside_repository() {
 fn install_local_with_conflicting_scope() {
     let t = Test::new();
     let repo = t.init("t-install-scope-conflict");
-
-    let run = repo
-        .lfs_command()
-        .args(["install", "--local", "--system"])
-        .run()
-        .fails();
-
-    assert_eq!(
-        run.stderr(),
-        "Only one of the --local, --system, --worktree, and --file options \
-         can be specified.\n"
-    );
+    assert_scope_conflict(&repo, &["install", "--local", "--system"]);
 }
 
 #[test]

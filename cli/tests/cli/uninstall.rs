@@ -4,17 +4,17 @@
 
 use crate::harness::{Repo, Test};
 use crate::install::{
-    HOOKS, assert_default_filters, assert_other_global_filters, config, mkdir,
-    set_other_global_filters,
+    HOOKS, assert_default_filters, assert_other_global_filters, assert_scope_conflict, config,
+    mkdir, set_other_global_filters,
 };
 
-const GLOBAL_REMOVED: &str = "Global Git LFS configuration has been removed.";
+pub(crate) const GLOBAL_REMOVED: &str = "Global Git LFS configuration has been removed.";
 
 /// Check that none of the three filter settings that `git config` reads in
 /// `dir` with `args` is set, or each is empty, as the shell's `[ "" = ...
 /// ]` checks.
 #[track_caller]
-fn assert_no_filters(dir: &Repo, args: &[&str]) {
+pub(crate) fn assert_no_filters(dir: &Repo, args: &[&str]) {
     for key in [
         "filter.lfs.smudge",
         "filter.lfs.clean",
@@ -158,18 +158,7 @@ fn uninstall_local_outside_repository() {
 fn uninstall_local_with_conflicting_scope() {
     let t = Test::new();
     let repo = t.init("t-uninstall-scope-conflict");
-
-    let run = repo
-        .lfs_command()
-        .args(["uninstall", "--local", "--system"])
-        .run()
-        .fails();
-
-    assert_eq!(
-        run.stderr(),
-        "Only one of the --local, --system, --worktree, and --file options \
-         can be specified.\n"
-    );
+    assert_scope_conflict(&repo, &["uninstall", "--local", "--system"]);
 }
 
 #[test]
