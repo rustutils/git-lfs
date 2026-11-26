@@ -52,7 +52,7 @@ pub fn run(cwd: &Path) -> Result<(), EnvError> {
         emit_paths_outside_repo();
     }
 
-    emit_static_defaults(cwd);
+    emit_settings(cwd);
     println!("AccessDownload=none");
     println!("AccessUpload=none");
     let tus = bool_config(cwd, "lfs.tustransfers");
@@ -241,8 +241,8 @@ fn emit_paths_outside_repo() {
     println!("TempDir={}", PathBuf::from("lfs").join("tmp").display());
 }
 
-/// Print the transfer settings and the fixed fetch and prune defaults.
-fn emit_static_defaults(cwd: &Path) {
+/// Print the transfer, fetch, and prune settings.
+fn emit_settings(cwd: &Path) {
     println!("ConcurrentTransfers={}", concurrent_transfers(cwd));
     println!("TusTransfers={}", bool_config(cwd, "lfs.tustransfers"));
     println!(
@@ -250,14 +250,21 @@ fn emit_static_defaults(cwd: &Path) {
         bool_config(cwd, "lfs.basictransfersonly")
     );
     println!("SkipDownloadErrors={}", skip_download_errors(cwd));
-    println!("FetchRecentAlways=false");
-    println!("FetchRecentRefsDays=7");
-    println!("FetchRecentCommitsDays=0");
-    println!("FetchRecentRefsIncludeRemotes=true");
-    println!("PruneOffsetDays=3");
-    println!("PruneVerifyRemoteAlways=false");
-    println!("PruneVerifyUnreachableAlways=false");
-    println!("PruneRemoteName=origin");
+    let fp = git_lfs_git::fetch_prune::FetchPruneConfig::from_repo(cwd);
+    println!("FetchRecentAlways={}", fp.fetch_recent_always);
+    println!("FetchRecentRefsDays={}", fp.fetch_recent_refs_days);
+    println!("FetchRecentCommitsDays={}", fp.fetch_recent_commits_days);
+    println!(
+        "FetchRecentRefsIncludeRemotes={}",
+        fp.fetch_recent_refs_include_remotes
+    );
+    println!("PruneOffsetDays={}", fp.prune_offset_days);
+    println!("PruneVerifyRemoteAlways={}", fp.prune_verify_remote_always);
+    println!(
+        "PruneVerifyUnreachableAlways={}",
+        fp.prune_verify_unreachable_always
+    );
+    println!("PruneRemoteName={}", fp.prune_remote_name);
 }
 
 /// Whether `lfs.skipdownloaderrors` or `GIT_LFS_SKIP_DOWNLOAD_ERRORS` is

@@ -619,7 +619,6 @@ fn env_with_duplicate_endpoints() {
 /// Not from the shell suite: the fetch and prune settings show their
 /// configured values.
 #[test]
-#[ignore = "env always shows the default fetch and prune settings"]
 fn env_shows_fetch_and_prune_settings() {
     let t = Test::new();
     let repo = t.init("env-fetch-prune-settings");
