@@ -22,6 +22,10 @@ pub enum Attrs {
     /// With a macro that sets the LFS attributes, used for `*.txt`
     /// (`lfsmacro`).
     LfsMacro,
+    /// With `a.dat`, `a.bat`, `a.out`, and `a.bin`, tracked by LFS through
+    /// `.gitattributes`, `info/attributes`, and the global attributes
+    /// file, each overriding another (`special`).
+    Special,
 }
 
 /// Write `contents` of `size` to each of `files`.
@@ -143,6 +147,29 @@ pub fn single_local_branch_tracked_corrupt<'a>(t: &'a Test, attrs: Attrs) -> Rep
             attributes = "[attr]lfs filter=lfs diff=lfs merge=lfs -text\n*.txt lfs\n".into();
         }
         Attrs::Macro => attributes += "[attr]foo foo\n",
+        Attrs::Special => {
+            repo.write(
+                ".git/info/attributes",
+                "*.dat filter=lfs\n*.bin filter=lfs diff=lfs merge=lfs -text\n",
+            );
+            attributes += "*.dat filter=overridden diff=lfs merge=lfs -text\n";
+            let global = t.home().join(".config/git");
+            std::fs::create_dir_all(&global).unwrap();
+            std::fs::write(
+                global.join("attributes"),
+                "*.bat filter=overridden diff=lfs merge=lfs -text\n*.out filter=lfs\n",
+            )
+            .unwrap();
+            attributes += "*.bat filter=lfs\n*.out diff=lfs merge=lfs -text\n";
+            let files = [
+                ("a.dat", 120),
+                ("a.bat", 120),
+                ("a.out", 120),
+                ("a.bin", 120),
+            ];
+            write_sized(&repo, &files);
+            repo.git(["add", "a.dat", "a.bat", "a.out", "a.bin"]).ok();
+        }
         _ => {}
     }
     if attrs == Attrs::Link {
