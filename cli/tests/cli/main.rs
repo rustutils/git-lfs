@@ -13,6 +13,7 @@ mod clone;
 mod config;
 mod env;
 mod fetch;
+mod fetch_recent;
 mod filter_process;
 mod fsck;
 mod install;
