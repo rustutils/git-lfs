@@ -125,7 +125,6 @@ fn migrate_export_with_remote() {
 }
 
 #[test]
-#[ignore = "the --exclude line lacks -text"]
 fn migrate_export_include_exclude_args() {
     let t = Test::new();
     let repo = fixtures::single_local_branch_tracked(&t, Attrs::Plain);

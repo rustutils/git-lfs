@@ -241,9 +241,8 @@ pub(super) fn any_attrs_symlink(cwd: &Path, refs: &[String]) -> bool {
 ///
 /// Each `--include` pattern adds `<pat> !text !filter !merge !diff` and
 /// removes `<pat> filter=lfs diff=lfs merge=lfs -text`. Each `--exclude`
-/// pattern adds `<pat> filter=lfs diff=lfs merge=lfs`, so a broad
-/// include doesn't untrack it. Unlike upstream, patterns aren't escaped
-/// and the exclude line has no `-text`.
+/// pattern adds `<pat> filter=lfs diff=lfs merge=lfs -text`, so a broad
+/// include doesn't untrack it. Unlike upstream, patterns aren't escaped.
 fn build_export_attrs(include: &[String], exclude: &[String]) -> (Vec<String>, Vec<String>) {
     let mut adds: Vec<String> = Vec::new();
     let mut removes: Vec<String> = Vec::new();
@@ -252,7 +251,7 @@ fn build_export_attrs(include: &[String], exclude: &[String]) -> (Vec<String>, V
         removes.push(format!("{pat} filter=lfs diff=lfs merge=lfs -text"));
     }
     for pat in exclude {
-        adds.push(format!("{pat} filter=lfs diff=lfs merge=lfs"));
+        adds.push(format!("{pat} filter=lfs diff=lfs merge=lfs -text"));
     }
     (adds, removes)
 }

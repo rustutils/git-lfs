@@ -10,6 +10,8 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- `git lfs migrate export` writes the `.gitattributes` line for an
+  `--exclude` pattern with `-text`, like upstream.
 - `git lfs migrate import --fixup` and `migrate info --fixup` let a
   directory's `.gitattributes` take precedence over the root's, like
   upstream, also when the directory's name sorts before `.gitattributes`,
