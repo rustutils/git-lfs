@@ -8,8 +8,10 @@ mod harness;
 mod migrate_fixtures;
 
 mod checkout;
+mod clean;
 mod clone;
 mod fetch;
+mod filter_process;
 mod fsck;
 mod install;
 mod install_custom_hooks_path;
@@ -27,6 +29,7 @@ mod pre_push;
 mod prune;
 mod pull;
 mod push;
+mod smudge;
 mod status;
 mod track;
 mod uninstall;
