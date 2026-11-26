@@ -11,6 +11,7 @@ mod checkout;
 mod clone;
 mod fetch;
 mod fsck;
+mod install;
 mod lock;
 mod locks;
 mod ls_files;
