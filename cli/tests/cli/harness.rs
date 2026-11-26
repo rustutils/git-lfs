@@ -468,6 +468,28 @@ impl Repo<'_> {
         assert_eq!(blob.stdout(), pointer(oid, size), "{rev}:{path}");
     }
 
+    /// Check that `path` at `rev` isn't a pointer.
+    #[track_caller]
+    pub fn refute_pointer(&self, rev: &str, path: &str) {
+        let blob = self.blob(rev, path).expect("no such blob");
+        assert!(
+            !blob.starts_with("version https://git-lfs"),
+            "{rev}:{path} is a pointer"
+        );
+    }
+
+    /// The contents of `path` at `rev`, if it exists.
+    pub fn blob(&self, rev: &str, path: &str) -> Option<String> {
+        let run = self.git(["cat-file", "-p", &format!("{rev}:{path}")]);
+        (run.code() == Some(0)).then(|| run.stdout())
+    }
+
+    /// The object ID `rev` names.
+    pub fn rev_parse(&self, rev: &str) -> String {
+        let run = self.git(["rev-parse", "--verify", rev]).ok();
+        run.stdout().trim().to_owned()
+    }
+
     /// Configure the case-inverting pointer extension, like the shell
     /// suites' `setup_case_inverter_extension`. It logs each run to the
     /// returned file.

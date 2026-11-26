@@ -13,6 +13,8 @@ use crate::harness::{Repo, Test, sized};
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Attrs {
     Plain,
+    /// Executable (`0755`).
+    Executable,
     /// A symlink to `gitattrs` (`link`).
     Link,
     /// With an unrelated macro definition (`macro`).
@@ -48,6 +50,11 @@ pub fn local_branch_with_gitattrs<'a>(t: &'a Test, attrs: Attrs) -> Repo<'a> {
     commit(&repo, &["a.txt"], "initial commit");
     repo.lfs(["track", "*.txt"]).ok();
     repo.lfs(["track", "*.other"]).ok();
+    if attrs == Attrs::Executable {
+        use std::os::unix::fs::PermissionsExt;
+        let path = repo.path().join(".gitattributes");
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
     if attrs == Attrs::Link {
         std::fs::rename(
             repo.path().join(".gitattributes"),
@@ -58,6 +65,16 @@ pub fn local_branch_with_gitattrs<'a>(t: &'a Test, attrs: Attrs) -> Repo<'a> {
         repo.git(["add", "gitattrs"]).ok();
     }
     commit(&repo, &[".gitattributes"], "add .gitattributes");
+    repo
+}
+
+/// An empty commit, then `a.txt` and `name` committed outside LFS.
+pub fn single_local_branch_untracked<'a>(t: &'a Test, name: &str) -> Repo<'a> {
+    let repo = t.init("migrate-single-local-branch-untracked");
+    repo.git(["commit", "--allow-empty", "-m", "initial commit"])
+        .ok();
+    write_sized(&repo, &[("a.txt", 120), (name, 140)]);
+    commit(&repo, &["a.txt", name], &format!("add a.txt and {name}"));
     repo
 }
 
@@ -139,6 +156,18 @@ pub fn multiple_local_branches(t: &Test) -> Repo<'_> {
     repo
 }
 
+/// [`multiple_local_branches`], with `refs/pull/1/head` at `my-feature`
+/// and `refs/pull/1/base` at `main`.
+pub fn multiple_local_branches_non_standard(t: &Test) -> Repo<'_> {
+    let repo = multiple_local_branches(t);
+    for (name, target) in [("head", "my-feature"), ("base", "main")] {
+        let sha = repo.git(["rev-parse", target]).ok().stdout();
+        repo.git(["update-ref", &format!("refs/pull/1/{name}"), sha.trim()])
+            .ok();
+    }
+    repo
+}
+
 /// [`multiple_local_branches`], with a file without an extension.
 pub fn multiple_local_branches_with_alternate_names(t: &Test) -> Repo<'_> {
     let repo = t.init("migrate-info-multiple-local-branches");
@@ -210,5 +239,119 @@ pub fn single_local_branch_deep_trees(t: &Test) -> Repo<'_> {
     let repo = t.init("migrate-single-local-branch-with-deep-trees");
     write_sized(&repo, &[("foo/bar/baz/a.txt", 120)]);
     commit(&repo, &["foo/bar/baz/a.txt"], "initial commit");
+    repo
+}
+
+/// `a file.txt` committed.
+pub fn local_branch_with_space(t: &Test) -> Repo<'_> {
+    let repo = t.init("migrate-local-branch-with-space");
+    write_sized(&repo, &[("a file.txt", 50)]);
+    commit(&repo, &["a file.txt"], "initial commit");
+    repo
+}
+
+/// `a.txt` committed with 1 byte, then with 2 bytes and tagged `v1.0.0`,
+/// with an annotated tag if `annotated`.
+pub fn single_local_branch_with_tags(t: &Test, annotated: bool) -> Repo<'_> {
+    let repo = t.init("migrate-single-local-branch-tags");
+    write_sized(&repo, &[("a.txt", 1)]);
+    commit(&repo, &["a.txt"], "initial commit");
+    write_sized(&repo, &[("a.txt", 2)]);
+    commit(&repo, &["a.txt"], "secondary commit");
+    if annotated {
+        repo.git(["tag", "v1.0.0", "-m", "v1.0.0"]).ok();
+    } else {
+        repo.git(["tag", "v1.0.0"]).ok();
+    }
+    repo
+}
+
+/// A clone with a second remote, `fork`. `a.txt` is pushed to `origin`,
+/// then changed and pushed to `fork`.
+pub fn multiple_remotes(t: &Test) -> Repo<'_> {
+    let repo = t.remote_and_clone("migrate-multiple-remotes");
+    t.remote("migrate-multiple-remotes-fork");
+    repo.git([
+        "remote",
+        "add",
+        "fork",
+        &t.remote_url("migrate-multiple-remotes-fork"),
+    ])
+    .ok();
+    repo.write("a.txt", sized("a.txt", 16));
+    commit(&repo, &["a.txt"], "initial commit");
+    repo.git(["push", "origin", "main"]).ok();
+    repo.write("a.txt", sized("a.txt again", 16));
+    commit(&repo, &["a.txt"], "another commit");
+    repo.git(["push", "fork", "main"]).ok();
+    repo
+}
+
+/// `a.txt`, `foo/a.txt`, `bar.txt/b.md`, and `bar.txt/b.txt` committed.
+pub fn single_local_branch_same_file_tree_ext(t: &Test) -> Repo<'_> {
+    let repo = t.init("migrate-single-local-branch-with-same-file-tree-ext");
+    let files = ["a.txt", "foo/a.txt", "bar.txt/b.md", "bar.txt/b.txt"];
+    for file in files {
+        repo.write(file, sized(file, 120));
+    }
+    commit(&repo, &files, "initial commit");
+    repo
+}
+
+/// `a.txt` committed, then `link.txt`, a symlink to it.
+pub fn local_branch_with_symlink(t: &Test) -> Repo<'_> {
+    let repo = t.init("migrate-single-local-branch-with-symlink");
+    write_sized(&repo, &[("a.txt", 120)]);
+    commit(&repo, &["a.txt"], "initial commit");
+    symlink(&repo, "a.txt", "link.txt");
+    commit(&repo, &["link.txt"], "add symlink");
+    repo
+}
+
+/// `a.txt` committed with the text `a.txt`, then changed in the working
+/// tree.
+pub fn local_branch_with_dirty_copy(t: &Test) -> Repo<'_> {
+    let repo = t.init("migrate-single-local-branch-with-dirty-copy");
+    repo.write("a.txt", "a.txt");
+    commit(&repo, &["a.txt"], "initial commit");
+    repo.append("a.txt", "2");
+    repo
+}
+
+/// `a.txt` and `dir/a.txt` committed, both with the text `a.txt`.
+pub fn local_branch_with_copied_file(t: &Test) -> Repo<'_> {
+    let repo = t.init("migrate-single-local-branch-with-copied-file");
+    repo.write("a.txt", "a.txt");
+    repo.write("dir/a.txt", "a.txt");
+    commit(&repo, &["a.txt", "dir/a.txt"], "initial commit");
+    repo
+}
+
+/// Three `.bin` files with special characters in their names committed.
+pub fn local_branch_with_special_character_files(t: &Test) -> Repo<'_> {
+    let repo = t.init("migrate-single-local-branch-with-special-filenames");
+    write_sized(
+        &repo,
+        &[
+            ("test - special.bin", 80),
+            ("test (test2) special.bin", 100),
+            ("test * ** special.bin", 120),
+        ],
+    );
+    repo.git(["add", "--", "*.bin"]).ok();
+    repo.git(["commit", "-m", "initial commit"]).ok();
+    repo
+}
+
+/// Turn `repo` into a bare repository, like the shell suites' `make_bare`,
+/// and return it.
+pub fn make_bare<'a>(t: &'a Test, repo: Repo<'a>) -> Repo<'a> {
+    let dir = repo.path().to_path_buf();
+    let name = dir.file_name().unwrap().to_str().unwrap().to_owned();
+    let bare = format!("{name}.git");
+    std::fs::rename(dir.join(".git"), dir.with_file_name(&bare)).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let repo = t.repo(&bare);
+    repo.git(["config", "--bool", "core.bare", "true"]).ok();
     repo
 }
