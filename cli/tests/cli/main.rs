@@ -10,6 +10,7 @@ mod migrate_fixtures;
 mod checkout;
 mod clean;
 mod clone;
+mod config;
 mod fetch;
 mod filter_process;
 mod fsck;
