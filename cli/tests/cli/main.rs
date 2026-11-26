@@ -12,6 +12,7 @@ mod clone;
 mod fetch;
 mod fsck;
 mod install;
+mod install_custom_hooks_path;
 mod install_worktree;
 mod lock;
 mod locks;
