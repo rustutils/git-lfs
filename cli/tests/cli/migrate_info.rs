@@ -265,7 +265,6 @@ fn migrate_info_above_threshold_top() {
 }
 
 #[test]
-#[ignore = "--top doesn't accept a negative number"]
 fn migrate_info_top() {
     let t = Test::new();
     let repo = with_bin(&t);

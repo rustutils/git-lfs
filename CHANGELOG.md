@@ -10,6 +10,8 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- `git lfs migrate info --top` accepts zero or a negative number and then
+  shows nothing, like upstream. Before, a negative number was an error.
 - `git lfs clean`, `smudge`, and `filter-process` refuse stdin that's a
   terminal or other character device, like upstream, saying they should be
   run by Git. Before, run by hand, they waited for input, or for

@@ -1150,8 +1150,14 @@ pub struct MigrateInfoArgs {
     ///
     /// Default 5. When existing Git LFS objects are found, an extra
     /// "LFS Objects" line is output in addition to the top N
-    /// entries (unless `--pointers` changes this).
-    #[arg(long, default_value_t = 5)]
+    /// entries (unless `--pointers` changes this). Zero or less shows
+    /// nothing.
+    #[arg(
+        long,
+        default_value_t = 5,
+        allow_negative_numbers = true,
+        value_parser = parse_clamped_count
+    )]
     pub top: usize,
 
     /// How to handle existing LFS pointer blobs.
@@ -1190,6 +1196,15 @@ pub struct MigrateInfoArgs {
     /// auto-fetch path).
     #[arg(long)]
     pub remote: Option<String>,
+}
+
+/// Parses a whole number and clamps a negative one to zero, as upstream
+/// does for `--top`.
+fn parse_clamped_count(value: &str) -> Result<usize, String> {
+    let n: i64 = value
+        .parse()
+        .map_err(|e: std::num::ParseIntError| e.to_string())?;
+    Ok(usize::try_from(n).unwrap_or(0))
 }
 
 /// Populate working copy with real content from Git LFS files.

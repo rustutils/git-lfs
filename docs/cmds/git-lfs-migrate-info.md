@@ -50,7 +50,7 @@ Existing Git LFS pointers are followed by default (the size of the referenced ob
 - `--top` `<TOP>`
     Display the top N entries, ordered by total file count.
 
-    Default 5. When existing Git LFS objects are found, an extra "LFS Objects" line is output in addition to the top N entries (unless `--pointers` changes this).
+    Default 5. When existing Git LFS objects are found, an extra "LFS Objects" line is output in addition to the top N entries (unless `--pointers` changes this). Zero or less shows nothing.
 
 - `--pointers` `<POINTERS>`
     How to handle existing LFS pointer blobs.
