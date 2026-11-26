@@ -10,6 +10,11 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- The `--include` and `--exclude` patterns of `git lfs migrate` match like
+  `.gitattributes` patterns, as upstream. `a.txt` matches a file of that
+  name in any directory, and `/a.txt` only the one at the root. Before,
+  `a.txt` matched only at the root, and `/a.txt` matched nothing, though
+  `migrate import` still tracked it.
 - `git lfs migrate info --top` accepts zero or a negative number and then
   shows nothing, like upstream. Before, a negative number was an error.
 - `git lfs clean`, `smudge`, and `filter-process` refuse stdin that's a

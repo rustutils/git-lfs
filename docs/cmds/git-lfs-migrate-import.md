@@ -30,10 +30,10 @@ With `--no-rewrite`, migrate objects to pointers in a single new commit on top o
 ### Flags
 
 - `-I`, `--include` `<INCLUDE>`
-    Convert paths matching this glob (repeatable, comma-delimited). Required unless `--above` is set or `--no-rewrite` is given
+    Convert paths matching this pattern, as in `.gitattributes` (repeatable, comma-delimited). Required unless `--above` is set or `--no-rewrite` is given
 
 - `-X`, `--exclude` `<EXCLUDE>`
-    Exclude paths matching this glob (repeatable, comma-delimited)
+    Exclude paths matching this pattern, as in `.gitattributes` (repeatable, comma-delimited)
 
 - `--include-ref` `<INCLUDE_REF>`
     Restrict the rewrite to commits reachable from these refs. Repeatable

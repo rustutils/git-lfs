@@ -16,9 +16,9 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
+use git_lfs_git::attr::PathPatterns;
 use git_lfs_pointer::{Oid, Pointer};
 use git_lfs_store::Store;
-use globset::GlobSet;
 use sha2::{Digest, Sha256};
 
 use super::fast_export::{Blob, Command, Commit, DataRef, FileChange, Reader};
@@ -48,8 +48,8 @@ pub enum Mode {
 
 #[derive(Debug, Clone, Default)]
 pub struct Options {
-    pub include: Option<GlobSet>,
-    pub exclude: Option<GlobSet>,
+    pub include: Option<PathPatterns>,
+    pub exclude: Option<PathPatterns>,
     /// Minimum blob size to convert, in [`Mode::Import`] only.
     pub above: u64,
     /// `.gitattributes` lines to add to every commit, built from the
@@ -792,7 +792,6 @@ fn replace_or_insert_attrs(changes: &mut Vec<FileChange>, attrs_mark: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use globset::{Glob, GlobSetBuilder};
     use tempfile::TempDir;
 
     fn fixture_store() -> (TempDir, Store) {
@@ -801,10 +800,8 @@ mod tests {
         (tmp, store)
     }
 
-    fn glob(pat: &str) -> GlobSet {
-        let mut b = GlobSetBuilder::new();
-        b.add(Glob::new(pat).unwrap());
-        b.build().unwrap()
+    fn glob(pat: &str) -> PathPatterns {
+        PathPatterns::new([pat])
     }
 
     fn run_transform(input: &[u8], opts: Options) -> (Vec<u8>, Stats) {

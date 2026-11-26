@@ -22,7 +22,7 @@ pub(crate) use pipeline::working_tree_dirty;
 use std::path::Path;
 use std::process::Command;
 
-use globset::{Glob, GlobSet, GlobSetBuilder};
+use git_lfs_git::attr::PathPatterns;
 
 #[derive(Debug, thiserror::Error)]
 pub enum MigrateError {
@@ -30,12 +30,6 @@ pub enum MigrateError {
     Git(#[from] git_lfs_git::Error),
     #[error(transparent)]
     Io(#[from] std::io::Error),
-    #[error("invalid glob pattern {pattern:?}: {source}")]
-    BadGlob {
-        pattern: String,
-        #[source]
-        source: globset::Error,
-    },
     #[error("invalid size {0:?}: expected formats like '500k', '1mb', '2g', or plain bytes")]
     BadSize(String),
     #[error("{0}")]
@@ -182,31 +176,18 @@ fn is_special_ref(refname: &str) -> bool {
             .any(|prefix| refname.starts_with(prefix))
 }
 
-pub(super) fn build_globset(patterns: &[String]) -> Result<Option<GlobSet>, MigrateError> {
-    if patterns.is_empty() {
-        return Ok(None);
-    }
-    let mut builder = GlobSetBuilder::new();
-    for p in patterns {
-        let glob = Glob::new(p).map_err(|e| MigrateError::BadGlob {
-            pattern: p.clone(),
-            source: e,
-        })?;
-        builder.add(glob);
-    }
-    builder
-        .build()
-        .map(Some)
-        .map_err(|e| MigrateError::BadGlob {
-            pattern: patterns.join(", "),
-            source: e,
-        })
+/// The `--include` or `--exclude` patterns, or `None` if there are none.
+///
+/// They match like `.gitattributes` patterns, as upstream: `a.txt`
+/// matches `a.txt` in any directory, and `/a.txt` only at the root.
+pub(super) fn build_patterns(patterns: &[String]) -> Option<PathPatterns> {
+    (!patterns.is_empty()).then(|| PathPatterns::new(patterns))
 }
 
 pub(super) fn path_matches(
     path: &str,
-    include: &Option<GlobSet>,
-    exclude: &Option<GlobSet>,
+    include: &Option<PathPatterns>,
+    exclude: &Option<PathPatterns>,
 ) -> bool {
     if let Some(ex) = exclude
         && ex.is_match(path)
@@ -350,8 +331,8 @@ mod tests {
 
     #[test]
     fn path_matches_include_and_exclude() {
-        let inc = build_globset(&["*.bin".into()]).unwrap();
-        let exc = build_globset(&["**/skip.bin".into()]).unwrap();
+        let inc = build_patterns(&["*.bin".into()]);
+        let exc = build_patterns(&["skip.bin".into()]);
         assert!(path_matches("foo.bin", &inc, &exc));
         assert!(!path_matches("foo.txt", &inc, &exc));
         assert!(!path_matches("dir/skip.bin", &inc, &exc));

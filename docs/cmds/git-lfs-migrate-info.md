@@ -28,10 +28,10 @@ Existing Git LFS pointers are followed by default (the size of the referenced ob
 ### Flags
 
 - `-I`, `--include` `<INCLUDE>`
-    Only include paths matching this glob (repeatable, comma-delimited)
+    Only include paths matching this pattern, as in `.gitattributes` (repeatable, comma-delimited)
 
 - `-X`, `--exclude` `<EXCLUDE>`
-    Exclude paths matching this glob (repeatable, comma-delimited)
+    Exclude paths matching this pattern, as in `.gitattributes` (repeatable, comma-delimited)
 
 - `--include-ref` `<INCLUDE_REF>`
     Restrict the scan to commits reachable from these refs. Repeatable

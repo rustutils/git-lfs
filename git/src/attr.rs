@@ -20,6 +20,9 @@
 //!
 //! [`list_lfs_patterns`] is separate. It lists the raw LFS pattern lines
 //! for `git lfs track`, without matching any paths.
+//!
+//! [`PathPatterns`] matches paths against patterns given on their own,
+//! such as `git lfs migrate --include`, by the same rules.
 
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -566,10 +569,73 @@ fn walk_for_gitattributes(dir: &Path, out: &mut Vec<PathBuf>) -> io::Result<()> 
     Ok(())
 }
 
+/// Patterns matched against paths the way `.gitattributes` patterns are.
+///
+/// A pattern without a slash matches the file name at any depth, and
+/// one with a slash matches the whole path from the repository root. A
+/// leading slash only anchors the pattern. A `*` doesn't match a slash,
+/// but `**` does. A pattern ending in a slash matches only directories,
+/// so never a file.
+#[derive(Debug, Clone)]
+pub struct PathPatterns {
+    patterns: Vec<gix_glob::Pattern>,
+}
+
+impl PathPatterns {
+    /// Parse `patterns`, skipping empty ones and comments, which match
+    /// nothing.
+    pub fn new<S: AsRef<str>>(patterns: impl IntoIterator<Item = S>) -> Self {
+        let patterns = patterns
+            .into_iter()
+            .filter_map(|p| gix_glob::Pattern::from_bytes_without_negation(p.as_ref().as_bytes()))
+            .collect();
+        Self { patterns }
+    }
+
+    /// Whether any pattern matches the file at `path`, relative to the
+    /// repository root and separated by slashes.
+    pub fn is_match(&self, path: &str) -> bool {
+        let basename = path.rfind('/').map(|i| i + 1);
+        self.patterns.iter().any(|p| {
+            p.matches_repo_relative_path(
+                path.into(),
+                basename,
+                Some(false),
+                Case::Sensitive,
+                gix_glob::wildmatch::Mode::NO_MATCH_SLASH_LITERAL,
+            )
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn path_patterns_match_like_gitattributes() {
+        let cases: &[(&str, &[&str], &[&str])] = &[
+            ("a.txt", &["a.txt", "dir/a.txt"], &["b.txt", "a.txt/b"]),
+            ("/a.txt", &["a.txt"], &["dir/a.txt"]),
+            ("*.txt", &["a.txt", "x/y/a.txt"], &["bar.txt/b.md"]),
+            ("dir/*.txt", &["dir/a.txt"], &["dir/x/a.txt", "x/dir/a.txt"]),
+            ("foo/**", &["foo/a", "foo/b/c"], &["a/foo/b"]),
+            ("**/*ar/**", &["foo/bar/baz/a.txt"], &["foo/baz/a.txt"]),
+            ("a[[:space:]]b", &["a b"], &["ab"]),
+            ("dir/", &[], &["dir", "dir/a"]),
+        ];
+        for (pattern, matching, other) in cases {
+            let set = PathPatterns::new([pattern]);
+            for path in *matching {
+                assert!(set.is_match(path), "{pattern} should match {path}");
+            }
+            for path in *other {
+                assert!(!set.is_match(path), "{pattern} matched {path}");
+            }
+        }
+        assert!(!PathPatterns::new(["", "# comment"]).is_match(""));
+    }
 
     #[test]
     fn negated_macro_unsets_constituent_attrs() {

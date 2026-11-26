@@ -22,7 +22,7 @@ use sha2::{Digest, Sha256};
 
 use super::pipeline::{ensure_working_copy_clean, print_pre_migrate_refs, refresh_working_tree};
 use super::transform::{Mode, Stats};
-use super::{MigrateError, RefSelection, build_globset, head_exists, resolve_refs};
+use super::{MigrateError, RefSelection, build_patterns, head_exists, resolve_refs};
 
 #[derive(Debug, Clone)]
 pub struct ImportOptions {
@@ -132,8 +132,8 @@ pub fn import(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateError> {
     print_pre_migrate_refs(cwd, &include_refs);
 
     let store = Store::new(git_lfs_git::lfs_dir(cwd)?);
-    let include = build_globset(&opts.include)?;
-    let exclude = build_globset(&opts.exclude)?;
+    let include = build_patterns(&opts.include);
+    let exclude = build_patterns(&opts.exclude);
 
     let marks_tmp = tempfile::NamedTempFile::new().map_err(MigrateError::Io)?;
 

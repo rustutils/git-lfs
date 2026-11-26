@@ -1021,7 +1021,6 @@ fn migrate_import_copied_file() {
 }
 
 #[test]
-#[ignore = "--include=/a.txt doesn't match a.txt"]
 fn migrate_import_copied_file_with_only_a_single_path() {
     let t = Test::new();
     let repo = fixtures::local_branch_with_copied_file(&t);
@@ -1033,6 +1032,20 @@ fn migrate_import_copied_file_with_only_a_single_path() {
     assert_eq!(attrs_starting(&repo, "/a.txt "), 1);
     repo.assert_pointer("refs/heads/main", "a.txt", &txt, 5);
     repo.refute_pointer("refs/heads/main", "dir/a.txt");
+}
+
+/// Not from the shell suite: a pattern without a slash matches the file
+/// name in any directory, like a `.gitattributes` pattern.
+#[test]
+fn migrate_import_include_without_slash_matches_any_directory() {
+    let t = Test::new();
+    let repo = fixtures::local_branch_with_copied_file(&t);
+    let txt = oid("a.txt");
+
+    import(&repo, &["--include=a.txt"]).ok();
+
+    repo.assert_pointer("refs/heads/main", "a.txt", &txt, 5);
+    repo.assert_pointer("refs/heads/main", "dir/a.txt", &txt, 5);
 }
 
 #[test]

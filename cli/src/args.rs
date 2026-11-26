@@ -916,12 +916,14 @@ pub struct MigrateImportArgs {
     /// files to convert. References prefixed with `^` are excluded.
     pub args: Vec<String>,
 
-    /// Convert paths matching this glob (repeatable, comma-delimited).
-    /// Required unless `--above` is set or `--no-rewrite` is given.
+    /// Convert paths matching this pattern, as in `.gitattributes`
+    /// (repeatable, comma-delimited). Required unless `--above` is set or
+    /// `--no-rewrite` is given.
     #[arg(short = 'I', long = "include")]
     pub include: Vec<String>,
 
-    /// Exclude paths matching this glob (repeatable, comma-delimited).
+    /// Exclude paths matching this pattern, as in `.gitattributes`
+    /// (repeatable, comma-delimited).
     #[arg(short = 'X', long = "exclude")]
     pub exclude: Vec<String>,
 
@@ -1031,13 +1033,13 @@ pub struct MigrateExportArgs {
     /// branch). References prefixed with `^` are excluded.
     pub branches: Vec<String>,
 
-    /// Convert pointers at paths matching this glob (repeatable,
-    /// comma-delimited). Required — at least one must be given.
+    /// Convert pointers at paths matching this pattern, as in
+    /// `.gitattributes` (repeatable, comma-delimited). Required — at least one must be given.
     #[arg(short = 'I', long = "include")]
     pub include: Vec<String>,
 
-    /// Don't convert pointers at paths matching this glob
-    /// (repeatable, comma-delimited).
+    /// Don't convert pointers at paths matching this pattern, as in
+    /// `.gitattributes` (repeatable, comma-delimited).
     #[arg(short = 'X', long = "exclude")]
     pub exclude: Vec<String>,
 
@@ -1116,12 +1118,13 @@ pub struct MigrateInfoArgs {
     /// References prefixed with `^` are excluded.
     pub branches: Vec<String>,
 
-    /// Only include paths matching this glob (repeatable,
-    /// comma-delimited).
+    /// Only include paths matching this pattern, as in `.gitattributes`
+    /// (repeatable, comma-delimited).
     #[arg(short = 'I', long = "include")]
     pub include: Vec<String>,
 
-    /// Exclude paths matching this glob (repeatable, comma-delimited).
+    /// Exclude paths matching this pattern, as in `.gitattributes`
+    /// (repeatable, comma-delimited).
     #[arg(short = 'X', long = "exclude")]
     pub exclude: Vec<String>,
 

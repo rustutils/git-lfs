@@ -11,6 +11,7 @@
 //!
 //! Unlike import, this doesn't skip commits already on a remote.
 
+use git_lfs_git::attr::PathPatterns;
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -22,7 +23,7 @@ use super::pipeline::{
     run_pipeline_with_export_marks,
 };
 use super::transform::{Mode, Stats};
-use super::{MigrateError, RefSelection, build_globset, resolve_refs};
+use super::{MigrateError, RefSelection, build_patterns, resolve_refs};
 
 #[derive(Debug, Clone)]
 pub struct ExportOptions {
@@ -94,8 +95,8 @@ pub fn export(cwd: &Path, opts: &ExportOptions) -> Result<Stats, MigrateError> {
 
     let store = Store::new(git_lfs_git::lfs_dir(cwd)?)
         .with_references(git_lfs_git::lfs_alternate_dirs(cwd).unwrap_or_default());
-    let include = build_globset(&opts.include)?;
-    let exclude = build_globset(&opts.exclude)?;
+    let include = build_patterns(&opts.include);
+    let exclude = build_patterns(&opts.exclude);
     download_missing(
         cwd,
         &store,
@@ -352,7 +353,7 @@ fn download_missing(
     cwd: &Path,
     store: &Store,
     (include_refs, exclude_refs): (&[String], &[String]),
-    (include, exclude): (&Option<globset::GlobSet>, &Option<globset::GlobSet>),
+    (include, exclude): (&Option<PathPatterns>, &Option<PathPatterns>),
     remote: Option<&str>,
 ) -> Result<(), MigrateError> {
     use git_lfs_git::endpoint::Operation;

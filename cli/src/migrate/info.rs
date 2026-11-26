@@ -16,7 +16,7 @@ use git_lfs_pointer::{MAX_POINTER_SIZE, Pointer};
 
 use super::transform::{dir_of, is_attrs_path};
 use super::{
-    MigrateError, RefSelection, build_globset, ext_group, humanize, humanize_with_unit,
+    MigrateError, RefSelection, build_patterns, ext_group, humanize, humanize_with_unit,
     path_matches, resolve_refs,
 };
 
@@ -121,8 +121,8 @@ pub fn info(cwd: &Path, opts: &InfoOptions) -> Result<(), MigrateError> {
         return info_fixup(cwd, opts, &include_refs, &exclude_refs);
     }
 
-    let include = build_globset(&opts.include)?;
-    let exclude = build_globset(&opts.exclude)?;
+    let include = build_patterns(&opts.include);
+    let exclude = build_patterns(&opts.exclude);
 
     let include_strs: Vec<&str> = include_refs.iter().map(String::as_str).collect();
     let exclude_strs: Vec<&str> = exclude_refs.iter().map(String::as_str).collect();

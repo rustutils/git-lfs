@@ -28,10 +28,10 @@ At least one `--include` pattern is required. Objects not present in the local L
 ### Flags
 
 - `-I`, `--include` `<INCLUDE>`
-    Convert pointers at paths matching this glob (repeatable, comma-delimited). Required — at least one must be given
+    Convert pointers at paths matching this pattern, as in `.gitattributes` (repeatable, comma-delimited). Required — at least one must be given
 
 - `-X`, `--exclude` `<EXCLUDE>`
-    Don't convert pointers at paths matching this glob (repeatable, comma-delimited)
+    Don't convert pointers at paths matching this pattern, as in `.gitattributes` (repeatable, comma-delimited)
 
 - `--include-ref` `<INCLUDE_REF>`
     Restrict the rewrite to commits reachable from these refs. Repeatable
