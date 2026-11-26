@@ -493,7 +493,6 @@ fn migrate_export_invalid_pointer() {
 /// Not from the shell suite: the patterns are escaped in `.gitattributes`
 /// as upstream does it, so a space doesn't split the line.
 #[test]
-#[ignore = "patterns aren't escaped like upstream"]
 fn migrate_export_escapes_patterns() {
     let t = Test::new();
     let repo = t.init("repo");

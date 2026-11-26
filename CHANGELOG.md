@@ -10,6 +10,11 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- `git lfs migrate import` and `migrate export` escape the `--include`
+  and `--exclude` patterns they write to `.gitattributes`, like upstream:
+  a backslash is doubled and a `#` gets a backslash. Before, export didn't
+  escape them at all, so a pattern with a space wrote a broken line, and
+  import wrote a backslash as is, which matched a different file.
 - `git lfs migrate export` leaves commits already on a remote alone, like
   upstream and like `migrate import`. Before, it rewrote them too. As
   with import, `--everything`, `--include-ref`, and `--exclude-ref` turn

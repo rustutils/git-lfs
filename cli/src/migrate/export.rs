@@ -23,7 +23,7 @@ use super::pipeline::{
     run_pipeline_with_export_marks,
 };
 use super::transform::{Mode, Stats};
-use super::{MigrateError, RefSelection, build_patterns, resolve_refs};
+use super::{MigrateError, RefSelection, build_patterns, escape_attr_pattern, resolve_refs};
 
 #[derive(Debug, Clone)]
 pub struct ExportOptions {
@@ -230,15 +230,18 @@ pub(super) fn any_attrs_symlink(cwd: &Path, refs: &[String]) -> bool {
 /// Each `--include` pattern adds `<pat> !text !filter !merge !diff` and
 /// removes `<pat> filter=lfs diff=lfs merge=lfs -text`. Each `--exclude`
 /// pattern adds `<pat> filter=lfs diff=lfs merge=lfs -text`, so a broad
-/// include doesn't untrack it. Unlike upstream, patterns aren't escaped.
+/// include doesn't untrack it. The patterns are escaped with
+/// [`escape_attr_pattern`].
 fn build_export_attrs(include: &[String], exclude: &[String]) -> (Vec<String>, Vec<String>) {
     let mut adds: Vec<String> = Vec::new();
     let mut removes: Vec<String> = Vec::new();
     for pat in include {
+        let pat = escape_attr_pattern(pat);
         adds.push(format!("{pat} !text !filter !merge !diff"));
         removes.push(format!("{pat} filter=lfs diff=lfs merge=lfs -text"));
     }
     for pat in exclude {
+        let pat = escape_attr_pattern(pat);
         adds.push(format!("{pat} filter=lfs diff=lfs merge=lfs -text"));
     }
     (adds, removes)

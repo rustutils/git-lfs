@@ -22,7 +22,9 @@ use sha2::{Digest, Sha256};
 
 use super::pipeline::{ensure_working_copy_clean, print_pre_migrate_refs, refresh_working_tree};
 use super::transform::{Mode, Stats};
-use super::{MigrateError, RefSelection, build_patterns, head_exists, resolve_refs};
+use super::{
+    MigrateError, RefSelection, build_patterns, escape_attr_pattern, head_exists, resolve_refs,
+};
 
 #[derive(Debug, Clone)]
 pub struct ImportOptions {
@@ -133,8 +135,8 @@ pub fn import(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateError> {
 
     let marks_tmp = tempfile::NamedTempFile::new().map_err(MigrateError::Io)?;
 
-    // `--include` patterns become `.gitattributes` lines as given, with
-    // spaces escaped. Deriving them from each path's extension would
+    // `--include` patterns become `.gitattributes` lines as given, but
+    // escaped. Deriving them from each path's extension would
     // turn `--include "a file.txt"` into `*.txt`. Each `--exclude`
     // pattern gets a line that turns LFS off, as upstream.
     let mut attrs_add_initial: Vec<String> = opts
@@ -192,14 +194,6 @@ pub fn import(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateError> {
         stats.patterns.len(),
     );
     Ok(stats)
-}
-
-/// Escape the spaces in a `.gitattributes` pattern as `[[:space:]]`.
-///
-/// A space would otherwise end the pattern. Glob characters stay, since
-/// the user's pattern is a glob.
-pub(crate) fn escape_attr_pattern(p: &str) -> String {
-    p.replace(' ', "[[:space:]]")
 }
 
 /// Escape a path for a `.gitattributes` pattern that matches only it.

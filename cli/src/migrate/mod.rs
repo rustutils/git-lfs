@@ -217,6 +217,25 @@ fn is_special_ref(refname: &str) -> bool {
             .any(|prefix| refname.starts_with(prefix))
 }
 
+/// Escape a `--include` or `--exclude` pattern for a `.gitattributes`
+/// line, as upstream does.
+///
+/// Doubles each backslash, writes a space as `[[:space:]]` so it doesn't
+/// end the pattern, and puts a backslash before each `#`. Glob characters
+/// stay, since the pattern is a glob.
+pub(super) fn escape_attr_pattern(p: &str) -> String {
+    let mut out = String::with_capacity(p.len());
+    for c in p.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            ' ' => out.push_str("[[:space:]]"),
+            '#' => out.push_str("\\#"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 /// The `--include` or `--exclude` patterns, or `None` if there are none.
 ///
 /// They match like `.gitattributes` patterns, as upstream: `a.txt`
