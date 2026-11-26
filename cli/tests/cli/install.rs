@@ -2,6 +2,9 @@
 //!
 //! Like the shell tests, these start in the test's directory, which isn't a
 //! repository, with the global config that `Test::new` installed.
+//!
+//! The helpers for config settings and hooks are shared with the other
+//! install and uninstall suites.
 
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
@@ -10,7 +13,7 @@ use crate::harness::{Repo, Test};
 const INSTALLED: &str = "Updated Git hooks.\nGit LFS initialized.\n";
 
 /// The hook `git lfs install` writes for `name`.
-fn hook(name: &str) -> String {
+pub(crate) fn hook(name: &str) -> String {
     format!(
         "#!/bin/sh\n\
          command -v git-lfs >/dev/null 2>&1 || {{ printf >&2 \"\\n%s\\n\\n\" \
@@ -22,11 +25,11 @@ fn hook(name: &str) -> String {
     )
 }
 
-const HOOKS: [&str; 4] = ["pre-push", "post-checkout", "post-commit", "post-merge"];
+pub(crate) const HOOKS: [&str; 4] = ["pre-push", "post-checkout", "post-commit", "post-merge"];
 
 /// The value of `key` that `git config` reads in `dir`, with `args` such
 /// as `--global`, or `None` if it's unset.
-fn config(dir: &Repo, args: &[&str], key: &str) -> Option<String> {
+pub(crate) fn config(dir: &Repo, args: &[&str], key: &str) -> Option<String> {
     let mut all = vec!["config"];
     all.extend(args);
     all.push(key);
@@ -35,7 +38,7 @@ fn config(dir: &Repo, args: &[&str], key: &str) -> Option<String> {
 }
 
 /// The directory `name` in the test's directory, made empty.
-fn mkdir<'a>(t: &'a Test, name: &str) -> Repo<'a> {
+pub(crate) fn mkdir<'a>(t: &'a Test, name: &str) -> Repo<'a> {
     std::fs::create_dir(t.dir().join(name)).unwrap();
     t.repo(name)
 }
@@ -43,7 +46,7 @@ fn mkdir<'a>(t: &'a Test, name: &str) -> Repo<'a> {
 /// Check the three filter settings that `git config` reads in `dir` with
 /// `args`.
 #[track_caller]
-fn assert_filters(dir: &Repo, args: &[&str], smudge: &str, clean: &str, process: &str) {
+pub(crate) fn assert_filters(dir: &Repo, args: &[&str], smudge: &str, clean: &str, process: &str) {
     assert_eq!(
         config(dir, args, "filter.lfs.smudge").as_deref(),
         Some(smudge)
@@ -60,7 +63,7 @@ fn assert_filters(dir: &Repo, args: &[&str], smudge: &str, clean: &str, process:
 
 /// Check that `dir` has the default filter settings, as read with `args`.
 #[track_caller]
-fn assert_default_filters(dir: &Repo, args: &[&str]) {
+pub(crate) fn assert_default_filters(dir: &Repo, args: &[&str]) {
     assert_filters(
         dir,
         args,
@@ -72,7 +75,7 @@ fn assert_default_filters(dir: &Repo, args: &[&str]) {
 
 /// Set the three global filter settings to values `install --local` and
 /// `--file` must leave alone.
-fn set_other_global_filters(t: &Test) {
+pub(crate) fn set_other_global_filters(t: &Test) {
     t.git_config_global("filter.lfs.smudge", "global smudge");
     t.git_config_global("filter.lfs.clean", "global clean");
     t.git_config_global("filter.lfs.process", "global filter");
@@ -151,7 +154,7 @@ fn install_with_upgradeable_settings() {
 /// Check that each of the four hooks in `hooks` is the one `install`
 /// writes.
 #[track_caller]
-fn assert_hooks(repo: &Repo, hooks: &str) {
+pub(crate) fn assert_hooks(repo: &Repo, hooks: &str) {
     for name in HOOKS {
         assert_eq!(repo.read(&format!("{hooks}/{name}")), hook(name), "{name}");
     }
@@ -254,7 +257,7 @@ fn install_skip_smudge() {
 /// Check that the global filter settings are still the ones
 /// [`set_other_global_filters`] set.
 #[track_caller]
-fn assert_other_global_filters(dir: &Repo) {
+pub(crate) fn assert_other_global_filters(dir: &Repo) {
     assert_filters(
         dir,
         &["--global"],

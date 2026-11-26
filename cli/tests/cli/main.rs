@@ -27,4 +27,5 @@ mod pull;
 mod push;
 mod status;
 mod track;
+mod uninstall;
 mod unlock;
