@@ -14,6 +14,7 @@ mod fsck;
 mod lock;
 mod locks;
 mod ls_files;
+mod migrate_export;
 mod migrate_fixup;
 mod migrate_import;
 mod migrate_import_no_rewrite;

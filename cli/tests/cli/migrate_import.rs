@@ -497,19 +497,12 @@ fn migrate_import_exclude_with_existing_gitattributes() {
     );
 }
 
-/// Whether `path` in the working tree is executable by its owner.
-fn is_executable(repo: &Repo, path: &str) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    let meta = std::fs::metadata(repo.path().join(path)).unwrap();
-    meta.permissions().mode() & 0o100 != 0
-}
-
 #[test]
 fn migrate_import_existing_gitattributes_with_different_permissions() {
     let t = Test::new();
     let repo = fixtures::local_branch_with_gitattrs(&t, Attrs::Executable);
     let txt = oid_at(&repo, "main", "a.txt");
-    assert!(is_executable(&repo, ".gitattributes"));
+    assert!(fixtures::is_executable(&repo, ".gitattributes"));
 
     import(
         &repo,
@@ -517,7 +510,7 @@ fn migrate_import_existing_gitattributes_with_different_permissions() {
     )
     .ok();
 
-    assert!(!is_executable(&repo, ".gitattributes"));
+    assert!(!fixtures::is_executable(&repo, ".gitattributes"));
     repo.assert_local_object(&txt, 120);
     let main = repo.blob("refs/heads/main", ".gitattributes");
     assert_eq!(
@@ -565,18 +558,14 @@ fn migrate_import_identical_contents_different_permissions() {
     repo.write("foo.dat", "foo\n");
     repo.git(["add", "."]).ok();
     repo.git(["commit", "-m", "add file"]).ok();
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let path = repo.path().join("foo.dat");
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    fixtures::make_executable(&repo, "foo.dat");
     repo.git(["add", "."]).ok();
     repo.git(["commit", "-m", "make file executable"]).ok();
-    assert!(is_executable(&repo, "foo.dat"));
+    assert!(fixtures::is_executable(&repo, "foo.dat"));
 
     import(&repo, &["--everything", "--include=*.dat"]).ok();
 
-    assert!(is_executable(&repo, "foo.dat"));
+    assert!(fixtures::is_executable(&repo, "foo.dat"));
     let tree = repo.git(["ls-tree", "main", "--", "foo.dat"]).ok().stdout();
     assert!(tree.starts_with("100755 blob "), "{tree}");
     let before = repo

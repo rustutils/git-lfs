@@ -40,6 +40,20 @@ fn commit(repo: &Repo, files: &[&str], message: &str) {
     repo.git(["commit", "-m", message]).ok();
 }
 
+/// Give `path` the mode 0755.
+pub fn make_executable(repo: &Repo, path: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let path = repo.path().join(path);
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// Whether `path` in the working tree is executable by its owner.
+pub fn is_executable(repo: &Repo, path: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    let meta = std::fs::metadata(repo.path().join(path)).unwrap();
+    meta.permissions().mode() & 0o100 != 0
+}
+
 /// Make `link` a symlink to `target`, like the shell suites' `add_symlink`
 /// does through the index.
 fn symlink(repo: &Repo, target: &str, link: &str) {
@@ -55,9 +69,7 @@ pub fn local_branch_with_gitattrs<'a>(t: &'a Test, attrs: Attrs) -> Repo<'a> {
     repo.lfs(["track", "*.txt"]).ok();
     repo.lfs(["track", "*.other"]).ok();
     if attrs == Attrs::Executable {
-        use std::os::unix::fs::PermissionsExt;
-        let path = repo.path().join(".gitattributes");
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        make_executable(&repo, ".gitattributes");
     }
     if attrs == Attrs::Link {
         std::fs::rename(
@@ -103,6 +115,9 @@ pub fn single_local_branch_tracked<'a>(t: &'a Test, attrs: Attrs) -> Repo<'a> {
         ".gitattributes",
         "*.txt filter=lfs diff=lfs merge=lfs -text\n*.md filter=lfs diff=lfs merge=lfs -text\n",
     );
+    if attrs == Attrs::Executable {
+        make_executable(&repo, ".gitattributes");
+    }
     commit(&repo, &[".gitattributes"], "initial commit");
     write_sized(&repo, &[("a.txt", 120), ("a.md", 140)]);
     commit(&repo, &["a.txt", "a.md"], "add a.{txt,md}");
@@ -282,11 +297,47 @@ pub fn single_remote_branch_with_gitattrs(t: &Test) -> Repo<'_> {
     repo
 }
 
+/// [`single_remote_branch`], with `*.md` and `*.txt` tracked from the
+/// start, so the files are pointers. The commit adding them is pushed.
+pub fn single_remote_branch_tracked(t: &Test) -> Repo<'_> {
+    let repo = t.remote_and_clone("migrate-info-single-remote-branch");
+    repo.lfs(["track", "*.md", "*.txt"]).ok();
+    commit(&repo, &[".gitattributes"], "initial commit");
+    write_sized(&repo, &[("a.txt", 120), ("a.md", 140)]);
+    commit(&repo, &["a.txt", "a.md"], "add a.{txt,md}");
+    repo.git(["push", "origin", "main"]).ok();
+    write_sized(&repo, &[("a.txt", 30), ("a.md", 50)]);
+    commit(
+        &repo,
+        &["a.md", "a.txt"],
+        "add an additional 30, 50 bytes to a.{txt,md}",
+    );
+    repo
+}
+
 /// A clone with one commit pushed, one more on `main`, and a third on
 /// `my-feature`, each changing `a.txt` and `a.md`, with `main` checked
 /// out.
 pub fn multiple_remote_branches(t: &Test) -> Repo<'_> {
     let repo = t.remote_and_clone("migrate-info-exclude-remote-refs-given-branch");
+    write_sized(&repo, &[("a.txt", 10), ("a.md", 11)]);
+    commit(&repo, &["a.txt", "a.md"], "add 10, 11 bytes, a.{txt,md}");
+    repo.git(["push", "origin", "main"]).ok();
+    write_sized(&repo, &[("a.txt", 20), ("a.md", 21)]);
+    commit(&repo, &["a.txt", "a.md"], "add 20, 21 bytes, a.{txt,md}");
+    repo.git(["checkout", "-b", "my-feature"]).ok();
+    write_sized(&repo, &[("a.txt", 30), ("a.md", 31)]);
+    commit(&repo, &["a.txt", "a.md"], "add 30, 31 bytes, a.{txt,md}");
+    repo.git(["checkout", "main"]).ok();
+    repo
+}
+
+/// [`multiple_remote_branches`], with `*.txt` and `*.md` tracked from the
+/// start, so the files are pointers.
+pub fn multiple_remote_branches_gitattrs(t: &Test) -> Repo<'_> {
+    let repo = t.remote_and_clone("migrate-info-exclude-remote-refs-given-branch");
+    repo.lfs(["track", "*.txt", "*.md"]).ok();
+    commit(&repo, &[".gitattributes"], "initial commit");
     write_sized(&repo, &[("a.txt", 10), ("a.md", 11)]);
     commit(&repo, &["a.txt", "a.md"], "add 10, 11 bytes, a.{txt,md}");
     repo.git(["push", "origin", "main"]).ok();
