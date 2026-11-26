@@ -78,6 +78,20 @@ fn migrate_import_fixup_complex_nested() {
     );
 }
 
+/// Not from the shell suite: a directory's `.gitattributes` wins over
+/// the root's, also when the directory sorts before `.gitattributes`.
+#[test]
+fn migrate_import_fixup_nested_dir_sorting_first() {
+    let t = Test::new();
+    let repo = fixtures::single_local_branch_complex_tracked_dash_dir(&t);
+    let a = oid_at(&repo, "main", "a.txt");
+
+    fixup(&repo, &["--everything"]).ok();
+
+    repo.assert_pointer("refs/heads/main", "a.txt", &a, 1);
+    repo.refute_pointer("refs/heads/main", "-dir/b.txt");
+}
+
 /// Check that `fixup --everything` with `flag` fails with `message`, and
 /// leaves `main` alone.
 fn assert_refused(flag: &str, message: &str) {

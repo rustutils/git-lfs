@@ -578,6 +578,19 @@ fn migrate_info_potential_fixup_complex_nested_fixup() {
     );
 }
 
+/// Not from the shell suite: a directory's `.gitattributes` wins over
+/// the root's, also when the directory sorts before `.gitattributes`.
+#[test]
+fn migrate_info_fixup_nested_dir_sorting_first() {
+    let t = Test::new();
+    let repo = fixtures::single_local_branch_complex_tracked_dash_dir(&t);
+    assert_info(
+        &repo,
+        &["--fixup"],
+        &[row(["*.txt", "1 B", "1/1 file ", "100%"])],
+    );
+}
+
 /// A tag named like HEAD's commit doesn't confuse it.
 #[test]
 fn migrate_info_ambiguous_reference() {

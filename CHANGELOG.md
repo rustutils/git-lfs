@@ -10,6 +10,10 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- `git lfs migrate import --fixup` and `migrate info --fixup` let a
+  directory's `.gitattributes` take precedence over the root's, like
+  upstream, also when the directory's name sorts before `.gitattributes`,
+  such as `-dir`. Before, the root's won for such a directory.
 - The `--include` and `--exclude` patterns of `git lfs migrate` match like
   `.gitattributes` patterns, as upstream. `a.txt` matches a file of that
   name in any directory, and `/a.txt` only the one at the root. Before,

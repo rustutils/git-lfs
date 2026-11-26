@@ -36,7 +36,7 @@ fn write_sized(repo: &Repo, files: &[(&str, usize)]) {
 }
 
 fn commit(repo: &Repo, files: &[&str], message: &str) {
-    repo.git(["add"].iter().chain(files)).ok();
+    repo.git(["add", "--"].iter().chain(files)).ok();
     repo.git(["commit", "-m", message]).ok();
 }
 
@@ -132,18 +132,30 @@ pub fn single_local_branch_tracked<'a>(t: &'a Test, attrs: Attrs) -> Repo<'a> {
 /// `a.txt` and `dir/b.txt` committed without the LFS filters, where the
 /// attributes track the first but not the second.
 pub fn single_local_branch_complex_tracked(t: &Test) -> Repo<'_> {
+    complex_tracked_in(t, "dir")
+}
+
+/// Like [`single_local_branch_complex_tracked`], in `-dir`, which sorts
+/// before `.gitattributes`.
+pub fn single_local_branch_complex_tracked_dash_dir(t: &Test) -> Repo<'_> {
+    complex_tracked_in(t, "-dir")
+}
+
+fn complex_tracked_in<'a>(t: &'a Test, dir: &str) -> Repo<'a> {
     let repo = t.init("migrate-single-local-branch-complex-tracked");
+    let dir_attributes = format!("{dir}/.gitattributes");
+    let b = format!("{dir}/b.txt");
     repo.write(
         ".gitattributes",
         "*.txt filter=lfs diff=lfs merge=lfs -text\n",
     );
-    repo.write("dir/.gitattributes", "*.txt !filter !diff !merge\n");
+    repo.write(&dir_attributes, "*.txt !filter !diff !merge\n");
     repo.write("a.txt", "a");
-    repo.write("dir/b.txt", "b");
+    repo.write(&b, "b");
     repo.lfs(["uninstall"]).ok();
     commit(
         &repo,
-        &[".gitattributes", "dir/.gitattributes", "a.txt", "dir/b.txt"],
+        &[".gitattributes", &dir_attributes, "a.txt", &b],
         "initial commit",
     );
     repo.lfs(["install"]).ok();

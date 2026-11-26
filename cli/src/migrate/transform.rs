@@ -295,7 +295,7 @@ impl<'a> Transform<'a> {
         // The last list added takes precedence, so add from lowest to
         // highest: the global file, `.gitattributes` from shallow to
         // deep, then `info/attributes`.
-        attrs_dirs.sort_by_key(|(d, _)| d.matches('/').count());
+        attrs_dirs.sort_by_key(|(d, _)| dir_depth(d));
         let mut attrs = git_lfs_git::AttrSet::empty();
         if !self.opts.global_attrs.is_empty() {
             attrs.add_buffer_at(&self.opts.global_attrs, "");
@@ -713,6 +713,16 @@ pub(super) fn dir_of(path: &str) -> String {
     match path.rsplit_once('/') {
         Some((parent, _)) => parent.to_owned(),
         None => String::new(),
+    }
+}
+
+/// How deep `dir`, from [`dir_of`], is: 0 at the top level, 1 for a
+/// top-level directory, and so on.
+pub(super) fn dir_depth(dir: &str) -> usize {
+    if dir.is_empty() {
+        0
+    } else {
+        dir.split('/').count()
     }
 }
 

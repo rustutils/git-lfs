@@ -14,7 +14,7 @@ use git_lfs_git::rev_list::rev_list;
 use git_lfs_git::scanner::scan_tree_blobs;
 use git_lfs_pointer::{MAX_POINTER_SIZE, Pointer};
 
-use super::transform::{dir_of, is_attrs_path};
+use super::transform::{dir_depth, dir_of, is_attrs_path};
 use super::{
     MigrateError, RefSelection, build_patterns, ext_group, humanize, humanize_with_unit,
     path_matches, resolve_refs,
@@ -224,7 +224,7 @@ fn info_fixup(
             }
             attrs_dirs.push((dir_of(&path), attrs_blobs[&blob.blob_oid].clone()));
         }
-        attrs_dirs.sort_by_key(|(d, _)| d.matches('/').count());
+        attrs_dirs.sort_by_key(|(d, _)| dir_depth(d));
         let mut attrs = AttrSet::empty();
         if !global_attrs.is_empty() {
             attrs.add_buffer_at(&global_attrs, "");
