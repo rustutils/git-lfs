@@ -31,6 +31,7 @@ mod pre_push;
 mod prune;
 mod pull;
 mod push;
+mod push_failures_remote;
 mod smudge;
 mod status;
 mod track;
