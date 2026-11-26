@@ -1052,6 +1052,41 @@ fn migrate_import_include_ignores_case_with_core_ignorecase() {
     repo.refute_pointer("refs/heads/main", "a.md");
 }
 
+/// Not from the shell suite: the patterns are escaped in `.gitattributes`
+/// as upstream does it, so a space doesn't split the line.
+#[test]
+#[ignore = "patterns aren't escaped like upstream"]
+fn migrate_import_escapes_patterns() {
+    let t = Test::new();
+    let repo = t.init("repo");
+    repo.write("a b#c.txt", "a b#c.txt contents");
+    repo.write("x\\y.md", "x\\y.md contents");
+    repo.git(["add", "."]).ok();
+    repo.git(["commit", "-m", "initial"]).ok();
+
+    import(&repo, &["--include=a b#c.txt", "--exclude=x\\y.md"]).ok();
+
+    assert_attrs(
+        &repo,
+        "main",
+        &[
+            r"a[[:space:]]b\#c.txt filter=lfs diff=lfs merge=lfs -text",
+            r"x\\y.md !text -filter -merge -diff",
+        ],
+    );
+    repo.assert_pointer(
+        "refs/heads/main",
+        "a b#c.txt",
+        &oid("a b#c.txt contents"),
+        18,
+    );
+    let run = repo
+        .git(["check-attr", "filter", "--", "a b#c.txt"])
+        .ok()
+        .stdout();
+    assert_eq!(run, "a b#c.txt: filter: lfs\n");
+}
+
 #[test]
 fn migrate_import_filename_special_characters() {
     let t = Test::new();

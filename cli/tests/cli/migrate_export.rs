@@ -489,3 +489,41 @@ fn migrate_export_invalid_pointer() {
         );
     }
 }
+
+/// Not from the shell suite: the patterns are escaped in `.gitattributes`
+/// as upstream does it, so a space doesn't split the line.
+#[test]
+#[ignore = "patterns aren't escaped like upstream"]
+fn migrate_export_escapes_patterns() {
+    let t = Test::new();
+    let repo = t.init("repo");
+    repo.lfs(["track", "*.txt", "*.md"]).ok();
+    repo.write("a b#c.txt", "a b#c.txt contents");
+    repo.write("x\\y.md", "x\\y.md contents");
+    repo.git(["add", "."]).ok();
+    repo.git(["commit", "-m", "initial"]).ok();
+
+    export(
+        &repo,
+        &["--include=a b#c.txt", "--exclude=x\\y.md", "--yes"],
+    )
+    .ok();
+
+    assert_attrs(
+        &repo,
+        "main",
+        &[
+            r"a[[:space:]]b\#c.txt !text !filter !merge !diff",
+            r"x\\y.md filter=lfs diff=lfs merge=lfs -text",
+        ],
+    );
+    assert_eq!(
+        repo.blob("main", "a b#c.txt").as_deref(),
+        Some("a b#c.txt contents")
+    );
+    let run = repo
+        .git(["check-attr", "filter", "--", "a b#c.txt"])
+        .ok()
+        .stdout();
+    assert_eq!(run, "a b#c.txt: filter: unspecified\n");
+}
