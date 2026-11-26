@@ -15,6 +15,7 @@ mod lock;
 mod locks;
 mod ls_files;
 mod migrate_import;
+mod migrate_import_no_rewrite;
 mod migrate_info;
 mod pointer;
 mod pre_push;

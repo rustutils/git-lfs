@@ -68,6 +68,19 @@ pub fn local_branch_with_gitattrs<'a>(t: &'a Test, attrs: Attrs) -> Repo<'a> {
     repo
 }
 
+/// `a.txt` and `a.md` committed outside LFS, then `.gitattributes`
+/// tracking `*.txt`, and `b/a.md` with `b/.gitattributes` tracking `*.md`.
+pub fn local_branch_with_nested_gitattrs(t: &Test) -> Repo<'_> {
+    let repo = t.init("migrate-single-local-branch-nested-attrs");
+    write_sized(&repo, &[("a.txt", 120), ("a.md", 140), ("b/a.md", 140)]);
+    commit(&repo, &["a.txt", "a.md", "b/a.md"], "initial commit");
+    repo.lfs(["track", "*.txt"]).ok();
+    commit(&repo, &[".gitattributes"], "add .gitattributes");
+    repo.at("b").lfs(["track", "*.md"]).ok();
+    commit(&repo, &["b/.gitattributes"], "add nested .gitattributes");
+    repo
+}
+
 /// An empty commit, then `a.txt` and `name` committed outside LFS.
 pub fn single_local_branch_untracked<'a>(t: &'a Test, name: &str) -> Repo<'a> {
     let repo = t.init("migrate-single-local-branch-untracked");
@@ -156,6 +169,23 @@ pub fn multiple_local_branches(t: &Test) -> Repo<'_> {
     repo
 }
 
+/// [`multiple_local_branches`], then `.gitattributes` tracking `a.txt` and
+/// `a.md` committed on `main`. The shell tracks `*.txt` and `*.md`
+/// unquoted, which expand to those names.
+pub fn multiple_local_branches_with_gitattrs(t: &Test) -> Repo<'_> {
+    let repo = multiple_local_branches(t);
+    track_and_commit(&repo, &["a.txt", "a.md"]);
+    repo
+}
+
+/// Track each of `patterns`, then commit `.gitattributes`.
+fn track_and_commit(repo: &Repo, patterns: &[&str]) {
+    for pattern in patterns {
+        repo.lfs(["track", pattern]).ok();
+    }
+    commit(repo, &[".gitattributes"], "add .gitattributes");
+}
+
 /// [`multiple_local_branches`], with `refs/pull/1/head` at `my-feature`
 /// and `refs/pull/1/base` at `main`.
 pub fn multiple_local_branches_non_standard(t: &Test) -> Repo<'_> {
@@ -214,6 +244,14 @@ pub fn single_remote_branch(t: &Test) -> Repo<'_> {
         &["a.md", "a.txt"],
         "add an additional 30, 50 bytes to a.{txt,md}",
     );
+    repo
+}
+
+/// [`single_remote_branch`], then `.gitattributes` tracking `a.txt` and
+/// `a.md` committed, like [`multiple_local_branches_with_gitattrs`].
+pub fn single_remote_branch_with_gitattrs(t: &Test) -> Repo<'_> {
+    let repo = single_remote_branch(t);
+    track_and_commit(&repo, &["a.txt", "a.md"]);
     repo
 }
 
