@@ -25,6 +25,7 @@ mod migrate_fixup;
 mod migrate_import;
 mod migrate_import_no_rewrite;
 mod migrate_info;
+mod multiple_remotes;
 mod pointer;
 mod pre_push;
 mod prune;
