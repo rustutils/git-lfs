@@ -206,7 +206,6 @@ fn migrate_export_no_filter() {
 }
 
 #[test]
-#[ignore = "export rewrites commits already on the remote"]
 fn migrate_export_exclude_remote_refs() {
     let t = Test::new();
     let repo = fixtures::single_remote_branch_tracked(&t);

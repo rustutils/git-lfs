@@ -10,6 +10,10 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ### Fixed
 
+- `git lfs migrate export` leaves commits already on a remote alone, like
+  upstream and like `migrate import`. Before, it rewrote them too. As
+  with import, `--everything`, `--include-ref`, and `--exclude-ref` turn
+  this off.
 - `git lfs migrate export` writes the `.gitattributes` line for an
   `--exclude` pattern with `-text`, like upstream.
 - `git lfs migrate import --fixup` and `migrate info --fixup` let a

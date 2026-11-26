@@ -120,6 +120,29 @@ pub(super) fn validate_refs(
     Ok(())
 }
 
+/// Exclude the remote-tracking refs from the walk, so commits already
+/// on a remote aren't rewritten.
+///
+/// As upstream, this applies unless the refs were chosen with
+/// `--everything`, `--include-ref`, or `--exclude-ref`, so also with
+/// branch arguments.
+pub(super) fn exclude_remote_refs(
+    cwd: &Path,
+    everything: bool,
+    ref_flags: (&[String], &[String]),
+    exclude_refs: &mut Vec<String>,
+) {
+    let (include_ref, exclude_ref) = ref_flags;
+    if everything || !include_ref.is_empty() || !exclude_ref.is_empty() {
+        return;
+    }
+    for r in export::list_remote_tracking_refs(cwd) {
+        if !exclude_refs.contains(&r) {
+            exclude_refs.push(r);
+        }
+    }
+}
+
 pub(super) fn head_exists(cwd: &Path) -> bool {
     Command::new("git")
         .arg("-C")

@@ -116,10 +116,10 @@ come from reading the code.
 - `git lfs migrate --everything` doesn't rewrite remote-tracking branches,
   which upstream does. Rewriting them would leave them out of step with the
   server until the next fetch, so this may be worth keeping.
-- `git lfs migrate`: export doesn't exclude remote-tracking refs, has no
-  `--yes`, and writes its exclude line without `-text`. Remote refs aren't
-  fetched before the walk, so `--skip-fetch` does nothing. `--no-rewrite`
-  commits everything staged.
+- `git lfs migrate` doesn't fetch remote refs before the walk, so
+  `--skip-fetch` does nothing. It excludes remote-tracking refs in a bare
+  repository too, which upstream doesn't. `--no-rewrite` commits
+  everything staged. Export doesn't escape its `.gitattributes` patterns.
 - `git lfs track`: any value of `GIT_LFS_TRACK_NO_INSTALL_HOOKS` disables
   the hook install, one forbidden pattern stops the others, a failed touch
   of a read-only file is ignored, and `escape_attr_pattern` only escapes a

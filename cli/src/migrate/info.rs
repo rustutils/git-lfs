@@ -101,14 +101,12 @@ pub fn info(cwd: &Path, opts: &InfoOptions) -> Result<(), MigrateError> {
         }
     }
     super::validate_refs(cwd, &include_refs, &exclude_refs)?;
-    // Skip commits already on a remote, as in import.
-    if !opts.everything && opts.include_ref.is_empty() && opts.exclude_ref.is_empty() {
-        for r in super::export::list_remote_tracking_refs(cwd) {
-            if !exclude_refs.iter().any(|x| x == &r) {
-                exclude_refs.push(r);
-            }
-        }
-    }
+    super::exclude_remote_refs(
+        cwd,
+        opts.everything,
+        (&opts.include_ref, &opts.exclude_ref),
+        &mut exclude_refs,
+    );
     if include_refs.is_empty() {
         return Ok(());
     }

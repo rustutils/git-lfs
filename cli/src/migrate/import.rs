@@ -113,16 +113,12 @@ pub fn import(cwd: &Path, opts: &ImportOptions) -> Result<Stats, MigrateError> {
         }
     }
     super::validate_refs(cwd, &include_refs, &exclude_refs)?;
-    // As upstream, skip commits already on a remote unless the refs
-    // were chosen with `--everything`, `--include-ref`, or
-    // `--exclude-ref`. This applies to branch arguments too.
-    if !opts.everything && opts.include_ref.is_empty() && opts.exclude_ref.is_empty() {
-        for r in super::export::list_remote_tracking_refs(cwd) {
-            if !exclude_refs.iter().any(|x| x == &r) {
-                exclude_refs.push(r);
-            }
-        }
-    }
+    super::exclude_remote_refs(
+        cwd,
+        opts.everything,
+        (&opts.include_ref, &opts.exclude_ref),
+        &mut exclude_refs,
+    );
     if include_refs.is_empty() {
         return Err(MigrateError::Other(
             "no resolvable refs to migrate (empty repo?)".into(),

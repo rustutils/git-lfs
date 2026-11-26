@@ -85,6 +85,12 @@ pub fn export(cwd: &Path, opts: &ExportOptions) -> Result<Stats, MigrateError> {
         }
     }
     super::validate_refs(cwd, &include_refs, &exclude_refs)?;
+    super::exclude_remote_refs(
+        cwd,
+        opts.everything,
+        (&opts.include_ref, &opts.exclude_ref),
+        &mut exclude_refs,
+    );
     if include_refs.is_empty() {
         return Err(MigrateError::Other(
             "no resolvable refs to migrate (empty repo?)".into(),
