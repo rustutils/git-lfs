@@ -39,3 +39,4 @@ mod track;
 mod uninstall;
 mod uninstall_worktree;
 mod unlock;
+mod untrack;
