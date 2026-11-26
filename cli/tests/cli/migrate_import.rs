@@ -1086,6 +1086,30 @@ fn migrate_import_escapes_patterns() {
     assert_eq!(run, "a b#c.txt: filter: lfs\n");
 }
 
+/// Not from the shell suite: with `--above`, a backslash in a path is
+/// escaped in its `.gitattributes` line, so the line matches that file.
+#[test]
+#[ignore = "--above doesn't escape a backslash"]
+fn migrate_import_above_escapes_backslash() {
+    let t = Test::new();
+    let repo = t.init("repo");
+    repo.write("x\\y.bin", "x\\y.bin contents");
+    repo.git(["add", "."]).ok();
+    repo.git(["commit", "-m", "initial"]).ok();
+
+    import(&repo, &["--above=1b"]).ok();
+
+    repo.assert_pointer("refs/heads/main", "x\\y.bin", &oid("x\\y.bin contents"), 16);
+    let run = repo
+        .git(["check-attr", "filter", "--", "x\\y.bin", "xy.bin"])
+        .ok()
+        .stdout();
+    assert_eq!(
+        run,
+        "\"x\\\\y.bin\": filter: lfs\nxy.bin: filter: unspecified\n"
+    );
+}
+
 #[test]
 fn migrate_import_filename_special_characters() {
     let t = Test::new();
