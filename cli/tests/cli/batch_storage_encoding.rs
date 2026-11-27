@@ -3,48 +3,8 @@
 //! The server picks its encoding from the object's contents and the
 //! repository's name. The tests count lines in the trace.
 
-use crate::harness::{Repo, Run, Test, oid};
-
-/// Run `git` with `args` in `repo`, traced, with stderr merged into
-/// stdout.
-fn traced(repo: &Repo, args: &[&str]) -> Run {
-    repo.command("git")
-        .args(args)
-        .env("GIT_TRACE", "1")
-        .env("GIT_CURL_VERBOSE", "1")
-        .merged()
-        .run()
-}
-
-/// The remote repository `name`, cloned, with `files` committed under
-/// `*.dat` tracking.
-fn committed<'a>(t: &'a Test, name: &str, files: &[(&str, &str)]) -> Repo<'a> {
-    let repo = t.remote_and_clone(name);
-    repo.lfs(["track", "*.dat"]).ok();
-    repo.git(["add", ".gitattributes"]).ok();
-    for (path, contents) in files {
-        repo.write(path, contents);
-        repo.git(["add", path]).ok();
-    }
-    repo.git(["commit", "-m", "initial commit"]).ok();
-    repo
-}
-
-/// [`committed`] with `files`, pushed, and the local objects removed.
-fn pushed<'a>(t: &'a Test, name: &str, files: &[(&str, &str)]) -> Repo<'a> {
-    let repo = committed(t, name, files);
-    repo.git(["push", "origin", "main"]).ok();
-    repo.remove_local_objects();
-    repo
-}
-
-/// Check that `run`'s output has `count` lines containing each of `lines`.
-#[track_caller]
-fn assert_counts(run: &Run, lines: &[(&str, usize)]) {
-    for (text, count) in lines {
-        assert_eq!(run.count(text), *count, "{text:?}\n{run}");
-    }
-}
+use crate::harness::{Run, Test, oid};
+use crate::transfer_fixtures::{assert_counts, assert_line_with, committed, pushed, traced};
 
 /// Without any setting, with the setting, and with it for the server's
 /// URL only, the download is gzipped.
@@ -54,6 +14,7 @@ fn batch_storage_http_download_with_gzip_encoding() {
     let contents = "storage-download-encoding-gzip";
     let repo = pushed(
         &t,
+        "batch-storage-download-encoding-gzip",
         "batch-storage-download-encoding-gzip",
         &[("a.dat", contents)],
     );
@@ -92,6 +53,7 @@ fn batch_storage_http_download_with_zstd_encoding() {
     let repo = pushed(
         &t,
         "batch-storage-download-encoding-zstd",
+        "batch-storage-download-encoding-zstd",
         &[("a.dat", contents)],
     );
     let url_key = format!("lfs.transfer.{}.httpDownloadEncoding", t.server().url());
@@ -128,12 +90,14 @@ fn batch_storage_http_download_with_zstd_encoding_and_multiple_objects() {
     let repo = pushed(
         &t,
         "batch-storage-download-encoding-zstd-multiple",
+        "batch-storage-download-encoding-zstd-multiple",
         &[
             ("test1.dat", contents[0]),
             ("test2.dat", contents[1]),
             ("test3.dat", contents[2]),
         ],
     );
+    repo.remove_local_objects();
     repo.git(["config", "lfs.transfer.httpDownloadEncoding", "zstd"])
         .ok();
     repo.git(["config", "lfs.concurrentTransfers", "2"]).ok();
@@ -168,8 +132,10 @@ fn batch_storage_http_download_with_zstd_encoding_retries_with_range_header_and_
     let repo = pushed(
         &t,
         "batch-storage-download-encoding-zstd-retry-range",
+        "batch-storage-download-encoding-zstd-retry-range",
         &[("a.dat", contents)],
     );
+    repo.remove_local_objects();
     repo.git(["config", "lfs.transfer.httpDownloadEncoding", "zstd"])
         .ok();
 
@@ -191,11 +157,7 @@ fn batch_storage_http_download_with_zstd_encoding_retries_with_range_header_and_
         .has(&format!("Range: bytes={half}-{}", len - 1))
         .has("206 Partial Content")
         .has(&format!("Content-Range: bytes {half}-{}/{len}", len - 1));
-    let accepted = run
-        .output()
-        .lines()
-        .any(|l| l.contains("xfer: server accepted resume") && l.contains(&oid));
-    assert!(accepted, "{run}");
+    assert_line_with(&run, &["xfer: server accepted resume", &oid]);
     repo.assert_local_object(&oid, len);
 }
 
@@ -205,8 +167,10 @@ fn batch_storage_http_download_with_invalid_encoding() {
     let repo = pushed(
         &t,
         "batch-storage-download-encoding-invalid",
+        "batch-storage-download-encoding-invalid",
         &[("a.dat", "contents")],
     );
+    repo.remove_local_objects();
     repo.git(["config", "lfs.transfer.httpDownloadEncoding", "br"])
         .ok();
 
@@ -236,7 +200,7 @@ fn batch_storage_http_upload_with_chunked_transfer_encoding() {
     let t = Test::new();
     let name = "batch-storage-upload-encoding-chunked";
     let contents = "storage-upload-encoding-chunked";
-    let repo = committed(&t, name, &[("a.dat", contents)]);
+    let repo = committed(&t, name, name, &[("a.dat", contents)]);
 
     let run = traced(&repo, &["push", "origin", "main"]).ok();
 
@@ -251,7 +215,7 @@ fn batch_storage_http_upload_without_transfer_encoding() {
     let t = Test::new();
     let name = "batch-storage-upload-encoding-none";
     let contents = "storage-upload-encoding-none";
-    let repo = committed(&t, name, &[("a.dat", contents)]);
+    let repo = committed(&t, name, name, &[("a.dat", contents)]);
 
     let run = traced(&repo, &["push", "origin", "main"]).ok();
 

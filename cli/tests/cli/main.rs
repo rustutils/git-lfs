@@ -6,8 +6,12 @@
 mod conflicts;
 mod harness;
 mod migrate_fixtures;
+mod transfer_fixtures;
 
+mod batch_retries_ratelimit;
 mod batch_storage_encoding;
+mod batch_storage_retries;
+mod batch_storage_retries_ratelimit;
 mod checkout;
 mod clean;
 mod clone;

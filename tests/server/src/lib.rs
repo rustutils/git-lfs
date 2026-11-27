@@ -202,6 +202,22 @@ impl Server {
         locks.iter().map(|l| l.path.clone()).collect()
     }
 
+    /// Give the rate limit for `api`, `direction`, `repo`, and `oid` this
+    /// many `tokens`, or the most it can have with `None`, as the shell
+    /// suites' `set_server_rate_limit` does through `/limits/`.
+    pub fn set_rate_limit(
+        &self,
+        api: &str,
+        direction: &str,
+        repo: &str,
+        oid: &str,
+        tokens: Option<i64>,
+    ) {
+        let key = state::resource_key(api, direction, repo, oid);
+        let tokens = tokens.unwrap_or(state::REFILL_TOKEN_COUNT);
+        self.state.set_rate_limit(&key, tokens);
+    }
+
     /// Block until a client sends `POST /shutdown`, as the shell tests do
     /// when they finish.
     pub fn wait_for_shutdown_request(&self) {

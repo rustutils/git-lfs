@@ -116,6 +116,15 @@ pub(crate) fn respond(status: u16, headers: &[(&str, &str)], body: impl Into<Byt
         flushed: false,
     });
     *resp.status_mut() = StatusCode::from_u16(status).expect("valid status");
+    if status == 416 {
+        // Go's wording, which upstream's client prints from the status
+        // line and t-batch-storage-retries matches. hyper's is RFC 9110's
+        // "Range Not Satisfiable".
+        resp.extensions_mut()
+            .insert(hyper::ext::ReasonPhrase::from_static(
+                b"Requested Range Not Satisfiable",
+            ));
+    }
     for (name, value) in headers {
         add_header(&mut resp, name, value);
     }
