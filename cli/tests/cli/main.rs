@@ -8,6 +8,7 @@ mod harness;
 mod migrate_fixtures;
 mod transfer_fixtures;
 
+mod alternates;
 mod batch_retries_ratelimit;
 mod batch_storage_encoding;
 mod batch_storage_retries;
@@ -27,6 +28,7 @@ mod install_worktree;
 mod lock;
 mod locks;
 mod ls_files;
+mod merge_driver;
 mod migrate_export;
 mod migrate_fixup;
 mod migrate_import;
