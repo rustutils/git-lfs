@@ -22,6 +22,8 @@ mod fetch;
 mod fetch_recent;
 mod filter_process;
 mod fsck;
+mod happy_path;
+mod header_redirect;
 mod install;
 mod install_custom_hooks_path;
 mod install_worktree;
